@@ -55,7 +55,7 @@ are three tiers:
 
 | Tier | Fields | How |
 |------|--------|-----|
-| **Live on file-save** (watcher re-derives + atomic-swaps) | `detectors` (class enables), `routes`, `risk.thresholds` (incl. `enabled`), `rate_limit.buckets`, `tls.certificates`, `tls.client_auth` | edit `waf.yaml` → save → effect. Per-IP risk/rate state is preserved across the swap. Bad routes/certs keep the live value + emit `*_reload_failed`. |
+| **Live on file-save** (watcher re-derives + atomic-swaps) | `detectors` (class enables), `routes`, `risk.thresholds` (incl. `enabled`), `rate_limit.buckets`, `tls.certificates`, `zero_trust.downstream` | edit `waf.yaml` → save → effect. Per-IP risk/rate state is preserved across the swap. Bad routes/certs keep the live value + emit `*_reload_failed`. |
 | **Live via UI / API only** (runtime atomic; file-save updates the snapshot but **not** live behaviour) | `bots.enabled`, `ddos.*` (gate toggles) | flip via Traffic Gates → `PUT /api/gates/bots` \| `/api/gates/ddos`. Editing the file changes what `/api/config` reports but does **not** re-arm the gate until restart. |
 | **Restart-only** (bound / initialised at boot) | `listeners.*` binds, `admin.bind`, `node`, `runtime` (workers / CPU pin), `state.backend` + Redis URLs, `interop.*` | stop + re-run the binary. |
 
@@ -147,6 +147,40 @@ Deep-dive: [`docs/data-plane/tls-termination.md`](../docs/data-plane/tls-termina
 
 ---
 
+## `zero_trust`
+
+Unified mutual-TLS, both directions (replaces `tls.client_auth` and the old
+per-pool upstream `tls:` cert block — **no back-compat alias**). Both default off.
+
+| Field | Default | Notes |
+|---|---|---|
+| `downstream.mode` | `disabled` | `disabled` / `optional` / `required` — verify client certs presented *to* the WAF |
+| `downstream.ca_bundle` | unset | Trust anchor; **required** when `mode != disabled` |
+| `downstream.allowed_sans[]` | empty (any) | Optional SAN allowlist on client certs |
+| `downstream.apply_to[]` | empty | `admin` / `data` planes that enforce; required when non-disabled |
+| `upstream_identity.source` | `file` | `file` or `state` (config plane; PUBLIC cert only, key stays a ref) |
+| `upstream_identity.cert_path` | unset | PUBLIC WAF client cert (EKU `clientAuth`); required for `source: file` |
+| `upstream_identity.key_ref` | unset | Private-key reference (`${secret:*}` / path); never the bytes |
+
+Per-pool opt-in lives under `upstreams.<pool>.upstream_mtls`
+(`enabled` / `verify` / `trust`) — see [`#upstreams`](#upstreams).
+
+```yaml
+zero_trust:
+  downstream:
+    mode: required
+    ca_bundle: config/certs/clients-ca.pem
+    apply_to: [admin, data]
+  upstream_identity:
+    source: file
+    cert_path: config/certs/waf-client.pem
+    key_ref:   "${secret:env:WAF_UPSTREAM_KEY}"
+```
+
+Deep-dive: [`docs/security/zero-trust-mtls.md`](../docs/security/zero-trust-mtls.md).
+
+---
+
 ## `routes`
 
 Path-prefix or host+path matching, each mapped to one `upstreams.*`
@@ -186,18 +220,24 @@ Backend pools — addresses, load-balancing, health, circuit breaker.
 | `<pool>.health` | unset | `{ path, interval_ms, timeout_ms }` for active probes |
 | `<pool>.circuit_breaker` | unset | `{ error_rate_threshold, open_duration_ms }` |
 | `<pool>.connection.max_idle_per_host` | 32 | TCP keep-alive pool size |
+| `<pool>.upstream_mtls` | unset | Opt-in upstream mTLS — `{ enabled, verify, trust }`. Requires `connection.tls: true` + a `zero_trust.upstream_identity`. `trust` = an uploaded bundle name or a CA file path (`null` ⇒ webpki roots). Fails closed when unverifiable. See [`#zero_trust`](#zero_trust). |
 
 ```yaml
 upstreams:
   api-pool:
     members:
-      - { addr: 10.0.1.10:8080, weight: 1 }
-      - { addr: 10.0.1.11:8080, weight: 1 }
+      - { addr: 10.0.1.10:8443, weight: 1 }
+      - { addr: 10.0.1.11:8443, weight: 1 }
     lb: least_conn
+    connection: { tls: true }
     health:
       path: /healthz
       interval_ms: 5000
       timeout_ms: 1000
+    upstream_mtls:
+      enabled: true
+      verify: true
+      trust: internal-ca          # uploaded bundle name OR a CA file path
 ```
 
 Deep-dive: [`docs/data-plane/upstream-pools.md`](../docs/data-plane/upstream-pools.md).
@@ -486,8 +526,7 @@ Dashboard authentication, CSRF, session cookies, optional mTLS.
 | `dashboard_auth.csrf_secret_ref` | inline placeholder | Use `${secret:*}` in prod |
 | `dashboard_auth.max_request_body_bytes` | `1 MiB` | Per-request cap on the admin plane |
 | `dashboard_auth.session_idle_seconds` | `3600` | Session-cookie TTL |
-| `dashboard_auth.allow_ca_upload` | `false` | Opt-in for the mTLS CA-bundle upload card |
-| `mtls.mode` | `optional` | `disabled` / `optional` / `required` |
+| `dashboard_auth.allow_ca_upload` | `false` | Capability gate for all browser-driven cert mutation (downstream CA bundle, **and** the Zero Trust upstream identity / backend-CA trust-bundle uploads) |
 
 ```yaml
 admin:

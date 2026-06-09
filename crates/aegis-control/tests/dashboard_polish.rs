@@ -106,7 +106,11 @@ fn bundle_under_documented_budget() {
     // version card + Scaling page, multi-node metrics UI, and the
     // R2-009 feature-off AI-row polish. Rationale + bump policy:
     // assets/dashboard/bundle-budget.md.
-    const RAW_BUDGET_BYTES: usize = 720_000;
+    // Bumped 2026-06-09 from 720 → 780 KB — raw total reached 742 KB
+    // after the P4 Zero Trust console: WAF-identity upload, backend-CA
+    // trust-bundle upload/list/delete, the per-pool upstream-mTLS
+    // drawer, and the upstream handshake-failure card.
+    const RAW_BUDGET_BYTES: usize = 780_000;
     let mut total = 0usize;
     for path in ["index.html", "app.js", "aegis.css", "react.min.js", "react-dom.min.js", "i18n.json"] {
         let asset: EmbeddedAsset = lookup(path).unwrap_or_else(|| panic!("{path} must resolve"));
@@ -153,7 +157,13 @@ fn app_js_under_per_bundle_budget() {
     // policy + the why-not-code-split note: assets/dashboard/bundle-budget.md.
     // Real dependency growth (new React lib, etc.) needs an
     // explicit budget bump + comment here, not a silent overrun.
-    const APP_JS_BUDGET: usize = 540_000;
+    // Bumped 2026-06-09 from 540 → 600 KB. app.js reached 560 KB after
+    // the P4 Zero Trust console additions: the WAF-identity store/rotate
+    // upload, the backend-CA trust-bundle card (upload/list/delete), the
+    // per-pool upstream-mTLS edit drawer, and the upstream
+    // handshake-failure histogram card. Still feature surface, not
+    // dependency bloat (no new libs; React stays UMD-global).
+    const APP_JS_BUDGET: usize = 600_000;
     let bytes = lookup("app.js").unwrap().bytes.len();
     assert!(
         bytes < APP_JS_BUDGET,

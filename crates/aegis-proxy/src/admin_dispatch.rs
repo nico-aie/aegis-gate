@@ -457,21 +457,46 @@ pub(crate) async fn handle_admin_request(
 
     // MTLS-T7 — Allowed SAN allowlist mutations. Audit-mutated;
     // CSRF-gated. Three handlers:
-    //   PUT    /api/mtls/sans              whole-list replace
-    //   DELETE /api/mtls/sans/{san}        single remove
-    //   POST   /api/mtls/sans/{san}/test   synthetic admit check
+    //   PUT    /api/zero-trust/downstream/sans              whole-list replace
+    //   DELETE /api/zero-trust/downstream/sans/{san}        single remove
+    //   POST   /api/zero-trust/downstream/sans/{san}/test   synthetic admit check
     // MTLS-T8 — runtime mode override.
-    if method == hyper::Method::PUT && path == "/api/mtls/mode" {
+    if method == hyper::Method::PUT && path == "/api/zero-trust/downstream/mode" {
         return crate::admin_mutate::handle_mtls_mode_put(req, services).await;
     }
     // MTLS-T10 — CA bundle validation + audit-emit (Phase 1).
-    if method == hyper::Method::PUT && path == "/api/mtls/ca-bundle" {
+    if method == hyper::Method::PUT && path == "/api/zero-trust/downstream/ca-bundle" {
         return crate::admin_mutate::handle_mtls_ca_bundle_put(req, services).await;
     }
-    if method == hyper::Method::PUT && path == "/api/mtls/sans" {
+    if method == hyper::Method::PUT && path == "/api/zero-trust/downstream/sans" {
         return handle_mtls_sans_put(req, services).await;
     }
-    if let Some(suffix) = path.strip_prefix("/api/mtls/sans/") {
+    // P4 4a-ii — store the shared fleet WAF client identity (upstream
+    // mTLS, source: state) in the config plane. Audit-mutated,
+    // CSRF-gated, gated behind allow_ca_upload. PUBLIC cert + key
+    // reference only (never the key bytes).
+    if method == hyper::Method::PUT && path == "/api/zero-trust/upstream/identity" {
+        return crate::admin_mutate::handle_zt_upstream_identity_put(req, services).await;
+    }
+    // P4 trust bundles — upload (POST) / list (GET) / remove (DELETE)
+    // PUBLIC backend-CA bundles a pool's `upstream_mtls.trust`
+    // references. POST/DELETE audit-mutated + CSRF + allow_ca_upload.
+    if method == hyper::Method::GET && path == "/api/zero-trust/upstream/trust" {
+        return crate::admin_mutate::handle_zt_upstream_trust_list(services).await;
+    }
+    if let Some(bundle) = path.strip_prefix("/api/zero-trust/upstream/trust/") {
+        if !bundle.is_empty() && !bundle.contains('/') {
+            if method == hyper::Method::POST {
+                return crate::admin_mutate::handle_zt_upstream_trust_put(req, bundle, services)
+                    .await;
+            }
+            if method == hyper::Method::DELETE {
+                return crate::admin_mutate::handle_zt_upstream_trust_delete(req, bundle, services)
+                    .await;
+            }
+        }
+    }
+    if let Some(suffix) = path.strip_prefix("/api/zero-trust/downstream/sans/") {
         if method == hyper::Method::POST {
             if let Some(san) = suffix.strip_suffix("/test") {
                 if !san.is_empty() && !san.contains('/') {

@@ -1150,7 +1150,7 @@ mod tests {
                     "before": { "allowed": before },
                     "after":  { "allowed": after  },
                 },
-                "resource": "/api/mtls/sans",
+                "resource": "/api/zero-trust/downstream/sans",
             }),
         }
     }

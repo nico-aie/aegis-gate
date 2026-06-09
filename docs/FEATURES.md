@@ -144,7 +144,8 @@ below will work.
 | ✅ CSRF double-submit | `curl -X PUT http://127.0.0.1:9443/api/detectors -d '{}'` (no CSRF) | 403 with `reason: "csrf_missing_cookie"`. |
 | ✅ Session expiry redirect | Wait for the cookie to expire and try a mutation | Dashboard toasts "Session expired — redirecting to login…" and bounces you to `/admin/login`. |
 | 🟡 TOTP enrollment | `waf admin enroll-totp --issuer Aegis --account you@x.com` | Generates a TOTP secret + recovery codes. Login flow includes TOTP step when `dashboard_auth.totp_required: true` in cfg. |
-| 🟡 mTLS admin | Set `admin.mtls.required: true` in cfg + provide a client cert | Dashboard accepts only requests presenting a client cert against the configured CA. |
+| ✅ Zero Trust — downstream mTLS | `zero_trust.downstream.mode: required` + `ca_bundle` + `apply_to: [admin]` | The listener accepts only requests presenting a client cert that chains to the bundle (and matches the SAN allowlist, if set). |
+| ✅ Zero Trust — upstream mTLS | Zero Trust page (Beta): store the WAF identity, upload a backend CA, enable a pool's drawer | The WAF presents its shared client cert + verifies the backend; fail-closed on an unverifiable backend. Handshake failures surface on the page. See [`docs/security/zero-trust-mtls.md`](security/zero-trust-mtls.md). |
 | ✅ IP allowlist on admin | `admin.allow_ips: [127.0.0.1/32]` in cfg | Other IPs get rejected at the gate before auth runs. |
 
 ### 3.2 Audit-mutated CRUD (the daily-driver paths)

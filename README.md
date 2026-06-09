@@ -345,7 +345,8 @@ waf help
 | **Detectors** (per-class behaviour + tags) | [`docs/security/detectors/README.md`](docs/security/detectors/README.md) |
 | **Upstream pools (full schema)** | [`docs/data-plane/upstream-pools.md`](docs/data-plane/upstream-pools.md) |
 | **Reverse proxy + tunneling** | [`docs/data-plane/reverse-proxy.md`](docs/data-plane/reverse-proxy.md) |
-| **TLS termination + mTLS** | [`docs/data-plane/tls-termination.md`](docs/data-plane/tls-termination.md) |
+| **TLS termination** | [`docs/data-plane/tls-termination.md`](docs/data-plane/tls-termination.md) |
+| **Zero Trust — mTLS both directions** | [`docs/security/zero-trust-mtls.md`](docs/security/zero-trust-mtls.md) |
 | **API contract** (OpenAPI) | [`docs/control-plane/api.openapi.yaml`](docs/control-plane/api.openapi.yaml) |
 | **Dashboard reference** (page inventory + REST/SSE) | [`docs/control-plane/enterprise/`](docs/control-plane/enterprise/) |
 | **AI Detector** (perf, config, observability) | [`docs/security/detectors/ai-detector.md`](docs/security/detectors/ai-detector.md) |

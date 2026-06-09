@@ -77,18 +77,28 @@ Removing a member from config puts it in `draining`:
 - In-flight requests finish
 - After `drain_timeout` or when in-flight is zero, the member is dropped
 
-## mTLS to upstream
+## mTLS to upstream (Zero Trust)
 
-Each pool can carry a dedicated `rustls::ClientConfig`:
+Opt in per pool via `upstream_mtls`. The WAF presents one **shared fleet client
+cert** (`zero_trust.upstream_identity`) and verifies the backend against a trust
+anchor — a CA file path or an uploaded **trust bundle** name. Full feature
+(shared identity, config-plane/state mode, console, security model):
+[`../security/zero-trust-mtls.md`](../security/zero-trust-mtls.md).
 
 ```yaml
-tls:
-  sni: "internal.svc.local"
-  ca_bundle: "/etc/waf/certs/internal-ca.pem"
-  client_cert: "/etc/waf/certs/waf-client.pem"
-  client_key:  "${secret:vault:kv/data/waf#upstream_key}"
-  min_version: tls1_3
+upstreams:
+  internal_svc:
+    members: [...]
+    connection: { tls: true }        # mTLS requires TLS to the backend
+    upstream_mtls:
+      enabled: true
+      verify: true                   # default; unverifiable backend FAILS CLOSED
+      trust: internal-ca             # uploaded bundle name OR a CA file path; null ⇒ webpki roots
 ```
+
+> Replaces the old per-pool `tls: { client_cert, client_key, ca_bundle }` shape —
+> **no back-compat alias.** `verify: false` and `allowed_sans` enforcement are
+> reserved for P5.
 
 ## Configuration
 

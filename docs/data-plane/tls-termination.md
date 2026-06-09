@@ -66,23 +66,36 @@ atomic with the rest of the cert store.
 - FIPS mode: only the `aws-lc-rs` FIPS-validated subset
 - PCI mode: TLS 1.2+ only, weak suites refused at config load
 
-## mTLS to upstream
+## mTLS — both directions (Zero Trust)
 
-Configured per pool in [`upstream-pools.md`](./upstream-pools.md):
+Mutual TLS — verifying client certs presented *to* the WAF (downstream) **and**
+the WAF presenting its own client cert to backends (upstream) — is owned by the
+unified `zero_trust` module + the **Zero Trust** console page. See
+[`../security/zero-trust-mtls.md`](../security/zero-trust-mtls.md) for the full
+feature (config, state mode, API, console, security model).
+
+> **Migration note:** this replaces the old `tls.client_auth` (downstream) block
+> and the old per-pool `tls: { client_cert, client_key, ca_bundle }` (upstream)
+> shape — **no back-compat alias.**
+
+Upstream mTLS is opt-in per pool; each pool owns a dedicated `hyper` client with a
+distinct `rustls::ClientConfig`:
 
 ```yaml
+zero_trust:
+  upstream_identity:                 # the shared fleet WAF client cert
+    source: file
+    cert_path: config/certs/waf-client.pem
+    key_ref:   "${secret:vault:kv/data/waf#upstream_key}"
 upstreams:
   internal_svc:
     members: [...]
-    tls:
-      sni: "internal.svc.local"
-      ca_bundle: "/etc/waf/certs/internal-ca.pem"
-      client_cert: "/etc/waf/certs/waf-client.pem"
-      client_key:  "${secret:vault:kv/data/waf#upstream_key}"
-      min_version: tls1_3
+    connection: { tls: true }
+    upstream_mtls:
+      enabled: true
+      verify: true                   # fail closed if the backend can't be verified
+      trust: internal-ca             # uploaded bundle name OR a CA file path
 ```
-
-Each pool owns a dedicated `hyper` client with a distinct `rustls::ClientConfig`.
 
 ## Zero-downtime cert reload
 

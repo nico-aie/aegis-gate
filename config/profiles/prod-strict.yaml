@@ -57,7 +57,11 @@ tls:
     max_age: 63072000          # 2 years (max preload-list eligible)
     include_subdomains: true
     preload: true              # only after submitting to hstspreload.org
-  client_auth:
+
+# Zero Trust — unified mutual-TLS surface (renamed from tls.client_auth).
+# `downstream` = WAF-as-server client-cert verification.
+zero_trust:
+  downstream:
     mode: required             # mTLS REQUIRED for compliance use cases
     ca_bundle: "/etc/aegis/ca/clients.pem"
     apply_to: [admin]

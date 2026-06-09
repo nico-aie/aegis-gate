@@ -63,6 +63,11 @@ pub struct PoolRegistry {
     /// readers can get the post-runtime-mutation truth without
     /// having to reconstruct it from the compiled Pool.
     raw: Arc<ArcSwap<HashMap<String, PoolConfig>>>,
+    /// P2 — the shared fleet upstream-mTLS identity, seeded at boot
+    /// (`seed_upstream_identity`). `apply` reuses it so a runtime
+    /// pool re-apply re-resolves each pool's client cert against the
+    /// same identity. `None` ⇒ no pool can have upstream mTLS.
+    upstream_identity: Arc<ArcSwap<Option<aegis_core::config::UpstreamIdentityConfig>>>,
 }
 
 impl PoolRegistry {
@@ -73,6 +78,7 @@ impl PoolRegistry {
             pools: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             breakers: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             raw: Arc::new(ArcSwap::from_pointee(HashMap::new())),
+            upstream_identity: Arc::new(ArcSwap::from_pointee(None)),
         }
     }
 
@@ -90,6 +96,7 @@ impl PoolRegistry {
             // it does, the GET endpoint will see an empty map
             // and fall back to the cfg snapshot.
             raw: Arc::new(ArcSwap::from_pointee(HashMap::new())),
+            upstream_identity: Arc::new(ArcSwap::from_pointee(None)),
         }
     }
 
@@ -97,6 +104,16 @@ impl PoolRegistry {
     /// the boot snapshot. After boot, `apply` keeps it in sync.
     pub fn seed_raw(&self, raw: HashMap<String, PoolConfig>) {
         self.raw.store(Arc::new(raw));
+    }
+
+    /// P2 — seed the shared upstream-mTLS identity at boot so
+    /// `apply` can re-resolve pool client certs against it on a
+    /// runtime pool re-apply.
+    pub fn seed_upstream_identity(
+        &self,
+        identity: Option<aegis_core::config::UpstreamIdentityConfig>,
+    ) {
+        self.upstream_identity.store(Arc::new(identity));
     }
 
     /// Snapshot of the live raw pool configs — used by the
@@ -113,6 +130,7 @@ impl PoolRegistry {
     /// `reason_code` to the dashboard.
     pub fn build_pools(
         upstreams: &HashMap<String, PoolConfig>,
+        upstream_identity: Option<&aegis_core::config::UpstreamIdentityConfig>,
     ) -> Result<BuiltPools, PoolValidationError> {
         for cfg in upstreams.values() {
             validate_pool(cfg)?;
@@ -188,13 +206,21 @@ impl PoolRegistry {
                     )),
                 );
             }
+            // P2 — resolve this pool's upstream-mTLS material from
+            // its `upstream_mtls` block + the shared fleet identity,
+            // and attach it to the cloned connection config so
+            // `forward::build_client` presents the client cert and
+            // `PoolKey` includes the cert fingerprint.
+            let mut connection = cfg.connection.clone();
+            connection.upstream_mtls =
+                aegis_core::config::resolve_upstream_mtls(cfg, upstream_identity);
             pools.insert(
                 name.clone(),
                 Arc::new(Pool {
                     name: name.clone(),
                     members,
                     strategy,
-                    connection: cfg.connection.clone(),
+                    connection,
                 }),
             );
         }
@@ -260,7 +286,8 @@ impl PoolRegistry {
         &self,
         new_pools: &HashMap<String, PoolConfig>,
     ) -> Result<(), PoolValidationError> {
-        let (pools, breakers) = Self::build_pools(new_pools)?;
+        let identity = self.upstream_identity.load();
+        let (pools, breakers) = Self::build_pools(new_pools, (**identity).as_ref())?;
         self.pools.store(Arc::new(pools));
         self.breakers.store(Arc::new(breakers));
         // Keep the raw shadow in lock-step so admin reads see
@@ -375,7 +402,7 @@ circuit_breaker:
             ("a", pool_cfg("127.0.0.1:3001")),
             ("b", pool_cfg("127.0.0.1:3002")),
         ]);
-        let (pools, breakers) = PoolRegistry::build_pools(&cfg).unwrap();
+        let (pools, breakers) = PoolRegistry::build_pools(&cfg, None).unwrap();
         assert_eq!(pools.len(), 2);
         assert!(pools.contains_key("a"));
         assert!(pools.contains_key("b"));
@@ -389,7 +416,7 @@ circuit_breaker:
             ("a", pool_cfg("127.0.0.1:3001")),
             ("b", pool_cfg_with_cb("127.0.0.1:3002")),
         ]);
-        let (_pools, breakers) = PoolRegistry::build_pools(&cfg).unwrap();
+        let (_pools, breakers) = PoolRegistry::build_pools(&cfg, None).unwrap();
         assert_eq!(breakers.len(), 1);
         assert!(breakers.contains_key("b"));
         assert!(!breakers.contains_key("a"));
@@ -401,7 +428,7 @@ circuit_breaker:
         let mut bad = pool_cfg("127.0.0.1:3001");
         bad.members.clear();
         let cfg = cfg_map(&[("bad", bad)]);
-        let err = PoolRegistry::build_pools(&cfg).unwrap_err();
+        let err = PoolRegistry::build_pools(&cfg, None).unwrap_err();
         assert_eq!(err, PoolValidationError::EmptyMembers);
     }
 
@@ -410,7 +437,7 @@ circuit_breaker:
         let mut bad = pool_cfg("127.0.0.1:3001");
         bad.members[0].weight = 0;
         let cfg = cfg_map(&[("bad", bad)]);
-        let err = PoolRegistry::build_pools(&cfg).unwrap_err();
+        let err = PoolRegistry::build_pools(&cfg, None).unwrap_err();
         assert!(matches!(err, PoolValidationError::ZeroWeight { .. }));
     }
 
@@ -419,7 +446,7 @@ circuit_breaker:
     #[test]
     fn get_returns_arc_pool() {
         let cfg = cfg_map(&[("a", pool_cfg("127.0.0.1:3001"))]);
-        let (pools, breakers) = PoolRegistry::build_pools(&cfg).unwrap();
+        let (pools, breakers) = PoolRegistry::build_pools(&cfg, None).unwrap();
         let registry = PoolRegistry::from_pools(pools, breakers);
         let p = registry.get("a").expect("present");
         assert_eq!(p.name, "a");
@@ -432,7 +459,7 @@ circuit_breaker:
             ("a", pool_cfg("127.0.0.1:3001")),
             ("b", pool_cfg_with_cb("127.0.0.1:3002")),
         ]);
-        let (pools, breakers) = PoolRegistry::build_pools(&cfg).unwrap();
+        let (pools, breakers) = PoolRegistry::build_pools(&cfg, None).unwrap();
         let registry = PoolRegistry::from_pools(pools, breakers);
         assert!(registry.breaker("a").is_none());
         assert!(registry.breaker("b").is_some());
@@ -443,7 +470,7 @@ circuit_breaker:
         // Hot-path safety: a request that grabbed Arc<Pool> before
         // a swap still has a valid pool reference after the swap.
         let cfg_v1 = cfg_map(&[("a", pool_cfg("127.0.0.1:3001"))]);
-        let (pools, breakers) = PoolRegistry::build_pools(&cfg_v1).unwrap();
+        let (pools, breakers) = PoolRegistry::build_pools(&cfg_v1, None).unwrap();
         let registry = PoolRegistry::from_pools(pools, breakers);
         let in_flight = registry.get("a").expect("v1 pool");
 
@@ -465,7 +492,7 @@ circuit_breaker:
     #[test]
     fn apply_replaces_pools_atomically() {
         let cfg_v1 = cfg_map(&[("a", pool_cfg("127.0.0.1:3001"))]);
-        let (pools, breakers) = PoolRegistry::build_pools(&cfg_v1).unwrap();
+        let (pools, breakers) = PoolRegistry::build_pools(&cfg_v1, None).unwrap();
         let registry = PoolRegistry::from_pools(pools, breakers);
 
         let cfg_v2 = cfg_map(&[
@@ -481,7 +508,7 @@ circuit_breaker:
     #[test]
     fn apply_leaves_registry_untouched_on_validation_error() {
         let cfg_v1 = cfg_map(&[("a", pool_cfg("127.0.0.1:3001"))]);
-        let (pools, breakers) = PoolRegistry::build_pools(&cfg_v1).unwrap();
+        let (pools, breakers) = PoolRegistry::build_pools(&cfg_v1, None).unwrap();
         let registry = PoolRegistry::from_pools(pools, breakers);
 
         // Apply a config with one invalid pool.
@@ -499,7 +526,7 @@ circuit_breaker:
     #[test]
     fn apply_swaps_breakers_in_lockstep_with_pools() {
         let cfg_v1 = cfg_map(&[("a", pool_cfg("127.0.0.1:3001"))]);
-        let (pools, breakers) = PoolRegistry::build_pools(&cfg_v1).unwrap();
+        let (pools, breakers) = PoolRegistry::build_pools(&cfg_v1, None).unwrap();
         let registry = PoolRegistry::from_pools(pools, breakers);
         assert!(registry.breaker("a").is_none());
 
@@ -527,7 +554,7 @@ circuit_breaker:
             ("a", pool_cfg("127.0.0.1:3001")),
             ("b", pool_cfg("127.0.0.1:3002")),
         ]);
-        let (pools, breakers) = PoolRegistry::build_pools(&cfg).unwrap();
+        let (pools, breakers) = PoolRegistry::build_pools(&cfg, None).unwrap();
         let registry = PoolRegistry::from_pools(pools, breakers);
         let snap = registry.snapshot();
         assert_eq!(snap.len(), 2);
@@ -538,7 +565,7 @@ circuit_breaker:
     #[test]
     fn cheap_clone_shares_inner_storage() {
         let cfg = cfg_map(&[("a", pool_cfg("127.0.0.1:3001"))]);
-        let (pools, breakers) = PoolRegistry::build_pools(&cfg).unwrap();
+        let (pools, breakers) = PoolRegistry::build_pools(&cfg, None).unwrap();
         let r1 = PoolRegistry::from_pools(pools, breakers);
         let r2 = r1.clone();
 
@@ -555,7 +582,7 @@ circuit_breaker:
             ("a", pool_cfg("127.0.0.1:3001")),
             ("b", pool_cfg("127.0.0.1:3002")),
         ]);
-        let (pools, breakers) = PoolRegistry::build_pools(&cfg).unwrap();
+        let (pools, breakers) = PoolRegistry::build_pools(&cfg, None).unwrap();
         let registry = PoolRegistry::from_pools(pools, breakers);
         let snap = registry.live_snapshot();
         assert_eq!(snap.pools.len(), 2);
@@ -570,7 +597,7 @@ circuit_breaker:
         use aegis_control::api::upstreams_config::UpstreamWriter;
         use std::sync::atomic::Ordering;
         let cfg = cfg_map(&[("api", pool_cfg("127.0.0.1:3001"))]);
-        let (pools, breakers) = PoolRegistry::build_pools(&cfg).unwrap();
+        let (pools, breakers) = PoolRegistry::build_pools(&cfg, None).unwrap();
         let registry = PoolRegistry::from_pools(pools, breakers);
 
         // Walk the live pool, flip the member's healthy AtomicBool
@@ -601,7 +628,7 @@ lb: round_robin
 "#;
         let pool_cfg: PoolConfig = serde_yaml::from_str(yaml).unwrap();
         let cfg = cfg_map(&[("mixed", pool_cfg)]);
-        let (pools, breakers) = PoolRegistry::build_pools(&cfg).unwrap();
+        let (pools, breakers) = PoolRegistry::build_pools(&cfg, None).unwrap();
         let registry = PoolRegistry::from_pools(pools, breakers);
 
         let live = registry.snapshot();

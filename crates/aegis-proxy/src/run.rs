@@ -156,6 +156,30 @@ pub async fn run(
         cfg_swap.store(Arc::new(next));
     }
 
+    // 2026-06-09 (P4 4a-ii / trust bundles) — materialize state-sourced
+    // Zero Trust material (the shared upstream identity's PUBLIC cert +
+    // any console-uploaded backend-CA trust bundles a pool references)
+    // from the Redis config plane before the (sync) pool build path
+    // (`ProxyContext::build` has no `StateBackend`). Reference-only:
+    // only PUBLIC cert/CA material is folded into the cfg snapshot; the
+    // private key stays a `key_ref`. Fail closed — a `source: state`
+    // identity that can't be materialized (or a corrupt referenced
+    // trust bundle) aborts boot rather than silently dialing without
+    // client auth / pinning. See
+    // `upstream::identity::materialize_zero_trust_state`.
+    {
+        let raw = cfg_swap.load_full();
+        if let Some(next) =
+            crate::upstream::identity::materialize_zero_trust_state(&raw, &state).await?
+        {
+            cfg_swap.store(Arc::new(next));
+            tracing::info!(
+                "zero_trust: materialized PUBLIC upstream-mTLS material from the \
+                 config plane (identity cert and/or backend-CA trust bundles)"
+            );
+        }
+    }
+
     // Boot snapshot — every existing read site keeps `cfg` as
     // `Arc<WafConfig>`. Future per-handler `cfg.load()` calls
     // can read the latest revision without churning the whole
@@ -1079,8 +1103,8 @@ pub async fn run(
                 arc_swap::ArcSwap::from_pointee(store),
             )));
 
-            // MTLS-T2 — when `cfg.tls.client_auth` is set and its
-            // `apply_to` includes `Data`, build a
+            // MTLS-T2 — when `cfg.zero_trust.downstream` is set and
+            // its `apply_to` includes `Data`, build a
             // `WebPkiClientVerifier` from the configured CA bundle
             // and wire it into the server config. Otherwise fall
             // through to the existing no-client-auth path.
@@ -1088,12 +1112,16 @@ pub async fn run(
             // Boot-time CA-bundle parse failures fail the boot
             // (operator opted in; silently downgrading to
             // no-client-auth would be a security regression).
-            let client_auth_for_data = tls_cfg.client_auth.as_ref().filter(|ca| {
-                ca.mode != aegis_core::config::ClientAuthMode::Disabled
-                    && ca
-                        .apply_to
-                        .contains(&aegis_core::config::ClientAuthScope::Data)
-            });
+            let client_auth_for_data = cfg
+                .zero_trust
+                .as_ref()
+                .and_then(|z| z.downstream.as_ref())
+                .filter(|ca| {
+                    ca.mode != aegis_core::config::DownstreamMtlsMode::Disabled
+                        && ca
+                            .apply_to
+                            .contains(&aegis_core::config::DownstreamMtlsScope::Data)
+                });
 
             // MTLS-T5 — keep the parsed `ClientTrustStore`
             // around so the cfg-reload watcher can swap it on
@@ -1105,7 +1133,7 @@ pub async fn run(
             let mut server_cfg = if let Some(ca) = client_auth_for_data {
                 let bundle = ca.ca_bundle.as_ref().ok_or_else(|| {
                     aegis_core::WafError::Config(
-                        "tls.client_auth.ca_bundle is required when mode != disabled".into(),
+                        "zero_trust.downstream.ca_bundle is required when mode != disabled".into(),
                     )
                 })?;
                 let trust =
@@ -1265,6 +1293,21 @@ pub async fn run(
             crate::config_source::redis_source::DEFAULT_POLL,
         ));
     }
+
+    // 2026-06-09 (P5) — Zero Trust upstream-mTLS hot rotation. A
+    // console/API store of a new shared identity or backend-CA trust
+    // bundle (config plane, `cas_set`) is picked up here and applied to
+    // live pools with no restart and no dropped connections (the
+    // re-applied pool's `PoolKey` fingerprint changes, so the next dial
+    // builds a fresh client). No-op every tick when no pool has upstream
+    // mTLS enabled. Essential for a fleet — rotation no longer means a
+    // rolling restart of every node.
+    std::mem::drop(crate::upstream::rotation::spawn(
+        state.clone(),
+        upstream_ctx.pools.clone(),
+        cfg_swap.clone(),
+        crate::upstream::rotation::DEFAULT_INTERVAL,
+    ));
 
     // MTLS-T3 — create the per-identity sliding-window tracker
     // here, ahead of both accept loops, so the data-plane

@@ -11,7 +11,7 @@
 //!   `/api/risk*`, `/api/mode`, `/api/loadmode`, `/api/runtime`,
 //!   `/api/detectors`, `/api/blacklist`, `/api/whitelist`,
 //!   `/api/alerts`, `/api/slo`, `/api/certs`, `/api/cluster`,
-//!   `/api/gitops/*`, `/api/mtls*` (MTLS-T6), `/api/filters`,
+//!   `/api/gitops/*`, `/api/zero-trust/downstream*` (MTLS-T6), `/api/filters`,
 //!   `/api/integrations`, `/api/admin/*`, `/api/cold-tier`,
 //!   `/api/logging`, `/api/analytics/*`, `/api/threat-intel/*`,
 //!   `/api/bots/*`, `/api/audit/witness`, `/api/tracking/*`,
@@ -1024,7 +1024,7 @@ pub(crate) fn admin_router(
         // `cfg.admin.dashboard_auth.allow_ca_upload`. Distinct
         // from the actual upload (PUT) so the GET is cheap +
         // doesn't require auth.
-        "/api/mtls/ca-bundle/capability" => {
+        "/api/zero-trust/downstream/ca-bundle/capability" => {
             let allowed = services.allow_ca_upload;
             let body = serde_json::json!({"allow_ca_upload": allowed});
             json_body_response(200, body.to_string(), "private, max-age=30")
@@ -1036,7 +1036,7 @@ pub(crate) fn admin_router(
         // from the configured value (the TLS acceptor rebuilds
         // only on cfg.tls swaps today; mode flips alone need a
         // process restart to land at the handshake layer).
-        "/api/mtls/mode" => {
+        "/api/zero-trust/downstream/mode" => {
             let store = &services.mtls_mode_store;
             let body = aegis_control::api::mtls_mode::render_mode_response(
                 store.configured(),
@@ -1044,26 +1044,83 @@ pub(crate) fn admin_router(
             );
             json_body_response(200, body.to_string(), "private, max-age=2")
         }
-        "/api/mtls" => json_body_response(
+        "/api/zero-trust/downstream" => json_body_response(
             200,
             aegis_control::api::mtls::MtlsConfigView::from_config(cfg).render(),
             "private, max-age=2",
         ),
-        "/api/mtls/connections" => json_body_response(
+        // Zero Trust (P3) — upstream (WAF-as-client) read views.
+        // Identity returns PUBLIC cert metadata only — never the key.
+        "/api/zero-trust/upstream/identity" => {
+            // Overlay the LIVE rotated cert (P5 hot rotation) so the
+            // page reflects a rotation without a restart — the boot
+            // `cfg` snapshot would otherwise show the stale identity.
+            let mut effective_cfg = cfg.clone();
+            let rot = crate::upstream::rotation::status();
+            if let Some(pem) = rot.identity_cert_pem {
+                if let Some(id) = effective_cfg
+                    .zero_trust
+                    .as_mut()
+                    .and_then(|z| z.upstream_identity.as_mut())
+                {
+                    id.cert_pem = Some(pem);
+                }
+            }
+            json_body_response(
+                200,
+                aegis_control::api::zero_trust::UpstreamIdentityView::from_config(&effective_cfg)
+                    .render(),
+                "private, max-age=5",
+            )
+        }
+        // P5 — hot-rotation status (generation + applied timestamp) so
+        // the console can show "applied live, no restart".
+        "/api/zero-trust/upstream/rotation" => json_body_response(
+            200,
+            crate::upstream::rotation::render(),
+            "private, max-age=2",
+        ),
+        "/api/zero-trust/upstream/config" => {
+            // Overlay the live raw pool configs (registry shadow) onto
+            // the boot cfg so runtime `upstream_mtls` edits made via the
+            // Zero Trust drawer (PUT /api/upstreams/pool/{id}) are
+            // reflected immediately — mirrors `/api/upstreams/config`.
+            let mut effective_cfg = cfg.clone();
+            if let Some(writer) = services.upstream_writer.as_ref() {
+                for (name, pool_cfg) in writer.current_pools() {
+                    effective_cfg.upstreams.insert(name, pool_cfg);
+                }
+            }
+            json_body_response(
+                200,
+                aegis_control::api::zero_trust::UpstreamConfigView::from_config(&effective_cfg)
+                    .render(),
+                "private, max-age=2",
+            )
+        }
+        // P4 — upstream (WAF-as-client) mTLS handshake-failure
+        // histogram, grouped by pool + reason. Process-global tracker
+        // recorded by the data plane on `ForwardError::Handshake`.
+        "/api/zero-trust/upstream/failures" => json_body_response(
+            200,
+            crate::upstream::mtls_failures::render(),
+            "private, max-age=2",
+        ),
+        "/api/zero-trust/downstream/connections" => json_body_response(
             200,
             aegis_control::api::mtls::render_connections(
                 services.identity_tracker.as_ref(),
             ),
             "private, max-age=2",
         ),
-        "/api/mtls/failures" => json_body_response(
+        "/api/zero-trust/downstream/failures" => json_body_response(
             200,
             aegis_control::api::mtls::render_failures(
                 services.identity_tracker.as_ref(),
             ),
             "private, max-age=2",
         ),
-        "/api/mtls/ca-summary" => json_body_response(
+        "/api/zero-trust/downstream/ca-summary" => json_body_response(
             200,
             aegis_control::api::mtls::render_ca_summary(
                 services.identity_tracker.as_ref(),
@@ -1073,7 +1130,7 @@ pub(crate) fn admin_router(
         // MTLS-T7 — live allowed-SAN list. Empty array when
         // no allowlist is wired (test bundles or operators
         // who haven't opted in).
-        "/api/mtls/sans" => {
+        "/api/zero-trust/downstream/sans" => {
             let body = match services.allowed_sans.as_ref() {
                 Some(store) => serde_json::json!({ "allowed": store.current() }),
                 None => serde_json::json!({ "allowed": [] }),
