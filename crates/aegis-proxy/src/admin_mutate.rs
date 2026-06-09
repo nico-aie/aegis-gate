@@ -215,6 +215,67 @@ fn patch_upstream_pool_remove(base: &str, id: &str) -> Result<String, String> {
     serde_yaml::to_string(&doc).map_err(|e| format!("re-serialize config: {e}"))
 }
 
+/// P4 global cross-ref gate for runtime pool edits: every enabled pool
+/// that names a **bundle-style** trust anchor (a bare name, no path
+/// separator) must reference a backend-CA bundle already uploaded to
+/// the config plane (`aegis:zt:upstream:trust:<name>`). A **path-style**
+/// value (contains `/`) is treated as a file and left to boot-time /
+/// file-read enforcement — matching `materialize_zero_trust_state`'s
+/// lookup-first resolution. This surfaces "enabled mTLS against a
+/// bundle that isn't uploaded" as a 400 at PUT time instead of a
+/// fail-closed dial at the next boot.
+///
+/// The structural checks (`enabled ⇒ zero_trust.upstream_identity`,
+/// TLS required, P4/P5-gated knobs) already run inside
+/// `aegis_core::load_config_str` (→ `validate_upstream_mtls`); this
+/// adds only the state-dependent piece pure validation can't see.
+/// No-op when no state backend is wired.
+async fn validate_pool_trust_bundles(
+    upstreams: &std::collections::HashMap<String, aegis_core::config::PoolConfig>,
+    state: Option<&std::sync::Arc<dyn aegis_core::state::StateBackend>>,
+) -> Result<(), aegis_control::api::mutation::MutationError> {
+    use aegis_control::api::mutation::MutationError;
+    let Some(state) = state else {
+        return Ok(());
+    };
+    for (name, pool) in upstreams {
+        let Some(m) = pool.upstream_mtls.as_ref() else {
+            continue;
+        };
+        if !m.enabled {
+            continue;
+        }
+        let Some(trust) = m.trust.as_ref().and_then(|p| p.to_str()) else {
+            continue;
+        };
+        // Path-style ⇒ file source; boot / file-read enforces it.
+        if trust.contains('/') {
+            continue;
+        }
+        // Bare name ⇒ must be a valid identifier AND an uploaded bundle.
+        if !aegis_control::api::zero_trust::is_valid_bundle_name(trust) {
+            return Err(MutationError::Validation(format!(
+                "upstream '{name}': upstream_mtls.trust '{trust}' is neither a valid bundle \
+                 name ([A-Za-z0-9._-], ≤64) nor a file path"
+            )));
+        }
+        let key = aegis_core::config::upstream_trust_state_key(trust);
+        let exists = state
+            .get(&key)
+            .await
+            .map_err(|e| MutationError::Internal(format!("config-plane read: {e}")))?
+            .is_some();
+        if !exists {
+            return Err(MutationError::Validation(format!(
+                "upstream '{name}': upstream_mtls.trust '{trust}' is not an uploaded backend-CA \
+                 bundle — POST /api/zero-trust/upstream/trust/{trust} first (or set trust to a \
+                 CA file path)"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Local resolvability gate for the folded upstream handlers: resolve
 /// `pools` against this node's resolver (Strict) purely to surface
 /// typos as a 400 before activating. The result is discarded — the doc
@@ -299,10 +360,22 @@ pub(crate) async fn handle_upstreams_config_put(
             )
         }
     };
-    if let Err(e) = aegis_core::load_config_str(&new_blob) {
-        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
-            format!("patched config failed validation: {e}"),
-        ));
+    let patched_cfg = match aegis_core::load_config_str(&new_blob) {
+        Ok(c) => c,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(format!(
+                    "patched config failed validation: {e}"
+                )),
+            )
+        }
+    };
+    // P4 — state-dependent cross-ref for every enabled pool's
+    // bundle-style `upstream_mtls.trust`.
+    if let Err(e) =
+        validate_pool_trust_bundles(&patched_cfg.upstreams, services.state_backend.as_ref()).await
+    {
+        return mutation_error_response(e);
     }
 
     let before = serde_json::json!({ "version": expected });
@@ -408,10 +481,23 @@ pub(crate) async fn handle_pool_upsert(
             )
         }
     };
-    if let Err(e) = aegis_core::load_config_str(&new_blob) {
-        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
-            format!("patched config failed validation: {e}"),
-        ));
+    let patched_cfg = match aegis_core::load_config_str(&new_blob) {
+        Ok(c) => c,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(format!(
+                    "patched config failed validation: {e}"
+                )),
+            )
+        }
+    };
+    // P4 — state-dependent cross-ref: a bundle-style `upstream_mtls.trust`
+    // must name an uploaded backend-CA bundle (pure validation above
+    // can't see the config plane).
+    if let Err(e) =
+        validate_pool_trust_bundles(&patched_cfg.upstreams, services.state_backend.as_ref()).await
+    {
+        return mutation_error_response(e);
     }
 
     let before = serde_json::json!({ "version": expected });
@@ -5657,6 +5743,67 @@ zero_trust:
     #[test]
     fn pools_referencing_trust_unparseable_blob_yields_no_refs() {
         assert!(pools_referencing_trust("not: [valid", "backend-ca").is_empty());
+    }
+
+    fn upstreams_with_trust(
+        trust: &str,
+    ) -> std::collections::HashMap<String, aegis_core::config::PoolConfig> {
+        aegis_core::load_config_str(&cfg_blob_with_pool_trust(trust))
+            .unwrap()
+            .upstreams
+    }
+
+    #[tokio::test]
+    async fn trust_bundle_xref_passes_when_bundle_uploaded() {
+        use crate::state::in_memory::InMemoryBackend;
+        let state: std::sync::Arc<dyn aegis_core::state::StateBackend> =
+            std::sync::Arc::new(InMemoryBackend::new());
+        state
+            .cas_set(
+                &aegis_core::config::upstream_trust_state_key("backend-ca"),
+                None,
+                &serde_json::to_vec(&aegis_core::config::UpstreamTrustRecord {
+                    ca_pem: "x".into(),
+                })
+                .unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        let ups = upstreams_with_trust("backend-ca");
+        assert!(validate_pool_trust_bundles(&ups, Some(&state)).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn trust_bundle_xref_rejects_unuploaded_bundle() {
+        use crate::state::in_memory::InMemoryBackend;
+        let state: std::sync::Arc<dyn aegis_core::state::StateBackend> =
+            std::sync::Arc::new(InMemoryBackend::new());
+        let ups = upstreams_with_trust("backend-ca");
+        let err = validate_pool_trust_bundles(&ups, Some(&state))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, aegis_control::api::mutation::MutationError::Validation(m)
+                if m.contains("not an uploaded backend-CA bundle")),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn trust_bundle_xref_skips_file_path_trust() {
+        use crate::state::in_memory::InMemoryBackend;
+        // A path-style trust value is a file source — not state-checked.
+        let state: std::sync::Arc<dyn aegis_core::state::StateBackend> =
+            std::sync::Arc::new(InMemoryBackend::new());
+        let ups = upstreams_with_trust("/etc/waf/backend-ca.pem");
+        assert!(validate_pool_trust_bundles(&ups, Some(&state)).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn trust_bundle_xref_noop_without_state_backend() {
+        let ups = upstreams_with_trust("backend-ca");
+        assert!(validate_pool_trust_bundles(&ups, None).await.is_ok());
     }
 
     #[test]
