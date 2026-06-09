@@ -409,7 +409,11 @@ traffic yet, so the temporary downstream-enforcement gap during the hard cut is 
       `mtls_*`→`zero_trust_*`; rename break-glass env `AEGIS_MTLS_BREAK_GLASS`/`mtls_break_glass_active`;
       consolidate `api/mtls*.rs` files into `api/zero_trust`. Decision (2026-06-09): P3 uploads/downloads
       PUBLIC material only; private-key upload + encryption-at-rest is P4 (key stays a YAML `key_ref` path).
-      **Verification owed:** live visual/E2E render of the page (build + JS parse + unit tests pass; browser not yet checked).
+      **Verification DONE (2026-06-09):** live headless-Chromium render against the running WAF
+      (debug binary, in_memory config) — page renders, both sections present, relocated downstream
+      cards work, NAV entry active; `/api/zero-trust/{upstream/identity,upstream/config,downstream,
+      downstream/sans}` all return 200 with correct JSON (identity shows no key leak); no React/page
+      errors (only pre-existing CSP-inline warnings + unrelated background-poll 403/503 in single-node dev).
 - [~] **P4** Shared identity in config plane. **Decision (2026-06-09): REFERENCE-ONLY** (not
       envelope-encrypted) — repo has no AEAD primitive; `source:state` stores the PUBLIC cert +
       backend CAs in the config plane (cas_set, multi-node), private key stays a `${secret:...}`/path
