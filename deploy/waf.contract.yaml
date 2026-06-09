@@ -84,6 +84,15 @@ ai:
   model_path: "data/ai_model/waf_model.onnx"
   confidence_threshold: 0.95
 
+# GeoIP — MaxMind readers (compiled via the `geoip` feature). The .mmdb files
+# are NOT committed (license + 30-day refresh; see data/geoip/README.md) — each
+# node populates data/geoip/ locally. Without these paths the geoip block is a
+# no-op even with the feature built. Enables country/ASN enrichment + the bot
+# classifier's cloud/hosting ASN signal.
+geoip:
+  country_db: "data/geoip/GeoLite2-Country.mmdb"
+  asn_db: "data/geoip/GeoLite2-ASN.mmdb"
+
 risk:
   thresholds: { enabled: true, challenge_at: 40, block_at: 80, max: 100 }
 

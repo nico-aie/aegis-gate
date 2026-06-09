@@ -57,7 +57,7 @@ cargo build -p aegis-bin --release --features "redis geoip alerts ai affinity ot
 cp target/release/waf ./waf
 cp deploy/waf.contract.yaml ./waf.yaml        # then set node.id / IPs as needed
 set -a; . ./.env; set +a                       # LLM_API_KEY (copilot) + ORT_DYLIB_PATH (ai)
-export RUST_LOG="info,hyper=warn,hyper_util=warn,h2=warn,tower=warn,rustls=warn,tonic=warn"
+export RUST_LOG="info,hyper=warn,hyper_util=warn,h2=warn,tower=warn,rustls=warn,tonic=warn,maxminddb=warn"
 AEGIS_INSECURE_COOKIES=1 ./waf run --config ./waf.yaml >> logs/waf.json 2>&1 &
 # ai is ON (waf.yaml: ai.enabled + model_path). It needs onnxruntime 1.24.2 in
 # runtime/onnxruntime/ + ORT_DYLIB_PATH (kept in .env). The earlier boot hang was

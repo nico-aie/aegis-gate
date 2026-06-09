@@ -127,7 +127,15 @@ upstreams:                                     # → infra mock (or your real up
 listeners:
   data:  [{ bind: "0.0.0.0:8080" }]            # plaintext (add :8443 TLS once you have a cert, §6)
   admin: { bind: "127.0.0.1:9443" }            # loopback — /__waf_control/* is loopback-gated
+geoip:                                          # MaxMind enrichment (geoip feature)
+  country_db: "data/geoip/GeoLite2-Country.mmdb"
+  asn_db:     "data/geoip/GeoLite2-ASN.mmdb"
 ```
+
+> **GeoIP:** the `geoip` feature is built (part of the run-copilot set), but it's
+> a **no-op without the `geoip:` block + the `.mmdb` files**. The DBs are NOT
+> committed (MaxMind license + 30-day refresh) — populate `data/geoip/` per node
+> (see `data/geoip/README.md`). Confirm load: `maxminddb::decoder` lines at boot.
 
 > **Rules that make it ONE fleet:** identical `state.redis.urls` on every node +
 > a **unique `node.id`** each. Don't hand-edit detectors/rules/upstreams on each
@@ -358,7 +366,7 @@ per WAF VM:   WAF ──traces OTLP──▶ local agent ─┐
 **Tame log volume** (the WAF logs dependency crates at TRACE/DEBUG, which floods
 SigNoz). Run with:
 ```sh
-export RUST_LOG="info,hyper=warn,hyper_util=warn,h2=warn,tower=warn,rustls=warn,tonic=warn"
+export RUST_LOG="info,hyper=warn,hyper_util=warn,h2=warn,tower=warn,rustls=warn,tonic=warn,maxminddb=warn"
 ```
 For even quieter logs, lower `logging.verbosity` or extend `RUST_LOG` with the
 `aegis_proxy=info` target.
