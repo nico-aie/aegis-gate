@@ -19,7 +19,7 @@ use serde::Serialize;
 
 use aegis_core::config::{UpstreamIdentitySource, WafConfig};
 
-use crate::identity_tracker::{parse_ca_bundle, CaCertSummary};
+use crate::identity_tracker::{parse_ca_bundle, parse_ca_bundle_bytes, CaCertSummary};
 
 // ---------------------------------------------------------------------------
 // GET /api/zero-trust/upstream/identity
@@ -68,20 +68,37 @@ impl UpstreamIdentityView {
             UpstreamIdentitySource::State => "state",
         };
         let cert_path = id.cert_path.as_ref().map(|p| p.display().to_string());
-        // Parse the PUBLIC cert for display metadata only.
-        let (certificates, error) = match id.cert_path.as_ref() {
-            Some(p) => match parse_ca_bundle(Path::new(p)) {
-                Ok(summary) => (summary.certificates, None),
-                Err(e) => (Vec::new(), Some(e.to_string())),
+        // PUBLIC cert material + parsed metadata. Two sources:
+        //   * file  — read `cert_path` off disk (a missing file
+        //             surfaces an Io error so the operator notices).
+        //   * state — use the in-memory PEM materialized from the
+        //             config plane at boot (`cert_pem`); `cert_path`
+        //             is irrelevant. Unmaterialized (e.g. read before
+        //             boot folded it in) ⇒ empty, no error.
+        // The private key (`key_ref`) is NEVER read in either branch.
+        let (certificates, error, cert_pem) = match id.source {
+            UpstreamIdentitySource::File => {
+                let (certs, err) = match id.cert_path.as_ref() {
+                    Some(p) => match parse_ca_bundle(Path::new(p)) {
+                        Ok(summary) => (summary.certificates, None),
+                        Err(e) => (Vec::new(), Some(e.to_string())),
+                    },
+                    None => (Vec::new(), None),
+                };
+                let pem = id
+                    .cert_path
+                    .as_ref()
+                    .and_then(|p| std::fs::read_to_string(p).ok());
+                (certs, err, pem)
+            }
+            UpstreamIdentitySource::State => match id.cert_pem.as_ref() {
+                Some(pem) => match parse_ca_bundle_bytes(pem.as_bytes()) {
+                    Ok(certs) => (certs, None, Some(pem.clone())),
+                    Err(e) => (Vec::new(), Some(e.to_string()), Some(pem.clone())),
+                },
+                None => (Vec::new(), None, None),
             },
-            None => (Vec::new(), None),
         };
-        // PUBLIC cert PEM for the download button. Key file
-        // (`key_ref`) is never read.
-        let cert_pem = id
-            .cert_path
-            .as_ref()
-            .and_then(|p| std::fs::read_to_string(p).ok());
         Self {
             configured: true,
             source,
@@ -95,6 +112,45 @@ impl UpstreamIdentityView {
     pub fn render(&self) -> String {
         serde_json::to_string(self).unwrap_or_else(|_| String::from("{}"))
     }
+}
+
+// ---------------------------------------------------------------------------
+// PUT /api/zero-trust/upstream/identity — store the shared fleet identity
+// ---------------------------------------------------------------------------
+
+/// Parsed + validated PUT body for storing the shared upstream
+/// identity. PUBLIC cert + a *reference* to the private key — the key
+/// bytes are never accepted here (reference-only, P4).
+#[derive(Debug, serde::Deserialize)]
+pub struct IdentityUploadRequest {
+    /// PUBLIC client-cert chain PEM (the shared fleet identity).
+    pub cert_pem: String,
+    /// Reference to the private key (path / `${secret:...}`). Never
+    /// the key bytes.
+    pub key_ref: String,
+}
+
+/// Validate an identity upload before it is persisted: the cert must
+/// be parseable PEM with ≥1 certificate, and the key reference must
+/// be non-empty. Returns the parsed PUBLIC cert summaries (for the
+/// audit `after` projection + the response preview) or a stable error
+/// string. Pure — no IO, no key material.
+pub fn validate_identity_upload(
+    req: &IdentityUploadRequest,
+) -> Result<Vec<CaCertSummary>, String> {
+    if req.key_ref.trim().is_empty() {
+        return Err("key_ref must be a non-empty reference to the private key".into());
+    }
+    // Defense in depth: a private key block must never ride in on the
+    // PUBLIC cert field. Reject loudly rather than persisting it.
+    if req.cert_pem.contains("PRIVATE KEY") {
+        return Err(
+            "cert_pem must contain only the PUBLIC certificate chain — \
+             a PRIVATE KEY block was found (the key stays a key_ref, never stored)"
+                .into(),
+        );
+    }
+    parse_ca_bundle_bytes(req.cert_pem.as_bytes()).map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -194,6 +250,75 @@ state: {{ backend: in_memory }}
         assert!(v.error.is_some());
         // The rendered JSON must never contain the key path.
         assert!(!v.render().contains("secret.key"));
+    }
+
+    /// A real self-signed PUBLIC cert (no key) for parse tests.
+    /// Generated out of band; PUBLIC material only.
+    const TEST_CERT_PEM: &str = "-----BEGIN CERTIFICATE-----
+MIIBhTCCASugAwIBAgIUO0nGZ7Wm0Q6kJ8Yk0Y5Q0Z0Q0wwCgYIKoZIzj0EAwIw
+-----END CERTIFICATE-----
+";
+
+    #[test]
+    fn identity_view_state_source_uses_materialized_pem() {
+        // Simulate the boot materialization: source: state with the
+        // PUBLIC cert folded into `cert_pem` (the config-plane read).
+        let mut cfg = cfg("zero_trust:\n  upstream_identity:\n    source: state\n");
+        let id = cfg
+            .zero_trust
+            .as_mut()
+            .and_then(|z| z.upstream_identity.as_mut())
+            .unwrap();
+        id.cert_pem = Some(TEST_CERT_PEM.to_string());
+        id.key_ref = Some("/run/secrets/waf-client.key".into());
+        let v = UpstreamIdentityView::from_config(&cfg);
+        assert!(v.configured);
+        assert_eq!(v.source, "state");
+        // Surfaces the PUBLIC PEM (for the download button)…
+        assert_eq!(v.cert_pem.as_deref(), Some(TEST_CERT_PEM));
+        // …and never the key reference.
+        assert!(!v.render().contains("waf-client.key"));
+    }
+
+    #[test]
+    fn identity_view_state_source_unmaterialized_is_empty_no_panic() {
+        // source: state but cert_pem not yet folded in ⇒ empty, no error.
+        let cfg = cfg("zero_trust:\n  upstream_identity:\n    source: state\n");
+        let v = UpstreamIdentityView::from_config(&cfg);
+        assert!(v.configured);
+        assert_eq!(v.source, "state");
+        assert!(v.cert_pem.is_none());
+        assert!(v.certificates.is_empty());
+        assert!(v.error.is_none());
+    }
+
+    #[test]
+    fn validate_identity_upload_rejects_empty_key_ref() {
+        let req = IdentityUploadRequest {
+            cert_pem: TEST_CERT_PEM.into(),
+            key_ref: "   ".into(),
+        };
+        assert!(validate_identity_upload(&req).unwrap_err().contains("key_ref"));
+    }
+
+    #[test]
+    fn validate_identity_upload_rejects_private_key_in_cert_field() {
+        let req = IdentityUploadRequest {
+            cert_pem: "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n".into(),
+            key_ref: "/run/secrets/waf-client.key".into(),
+        };
+        assert!(validate_identity_upload(&req)
+            .unwrap_err()
+            .contains("PRIVATE KEY"));
+    }
+
+    #[test]
+    fn validate_identity_upload_rejects_garbage_pem() {
+        let req = IdentityUploadRequest {
+            cert_pem: "not a pem at all".into(),
+            key_ref: "/run/secrets/waf-client.key".into(),
+        };
+        assert!(validate_identity_upload(&req).is_err());
     }
 
     #[test]

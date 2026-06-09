@@ -1009,22 +1009,31 @@ fn validate_zero_trust(zt: &ZeroTrustConfig) -> crate::Result<()> {
             }
         }
     }
-    // Upstream (WAF-as-client) shared identity. P2 supports the
-    // `file` source only; both cert_path and key_ref are required.
+    // Upstream (WAF-as-client) shared identity.
     if let Some(id) = zt.upstream_identity.as_ref() {
-        if id.source == UpstreamIdentitySource::State {
-            return Err(crate::error::WafError::Config(
-                "zero_trust.upstream_identity.source: state is not supported yet \
-                 (config-plane identity lands in P4) — use source: file"
-                    .into(),
-            ));
-        }
-        if id.cert_path.is_none() || id.key_ref.is_none() {
-            return Err(crate::error::WafError::Config(
-                "zero_trust.upstream_identity (source: file) requires both \
-                 cert_path and key_ref"
-                    .into(),
-            ));
+        match id.source {
+            // `file` — both the PUBLIC cert and the key reference live
+            // in the operator's YAML / on disk.
+            UpstreamIdentitySource::File => {
+                if id.cert_path.is_none() || id.key_ref.is_none() {
+                    return Err(crate::error::WafError::Config(
+                        "zero_trust.upstream_identity (source: file) requires both \
+                         cert_path and key_ref"
+                            .into(),
+                    ));
+                }
+            }
+            // `state` — P4 reference-only. The PUBLIC cert AND the
+            // private-key `key_ref` are stored together in the Redis
+            // config plane (key `aegis:zt:upstream:identity`,
+            // `UpstreamIdentityRecord`) and materialized at boot into
+            // `cert_pem` / `key_ref`. The YAML need only declare
+            // `source: state`; `cert_path` / `key_ref` here are
+            // optional overrides. Presence of the stored record is
+            // enforced fail-closed at boot (the data plane aborts
+            // rather than dialing without client auth), not here — the
+            // config plane is read asynchronously, after validation.
+            UpstreamIdentitySource::State => {}
         }
     }
     Ok(())
@@ -1397,19 +1406,38 @@ pub fn resolve_upstream_mtls(
     if !m.enabled {
         return None;
     }
-    // P2: shared identity only (per-pool override is P4). Both
-    // fields are guaranteed present by validation.
+    // Shared identity only (per-pool override is P4+). The private
+    // key reference is guaranteed present by validation (file) or by
+    // boot materialization from the config plane (state).
     let id = identity?;
-    let cert_path = id.cert_path.clone()?;
     let client_key_ref = id.key_ref.clone()?;
+    // The PUBLIC client cert is either a file on disk (file source)
+    // or in-memory PEM materialized from the config plane (state
+    // source — `cert_pem` injected at boot). State source without a
+    // materialized cert ⇒ `None` here; the boot path fails closed
+    // before reaching the build path, so a downgraded (no-client-auth)
+    // dial never goes live.
+    let client_cert = match id.cert_pem.clone() {
+        Some(pem) => CertSource::Pem(pem),
+        None => CertSource::File(id.cert_path.clone()?),
+    };
     let trust_ca_path = m.trust.clone();
     // Stable, transparent fingerprint over the public inputs (the
     // key_ref is a path, not key bytes). Part of `PoolKey` so a
     // config change rebuilds the cached client. Content-based
     // hashing (same-path rotation) is P5.
+    let cert_fp = match &client_cert {
+        CertSource::File(p) => format!("file:{}", p.display()),
+        CertSource::Pem(pem) => {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            pem.hash(&mut h);
+            format!("pem:{:016x}", h.finish())
+        }
+    };
     let fingerprint = format!(
         "v1|cert={}|key={}|trust={}|verify={}|sans={}",
-        cert_path.display(),
+        cert_fp,
         client_key_ref,
         trust_ca_path
             .as_ref()
@@ -1419,7 +1447,7 @@ pub fn resolve_upstream_mtls(
         m.allowed_sans.join(","),
     );
     Some(UpstreamMtlsResolved {
-        client_cert: CertSource::File(cert_path),
+        client_cert,
         client_key_ref,
         trust: trust_ca_path.map(CertSource::File),
         verify: m.verify,
@@ -2314,6 +2342,37 @@ pub struct UpstreamIdentityConfig {
     /// returned by any API.
     #[serde(default)]
     pub key_ref: Option<String>,
+    /// **Never deserialized** (`#[serde(skip)]`). For `source: state`
+    /// this holds the PUBLIC client-cert chain PEM materialized from
+    /// the Redis config plane (`UpstreamIdentityRecord.cert_pem`) by
+    /// the async boot step in `aegis-proxy::run`, before the (sync)
+    /// pool build path. `resolve_upstream_mtls` turns it into
+    /// `CertSource::Pem`. PUBLIC material only — Debug-safe, never the
+    /// private key.
+    #[serde(skip)]
+    pub cert_pem: Option<String>,
+}
+
+/// Config-plane key under which the shared fleet upstream identity is
+/// persisted (P4, reference-only). The stored value is an
+/// [`UpstreamIdentityRecord`]. See `plans/future/mTLS.md` §3.3.
+pub const UPSTREAM_IDENTITY_STATE_KEY: &str = "aegis:zt:upstream:identity";
+
+/// State-plane record for the `source: state` shared upstream
+/// identity (P4, **reference-only** — no envelope encryption).
+///
+/// PUBLIC cert material plus a *reference* to the private key. The
+/// key bytes are **never** stored here: `key_ref` is a path /
+/// `${secret:...}` reference resolved at client-build time. Persisted
+/// via [`crate::state::StateBackend::cas_set`] so a multi-node fleet
+/// activates atomically.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpstreamIdentityRecord {
+    /// PUBLIC client-cert chain PEM (the shared fleet identity).
+    pub cert_pem: String,
+    /// Reference to the private key (path / `${secret:...}`). Never
+    /// the key bytes.
+    pub key_ref: String,
 }
 
 /// Source of the shared upstream client identity.
@@ -5261,12 +5320,45 @@ state: {{ backend: in_memory }}
     }
 
     #[test]
-    fn upstream_identity_source_state_rejected_p2() {
+    fn upstream_identity_source_state_accepted_p4() {
+        // P4 4a-ii: `source: state` validates with just the source
+        // declared — the PUBLIC cert + key_ref come from the config
+        // plane at boot, so neither cert_path nor key_ref is required
+        // in YAML.
         let zt = "zero_trust:\n  upstream_identity:\n    source: state\n";
         let yaml = cfg_with_upstream("", zt);
         let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
-        let err = cfg.validate().unwrap_err().to_string();
-        assert!(err.contains("source: state"), "got: {err}");
+        cfg.validate().expect("source: state validates (materialized at boot)");
+    }
+
+    #[test]
+    fn upstream_mtls_state_identity_resolves_pem_after_materialization() {
+        // Simulate the boot materialization: a `source: state` identity
+        // with its PUBLIC cert injected into `cert_pem` + key_ref filled
+        // from the config-plane record. `resolve_upstream_mtls` must
+        // produce `CertSource::Pem` (not a file path).
+        let zt = "zero_trust:\n  upstream_identity:\n    source: state\n";
+        let yaml = cfg_with_upstream("    upstream_mtls: { enabled: true }\n", zt);
+        let mut cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        {
+            let id = cfg
+                .zero_trust
+                .as_mut()
+                .and_then(|z| z.upstream_identity.as_mut())
+                .unwrap();
+            id.cert_pem = Some("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n".into());
+            id.key_ref = Some("/run/secrets/waf-client.key".into());
+        }
+        let id = cfg.zero_trust.as_ref().and_then(|z| z.upstream_identity.as_ref());
+        let resolved = resolve_upstream_mtls(&cfg.upstreams["api"], id).expect("enabled ⇒ Some");
+        assert!(
+            matches!(resolved.client_cert, CertSource::Pem(ref p) if p.contains("BEGIN CERTIFICATE")),
+            "state source must resolve to in-memory PEM, got {:?}",
+            resolved.client_cert
+        );
+        assert_eq!(resolved.client_key_ref, "/run/secrets/waf-client.key");
+        assert!(resolved.fingerprint.contains("pem:"), "fingerprint must mark a PEM cert source");
     }
 
     #[test]

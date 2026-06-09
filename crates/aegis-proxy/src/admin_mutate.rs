@@ -1206,6 +1206,157 @@ pub(crate) async fn handle_mtls_mode_put(
     }
 }
 
+// P4 4a-ii — store the shared fleet WAF client identity (upstream
+// mTLS, `source: state`) in the Redis config plane. Audit-mutated,
+// CSRF-gated, and gated behind the same `allow_ca_upload` capability
+// as the downstream CA-bundle upload.
+//
+// Reference-only (no envelope encryption): the body carries the
+// PUBLIC cert chain + a *reference* to the private key (`key_ref`),
+// never the key bytes. We reject a PRIVATE KEY block in the cert field
+// defensively. Persisted via `StateBackend::cas_set` under
+// `aegis:zt:upstream:identity` so the fleet converges; nodes
+// materialize the PUBLIC cert at boot (`run::run`). The audit chain
+// records PUBLIC cert metadata only — never the key reference value.
+//
+// Body: `{"cert_pem": "<PUBLIC chain>", "key_ref": "<path|secret-ref>"}`.
+pub(crate) async fn handle_zt_upstream_identity_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    if !services.allow_ca_upload {
+        return json_response(
+            403,
+            &serde_json::json!({
+                "error": "feature_disabled",
+                "message": "Upstream identity upload is gated behind cfg.admin.dashboard_auth.allow_ca_upload — flip to true and restart to enable.",
+            }),
+        );
+    }
+    let Some(state) = services.state_backend.clone() else {
+        return json_response(
+            409,
+            &serde_json::json!({
+                "error": "state_unavailable",
+                "message": "No config-plane StateBackend is wired; the shared upstream identity can't be persisted.",
+            }),
+        );
+    };
+
+    let pre = mutation_preamble(&req, "zt-upstream-identity-put");
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => bytes::Bytes::new(),
+    };
+    let upload: aegis_control::api::zero_trust::IdentityUploadRequest =
+        match serde_json::from_slice(&body_bytes) {
+            Ok(u) => u,
+            Err(e) => {
+                return json_response(
+                    400,
+                    &serde_json::json!({
+                        "error": "invalid_body",
+                        "message": format!("expected JSON {{cert_pem, key_ref}}: {e}"),
+                    }),
+                )
+            }
+        };
+    // Validate PUBLIC cert parses + key_ref present + no key leak.
+    let certs = match aegis_control::api::zero_trust::validate_identity_upload(&upload) {
+        Ok(c) => c,
+        Err(e) => {
+            return json_response(
+                400,
+                &serde_json::json!({ "error": "invalid_identity", "message": e }),
+            )
+        }
+    };
+
+    let record = aegis_core::config::UpstreamIdentityRecord {
+        cert_pem: upload.cert_pem.clone(),
+        key_ref: upload.key_ref.clone(),
+    };
+    let new_bytes = match serde_json::to_vec(&record) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal(format!(
+                    "identity record encode: {e}"
+                )),
+            )
+        }
+    };
+
+    // Audit before/after — PUBLIC cert metadata only; the key
+    // reference value is NEVER projected into the chain.
+    let before_existed = state
+        .get(aegis_core::config::UPSTREAM_IDENTITY_STATE_KEY)
+        .await
+        .ok()
+        .flatten()
+        .is_some();
+    let before = serde_json::json!({ "configured": before_existed });
+    let after = serde_json::json!({
+        "configured": true,
+        "key_ref_set": true,
+        "certificates": certs.clone(),
+    });
+
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/zero-trust/upstream/identity",
+        action: "zero_trust_upstream_identity_set",
+        reason: "operator stored the shared WAF client identity (public cert + key reference)",
+    };
+
+    let state_cl = state.clone();
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            // CAS from the exact bytes we observed so a concurrent
+            // writer can't be clobbered (mirrors config_store::activate).
+            let current = state_cl
+                .get(aegis_core::config::UPSTREAM_IDENTITY_STATE_KEY)
+                .await
+                .map_err(|e| format!("config-plane read: {e}"))?;
+            let swapped = state_cl
+                .cas_set(
+                    aegis_core::config::UPSTREAM_IDENTITY_STATE_KEY,
+                    current.as_deref(),
+                    &new_bytes,
+                    None,
+                )
+                .await
+                .map_err(|e| format!("config-plane write: {e}"))?;
+            if swapped {
+                Ok(())
+            } else {
+                Err("config-plane conflict — the identity was updated concurrently; retry".to_string())
+            }
+        })
+        .await;
+
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "request_id": pre.request_id,
+                "configured": true,
+                "certificates": certs,
+                "note": "Stored in the config plane (public cert + key reference). Nodes materialize the PUBLIC cert at boot; restart to present the new identity (hot rotation lands in P5).",
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
 // Phase-3 Incidents — operator overlay on top of SLO alerts.
 // All three handlers are audit-mutated + CSRF-gated, same shape
 // as handle_alert_ack above.

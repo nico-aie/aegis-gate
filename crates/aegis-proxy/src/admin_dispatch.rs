@@ -471,6 +471,13 @@ pub(crate) async fn handle_admin_request(
     if method == hyper::Method::PUT && path == "/api/zero-trust/downstream/sans" {
         return handle_mtls_sans_put(req, services).await;
     }
+    // P4 4a-ii — store the shared fleet WAF client identity (upstream
+    // mTLS, source: state) in the config plane. Audit-mutated,
+    // CSRF-gated, gated behind allow_ca_upload. PUBLIC cert + key
+    // reference only (never the key bytes).
+    if method == hyper::Method::PUT && path == "/api/zero-trust/upstream/identity" {
+        return crate::admin_mutate::handle_zt_upstream_identity_put(req, services).await;
+    }
     if let Some(suffix) = path.strip_prefix("/api/zero-trust/downstream/sans/") {
         if method == hyper::Method::POST {
             if let Some(san) = suffix.strip_suffix("/test") {

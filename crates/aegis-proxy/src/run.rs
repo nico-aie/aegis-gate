@@ -156,6 +156,27 @@ pub async fn run(
         cfg_swap.store(Arc::new(next));
     }
 
+    // 2026-06-09 (P4 4a-ii) — materialize the state-sourced shared
+    // upstream identity from the Redis config plane before the (sync)
+    // pool build path (`ProxyContext::build` has no `StateBackend`).
+    // Reference-only: only the PUBLIC cert is folded into the cfg
+    // snapshot; the private key stays a `key_ref`. Fail closed — a
+    // `source: state` identity that can't be materialized aborts boot
+    // rather than silently dialing backends without client auth. See
+    // `upstream::identity::materialize_upstream_identity`.
+    {
+        let raw = cfg_swap.load_full();
+        if let Some(next) =
+            crate::upstream::identity::materialize_upstream_identity(&raw, &state).await?
+        {
+            cfg_swap.store(Arc::new(next));
+            tracing::info!(
+                "zero_trust.upstream_identity: materialized PUBLIC client cert from \
+                 the config plane (state source)"
+            );
+        }
+    }
+
     // Boot snapshot — every existing read site keeps `cfg` as
     // `Arc<WafConfig>`. Future per-handler `cfg.load()` calls
     // can read the latest revision without churning the whole
