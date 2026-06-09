@@ -43,3 +43,4 @@ dependency instead of bumping.
 |---|---|---|---|
 | 2026-05-10 | 444 KB | 624 KB | Strike-Block PUT surface + GateExplain strips |
 | 2026-06-01 | 540 KB | 720 KB | Cumulative growth since 2026-05-10: AI `confidence_threshold` tuning row, cluster config-plane version card + Scaling page, multi-node metrics aggregation UI, and the R2-009 feature-off AI-row polish. Measured `app.js` 506 KB / raw 682 KB; budgets set ~6 % above actual to leave headroom without masking a dependency add. |
+| 2026-06-09 | 600 KB | 780 KB | P4 Zero Trust console: WAF-identity store/rotate upload, backend-CA trust-bundle card (upload/list/delete + expiry badges), the per-pool upstream-mTLS edit drawer, and the upstream handshake-failure histogram card. Measured `app.js` 560 KB / raw 742 KB; feature surface only (no new deps, React stays UMD-global). |

@@ -1355,7 +1355,7 @@ pub struct PoolConfig {
 /// off. The WAF presents the shared fleet client identity
 /// (`zero_trust.upstream_identity`) — per-pool client-cert overrides
 /// (`client_cert_ref`) and console/config-plane storage land in P4.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpstreamMtlsConfig {
     /// Master switch. `false` (default) ⇒ no client cert presented.

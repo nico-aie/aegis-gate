@@ -62,6 +62,14 @@ pub struct PoolView {
     /// to preserve advanced fields like `l2`). Absent ⇒ no cache configured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache: Option<PoolCacheConfig>,
+    /// P4 — per-pool upstream-mTLS policy, surfaced verbatim so the
+    /// Zero Trust pool drawer (and the Routing pool editor) can show +
+    /// round-trip it. The PUT replaces the whole pool node, so the
+    /// form must echo this back to preserve it. PUBLIC fields only —
+    /// the materialized `trust_pem` is `#[serde(skip)]`. Absent ⇒ no
+    /// upstream mTLS configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream_mtls: Option<aegis_core::config::UpstreamMtlsConfig>,
     /// Routes whose `upstream` field references this pool. Empty
     /// when nothing routes to the pool — that's the only case
     /// where DELETE will succeed once writes ship.
@@ -123,6 +131,7 @@ impl UpstreamsConfigView {
                     circuit_breaker: pool.circuit_breaker.as_ref().map(circuit_view),
                     connection: connection_view(&pool.connection),
                     cache: pool.cache.clone(),
+                    upstream_mtls: pool.upstream_mtls.clone(),
                     referenced_by_routes: routes_referencing(cfg, name),
                 };
                 (name.clone(), view)
@@ -556,6 +565,65 @@ state:
         let l2 = back.l2.expect("l2 preserved through round-trip");
         assert_eq!(l2.urls, vec!["redis://cache:6379"]);
         assert_eq!(l2.key_prefix, "appcache");
+    }
+
+    /// P4 — the Zero Trust pool drawer reads `upstream_mtls` from this
+    /// view and PUTs the whole pool back, so the view must serialise
+    /// into JSON that round-trips into an identical `UpstreamMtlsConfig`
+    /// (and the materialized `trust_pem` must never appear).
+    fn upstream_mtls_pool_cfg() -> WafConfig {
+        cfg_yaml(
+            r#"
+listeners:
+  data: [{ bind: "0.0.0.0:443" }]
+  admin: { bind: "127.0.0.1:9443" }
+routes:
+  - { id: catch-all, path: "/", upstream: api }
+upstreams:
+  api:
+    members: [{ addr: "127.0.0.1:8443" }]
+    connection: { tls: true }
+    upstream_mtls: { enabled: true, trust: backend-ca }
+state: { backend: in_memory }
+zero_trust:
+  upstream_identity:
+    source: file
+    cert_path: /etc/waf/c.pem
+    key_ref: /etc/waf/c.key
+"#,
+        )
+    }
+
+    #[test]
+    fn view_surfaces_upstream_mtls_and_round_trips() {
+        let mut cfg = upstream_mtls_pool_cfg();
+        // Simulate a boot-materialized trust bundle — it must NOT leak
+        // into the view JSON (it's #[serde(skip)]).
+        cfg.upstreams
+            .get_mut("api")
+            .unwrap()
+            .upstream_mtls
+            .as_mut()
+            .unwrap()
+            .trust_pem = Some("-----BEGIN CERTIFICATE-----\nsecret-not-really\n-----END CERTIFICATE-----".into());
+        let view = UpstreamsConfigView::from_config(&cfg);
+        let m = view.pools["api"]
+            .upstream_mtls
+            .as_ref()
+            .expect("upstream_mtls surfaced");
+        assert!(m.enabled);
+        assert_eq!(m.trust.as_deref(), Some(std::path::Path::new("backend-ca")));
+
+        let json = serde_json::to_string(m).expect("serialises");
+        assert!(
+            !json.contains("trust_pem") && !json.contains("secret-not-really"),
+            "materialized trust_pem must never appear in the view JSON: {json}"
+        );
+        let back: aegis_core::config::UpstreamMtlsConfig =
+            serde_json::from_str(&json).expect("round-trips into UpstreamMtlsConfig");
+        assert!(back.enabled);
+        assert_eq!(back.trust.as_deref(), Some(std::path::Path::new("backend-ca")));
+        assert!(back.trust_pem.is_none());
     }
 
     #[test]

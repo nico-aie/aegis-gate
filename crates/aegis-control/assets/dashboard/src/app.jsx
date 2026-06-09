@@ -46,7 +46,7 @@ const NAV = [
     { id: 'access-lists',  label: 'Access Lists',     icon: <window.I.Ban />,      badge: null },
     { id: 'detectors',     label: 'Detectors & Tiers', icon: <window.I.Cluster />, badge: null },
     { id: 'rules',         label: 'Rules',            icon: <window.I.Layers />,   badge: null },
-    { id: 'zero-trust',    label: 'Zero Trust',       icon: <window.I.Shield />,   badge: 'NEW', tone: 'warn' },
+    { id: 'zero-trust',    label: 'Zero Trust',       icon: <window.I.Shield />,   badge: 'Beta', tone: 'warn' },
   ]},
   { group: 'Observability', items: [
     // 2026-06-05 — Copilot is no longer a page; it's a global chat widget

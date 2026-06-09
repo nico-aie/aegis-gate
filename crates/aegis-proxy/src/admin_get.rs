@@ -1056,9 +1056,30 @@ pub(crate) fn admin_router(
             aegis_control::api::zero_trust::UpstreamIdentityView::from_config(cfg).render(),
             "private, max-age=5",
         ),
-        "/api/zero-trust/upstream/config" => json_body_response(
+        "/api/zero-trust/upstream/config" => {
+            // Overlay the live raw pool configs (registry shadow) onto
+            // the boot cfg so runtime `upstream_mtls` edits made via the
+            // Zero Trust drawer (PUT /api/upstreams/pool/{id}) are
+            // reflected immediately — mirrors `/api/upstreams/config`.
+            let mut effective_cfg = cfg.clone();
+            if let Some(writer) = services.upstream_writer.as_ref() {
+                for (name, pool_cfg) in writer.current_pools() {
+                    effective_cfg.upstreams.insert(name, pool_cfg);
+                }
+            }
+            json_body_response(
+                200,
+                aegis_control::api::zero_trust::UpstreamConfigView::from_config(&effective_cfg)
+                    .render(),
+                "private, max-age=2",
+            )
+        }
+        // P4 — upstream (WAF-as-client) mTLS handshake-failure
+        // histogram, grouped by pool + reason. Process-global tracker
+        // recorded by the data plane on `ForwardError::Handshake`.
+        "/api/zero-trust/upstream/failures" => json_body_response(
             200,
-            aegis_control::api::zero_trust::UpstreamConfigView::from_config(cfg).render(),
+            crate::upstream::mtls_failures::render(),
             "private, max-age=2",
         ),
         "/api/zero-trust/downstream/connections" => json_body_response(
