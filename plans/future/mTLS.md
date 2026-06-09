@@ -427,8 +427,9 @@ traffic yet, so the temporary downstream-enforcement gap during the hard cut is 
       + key_ref come from the config plane). `UpstreamIdentityConfig.cert_pem` (`#[serde(skip)]`) carries
       the in-memory PUBLIC PEM; `resolve_upstream_mtls` emits `CertSource::Pem` (fingerprint marks `pem:`).
       `UPSTREAM_IDENTITY_STATE_KEY` (`aegis:zt:upstream:identity`) + `UpstreamIdentityRecord{cert_pem,key_ref}`.
-      (b) `upstream::identity::materialize_upstream_identity` reads the record on the async boot path
-      (`run::run`, before the sync `ProxyContext::build`) and folds the PUBLIC PEM into the cfg snapshot;
+      (b) `upstream::identity::materialize_zero_trust_state` (formerly `materialize_upstream_identity`)
+      reads the record on the async boot path (`run::run`, before the sync `ProxyContext::build`) and
+      folds the PUBLIC PEM into the cfg snapshot;
       the seeded registry identity then carries it, so config-doc reloads (which reuse the seed via
       `PoolRegistry::apply`) preserve it — no separate reseed needed. **Fail-closed:** a `source: state`
       identity with no stored record / unreadable / corrupt aborts boot (proven live with the `waf` binary).
@@ -441,12 +442,26 @@ traffic yet, so the temporary downstream-enforcement gap during the hard cut is 
       public-only metadata (CN=waf.internal); no-CSRF→403, PRIVATE-KEY-in-cert→400, empty key_ref→400;
       upstream/identity + upstream/config + downstream all 200. Positive boot-materialization round-trip
       across a restart is covered by unit tests (in_memory doesn't persist; redis round-trip deferred).
-      Remaining backend: (a) audited `POST /api/zero-trust/upstream/trust/{bundle}` (upload PUBLIC backend
-      CA → state) + state-backed CA loading in build_client; (b) per-pool `upstream_mtls` editing ALREADY
-      round-trips via existing `PUT /api/upstreams/pool/{id}` (it's a PoolConfig field) — needs the global
-      cross-ref validation added to that path + a frontend drawer.
-      Frontend: drawer editing, backend-CA upload, expiry badges, upstream handshake-failure surface.
-- [ ] **P5** Hot rotation on cas_set; session resumption; optional SPIFFE-SAN matcher.
+      **4a-iii DONE (commit d0332e9):** state-backed backend-CA trust bundles.
+      `UpstreamMtlsConfig.trust_pem` (`#[serde(skip)]`) carries a bundle's PUBLIC CA PEM;
+      `resolve_upstream_mtls` emits `CertSource::Pem` for the trust anchor when materialized, else reads
+      `trust` as a file path (fingerprint via shared `cert_source_fingerprint` so a trust rotation rebuilds
+      the PoolKey). `UPSTREAM_TRUST_STATE_PREFIX` + `upstream_trust_state_key(bundle)` + `UpstreamTrustRecord
+      {ca_pem}`. `materialize_zero_trust_state` folds identity cert AND per-pool trust bundles in one cfg
+      clone — **lookup-first**: a `trust` value matching an uploaded bundle → PEM, else file path; a
+      referenced bundle that exists-but-corrupt fails closed, one not uploaded falls through to file (which
+      fails closed at build if no such file). Endpoints `POST/GET/DELETE /api/zero-trust/upstream/trust
+      [/{bundle}]`: POST/DELETE audited + CSRF + allow_ca_upload; POST validates PUBLIC PEM + rejects a
+      PRIVATE KEY block; DELETE ref-checked (won't strand a pool); GET lists PUBLIC metadata; names
+      `[A-Za-z0-9._-]{1,64}`. Tests: proxy upstream::identity 8 (incl. trust fail-closed matrix) +
+      pools_referencing_trust 2; control zero_trust 15; core 284. **Live (in_memory):** POST 200 public-only
+      (CN=backend-ca.internal), GET list, PRIVATE-KEY→400, no-CSRF→403, DELETE 200.
+      Remaining backend: per-pool `upstream_mtls` editing ALREADY round-trips via existing
+      `PUT /api/upstreams/pool/{id}` (it's a PoolConfig field) — needs the global cross-ref validation
+      added to that path (enabled⇒identity, trust-bundle-exists) + a frontend drawer.
+      Frontend: drawer editing, backend-CA upload UI, expiry badges, upstream handshake-failure surface.
+- [ ] **P5** Hot rotation on cas_set (4a-* are boot/restart-only; identity/trust PUTs land at next boot);
+      session resumption; optional SPIFFE-SAN matcher.
 - [ ] **Tests/gates** §6 checklist all green before default-on.
 
 ---
