@@ -1079,8 +1079,8 @@ pub async fn run(
                 arc_swap::ArcSwap::from_pointee(store),
             )));
 
-            // MTLS-T2 — when `cfg.tls.client_auth` is set and its
-            // `apply_to` includes `Data`, build a
+            // MTLS-T2 — when `cfg.zero_trust.downstream` is set and
+            // its `apply_to` includes `Data`, build a
             // `WebPkiClientVerifier` from the configured CA bundle
             // and wire it into the server config. Otherwise fall
             // through to the existing no-client-auth path.
@@ -1088,12 +1088,16 @@ pub async fn run(
             // Boot-time CA-bundle parse failures fail the boot
             // (operator opted in; silently downgrading to
             // no-client-auth would be a security regression).
-            let client_auth_for_data = tls_cfg.client_auth.as_ref().filter(|ca| {
-                ca.mode != aegis_core::config::ClientAuthMode::Disabled
-                    && ca
-                        .apply_to
-                        .contains(&aegis_core::config::ClientAuthScope::Data)
-            });
+            let client_auth_for_data = cfg
+                .zero_trust
+                .as_ref()
+                .and_then(|z| z.downstream.as_ref())
+                .filter(|ca| {
+                    ca.mode != aegis_core::config::DownstreamMtlsMode::Disabled
+                        && ca
+                            .apply_to
+                            .contains(&aegis_core::config::DownstreamMtlsScope::Data)
+                });
 
             // MTLS-T5 — keep the parsed `ClientTrustStore`
             // around so the cfg-reload watcher can swap it on
@@ -1105,7 +1109,7 @@ pub async fn run(
             let mut server_cfg = if let Some(ca) = client_auth_for_data {
                 let bundle = ca.ca_bundle.as_ref().ok_or_else(|| {
                     aegis_core::WafError::Config(
-                        "tls.client_auth.ca_bundle is required when mode != disabled".into(),
+                        "zero_trust.downstream.ca_bundle is required when mode != disabled".into(),
                     )
                 })?;
                 let trust =

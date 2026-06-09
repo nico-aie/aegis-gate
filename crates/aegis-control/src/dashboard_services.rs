@@ -269,7 +269,7 @@ pub struct DashboardServices {
     /// Always present; starts at "no override" (resolves to the
     /// configured value). PUT /api/mtls/mode swaps the override
     /// in-process.
-    pub mtls_mode_store: std::sync::Arc<crate::api::mtls_mode::ClientAuthModeStore>,
+    pub mtls_mode_store: std::sync::Arc<crate::api::mtls_mode::DownstreamMtlsModeStore>,
     /// MTLS-T10 — operator opt-in for the dashboard's CA bundle
     /// upload card. Mirrors `cfg.admin.dashboard_auth.allow_ca_upload`.
     /// Default `false` so trust anchors stay GitOps-managed
@@ -648,7 +648,7 @@ impl DashboardServices {
                 // MTLS-T8 — empty override at boot. The proxy may
                 // seed it from a persisted file or YAML if needed.
                 mtls_mode_store: std::sync::Arc::new(
-                    crate::api::mtls_mode::ClientAuthModeStore::new(),
+                    crate::api::mtls_mode::DownstreamMtlsModeStore::new(),
                 ),
                 // MTLS-T10 — default off; proxy boot path overrides
                 // from cfg.admin.dashboard_auth.allow_ca_upload.

@@ -636,7 +636,7 @@ pub enum ClientAuthReloadOutcome {
     /// `mtls_reloaded` audit event).
     Applied {
         cert_count: usize,
-        mode: aegis_core::config::ClientAuthMode,
+        mode: aegis_core::config::DownstreamMtlsMode,
     },
     /// `cfg.tls.client_auth` is `None` or its mode is
     /// `Disabled` in the new cfg. Skip-not-clear: keeping the
@@ -678,13 +678,13 @@ pub fn apply_cfg_change_to_client_auth(
     let Some(trust_store) = trust_store else {
         return ClientAuthReloadOutcome::NoStore;
     };
-    let Some(tls_cfg) = new_cfg.tls.as_ref() else {
+    let Some(zt) = new_cfg.zero_trust.as_ref() else {
         return ClientAuthReloadOutcome::SkippedDisabled;
     };
-    let Some(ca_cfg) = tls_cfg.client_auth.as_ref() else {
+    let Some(ca_cfg) = zt.downstream.as_ref() else {
         return ClientAuthReloadOutcome::SkippedDisabled;
     };
-    if ca_cfg.mode == aegis_core::config::ClientAuthMode::Disabled {
+    if ca_cfg.mode == aegis_core::config::DownstreamMtlsMode::Disabled {
         return ClientAuthReloadOutcome::SkippedDisabled;
     }
 
@@ -1661,7 +1661,8 @@ state:
   backend: in_memory
 tls:
   certificates: []
-  client_auth:
+zero_trust:
+  downstream:
     mode: {mode}
     ca_bundle: {ca_path}
     apply_to: [data]
@@ -1727,7 +1728,7 @@ state:
         match outcome {
             ClientAuthReloadOutcome::Applied { cert_count, mode } => {
                 assert!(cert_count >= 1);
-                assert_eq!(mode, aegis_core::config::ClientAuthMode::Required);
+                assert_eq!(mode, aegis_core::config::DownstreamMtlsMode::Required);
             }
             other => panic!("expected Applied, got {other:?}"),
         }

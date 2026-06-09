@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use aegis_core::config::{ClientAuthMode, HstsConfig};
+use aegis_core::config::{DownstreamMtlsMode, HstsConfig};
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::{Response, StatusCode};
@@ -71,15 +71,15 @@ pub fn build_hardened_server_config(
 /// inbound client-cert verification wired on.
 ///
 /// `mode` selects the strictness:
-/// - [`ClientAuthMode::Disabled`] — caller should use the
+/// - [`DownstreamMtlsMode::Disabled`] — caller should use the
 ///   no-client-auth variant instead. Returns the same shape
 ///   anyway (with `with_no_client_auth`) so callers don't have
 ///   to branch when iterating.
-/// - [`ClientAuthMode::Optional`] — verifier built with
+/// - [`DownstreamMtlsMode::Optional`] — verifier built with
 ///   `.allow_unauthenticated()`. Handshake admits both
 ///   with-cert and without-cert clients; downstream identity
 ///   extraction (MTLS-T3) marks the latter as `Anonymous`.
-/// - [`ClientAuthMode::Required`] — verifier built without
+/// - [`DownstreamMtlsMode::Required`] — verifier built without
 ///   `.allow_unauthenticated()`. Handshake fails when the
 ///   client presents no cert, before any HTTP bytes are
 ///   exchanged.
@@ -90,7 +90,7 @@ pub fn build_hardened_server_config_with_client_auth(
     resolver: Arc<DynamicResolver>,
     min_version: Option<&str>,
     trust_store: &ClientTrustStore,
-    mode: ClientAuthMode,
+    mode: DownstreamMtlsMode,
 ) -> Result<rustls::ServerConfig, rustls::Error> {
     static PROVIDER_INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     PROVIDER_INIT.get_or_init(|| {
@@ -106,18 +106,18 @@ pub fn build_hardened_server_config_with_client_auth(
     // is logged + audit-emitted at boot in `run.rs`; we silently
     // apply here on every config build (boot + hot-reload).
     let effective_mode = if aegis_core::break_glass::is_active()
-        && mode == ClientAuthMode::Required
+        && mode == DownstreamMtlsMode::Required
     {
-        ClientAuthMode::Optional
+        DownstreamMtlsMode::Optional
     } else {
         mode
     };
 
     let mut config = match effective_mode {
-        ClientAuthMode::Disabled => builder
+        DownstreamMtlsMode::Disabled => builder
             .with_no_client_auth()
             .with_cert_resolver(resolver),
-        ClientAuthMode::Optional => {
+        DownstreamMtlsMode::Optional => {
             let verifier = WebPkiClientVerifier::builder(trust_store.current())
                 .allow_unauthenticated()
                 .build()
@@ -130,7 +130,7 @@ pub fn build_hardened_server_config_with_client_auth(
                 .with_client_cert_verifier(verifier)
                 .with_cert_resolver(resolver)
         }
-        ClientAuthMode::Required => {
+        DownstreamMtlsMode::Required => {
             let verifier = WebPkiClientVerifier::builder(trust_store.current())
                 .build()
                 .map_err(|e| {
@@ -492,7 +492,7 @@ mod tests {
             resolver,
             None,
             &trust,
-            ClientAuthMode::Disabled,
+            DownstreamMtlsMode::Disabled,
         )
         .expect("disabled builds");
         // ALPN list is preserved for the data-plane h2/http1.1

@@ -72,6 +72,13 @@ pub struct WafConfig {
     pub upstreams: HashMap<String, PoolConfig>,
     #[serde(default)]
     pub tls: Option<TlsConfig>,
+    /// Zero Trust — unified mutual-TLS surface. Holds the
+    /// downstream (WAF-as-server client-cert verification, the
+    /// renamed former `tls.client_auth`) policy and, from P2, the
+    /// shared upstream WAF client identity. `None` ⇒ no mTLS in
+    /// either direction (today's default). See [`ZeroTrustConfig`].
+    #[serde(default)]
+    pub zero_trust: Option<ZeroTrustConfig>,
     pub state: StateConfig,
     #[serde(default)]
     pub rules: RulesConfig,
@@ -791,6 +798,10 @@ impl WafConfig {
         if let Some(tls) = self.tls.as_ref() {
             validate_tls_hardening(tls)?;
         }
+        // Zero Trust: validate downstream (WAF-as-server) mTLS opt-in.
+        if let Some(zt) = self.zero_trust.as_ref() {
+            validate_zero_trust(zt)?;
+        }
         // 2026-05-19 committee bind contract: `/__waf_control/*`
         // MUST be local-only on the team's server. The control
         // surface is now peer-IP-gated to loopback at both mounts
@@ -963,21 +974,31 @@ fn validate_tls_hardening(tls: &TlsConfig) -> crate::Result<()> {
             }
         }
     }
-    if let Some(ca) = tls.client_auth.as_ref() {
+    Ok(())
+}
+
+/// Validate the unified `zero_trust:` block. Downstream
+/// (WAF-as-server) client-cert verification with a non-disabled
+/// mode requires a `ca_bundle` and at least one `apply_to` plane —
+/// otherwise the policy is unenforceable. Runs independently of
+/// `tls:` so a `zero_trust.downstream` opt-in is validated even
+/// when certs are managed elsewhere (e.g. ACME).
+fn validate_zero_trust(zt: &ZeroTrustConfig) -> crate::Result<()> {
+    if let Some(ds) = zt.downstream.as_ref() {
         // Disabled mode is a no-op so we don't require a
         // ca_bundle — operators can stage a future enable by
         // populating fields with mode: disabled.
-        if ca.mode != ClientAuthMode::Disabled {
-            if ca.ca_bundle.is_none() {
+        if ds.mode != DownstreamMtlsMode::Disabled {
+            if ds.ca_bundle.is_none() {
                 return Err(crate::error::WafError::Config(format!(
-                    "tls.client_auth.ca_bundle is required when mode is {:?} \
+                    "zero_trust.downstream.ca_bundle is required when mode is {:?} \
                      (cannot verify client certs without a trust anchor)",
-                    ca.mode,
+                    ds.mode,
                 )));
             }
-            if ca.apply_to.is_empty() {
+            if ds.apply_to.is_empty() {
                 return Err(crate::error::WafError::Config(
-                    "tls.client_auth.apply_to must list at least one listener \
+                    "zero_trust.downstream.apply_to must list at least one listener \
                      plane (admin / data) when mode is non-disabled — \
                      otherwise no listener would enforce the policy"
                         .into(),
@@ -2007,14 +2028,6 @@ pub struct TlsConfig {
     /// `certificates: [...]` flow.
     #[serde(default)]
     pub acme: Option<AcmeConfig>,
-    /// MTLS-T1 — server-side mutual-TLS client cert verification.
-    /// `None` (default) keeps the legacy `with_no_client_auth()`
-    /// behaviour — listeners present their server cert and never
-    /// ask the client to authenticate. Setting this opts the
-    /// listeners listed in `apply_to` into the rustls
-    /// `WebPkiClientVerifier` path; see [`ClientAuthConfig`].
-    #[serde(default)]
-    pub client_auth: Option<ClientAuthConfig>,
     /// B5 carry-over — when set, every TLS-served data-plane
     /// response is stamped with an `Alt-Svc:` header
     /// advertising the supplied UDP port for HTTP/3. Capable
@@ -2030,7 +2043,23 @@ pub struct TlsConfig {
     pub advertise_h3: Option<u16>,
 }
 
-/// MTLS-T1 — server-side mTLS client-cert verification settings.
+/// Unified Zero Trust mutual-TLS surface (top-level `zero_trust:`
+/// block — replaces the former `tls.client_auth`).
+///
+/// `downstream` carries WAF-as-server client-cert verification.
+/// P2 adds `upstream_identity` (the shared fleet WAF client cert
+/// for dialing backends) as a sibling field here.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ZeroTrustConfig {
+    /// Downstream (WAF-as-server) client-cert verification.
+    /// `None` ⇒ listeners never request a client cert (today's
+    /// `with_no_client_auth()` default).
+    #[serde(default)]
+    pub downstream: Option<DownstreamMtlsConfig>,
+}
+
+/// Downstream (WAF-as-server) mTLS client-cert verification
+/// settings (renamed from the former `ClientAuthConfig`).
 ///
 /// The presence of this struct means "request client certs from
 /// the listener planes named in [`Self::apply_to`]". The exact
@@ -2039,13 +2068,13 @@ pub struct TlsConfig {
 /// [`Self::allowed_sans`] means "any SAN signed by `ca_bundle`
 /// is admitted" — non-empty adds a SAN allowlist gate on top.
 #[derive(Clone, Debug, Deserialize)]
-pub struct ClientAuthConfig {
+pub struct DownstreamMtlsConfig {
     /// Strictness of the client-cert check. See
-    /// [`ClientAuthMode`]. Defaults to `Disabled` so a
+    /// [`DownstreamMtlsMode`]. Defaults to `Disabled` so a
     /// half-typed cfg (`client_auth: {}`) is a no-op rather than
     /// a footgun.
     #[serde(default)]
-    pub mode: ClientAuthMode,
+    pub mode: DownstreamMtlsMode,
     /// PEM bundle of trust anchors for verifying client certs.
     /// **Required** when `mode != Disabled` — validation rejects
     /// a non-disabled mode with no `ca_bundle` populated.
@@ -2064,14 +2093,14 @@ pub struct ClientAuthConfig {
     /// existing data-plane clients on a config that opts in
     /// without specifying `apply_to`. Operators wanting full
     /// zero-trust ingress set `apply_to: [admin, data]`.
-    #[serde(default = "default_client_auth_apply_to")]
-    pub apply_to: Vec<ClientAuthScope>,
+    #[serde(default = "default_downstream_mtls_apply_to")]
+    pub apply_to: Vec<DownstreamMtlsScope>,
 }
 
-/// Strictness of [`ClientAuthConfig`] enforcement.
+/// Strictness of [`DownstreamMtlsConfig`] enforcement.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ClientAuthMode {
+pub enum DownstreamMtlsMode {
     /// Listener does not request a client cert. Equivalent to
     /// `client_auth: None`.
     #[default]
@@ -2088,19 +2117,19 @@ pub enum ClientAuthMode {
     Required,
 }
 
-/// Listener plane(s) that enforce [`ClientAuthConfig`]. Mirrors
+/// Listener plane(s) that enforce [`DownstreamMtlsConfig`]. Mirrors
 /// the existing `cfg.listeners.{data, admin}` split.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ClientAuthScope {
+pub enum DownstreamMtlsScope {
     /// Admin / dashboard / `/__waf_control` listener.
     Admin,
     /// Data-plane listeners (per `cfg.listeners.data[*]`).
     Data,
 }
 
-fn default_client_auth_apply_to() -> Vec<ClientAuthScope> {
-    vec![ClientAuthScope::Admin]
+fn default_downstream_mtls_apply_to() -> Vec<DownstreamMtlsScope> {
+    vec![DownstreamMtlsScope::Admin]
 }
 
 /// ACME / Let's Encrypt configuration (P5 of the security-toggle
@@ -4666,89 +4695,110 @@ tls:
         assert!(!hsts.preload);
     }
 
-    // ---------- MTLS-T1 client_auth schema --------------------------------
+    // ---------- zero_trust.downstream mTLS schema -------------------------
+    // (renamed from the former tls.client_auth — hard rename, no alias.)
+
+    /// Inject a top-level `zero_trust:\n  downstream:\n{body}` block.
+    /// `ds_body` carries the downstream fields at 4-space indent.
+    fn good_cfg_with_downstream_mtls(ds_body: &str) -> String {
+        format!(
+            r#"
+listeners:
+  data: [{{ bind: "0.0.0.0:443" }}]
+  admin: {{ bind: "127.0.0.1:9443" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: default }}
+upstreams:
+  default: {{ members: [{{ addr: "127.0.0.1:8080" }}] }}
+state: {{ backend: in_memory }}
+zero_trust:
+  downstream:
+{ds_body}
+"#
+        )
+    }
 
     #[test]
-    fn client_auth_absent_keeps_default_disabled_behaviour() {
+    fn downstream_mtls_absent_keeps_default_disabled_behaviour() {
         let yaml = good_cfg_with_tls("  certificates: []\n");
         let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
         cfg.validate().unwrap();
-        assert!(cfg.tls.unwrap().client_auth.is_none());
+        assert!(cfg.zero_trust.is_none());
     }
 
     #[test]
-    fn client_auth_disabled_mode_does_not_require_ca_bundle() {
+    fn downstream_mtls_disabled_mode_does_not_require_ca_bundle() {
         // Operators staging a future enable can populate
         // allowed_sans / apply_to with mode: disabled to
         // pre-build the cfg without yet requesting client certs.
-        let yaml = good_cfg_with_tls(
-            "  client_auth:\n    mode: disabled\n    allowed_sans: [admin@aegis.local]\n",
+        let yaml = good_cfg_with_downstream_mtls(
+            "    mode: disabled\n    allowed_sans: [admin@aegis.local]\n",
         );
         let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
         cfg.validate().unwrap();
-        let ca = cfg.tls.unwrap().client_auth.unwrap();
-        assert_eq!(ca.mode, ClientAuthMode::Disabled);
-        assert_eq!(ca.allowed_sans, vec!["admin@aegis.local".to_string()]);
+        let ds = cfg.zero_trust.unwrap().downstream.unwrap();
+        assert_eq!(ds.mode, DownstreamMtlsMode::Disabled);
+        assert_eq!(ds.allowed_sans, vec!["admin@aegis.local".to_string()]);
         // apply_to default kicks in even when populated by the
         // serde default function.
-        assert_eq!(ca.apply_to, vec![ClientAuthScope::Admin]);
+        assert_eq!(ds.apply_to, vec![DownstreamMtlsScope::Admin]);
     }
 
     #[test]
-    fn client_auth_optional_mode_round_trips() {
-        let yaml = good_cfg_with_tls(
-            "  client_auth:\n    mode: optional\n    ca_bundle: /etc/aegis/admin-ca.pem\n",
+    fn downstream_mtls_optional_mode_round_trips() {
+        let yaml = good_cfg_with_downstream_mtls(
+            "    mode: optional\n    ca_bundle: /etc/aegis/admin-ca.pem\n",
         );
         let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
         cfg.validate().unwrap();
-        let ca = cfg.tls.unwrap().client_auth.unwrap();
-        assert_eq!(ca.mode, ClientAuthMode::Optional);
+        let ds = cfg.zero_trust.unwrap().downstream.unwrap();
+        assert_eq!(ds.mode, DownstreamMtlsMode::Optional);
         assert_eq!(
-            ca.ca_bundle.as_ref().unwrap().to_string_lossy(),
+            ds.ca_bundle.as_ref().unwrap().to_string_lossy(),
             "/etc/aegis/admin-ca.pem",
         );
     }
 
     #[test]
-    fn client_auth_required_mode_round_trips() {
-        let yaml = good_cfg_with_tls(
-            "  client_auth:\n    mode: required\n    ca_bundle: /etc/aegis/admin-ca.pem\n    allowed_sans:\n      - admin@aegis.local\n      - ops@aegis.local\n",
+    fn downstream_mtls_required_mode_round_trips() {
+        let yaml = good_cfg_with_downstream_mtls(
+            "    mode: required\n    ca_bundle: /etc/aegis/admin-ca.pem\n    allowed_sans:\n      - admin@aegis.local\n      - ops@aegis.local\n",
         );
         let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
         cfg.validate().unwrap();
-        let ca = cfg.tls.unwrap().client_auth.unwrap();
-        assert_eq!(ca.mode, ClientAuthMode::Required);
-        assert_eq!(ca.allowed_sans.len(), 2);
+        let ds = cfg.zero_trust.unwrap().downstream.unwrap();
+        assert_eq!(ds.mode, DownstreamMtlsMode::Required);
+        assert_eq!(ds.allowed_sans.len(), 2);
     }
 
     #[test]
-    fn client_auth_apply_to_defaults_to_admin_only() {
-        let yaml = good_cfg_with_tls(
-            "  client_auth:\n    mode: required\n    ca_bundle: /etc/aegis/ca.pem\n",
+    fn downstream_mtls_apply_to_defaults_to_admin_only() {
+        let yaml = good_cfg_with_downstream_mtls(
+            "    mode: required\n    ca_bundle: /etc/aegis/ca.pem\n",
         );
         let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
         cfg.validate().unwrap();
-        let ca = cfg.tls.unwrap().client_auth.unwrap();
-        assert_eq!(ca.apply_to, vec![ClientAuthScope::Admin]);
+        let ds = cfg.zero_trust.unwrap().downstream.unwrap();
+        assert_eq!(ds.apply_to, vec![DownstreamMtlsScope::Admin]);
     }
 
     #[test]
-    fn client_auth_apply_to_admin_and_data() {
-        let yaml = good_cfg_with_tls(
-            "  client_auth:\n    mode: required\n    ca_bundle: /etc/aegis/ca.pem\n    apply_to: [admin, data]\n",
+    fn downstream_mtls_apply_to_admin_and_data() {
+        let yaml = good_cfg_with_downstream_mtls(
+            "    mode: required\n    ca_bundle: /etc/aegis/ca.pem\n    apply_to: [admin, data]\n",
         );
         let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
         cfg.validate().unwrap();
-        let ca = cfg.tls.unwrap().client_auth.unwrap();
+        let ds = cfg.zero_trust.unwrap().downstream.unwrap();
         assert_eq!(
-            ca.apply_to,
-            vec![ClientAuthScope::Admin, ClientAuthScope::Data],
+            ds.apply_to,
+            vec![DownstreamMtlsScope::Admin, DownstreamMtlsScope::Data],
         );
     }
 
     #[test]
-    fn client_auth_required_without_ca_bundle_rejected() {
-        let yaml = good_cfg_with_tls("  client_auth:\n    mode: required\n");
+    fn downstream_mtls_required_without_ca_bundle_rejected() {
+        let yaml = good_cfg_with_downstream_mtls("    mode: required\n");
         let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
         let err = cfg.validate().unwrap_err().to_string();
         assert!(
@@ -4758,17 +4808,17 @@ tls:
     }
 
     #[test]
-    fn client_auth_optional_without_ca_bundle_rejected() {
-        let yaml = good_cfg_with_tls("  client_auth:\n    mode: optional\n");
+    fn downstream_mtls_optional_without_ca_bundle_rejected() {
+        let yaml = good_cfg_with_downstream_mtls("    mode: optional\n");
         let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
         let err = cfg.validate().unwrap_err().to_string();
         assert!(err.contains("ca_bundle is required"));
     }
 
     #[test]
-    fn client_auth_required_with_empty_apply_to_rejected() {
-        let yaml = good_cfg_with_tls(
-            "  client_auth:\n    mode: required\n    ca_bundle: /etc/aegis/ca.pem\n    apply_to: []\n",
+    fn downstream_mtls_required_with_empty_apply_to_rejected() {
+        let yaml = good_cfg_with_downstream_mtls(
+            "    mode: required\n    ca_bundle: /etc/aegis/ca.pem\n    apply_to: []\n",
         );
         let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
         let err = cfg.validate().unwrap_err().to_string();
@@ -4779,9 +4829,9 @@ tls:
     }
 
     #[test]
-    fn client_auth_unknown_mode_rejected_at_deserialise() {
-        let yaml = good_cfg_with_tls(
-            "  client_auth:\n    mode: paranoid\n    ca_bundle: /etc/aegis/ca.pem\n",
+    fn downstream_mtls_unknown_mode_rejected_at_deserialise() {
+        let yaml = good_cfg_with_downstream_mtls(
+            "    mode: paranoid\n    ca_bundle: /etc/aegis/ca.pem\n",
         );
         let err = serde_yaml::from_str::<WafConfig>(&yaml).unwrap_err();
         assert!(
@@ -4792,9 +4842,9 @@ tls:
     }
 
     #[test]
-    fn client_auth_unknown_scope_rejected_at_deserialise() {
-        let yaml = good_cfg_with_tls(
-            "  client_auth:\n    mode: required\n    ca_bundle: /etc/aegis/ca.pem\n    apply_to: [moon]\n",
+    fn downstream_mtls_unknown_scope_rejected_at_deserialise() {
+        let yaml = good_cfg_with_downstream_mtls(
+            "    mode: required\n    ca_bundle: /etc/aegis/ca.pem\n    apply_to: [moon]\n",
         );
         let err = serde_yaml::from_str::<WafConfig>(&yaml).unwrap_err();
         assert!(
