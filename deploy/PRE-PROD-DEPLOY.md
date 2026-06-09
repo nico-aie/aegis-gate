@@ -208,25 +208,54 @@ egress — intended here. (If you `./waf run` without sourcing `.env`, that's th
 
 ---
 
-## 7. TLS (deferred → add per node when ready)
+## 7. TLS — WAF terminates (edge); cert on every node
 
-We run **plaintext `:8080`** for now (TLS deferred). When you provision certs,
-since each node is the TLS edge, deploy **one shared cert to all nodes** and turn
-off in-WAF ACME (it's leader-only / not fleet-aware):
+Each node terminates TLS (so JA3/JA4/device_fp work), so **the cert lives on the
+node**, not on any LB. (If you front nodes with nginx `stream`, nginx forwards raw
+TLS and holds **no cert** — §15.)
 
+### 7a. Testing — self-signed (per node)
+```sh
+mkdir -p certs
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -keyout certs/selfsigned.key -out certs/selfsigned.crt \
+  -subj "/CN=aegis-gate.local" \
+  -addext "subjectAltName=DNS:localhost,DNS:aegis-gate.local,IP:127.0.0.1,IP:<NODE-IP>"
+```
+The committed `waf.contract.yaml` already has the matching TLS block:
 ```yaml
 listeners:
   data:
-    - { bind: "0.0.0.0:8443", tls: true }
     - { bind: "0.0.0.0:8080" }
+    - { bind: "0.0.0.0:8443", tls: true }   # WAF terminates → device_fp
+tls:
+  min_version: "1.2"
+  certificates:
+    - cert_path: "certs/selfsigned.crt"
+      key_ref:   "certs/selfsigned.key"
+      hosts: ["localhost", "aegis-gate.local", "*.aegis-gate.local"]
+```
+Test: `curl -k https://<node>:8443/` → 200, and now the WAF computes JA4 →
+`device_fp` populates (vs empty over plaintext). ⚠️ **The cert files must exist
+before `./waf run`** or the `:8443` listener fails to bind.
+
+### 7b. Production — one shared cert via DNS-01
+In-WAF ACME is **leader-only / not fleet-aware**, so don't use it for a fleet.
+Issue ONE wildcard / multi-SAN cert out-of-band with **DNS-01** (no per-node HTTP
+challenge to route), deploy the SAME PEM to every node, ACME off:
+```sh
+certbot certonly --dns-<provider> -d yourdomain.com -d '*.yourdomain.com' ...
+# push /etc/letsencrypt/live/yourdomain.com/{fullchain,privkey}.pem to each node
+```
+```yaml
 tls:
   acme: { auto_renew: false }
   certificates:
-    - { cert_path: "/etc/aegis/fullchain.pem", key_ref: "/etc/aegis/privkey.pem" }
+    - { cert_path: "/etc/aegis/fullchain.pem", key_ref: "/etc/aegis/privkey.pem",
+        hosts: ["yourdomain.com", "*.yourdomain.com"] }
 ```
-
-Issue a wildcard/multi-SAN cert out-of-band (certbot/cert-manager on the infra
-host or DNS-01), push the same PEM to every node, re-push on renewal.
+Renew centrally → re-push → the WAF **hot-reloads** the cert (atomic swap, no
+restart) on config apply.
 
 ---
 
@@ -438,19 +467,54 @@ pick by whether you need client-IP forwarding:
 | **L4 `stream`** | [`../nginx/nginx-stream.conf`](../nginx/nginx-stream.conf) | ✅ WAF terminates (preserved) | ❌ nginx IP (SNAT) | keep protocols + JA3; don't need client IP |
 | **L7 `http` + XFF** | [`../nginx/nginx-http.conf`](../nginx/nginx-http.conf) | ❌ nginx terminates | via `X-Forwarded-For` | want client IP forwarded (pending WAF XFF-resolution) |
 
-**Run a 2-node cluster + LB on this host:**
-```sh
-# 2nd WAF node (unique node.id + ports, same Redis → same fleet). waf2.yaml is
-# waf.yaml with node.id=waf-infra-2, data :8081, admin :9444, audit ./waf_audit-2.log.
-set -a; . ./.env; set +a
-AEGIS_INSECURE_COOKIES=1 ./waf run --config ./waf2.yaml >> logs/waf2.json 2>&1 &
+The active LB config is **L4 `stream` over TLS** (`nginx-stream.conf` → nodes'
+`:8443`/`:8444`): `curl -k https://10.20.0.72:8088/`. Verified 10 HTTPS requests →
+**5 node1 / 5 node2**, WAF terminates TLS each side → JA3/JA4/device_fp work.
 
-cd deploy/compose
-docker compose -f nginx-lb.docker-compose.yml up -d        # VIP :8088 → {8080,8081}
-curl http://10.20.0.72:8088/api/health                     # round-robins
+**Two-nodes-on-ONE-host (this test box)** needs distinct ports per node:
+
+| | node1 | node2 |
+|---|---|---|
+| plaintext | :8080 | :8081 |
+| **TLS** | **:8443** | **:8444** |
+| admin | :9443 | :9444 |
+| config | `waf.yaml` | `waf2.yaml` (same, ports+node.id+audit changed) |
+
+```sh
+set -a; . ./.env; set +a   # LLM_API_KEY + ORT_DYLIB_PATH
+AEGIS_INSECURE_COOKIES=1 ./waf run --config ./waf.yaml  >> logs/waf.json  2>&1 &
+AEGIS_INSECURE_COOKIES=1 ./waf run --config ./waf2.yaml >> logs/waf2.json 2>&1 &
+cd deploy/compose && docker compose -f nginx-lb.docker-compose.yml up -d   # VIP :8088 → {8443,8444}
 ```
-Verified: 10 requests → **5 node1 / 5 node2**; both nodes share the Redis cluster
-(members `waf-infra-1` + `waf-infra-2`, shared leader lease).
+Verified: both nodes share the Redis cluster (members `waf-infra-1` + `waf-infra-2`,
+shared leader lease).
+
+### 15a. Deploying nodes on OTHER machines (the real cluster)
+
+On separate VMs there is **no port contention**, so **every node uses the SAME
+ports** — `:8080`, `:8443`, `:9443` — and the **same `waf.yaml`** (just a unique
+`node.id`). The `:8081/:8444/:9444/waf2.yaml` split above is *only* because two
+nodes share this one host.
+
+Per remote VM:
+1. Build (§1–§2) + contract files (§3) + config (§4) with a **unique `node.id`**
+   and `state.redis.urls=["redis://10.20.0.72:6379"]`.
+2. **Cert (§7):** self-signed with that node's IP in the SAN (test), or the shared
+   DNS-01 PEM (prod); enable the `:8443` TLS listener.
+3. `ai` (§5): onnxruntime **1.24.2** + `ORT_DYLIB_PATH`; `geoip` (§4): copy the
+   `.mmdb`s. Run `set -a; . ./.env; set +a; ./waf run --config ./waf.yaml`.
+4. **Front the fleet** — nginx `stream` upstream points at each VM's `:8443`:
+   ```nginx
+   upstream waf_nodes {
+       server 10.20.0.81:8443;   # waf VM 1
+       server 10.20.0.82:8443;   # waf VM 2
+       server 10.20.0.83:8443;   # waf VM 3
+   }
+   ```
+   …or skip the LB and use **DNS round-robin** (A-records → each VM IP) so the WAF
+   is the direct edge (real client IP + JA3/JA4 — recommended for prod).
+5. Verify: node shows in Redis cluster members + `/healthz/ready` 200; per-protocol
+   smoke through the VIP.
 
 **Gotchas learned here:**
 - **Round-robin looked "pinned to node1"** — `worker_processes auto` on a many-core

@@ -15,8 +15,12 @@ services:
     image: nginx:1.27-alpine          # official image includes the stream module
     restart: unless-stopped
     volumes:
-      # L7 http + X-Forwarded-For (current). Swap to nginx-stream.conf for L4
-      # passthrough (keeps TLS/JA3, but cannot add XFF).
-      - ../nginx/nginx-http.conf:/etc/nginx/nginx.conf:ro
+      # L4 stream passthrough (current): keeps WAF as TLS edge → JA3/JA4/device_fp,
+      # cert on the WAF nodes, nginx holds none. Swap to nginx-http.conf for L7
+      # (adds X-Forwarded-For, but terminates TLS → loses JA3/JA4).
+      - ../nginx/nginx-stream.conf:/etc/nginx/nginx.conf:ro
     ports:
-      - "10.20.0.72:8088:8088"        # the LB VIP
+      # Bind all interfaces (incl. 127.0.0.1) so SSH/VS Code port-forwards that
+      # target the server's localhost:8088 reach it. (Was 10.20.0.72:8088 only,
+      # which left loopback empty → forwarded requests hung.)
+      - "8088:8088"                   # the LB VIP (0.0.0.0:8088)

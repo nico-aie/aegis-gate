@@ -113,3 +113,6 @@ __pycache__
 /waf2.yaml
 /waf_audit-2.log
 /logs/
+
+# self-signed / provisioned TLS certs (per-deploy, never commit)
+/certs/

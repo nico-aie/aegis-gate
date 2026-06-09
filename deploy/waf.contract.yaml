@@ -12,9 +12,20 @@ node:
 
 listeners:
   data:
-    - bind: "0.0.0.0:8080"          # plaintext (TLS deferred)
+    - bind: "0.0.0.0:8080"          # plaintext
+    - bind: "0.0.0.0:8443"          # TLS — WAF terminates → JA3/JA4 → device_fp
+      tls: true
   admin:
     bind: "127.0.0.1:9443"
+
+# TLS — self-signed cert for testing (curl -k). Replace with the shared DNS-01
+# wildcard/multi-SAN cert in production (same cert on every node, acme off).
+tls:
+  min_version: "1.2"
+  certificates:
+    - cert_path: "certs/selfsigned.crt"
+      key_ref:   "certs/selfsigned.key"
+      hosts: ["localhost", "aegis-gate.local", "*.aegis-gate.local"]
 
 # One route per protocol → the multi-protocol mock on the infra host.
 routes:
