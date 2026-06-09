@@ -1049,6 +1049,18 @@ pub(crate) fn admin_router(
             aegis_control::api::mtls::MtlsConfigView::from_config(cfg).render(),
             "private, max-age=2",
         ),
+        // Zero Trust (P3) — upstream (WAF-as-client) read views.
+        // Identity returns PUBLIC cert metadata only — never the key.
+        "/api/zero-trust/upstream/identity" => json_body_response(
+            200,
+            aegis_control::api::zero_trust::UpstreamIdentityView::from_config(cfg).render(),
+            "private, max-age=5",
+        ),
+        "/api/zero-trust/upstream/config" => json_body_response(
+            200,
+            aegis_control::api::zero_trust::UpstreamConfigView::from_config(cfg).render(),
+            "private, max-age=2",
+        ),
         "/api/mtls/connections" => json_body_response(
             200,
             aegis_control::api::mtls::render_connections(
