@@ -6142,6 +6142,194 @@ function MtlsSansCard() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Zero Trust page (P3) — unified mutual-TLS surface, both directions.
+// Upstream (WAF→backend, client auth) cards are new; downstream
+// (client→WAF) reuses the relocated MtlsModeCard / MtlsCaBundleCard /
+// MtlsSansCard (moved off the Settings page).
+// ---------------------------------------------------------------------------
+
+// Upstream WAF client identity — the shared fleet cert the WAF presents
+// to backends. Read-only metadata + a public-cert download. The private
+// key never reaches the browser (the API never returns it).
+function ZtIdentityCard() {
+  const api = window.useApi('/api/zero-trust/upstream/identity', {
+    intervalMs: 15000,
+    fallback: { configured: false },
+  });
+  const d = api.data || { configured: false };
+
+  function downloadCert() {
+    if (!d.cert_pem) return;
+    const blob = new Blob([d.cert_pem], { type: 'application/x-pem-file' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'waf-client.pem';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">WAF Client Identity</div>
+          <div className="card-sub">
+            The shared fleet cert every node presents when dialing a backend ·
+            WAF-as-client
+          </div>
+        </div>
+        <span className={`pill ${d.configured ? 'ok' : 'neutral'}`}>
+          {d.configured ? 'configured' : 'not set'}
+        </span>
+      </div>
+      {!d.configured ? (
+        <div style={{ fontSize: 12, color: 'var(--ink-mute)', padding: 4 }}>
+          No client identity configured. Set{' '}
+          <code>zero_trust.upstream_identity</code> (cert_path + key_ref) so the
+          WAF can present a client cert to backends that require mTLS.
+        </div>
+      ) : (
+        <div style={{ padding: 4 }}>
+          {d.error && (
+            <div className="banner warn" style={{ marginBottom: 8, fontSize: 12 }}>
+              Cert unreadable: {d.error}
+            </div>
+          )}
+          {(d.certificates || []).map((c, i) => (
+            <div key={i} style={{ fontSize: 12, marginBottom: 6 }}>
+              <div>
+                <span style={{ color: 'var(--ink-dim)' }}>Subject </span>
+                {c.subject}
+              </div>
+              <div>
+                <span style={{ color: 'var(--ink-dim)' }}>SHA-256 </span>
+                <code style={{ fontSize: 11 }}>{c.fingerprint_sha256}</code>
+              </div>
+              <div>
+                <span style={{ color: 'var(--ink-dim)' }}>Expires in </span>
+                <span className={`pill ${c.days_until_expiry < 30 ? 'warn' : 'ok'}`}>
+                  {c.days_until_expiry}d
+                </span>
+              </div>
+            </div>
+          ))}
+          <div style={{ fontSize: 11, color: 'var(--ink-mute)', margin: '6px 0 8px' }}>
+            source: {d.source} · {d.cert_path}
+          </div>
+          <button className="btn" disabled={!d.cert_pem} onClick={downloadCert}>
+            Download WAF cert (public)
+          </button>
+          <span style={{ fontSize: 11, color: 'var(--ink-mute)', marginLeft: 8 }}>
+            Hand this to backend operators for their client-trust store. The
+            private key never leaves the WAF.
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Per-pool upstream-mTLS status. Read-only in P3 (enable via YAML);
+// per-pool drawer editing lands with the config-plane phase.
+function ZtUpstreamPoolsCard() {
+  const api = window.useApi('/api/zero-trust/upstream/config', {
+    intervalMs: 10000,
+    fallback: { pools: [] },
+  });
+  const pools = api.data?.pools || [];
+  const cell = { padding: '4px 8px', borderBottom: '1px solid var(--hairline)', textAlign: 'left' };
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">Upstream mTLS by Pool</div>
+          <div className="card-sub">
+            Whether the WAF presents its client cert + verifies each backend
+          </div>
+        </div>
+      </div>
+      {pools.length === 0 ? (
+        <div style={{ fontSize: 12, color: 'var(--ink-mute)', padding: 4 }}>
+          No upstream pools.
+        </div>
+      ) : (
+        <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ color: 'var(--ink-dim)' }}>
+              <th style={cell}>Pool</th>
+              <th style={cell}>Status</th>
+              <th style={cell}>Backend trust</th>
+              <th style={cell}>SAN allowlist</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pools.map((p) => (
+              <tr key={p.pool}>
+                <td style={cell}>{p.pool}</td>
+                <td style={cell}>
+                  <span className={`pill ${p.enabled ? 'ok' : 'neutral'}`}>
+                    {p.status}
+                  </span>
+                </td>
+                <td style={cell}>
+                  {p.trust || (
+                    <span style={{ color: 'var(--ink-mute)' }}>webpki roots</span>
+                  )}
+                </td>
+                <td style={cell}>
+                  {(p.allowed_sans || []).join(', ') || '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 8, padding: 4 }}>
+        Enable per pool via <code>upstreams.&lt;pool&gt;.upstream_mtls</code> in
+        config. Per-pool editing from the console lands in a later phase.
+      </div>
+    </div>
+  );
+}
+
+function PageZeroTrust() {
+  const sectionLabel = {
+    fontSize: 11,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    color: 'var(--ink-dim)',
+    margin: '4px 0 8px',
+  };
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Zero Trust</h1>
+          <p className="page-subtitle">
+            Mutual TLS both directions — clients authenticating to the WAF
+            (downstream) and the WAF authenticating to backends (upstream)
+          </p>
+        </div>
+      </div>
+
+      <div style={sectionLabel}>Upstream — WAF → backend (client auth)</div>
+      <ZtIdentityCard />
+      <ZtUpstreamPoolsCard />
+
+      <div style={{ ...sectionLabel, marginTop: 18 }}>
+        Downstream — client → WAF (verify client certs)
+      </div>
+      <MtlsModeCard />
+      <MtlsCaBundleCard />
+      <MtlsSansCard />
+    </>
+  );
+}
+
 function PageSettings() {
   const modeApi = window.useModeApi();
   const mode = modeApi.data?.mode || 'enforce';
@@ -6249,9 +6437,15 @@ function PageSettings() {
 
       <ConfigVersionsCard />
 
-      <MtlsModeCard />
-      <MtlsCaBundleCard />
-      <MtlsSansCard />
+      {/* 2026-06-09 — mTLS cards (mode / CA bundle / SANs) moved to the
+          dedicated Zero Trust page (both mutual-TLS directions live
+          there now). Breadcrumb keeps operator memory happy. */}
+      <div style={{ marginBottom: 12, padding: '8px 12px', background: 'var(--surface-2)', borderRadius: 6, border: '1px solid var(--hairline)', fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <window.I.Shield />
+        <span>Looking for mTLS (client-cert mode, CA bundle, allowed SANs)?</span>
+        <span style={{ color: 'var(--ink-mute)' }}>·</span>
+        <a href="#/zero-trust" style={{ color: 'var(--accent)', fontWeight: 600 }}>Zero Trust</a>
+      </div>
 
       {/* 2026-05-19 — two dashboard features removed from this page
           during cleanup:
@@ -13953,6 +14147,8 @@ Object.assign(window, {
   PageOverview, PageLiveFeed, PageAttackEvents, PageAnalytics, PageAuditLog,
   PageRuleManager, PageTierConfig, ListPage, PageSettings, PageTracking,
   PageUpstreams, CacheStatsCard,
+  // Zero Trust (P3) — unified mutual-TLS page (both directions).
+  PageZeroTrust,
   // SC-T2 — Scaling page (L1 workers + L2 cluster + L3 state).
   PageScaling,
   // Phase 2 — merged Access Lists, plus Phase 3 stubs.

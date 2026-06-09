@@ -46,6 +46,7 @@ const NAV = [
     { id: 'access-lists',  label: 'Access Lists',     icon: <window.I.Ban />,      badge: null },
     { id: 'detectors',     label: 'Detectors & Tiers', icon: <window.I.Cluster />, badge: null },
     { id: 'rules',         label: 'Rules',            icon: <window.I.Layers />,   badge: null },
+    { id: 'zero-trust',    label: 'Zero Trust',       icon: <window.I.Shield />,   badge: 'NEW', tone: 'warn' },
   ]},
   { group: 'Observability', items: [
     // 2026-06-05 — Copilot is no longer a page; it's a global chat widget
@@ -616,6 +617,7 @@ function App() {
     // redirects to overview (see ROUTE_REDIRECTS).
     case 'rules':            page = <window.PageRuleManager />; break;
     case 'detectors':        page = <window.PageTierConfig />; break;
+    case 'zero-trust':       page = <window.PageZeroTrust />; break;
     case 'access-lists':     page = <window.PageAccessLists />; break;
     case 'upstreams':        page = <window.PageUpstreams />; break;
     case 'traffic-gates':    page = <window.PageTrafficGates />; break;

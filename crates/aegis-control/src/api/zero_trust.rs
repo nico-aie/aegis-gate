@@ -35,6 +35,11 @@ pub struct UpstreamIdentityView {
     pub source: &'static str,
     /// The PUBLIC cert path (never the key path).
     pub cert_path: Option<String>,
+    /// The PUBLIC cert chain PEM, for the "Download WAF cert" button
+    /// (operators install this in their backend client-trust store).
+    /// Public material only — the private key (`key_ref`) is never
+    /// read. `None` when unconfigured or unreadable.
+    pub cert_pem: Option<String>,
     /// Parsed metadata of the public cert (subject / fingerprint /
     /// expiry). Empty when unconfigured or the cert can't be read.
     pub certificates: Vec<CaCertSummary>,
@@ -53,6 +58,7 @@ impl UpstreamIdentityView {
                 configured: false,
                 source: "file",
                 cert_path: None,
+                cert_pem: None,
                 certificates: Vec::new(),
                 error: None,
             };
@@ -70,10 +76,17 @@ impl UpstreamIdentityView {
             },
             None => (Vec::new(), None),
         };
+        // PUBLIC cert PEM for the download button. Key file
+        // (`key_ref`) is never read.
+        let cert_pem = id
+            .cert_path
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(p).ok());
         Self {
             configured: true,
             source,
             cert_path,
+            cert_pem,
             certificates,
             error,
         }
