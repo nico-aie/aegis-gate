@@ -339,10 +339,24 @@ serves metrics on its admin `/metrics`. To get them into SigNoz you run an
 central collector cannot tail a remote node's log or scrape its loopback admin).
 
 ```
-per WAF VM:   WAF ──traces OTLP──▶ local agent ─┐
-              logs/waf.json ──filelog──▶ agent  ├─OTLP─▶ 10.20.0.72:4317 (central SigNoz)
-              /metrics :9443 ──prom────▶ agent ─┘   tagged host.name=<node-id>
+per WAF VM:   WAF ──traces OTLP──────▶ local agent ─┐
+              logs/waf.json ──filelog──▶ agent       │
+              waf_audit.log ──filelog──▶ agent       ├─OTLP─▶ 10.20.0.72:4317 (central SigNoz)
+              /metrics :9443 ──prom─────▶ agent ─────┘   tagged host.name=<node-id>
 ```
+
+**Three log streams — know what goes where:**
+
+| File | Contents | Shipped to SigNoz |
+|---|---|---|
+| `logs/waf.json` | WAF **app/tracing** logs (level/target/message) | ✅ `filelog` |
+| `./waf_audit.log` | **Security audit** (contract §6: request_id, action, risk_score, mode) — tagged `log_type=waf_audit` in SigNoz | ✅ `filelog/audit` |
+| `/tmp/aegis-audit.jsonl` | the `audit:` block's chain sink | ❌ **wired but unfed** — no file is produced (per-request decisions go to `waf_audit.log`, not this chain). Harmless; it's a redundant path. The contract audit is authoritative. |
+
+> The two log files have **different schemas** (`waf.json` has `timestamp`+`level`;
+> `waf_audit.log` has epoch-ms `ts_ms`, no level), so the collector uses **two
+> filelog receivers**. The audit file mounts to a **separate path**
+> (`/var/log/aegis-audit/`) because `/var/log/aegis` is a read-only mount.
 
 **Set up per node:**
 1. Write the WAF's JSON logs to a file: `./waf run … >> logs/waf.json 2>&1`.

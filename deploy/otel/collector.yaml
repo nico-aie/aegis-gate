@@ -73,6 +73,22 @@ receivers:
         severity:
           parse_from: attributes.level
 
+  # SECURITY AUDIT (contract §6) — ./waf_audit.log: one JSON decision per line
+  # { request_id, ts_ms, ip, method, path, action, risk_score, mode }. Different
+  # schema from the app log (epoch-ms ts, no `level`), so its own receiver.
+  filelog/audit:
+    include: ["/var/log/aegis-audit/waf_audit.log"]
+    start_at: end
+    operators:
+      - type: json_parser
+        timestamp:
+          parse_from: attributes.ts_ms
+          layout_type: epoch
+          layout: ms
+      - type: add
+        field: attributes.log_type
+        value: waf_audit
+
 processors:
   # P4 (2026-06-05) — stamp host identity on hostmetrics so per-node CPU/mem
   # carries `host.name` and matches the WAF's OTLP `host.name`. Run per node
@@ -135,6 +151,6 @@ service:
       # supported" for logs). `attributes/scrub` (header deletes) DOES support
       # logs; body-level PII should be scrubbed at source via the WAF's `dlp`.
       # (Bump the collector image past ~0.110 to re-add redaction here.)
-      receivers: [otlp, filelog]
+      receivers: [otlp, filelog, filelog/audit]
       processors: [attributes/scrub, batch]
       exporters: [otlp/signoz]

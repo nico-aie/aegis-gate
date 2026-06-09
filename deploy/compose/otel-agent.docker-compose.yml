@@ -25,4 +25,5 @@ services:
       OTEL_RESOURCE_ATTRIBUTES: "host.name=${NODE_ID:-waf-node}"
     volumes:
       - ../otel/collector-agent.yaml:/etc/otelcol-contrib/config.yaml:ro
-      - ../../logs:/var/log/aegis:ro         # this node's WAF JSON logs
+      - ../../logs:/var/log/aegis:ro                              # this node's app logs
+      - ../../waf_audit.log:/var/log/aegis-audit/waf_audit.log:ro # this node's security audit

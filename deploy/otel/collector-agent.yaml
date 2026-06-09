@@ -31,13 +31,22 @@ receivers:
   hostmetrics:                  # THIS node's CPU/mem/disk/net
     collection_interval: 15s
     scrapers: { cpu: {}, memory: {}, load: {}, disk: {}, filesystem: {}, network: {} }
-  filelog:                      # THIS node's WAF JSON log
+  filelog:                      # THIS node's WAF app/tracing log
     include: ["/var/log/aegis/waf.json"]
     start_at: end
     operators:
       - type: json_parser
         timestamp: { parse_from: attributes.timestamp, layout_type: gotime, layout: "2006-01-02T15:04:05.999999Z07:00" }
         severity: { parse_from: attributes.level }
+  filelog/audit:                # THIS node's contract security audit (./waf_audit.log)
+    include: ["/var/log/aegis-audit/waf_audit.log"]
+    start_at: end
+    operators:
+      - type: json_parser
+        timestamp: { parse_from: attributes.ts_ms, layout_type: epoch, layout: ms }
+      - type: add
+        field: attributes.log_type
+        value: waf_audit
 
 processors:
   resourcedetection/system:     # stamps host.name (override via OTEL_RESOURCE_ATTRIBUTES=host.name=<node-id>)
@@ -66,6 +75,6 @@ service:
       processors: [resourcedetection/system, batch]
       exporters: [otlp/signoz]
     logs:
-      receivers: [otlp, filelog]
+      receivers: [otlp, filelog, filelog/audit]
       processors: [resourcedetection/system, attributes/scrub, batch]
       exporters: [otlp/signoz]

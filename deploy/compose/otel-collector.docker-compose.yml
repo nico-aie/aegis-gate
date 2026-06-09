@@ -20,7 +20,8 @@ services:
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     volumes:
       - ../otel/collector.yaml:/etc/otelcol-contrib/config.yaml:ro
-      - ../../logs:/var/log/aegis:ro            # WAF JSON logs (logs/waf.json)
+      - ../../logs:/var/log/aegis:ro                              # app logs (logs/waf.json)
+      - ../../waf_audit.log:/var/log/aegis-audit/waf_audit.log:ro # security audit (contract §6) — separate mount (logs/ is ro)
     extra_hosts:
       - "host.docker.internal:host-gateway"     # for the /metrics scrape (admin must be reachable)
     networks: [signoz]                          # reach signoz-otel-collector:4317
