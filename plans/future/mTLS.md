@@ -488,7 +488,15 @@ traffic yet, so the temporary downstream-enforcement gap during the hard cut is 
       Tests: 4 unit; proxy lib 777. **Live-verified on redis (cluster mode):** booted `source: state`, PUT a
       new identity → 7s later, no restart, the WAF presents `CN=…-ROTATED-v2` (fp changed, generation 2). Also
       verified trust-bundle rotation on in_memory.
-- [ ] **P5 remaining** session resumption tuning; optional SPIFFE-SAN matcher.
+- [x] **P5 session resumption DONE** — `client_config_from_resolved` (aegis-proxy `upstream/tls.rs`) sets
+      `ClientConfig.resumption = Resumption::in_memory_sessions(256)` explicitly so a reconnect to a backend
+      skips the full mTLS handshake (TLS 1.3 tickets + TLS 1.2 session IDs). rustls defaults it on; making it
+      explicit guards against a silent regression and documents the per-pool sizing (one ClientConfig per pool/
+      cert signature). 0-RTT early data stays OFF (replay). The 6 upstream::tls handshake tests stay green.
+- [ ] **P5 FUTURE (deferred, not scheduled)** — **optional SPIFFE-SAN matcher.** Match a backend's server-cert
+      SAN against a SPIFFE ID / trust-domain pattern (interop with SPIFFE/SPIRE workloads), layered on the
+      existing `allowed_sans` gate. Out of scope for the current Zero Trust track; a real SPIFFE SDS data source
+      is a separate, larger effort (see §8). Tracked here as a future enhancement, not a remaining task.
 - [ ] **Tests/gates** §6 checklist all green before default-on.
 
 ---
