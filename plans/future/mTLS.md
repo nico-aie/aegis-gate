@@ -394,8 +394,16 @@ traffic yet, so the temporary downstream-enforcement gap during the hard cut is 
 - [x] **P2** Gates green: resolution (3) + validation (7) in aegis-core; PoolKey scope-isolation +
       build-fail-closed-on-missing-cert in forward; **wrong-CA live-handshake fail-closed** in upstream/tls.
       Scope cut: `verify:false` + `allowed_sans` enforcement + `source:state` deferred to P4/P5 (rejected now, not silently ignored).
-- [ ] **P3** `ZeroTrustPage`: WAF identity card (download public) + downstream section
-      (relocated) + per-upstream list/drawer (backend-CA upload); NAV entry; audited PUT + cas_set.
+- [x] **P3 slice 1 (backend)** `api/zero_trust` read views: `UpstreamIdentityView`
+      (public cert metadata via parse_ca_bundle, never the key) + `UpstreamConfigView`
+      (per-pool off|mutual+verify); `GET /api/zero-trust/upstream/{identity,config}`
+      wired (same dispatch/auth as /api/mtls). Additive — old /api/mtls/* untouched. 4 tests.
+- [ ] **P3 slice 2 (frontend)** `ZeroTrustPage` (WAF identity card + public download · downstream
+      section relocated from Settings · per-upstream list+drawer w/ backend-CA upload) + NAV entry;
+      **hard cut done here atomically**: rename /api/mtls/*→/api/zero-trust/downstream/* + delete the
+      3 PageSettings cards + data.jsx hooks + reconcile break-glass naming. Audited PUT + cas_set.
+      Decision (2026-06-09): P3 uploads PUBLIC material only (backend CA, WAF cert) + downloads public
+      WAF cert; private-key upload + encryption-at-rest deferred to P4 (key stays a YAML `key_ref` path).
 - [ ] **P4** Shared identity in config plane (key envelope-encrypted); rotate; per-upstream
       override; expiry badges; upstream failure surface.
 - [ ] **P5** Hot rotation on cas_set; session resumption; optional SPIFFE-SAN matcher.
