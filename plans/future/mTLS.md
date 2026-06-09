@@ -418,6 +418,10 @@ traffic yet, so the temporary downstream-enforcement gap during the hard cut is 
       envelope-encrypted) — repo has no AEAD primitive; `source:state` stores the PUBLIC cert +
       backend CAs in the config plane (cas_set, multi-node), private key stays a `${secret:...}`/path
       ref via `secrets/mod.rs::resolve_secret`. Satisfies §6 "key at rest" (reference path).
+      **4a-i DONE (commit 37a0230):** `CertSource::{File,Pem}` enum — the data plane now accepts a
+      PUBLIC cert/trust anchor as in-memory PEM (materialized from the config plane) or a file path;
+      `client_config_from_resolved` handles both; key stays a `client_key_ref`. Test:
+      client_config_from_resolved_accepts_pem_source. This is the prerequisite for state-backed certs.
       Remaining backend: (a) lift the `source:state` validation guard + async state→PEM resolution
       threaded into the resolve/build path (build_pools is sync + has no StateBackend — materialize
       PEM in the async boot/apply step before build_pools); (b) audited `POST /api/zero-trust/upstream/
