@@ -156,23 +156,26 @@ pub async fn run(
         cfg_swap.store(Arc::new(next));
     }
 
-    // 2026-06-09 (P4 4a-ii) — materialize the state-sourced shared
-    // upstream identity from the Redis config plane before the (sync)
-    // pool build path (`ProxyContext::build` has no `StateBackend`).
-    // Reference-only: only the PUBLIC cert is folded into the cfg
-    // snapshot; the private key stays a `key_ref`. Fail closed — a
-    // `source: state` identity that can't be materialized aborts boot
-    // rather than silently dialing backends without client auth. See
-    // `upstream::identity::materialize_upstream_identity`.
+    // 2026-06-09 (P4 4a-ii / trust bundles) — materialize state-sourced
+    // Zero Trust material (the shared upstream identity's PUBLIC cert +
+    // any console-uploaded backend-CA trust bundles a pool references)
+    // from the Redis config plane before the (sync) pool build path
+    // (`ProxyContext::build` has no `StateBackend`). Reference-only:
+    // only PUBLIC cert/CA material is folded into the cfg snapshot; the
+    // private key stays a `key_ref`. Fail closed — a `source: state`
+    // identity that can't be materialized (or a corrupt referenced
+    // trust bundle) aborts boot rather than silently dialing without
+    // client auth / pinning. See
+    // `upstream::identity::materialize_zero_trust_state`.
     {
         let raw = cfg_swap.load_full();
         if let Some(next) =
-            crate::upstream::identity::materialize_upstream_identity(&raw, &state).await?
+            crate::upstream::identity::materialize_zero_trust_state(&raw, &state).await?
         {
             cfg_swap.store(Arc::new(next));
             tracing::info!(
-                "zero_trust.upstream_identity: materialized PUBLIC client cert from \
-                 the config plane (state source)"
+                "zero_trust: materialized PUBLIC upstream-mTLS material from the \
+                 config plane (identity cert and/or backend-CA trust bundles)"
             );
         }
     }

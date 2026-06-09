@@ -154,6 +154,40 @@ pub fn validate_identity_upload(
 }
 
 // ---------------------------------------------------------------------------
+// POST/DELETE /api/zero-trust/upstream/trust/{bundle} — backend-CA bundles
+// ---------------------------------------------------------------------------
+
+/// Whether `name` is a safe trust-bundle identifier. Restricted to a
+/// conservative charset so it can't break the config-plane key shape
+/// (`aegis:zt:upstream:trust:<name>`) or smuggle path/colon tricks.
+pub fn is_valid_bundle_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// Validate a backend-CA trust-bundle upload before it is persisted:
+/// the body must be parseable PEM with ≥1 certificate, and must carry
+/// no private-key block (a CA bundle is PUBLIC trust material). Returns
+/// the parsed cert summaries (for the audit `after` projection +
+/// response preview) or a stable error string. Pure — no IO.
+pub fn validate_trust_upload(pem: &[u8]) -> Result<Vec<CaCertSummary>, String> {
+    // Defense in depth: a trust bundle is PUBLIC — reject a private key.
+    if let Ok(s) = std::str::from_utf8(pem) {
+        if s.contains("PRIVATE KEY") {
+            return Err(
+                "a backend-CA trust bundle must contain only PUBLIC certificates — \
+                 a PRIVATE KEY block was found"
+                    .into(),
+            );
+        }
+    }
+    parse_ca_bundle_bytes(pem).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // GET /api/zero-trust/upstream/config
 // ---------------------------------------------------------------------------
 
@@ -319,6 +353,32 @@ MIIBhTCCASugAwIBAgIUO0nGZ7Wm0Q6kJ8Yk0Y5Q0Z0Q0wwCgYIKoZIzj0EAwIw
             key_ref: "/run/secrets/waf-client.key".into(),
         };
         assert!(validate_identity_upload(&req).is_err());
+    }
+
+    #[test]
+    fn is_valid_bundle_name_accepts_safe_names_rejects_tricks() {
+        assert!(is_valid_bundle_name("backend-ca"));
+        assert!(is_valid_bundle_name("payments_v2.internal"));
+        assert!(!is_valid_bundle_name("")); // empty
+        assert!(!is_valid_bundle_name("a/b")); // slash
+        assert!(!is_valid_bundle_name("a:b")); // colon (key separator)
+        assert!(!is_valid_bundle_name("with space"));
+        assert!(!is_valid_bundle_name(&"x".repeat(65))); // too long
+    }
+
+    #[test]
+    fn validate_trust_upload_rejects_private_key() {
+        let err = validate_trust_upload(
+            b"-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("PRIVATE KEY"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_trust_upload_rejects_garbage() {
+        assert!(validate_trust_upload(b"not a pem").is_err());
+        assert!(validate_trust_upload(b"").is_err());
     }
 
     #[test]

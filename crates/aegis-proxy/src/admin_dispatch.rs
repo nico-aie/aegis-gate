@@ -478,6 +478,24 @@ pub(crate) async fn handle_admin_request(
     if method == hyper::Method::PUT && path == "/api/zero-trust/upstream/identity" {
         return crate::admin_mutate::handle_zt_upstream_identity_put(req, services).await;
     }
+    // P4 trust bundles — upload (POST) / list (GET) / remove (DELETE)
+    // PUBLIC backend-CA bundles a pool's `upstream_mtls.trust`
+    // references. POST/DELETE audit-mutated + CSRF + allow_ca_upload.
+    if method == hyper::Method::GET && path == "/api/zero-trust/upstream/trust" {
+        return crate::admin_mutate::handle_zt_upstream_trust_list(services).await;
+    }
+    if let Some(bundle) = path.strip_prefix("/api/zero-trust/upstream/trust/") {
+        if !bundle.is_empty() && !bundle.contains('/') {
+            if method == hyper::Method::POST {
+                return crate::admin_mutate::handle_zt_upstream_trust_put(req, bundle, services)
+                    .await;
+            }
+            if method == hyper::Method::DELETE {
+                return crate::admin_mutate::handle_zt_upstream_trust_delete(req, bundle, services)
+                    .await;
+            }
+        }
+    }
     if let Some(suffix) = path.strip_prefix("/api/zero-trust/downstream/sans/") {
         if method == hyper::Method::POST {
             if let Some(san) = suffix.strip_suffix("/test") {

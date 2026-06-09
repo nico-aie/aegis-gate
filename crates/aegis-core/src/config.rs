@@ -1373,11 +1373,21 @@ pub struct UpstreamMtlsConfig {
     /// closed) rather than trusting anything.
     #[serde(default = "default_upstream_verify")]
     pub verify: bool,
-    /// Custom CA bundle (PEM path) used to verify the backend's
-    /// server cert. `None` ⇒ public webpki roots. Required for
-    /// internal / self-signed backends.
+    /// Custom CA to verify the backend's server cert. `None` ⇒ public
+    /// webpki roots. Two ways to name it (P4): a **file path** on
+    /// disk, or the **name of a console-uploaded bundle** stored in
+    /// the config plane (`aegis:zt:upstream:trust:<name>`). At boot,
+    /// a value that matches an uploaded bundle is materialized into
+    /// [`Self::trust_pem`]; otherwise it is read as a file path.
     #[serde(default)]
     pub trust: Option<PathBuf>,
+    /// **Never deserialized** (`#[serde(skip)]`). When [`Self::trust`]
+    /// names a config-plane bundle, this carries that bundle's PUBLIC
+    /// CA PEM, materialized at boot from the config plane (P4). Public
+    /// material only — Debug-safe. `resolve_upstream_mtls` turns it
+    /// into `CertSource::Pem`; absent ⇒ `trust` is read as a file path.
+    #[serde(skip)]
+    pub trust_pem: Option<String>,
     /// Optional SAN allowlist on the backend's server cert. Empty ⇒
     /// any SAN that chains to the trust anchor is accepted.
     #[serde(default)]
@@ -1421,27 +1431,24 @@ pub fn resolve_upstream_mtls(
         Some(pem) => CertSource::Pem(pem),
         None => CertSource::File(id.cert_path.clone()?),
     };
-    let trust_ca_path = m.trust.clone();
+    // Backend-CA trust anchor: a console-uploaded bundle materialized
+    // from the config plane (state — `trust_pem` injected at boot) or
+    // a file on disk; `None` ⇒ public webpki roots.
+    let trust = match m.trust_pem.clone() {
+        Some(pem) => Some(CertSource::Pem(pem)),
+        None => m.trust.clone().map(CertSource::File),
+    };
     // Stable, transparent fingerprint over the public inputs (the
     // key_ref is a path, not key bytes). Part of `PoolKey` so a
     // config change rebuilds the cached client. Content-based
     // hashing (same-path rotation) is P5.
-    let cert_fp = match &client_cert {
-        CertSource::File(p) => format!("file:{}", p.display()),
-        CertSource::Pem(pem) => {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            pem.hash(&mut h);
-            format!("pem:{:016x}", h.finish())
-        }
-    };
     let fingerprint = format!(
         "v1|cert={}|key={}|trust={}|verify={}|sans={}",
-        cert_fp,
+        cert_source_fingerprint(&client_cert),
         client_key_ref,
-        trust_ca_path
+        trust
             .as_ref()
-            .map(|p| p.display().to_string())
+            .map(cert_source_fingerprint)
             .unwrap_or_else(|| "webpki".into()),
         m.verify,
         m.allowed_sans.join(","),
@@ -1449,11 +1456,27 @@ pub fn resolve_upstream_mtls(
     Some(UpstreamMtlsResolved {
         client_cert,
         client_key_ref,
-        trust: trust_ca_path.map(CertSource::File),
+        trust,
         verify: m.verify,
         allowed_sans: m.allowed_sans.clone(),
         fingerprint,
     })
+}
+
+/// Stable fingerprint component for a [`CertSource`] — the file path
+/// (file source) or a non-crypto hash of the PUBLIC PEM (state
+/// source). Used only as part of `PoolKey` so a material change
+/// rebuilds the cached client; never hashes private-key bytes.
+fn cert_source_fingerprint(src: &CertSource) -> String {
+    match src {
+        CertSource::File(p) => format!("file:{}", p.display()),
+        CertSource::Pem(pem) => {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            pem.hash(&mut h);
+            format!("pem:{:016x}", h.finish())
+        }
+    }
 }
 
 /// SC-1 — per-upstream smart-cache policy. Opt-in, allow-list by path
@@ -2373,6 +2396,27 @@ pub struct UpstreamIdentityRecord {
     /// Reference to the private key (path / `${secret:...}`). Never
     /// the key bytes.
     pub key_ref: String,
+}
+
+/// Config-plane key prefix for console-uploaded backend-CA trust
+/// bundles (P4). The bundle name is appended via
+/// [`upstream_trust_state_key`]. See `plans/future/mTLS.md` §3.3.
+pub const UPSTREAM_TRUST_STATE_PREFIX: &str = "aegis:zt:upstream:trust:";
+
+/// Config-plane key for the named backend-CA trust bundle a pool's
+/// `upstream_mtls.trust` references.
+pub fn upstream_trust_state_key(bundle: &str) -> String {
+    format!("{UPSTREAM_TRUST_STATE_PREFIX}{bundle}")
+}
+
+/// State-plane record for a console-uploaded backend-CA trust bundle.
+/// PUBLIC material only — a CA bundle is public by nature (it verifies
+/// the backend's server cert; it is not a secret). Persisted via
+/// [`crate::state::StateBackend::cas_set`].
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpstreamTrustRecord {
+    /// PUBLIC CA bundle PEM (one or more trust anchors).
+    pub ca_pem: String,
 }
 
 /// Source of the shared upstream client identity.
@@ -5252,6 +5296,52 @@ state: {{ backend: in_memory }}
         let fa = resolve_upstream_mtls(&cfg_a.upstreams["api"], id_a).unwrap().fingerprint;
         let fb = resolve_upstream_mtls(&cfg_b.upstreams["api"], id_b).unwrap().fingerprint;
         assert_ne!(fa, fb, "trust change must change the fingerprint (PoolKey)");
+    }
+
+    #[test]
+    fn upstream_mtls_state_trust_bundle_resolves_pem_after_materialization() {
+        // Simulate boot materialization of a console-uploaded backend
+        // CA bundle: the pool names `trust: backend-ca`, and the boot
+        // step folds the bundle's PUBLIC PEM into `trust_pem`.
+        // `resolve_upstream_mtls` must produce `CertSource::Pem` for
+        // the trust anchor (not a file path).
+        let yaml = cfg_with_upstream(
+            "    upstream_mtls: { enabled: true, trust: backend-ca }\n",
+            ID_FILE,
+        );
+        let mut cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        {
+            let m = cfg
+                .upstreams
+                .get_mut("api")
+                .unwrap()
+                .upstream_mtls
+                .as_mut()
+                .unwrap();
+            m.trust_pem =
+                Some("-----BEGIN CERTIFICATE-----\nMIIBca\n-----END CERTIFICATE-----\n".into());
+        }
+        let id = cfg.zero_trust.as_ref().and_then(|z| z.upstream_identity.as_ref());
+        let resolved = resolve_upstream_mtls(&cfg.upstreams["api"], id).expect("enabled ⇒ Some");
+        assert!(
+            matches!(resolved.trust, Some(CertSource::Pem(ref p)) if p.contains("BEGIN CERTIFICATE")),
+            "state trust bundle must resolve to in-memory PEM, got {:?}",
+            resolved.trust
+        );
+        assert!(
+            resolved.fingerprint.contains("trust=pem:"),
+            "fingerprint must mark a PEM trust source: {}",
+            resolved.fingerprint
+        );
+    }
+
+    #[test]
+    fn upstream_trust_state_key_is_prefixed() {
+        assert_eq!(
+            upstream_trust_state_key("backend-ca"),
+            "aegis:zt:upstream:trust:backend-ca"
+        );
     }
 
     #[test]

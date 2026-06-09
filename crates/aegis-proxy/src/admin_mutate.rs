@@ -1357,6 +1357,298 @@ pub(crate) async fn handle_zt_upstream_identity_put(
     }
 }
 
+// P4 trust bundles — upload / remove a PUBLIC backend-CA trust bundle
+// a pool's `upstream_mtls.trust` references. Audit-mutated, CSRF-gated,
+// allow_ca_upload-gated. Stored under `aegis:zt:upstream:trust:<name>`
+// via `cas_set`; nodes materialize the bundle PEM at boot
+// (`upstream::identity::materialize_zero_trust_state`). Body is raw PEM
+// (matches the downstream CA-bundle upload + the dashboard's
+// FileReader→text flow). A CA bundle is PUBLIC, so it is stored as-is.
+
+/// Names of pools whose `upstream_mtls.trust` references `bundle` in
+/// the given config blob. Best-effort: an unparseable blob yields no
+/// refs (delete proceeds; a dangling ref just fails closed at boot).
+fn pools_referencing_trust(blob: &str, bundle: &str) -> Vec<String> {
+    let Ok(cfg) = aegis_core::load_config_str(blob) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = cfg
+        .upstreams
+        .iter()
+        .filter(|(_, pool)| {
+            pool.upstream_mtls
+                .as_ref()
+                .and_then(|m| m.trust.as_ref())
+                .and_then(|p| p.to_str())
+                .map(|t| t == bundle)
+                .unwrap_or(false)
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    out.sort();
+    out
+}
+
+pub(crate) async fn handle_zt_upstream_trust_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    bundle: &str,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    if !services.allow_ca_upload {
+        return json_response(
+            403,
+            &serde_json::json!({
+                "error": "feature_disabled",
+                "message": "Backend-CA upload is gated behind cfg.admin.dashboard_auth.allow_ca_upload — flip to true and restart to enable.",
+            }),
+        );
+    }
+    if !aegis_control::api::zero_trust::is_valid_bundle_name(bundle) {
+        return json_response(
+            400,
+            &serde_json::json!({
+                "error": "invalid_bundle_name",
+                "message": "bundle name must be 1–64 chars of [A-Za-z0-9._-]",
+            }),
+        );
+    }
+    let Some(state) = services.state_backend.clone() else {
+        return json_response(
+            409,
+            &serde_json::json!({
+                "error": "state_unavailable",
+                "message": "No config-plane StateBackend is wired; trust bundles can't be persisted.",
+            }),
+        );
+    };
+
+    let pre = mutation_preamble(&req, "zt-upstream-trust-put");
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => bytes::Bytes::new(),
+    };
+    if body_bytes.is_empty() {
+        return json_response(
+            400,
+            &serde_json::json!({"error": "empty_body", "message": "expected PEM bytes in body"}),
+        );
+    }
+    let certs = match aegis_control::api::zero_trust::validate_trust_upload(body_bytes.as_ref()) {
+        Ok(c) => c,
+        Err(e) => {
+            return json_response(
+                400,
+                &serde_json::json!({ "error": "invalid_bundle", "message": e }),
+            )
+        }
+    };
+
+    let record = aegis_core::config::UpstreamTrustRecord {
+        ca_pem: String::from_utf8_lossy(body_bytes.as_ref()).into_owned(),
+    };
+    let new_bytes = match serde_json::to_vec(&record) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal(format!(
+                    "trust record encode: {e}"
+                )),
+            )
+        }
+    };
+
+    let key = aegis_core::config::upstream_trust_state_key(bundle);
+    let before_existed = state.get(&key).await.ok().flatten().is_some();
+    let before = serde_json::json!({ "bundle": bundle, "configured": before_existed });
+    let after = serde_json::json!({
+        "bundle": bundle,
+        "configured": true,
+        "certificates": certs.clone(),
+    });
+    let resource = format!("/api/zero-trust/upstream/trust/{bundle}");
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "POST",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: &resource,
+        action: "zero_trust_upstream_trust_set",
+        reason: "operator uploaded a backend-CA trust bundle",
+    };
+
+    let key_cl = key.clone();
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            let current = state
+                .get(&key_cl)
+                .await
+                .map_err(|e| format!("config-plane read: {e}"))?;
+            let swapped = state
+                .cas_set(&key_cl, current.as_deref(), &new_bytes, None)
+                .await
+                .map_err(|e| format!("config-plane write: {e}"))?;
+            if swapped {
+                Ok(())
+            } else {
+                Err("config-plane conflict — the bundle was updated concurrently; retry".to_string())
+            }
+        })
+        .await;
+
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "request_id": pre.request_id,
+                "bundle": bundle,
+                "certificates": certs,
+                "note": "Stored in the config plane. Pools that reference this bundle pick it up at boot (hot rotation lands in P5).",
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+pub(crate) async fn handle_zt_upstream_trust_delete(
+    req: hyper::Request<hyper::body::Incoming>,
+    bundle: &str,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    if !services.allow_ca_upload {
+        return json_response(
+            403,
+            &serde_json::json!({
+                "error": "feature_disabled",
+                "message": "Backend-CA management is gated behind cfg.admin.dashboard_auth.allow_ca_upload.",
+            }),
+        );
+    }
+    if !aegis_control::api::zero_trust::is_valid_bundle_name(bundle) {
+        return json_response(
+            400,
+            &serde_json::json!({ "error": "invalid_bundle_name" }),
+        );
+    }
+    let Some(state) = services.state_backend.clone() else {
+        return json_response(
+            409,
+            &serde_json::json!({ "error": "state_unavailable" }),
+        );
+    };
+
+    // Ref-check (like pool delete): refuse to remove a bundle a pool
+    // still references, so the dashboard can't strand a pool's trust.
+    if let Ok((_, blob, _)) = load_active_config_doc(services).await {
+        let refs = pools_referencing_trust(&blob, bundle);
+        if !refs.is_empty() {
+            return json_response(
+                409,
+                &serde_json::json!({
+                    "error": "bundle_in_use",
+                    "message": format!("trust bundle '{bundle}' is referenced by upstream(s): {}", refs.join(", ")),
+                    "pools": refs,
+                }),
+            );
+        }
+    }
+
+    let pre = mutation_preamble(&req, "zt-upstream-trust-delete");
+    let key = aegis_core::config::upstream_trust_state_key(bundle);
+    let existed = state.get(&key).await.ok().flatten().is_some();
+    let before = serde_json::json!({ "bundle": bundle, "configured": existed });
+    let after = serde_json::json!({ "bundle": bundle, "configured": false });
+    let resource = format!("/api/zero-trust/upstream/trust/{bundle}");
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "DELETE",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: &resource,
+        action: "zero_trust_upstream_trust_removed",
+        reason: "operator removed a backend-CA trust bundle",
+    };
+
+    let key_cl = key.clone();
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            state
+                .del(&key_cl)
+                .await
+                .map_err(|e| format!("config-plane delete: {e}"))
+        })
+        .await;
+
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "request_id": pre.request_id,
+                "bundle": bundle,
+                "removed": existed,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+/// GET /api/zero-trust/upstream/trust — list uploaded backend-CA
+/// trust bundles with PUBLIC cert metadata (never key material; a CA
+/// bundle has none). Async because it scans the config plane.
+pub(crate) async fn handle_zt_upstream_trust_list(
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let Some(state) = services.state_backend.as_ref() else {
+        return json_response(
+            200,
+            &serde_json::json!({ "bundles": [], "wired": false }),
+        );
+    };
+    let prefix = aegis_core::config::UPSTREAM_TRUST_STATE_PREFIX;
+    let keys = match state.scan_prefix(prefix).await {
+        Ok(k) => k,
+        Err(e) => {
+            return json_response(
+                503,
+                &serde_json::json!({ "error": "state_unavailable", "message": e.to_string() }),
+            )
+        }
+    };
+    let mut bundles: Vec<serde_json::Value> = Vec::with_capacity(keys.len());
+    for key in keys {
+        let name = key.strip_prefix(prefix).unwrap_or(&key).to_string();
+        let Ok(Some(bytes)) = state.get(&key).await else {
+            continue;
+        };
+        let Ok(rec) =
+            serde_json::from_slice::<aegis_core::config::UpstreamTrustRecord>(&bytes)
+        else {
+            bundles.push(serde_json::json!({ "name": name, "error": "corrupt record" }));
+            continue;
+        };
+        match aegis_control::identity_tracker::parse_ca_bundle_bytes(rec.ca_pem.as_bytes()) {
+            Ok(certs) => {
+                bundles.push(serde_json::json!({ "name": name, "certificates": certs }))
+            }
+            Err(e) => bundles
+                .push(serde_json::json!({ "name": name, "error": e.to_string() })),
+        }
+    }
+    bundles.sort_by(|a, b| {
+        a.get("name")
+            .and_then(|v| v.as_str())
+            .cmp(&b.get("name").and_then(|v| v.as_str()))
+    });
+    json_response(200, &serde_json::json!({ "bundles": bundles, "wired": true }))
+}
+
 // Phase-3 Incidents — operator overlay on top of SLO alerts.
 // All three handlers are audit-mutated + CSRF-gated, same shape
 // as handle_alert_ack above.
@@ -5330,6 +5622,42 @@ pub(crate) async fn handle_strikes_put(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cfg_blob_with_pool_trust(trust: &str) -> String {
+        format!(
+            r#"
+listeners:
+  data: [{{ bind: "0.0.0.0:443" }}]
+  admin: {{ bind: "127.0.0.1:9443" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: api }}
+upstreams:
+  api:
+    members: [{{ addr: "127.0.0.1:8443" }}]
+    connection: {{ tls: true }}
+    upstream_mtls: {{ enabled: true, trust: {trust} }}
+state: {{ backend: in_memory }}
+zero_trust:
+  upstream_identity:
+    source: file
+    cert_path: /x/c.pem
+    key_ref: /x/c.key
+"#
+        )
+    }
+
+    #[test]
+    fn pools_referencing_trust_finds_matching_pool() {
+        let blob = cfg_blob_with_pool_trust("backend-ca");
+        assert_eq!(pools_referencing_trust(&blob, "backend-ca"), vec!["api"]);
+        // A different bundle name is not referenced.
+        assert!(pools_referencing_trust(&blob, "other-ca").is_empty());
+    }
+
+    #[test]
+    fn pools_referencing_trust_unparseable_blob_yields_no_refs() {
+        assert!(pools_referencing_trust("not: [valid", "backend-ca").is_empty());
+    }
 
     #[test]
     fn patch_ai_enabled_sets_existing_field() {
