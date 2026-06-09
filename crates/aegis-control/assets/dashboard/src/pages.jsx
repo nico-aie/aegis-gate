@@ -6176,6 +6176,9 @@ function ZtIdentityCard() {
     intervalMs: 60000, fallback: { allow_ca_upload: false },
   });
   const canUpload = !!cap.data?.allow_ca_upload;
+  const rot = window.useApi('/api/zero-trust/upstream/rotation', {
+    intervalMs: 5000, fallback: { generation: 0, live: false },
+  });
   const d = api.data || { configured: false };
   const [certPem, setCertPem] = useStateP('');
   const [keyRef, setKeyRef] = useStateP('');
@@ -6240,9 +6243,19 @@ function ZtIdentityCard() {
             WAF-as-client
           </div>
         </div>
-        <span className={`pill ${d.configured ? 'ok' : 'neutral'}`}>
-          {d.configured ? 'configured' : 'not set'}
-        </span>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {rot.data?.generation > 0 && (
+            <span
+              className="pill ok"
+              title={`Last hot-rotated ${rot.data.applied_ms ? new Date(rot.data.applied_ms).toLocaleTimeString() : ''} — applied live, no restart`}
+            >
+              live · rotated ×{rot.data.generation}
+            </span>
+          )}
+          <span className={`pill ${d.configured ? 'ok' : 'neutral'}`}>
+            {d.configured ? 'configured' : 'not set'}
+          </span>
+        </div>
       </div>
       {!d.configured ? (
         <div style={{ fontSize: 12, color: 'var(--ink-mute)', padding: 4 }}>

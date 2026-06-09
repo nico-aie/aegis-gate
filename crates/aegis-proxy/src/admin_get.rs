@@ -1051,10 +1051,34 @@ pub(crate) fn admin_router(
         ),
         // Zero Trust (P3) — upstream (WAF-as-client) read views.
         // Identity returns PUBLIC cert metadata only — never the key.
-        "/api/zero-trust/upstream/identity" => json_body_response(
+        "/api/zero-trust/upstream/identity" => {
+            // Overlay the LIVE rotated cert (P5 hot rotation) so the
+            // page reflects a rotation without a restart — the boot
+            // `cfg` snapshot would otherwise show the stale identity.
+            let mut effective_cfg = cfg.clone();
+            let rot = crate::upstream::rotation::status();
+            if let Some(pem) = rot.identity_cert_pem {
+                if let Some(id) = effective_cfg
+                    .zero_trust
+                    .as_mut()
+                    .and_then(|z| z.upstream_identity.as_mut())
+                {
+                    id.cert_pem = Some(pem);
+                }
+            }
+            json_body_response(
+                200,
+                aegis_control::api::zero_trust::UpstreamIdentityView::from_config(&effective_cfg)
+                    .render(),
+                "private, max-age=5",
+            )
+        }
+        // P5 — hot-rotation status (generation + applied timestamp) so
+        // the console can show "applied live, no restart".
+        "/api/zero-trust/upstream/rotation" => json_body_response(
             200,
-            aegis_control::api::zero_trust::UpstreamIdentityView::from_config(cfg).render(),
-            "private, max-age=5",
+            crate::upstream::rotation::render(),
+            "private, max-age=2",
         ),
         "/api/zero-trust/upstream/config" => {
             // Overlay the live raw pool configs (registry shadow) onto

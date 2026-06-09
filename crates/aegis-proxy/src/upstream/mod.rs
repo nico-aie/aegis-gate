@@ -9,6 +9,7 @@ pub mod mtls_failures;
 pub mod pinned_resolver;
 pub mod probe;
 pub mod registry;
+pub mod rotation;
 pub mod tls;
 
 use std::net::SocketAddr;

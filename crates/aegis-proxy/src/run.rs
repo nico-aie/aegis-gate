@@ -1294,6 +1294,21 @@ pub async fn run(
         ));
     }
 
+    // 2026-06-09 (P5) — Zero Trust upstream-mTLS hot rotation. A
+    // console/API store of a new shared identity or backend-CA trust
+    // bundle (config plane, `cas_set`) is picked up here and applied to
+    // live pools with no restart and no dropped connections (the
+    // re-applied pool's `PoolKey` fingerprint changes, so the next dial
+    // builds a fresh client). No-op every tick when no pool has upstream
+    // mTLS enabled. Essential for a fleet — rotation no longer means a
+    // rolling restart of every node.
+    std::mem::drop(crate::upstream::rotation::spawn(
+        state.clone(),
+        upstream_ctx.pools.clone(),
+        cfg_swap.clone(),
+        crate::upstream::rotation::DEFAULT_INTERVAL,
+    ));
+
     // MTLS-T3 — create the per-identity sliding-window tracker
     // here, ahead of both accept loops, so the data-plane
     // (`accept_loop`) can record requests against it AND the
