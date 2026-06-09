@@ -56,3 +56,4 @@ scores per detector are listed in
 | [dlp.md](./dlp.md) | Data loss prevention patterns + FPE |
 | [response-filtering.md](./response-filtering.md) | Stack trace scrub, headers, DLP bridge |
 | [external-auth.md](./external-auth.md) | ForwardAuth, JWT, Basic, IP ACL (origin-facing) |
+| [zero-trust-mtls.md](./zero-trust-mtls.md) | Mutual TLS both directions — verify client certs (downstream) + present a shared fleet client cert to backends (upstream); config-plane identity/trust, console (Beta) |

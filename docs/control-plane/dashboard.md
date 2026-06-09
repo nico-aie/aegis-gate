@@ -147,8 +147,12 @@ admin:
       per_ip:   { limit: 5,  window: 1m }
       per_user: { limit: 10, window: 15m }
     lockout: { threshold: 10, window: 15m, duration: 15m }
-    mtls:    { enabled: false }
+    allow_ca_upload: false   # gate for Zero Trust cert uploads (mTLS)
 ```
+
+> Mutual TLS (verify client certs to the WAF + present a client cert to backends)
+> lives on the **Zero Trust** page (Beta) — see
+> [`../security/zero-trust-mtls.md`](../security/zero-trust-mtls.md).
 
 ## Implementation pointers
 

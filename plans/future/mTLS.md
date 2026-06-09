@@ -414,7 +414,17 @@ traffic yet, so the temporary downstream-enforcement gap during the hard cut is 
       cards work, NAV entry active; `/api/zero-trust/{upstream/identity,upstream/config,downstream,
       downstream/sans}` all return 200 with correct JSON (identity shows no key leak); no React/page
       errors (only pre-existing CSP-inline warnings + unrelated background-poll 403/503 in single-node dev).
-- [~] **P4** Shared identity in config plane. **Decision (2026-06-09): REFERENCE-ONLY** (not
+- [x] **P4** Shared identity in config plane — **COMPLETE (2026-06-09)**, reference-only. Backend:
+      4a-i CertSource enum, 4a-ii state identity, 4a-iii backend-CA trust bundles, 4a-iv per-pool
+      cross-ref validation. Frontend (commit 597ee18): Zero Trust console marked **Beta** — WAF
+      identity store/rotate upload, backend-CA trust-bundle upload/list/delete (with expiry badges +
+      409 in-use guard), per-pool upstream-mTLS edit drawer (round-trips the whole pool; fixed a
+      latent Routing-editor `upstream_mtls` wipe by surfacing it on `PoolView`), and an upstream
+      handshake-failure histogram (`upstream::mtls_failures` global tracker → `GET /api/zero-trust/
+      upstream/failures`). `/api/zero-trust/upstream/config` now reads the live registry shadow so
+      drawer edits show immediately. All flows verified end-to-end via headless Chromium against the
+      live binary. Bundle budgets bumped 540→600 KB / 720→780 KB (documented). **Original decision —**
+      **REFERENCE-ONLY** (not
       envelope-encrypted) — repo has no AEAD primitive; `source:state` stores the PUBLIC cert +
       backend CAs in the config plane (cas_set, multi-node), private key stays a `${secret:...}`/path
       ref via `secrets/mod.rs::resolve_secret`. Satisfies §6 "key at rest" (reference path).

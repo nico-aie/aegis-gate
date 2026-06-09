@@ -564,8 +564,12 @@ impl rustls::server::ResolvesServerCert for DynamicResolver { ... }
   the rustls layer).
 - **OCSP stapling**: background task fetches responses per cert and
   populates `CertifiedKey::ocsp`.
-- **mTLS upstream** per pool: pool client built with a `rustls::ClientConfig`
-  carrying client cert + CA bundle.
+- **Zero Trust mTLS** (both directions): one `zero_trust` module + one **Zero
+  Trust** console page own downstream client-cert verification *and* upstream
+  client-auth. The fleet shares one WAF client identity; per-pool `upstream_mtls`
+  builds a `rustls::ClientConfig` with that cert + a backend-CA trust anchor
+  (file or config-plane bundle). Reference-only key storage, fail-closed on an
+  unverifiable backend. See [`docs/security/zero-trust-mtls.md`](docs/security/zero-trust-mtls.md).
 - **FIPS mode**: `rustls` + `aws-lc-rs` FIPS provider; cipher / HMAC /
   signing allowlist enforced at load time. Non-FIPS primitives refused.
 - **HSM / PKCS#11** (bonus): private keys live behind a `cryptoki`

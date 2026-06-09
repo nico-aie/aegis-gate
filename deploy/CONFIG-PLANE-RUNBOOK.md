@@ -336,11 +336,62 @@ replicas — no HAProxy sidecar needed.
 
 ---
 
+## 10 · Zero Trust upstream mTLS (shared fleet identity + trust bundles)
+
+The WAF dials backends with **one shared client cert** (the fleet identity) and
+verifies each backend against an uploaded **trust bundle**. The PUBLIC cert +
+bundles distribute through the config plane; **the private key never does**
+(reference-only — it stays a `key_ref`). Full feature:
+[`../docs/security/zero-trust-mtls.md`](../docs/security/zero-trust-mtls.md).
+
+Enable the capability on **every** node and point the identity at the plane:
+
+```yaml
+admin:
+  dashboard_auth:
+    allow_ca_upload: true          # gate for cert mutation (off by default)
+zero_trust:
+  upstream_identity:
+    source: state                  # PUBLIC cert + key_ref come from the config plane
+```
+
+```sh
+# Store the shared identity (PUBLIC cert + a key reference — never the key bytes).
+curl -fsS -X PUT "$ADMIN/api/zero-trust/upstream/identity" -b "$JAR" -H "x-csrf-token: $CSRF" \
+  -H 'content-type: application/json' \
+  -d "{\"cert_pem\": $(jq -Rs . < waf-client.pem), \"key_ref\": \"\${secret:env:WAF_UPSTREAM_KEY}\"}"
+
+# Upload a backend CA as a named trust bundle (raw PEM body).
+curl -fsS -X POST "$ADMIN/api/zero-trust/upstream/trust/payments-ca" -b "$JAR" -H "x-csrf-token: $CSRF" \
+  -H 'content-type: application/x-pem-file' --data-binary @payments-ca.pem
+
+# Enable mTLS on a pool (round-trips the whole pool — fetch, patch upstream_mtls, PUT).
+#   …or just use the Zero Trust page → Upstream mTLS by Pool → Edit drawer.
+```
+
+- **Fail-closed:** `source: state` with no stored identity (or a corrupt record)
+  **aborts boot** — nodes refuse to dial backends without client auth. Store the
+  identity *before* rolling `source: state`.
+- **Activation is fleet-wide via `cas_set`**, but nodes **materialize the PUBLIC
+  cert at boot** — identity/trust changes land on the **next restart** (hot
+  rotation is P5). Roll a restart after storing.
+- **Delete is ref-checked:** a trust bundle a pool still references returns `409`
+  (`{error:"bundle_in_use", pools:[…]}`). Disable the pool's `upstream_mtls`
+  first.
+- Watch `GET /api/zero-trust/upstream/failures` (or the console card) after
+  cut-over: `untrusted_backend_cert` ⇒ wrong/missing trust bundle;
+  `cert_expired` ⇒ rotate; `client_identity_error` ⇒ identity cert/key unreadable.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
 | Fold returns `400 "publish a baseline via PUT /api/config first"` | Node booted without a file config and no baseline activated. Boot with `--config <file>` or do step 7 once. |
+| Boot aborts: `upstream_identity.source: state but no identity is stored` | Store the shared identity (step 10) **before** rolling `source: state`. Fail-closed by design. |
+| Pool PUT `400 "… is not an uploaded backend-CA bundle"` | The pool's `upstream_mtls.trust` names a bundle that isn't uploaded. Upload it first, or set `trust` to a CA file path. |
+| Upstream handshake failures after enabling mTLS | Check the failure histogram reason: untrusted_backend_cert (trust bundle) / cert_expired (rotate) / san_mismatch / client_identity_error (WAF cert/key). |
 | Fold returns `500 "config plane unavailable: no state backend wired"` | No `StateBackend` at all (shouldn't happen on a normal boot). Check `state:` block parsed. |
 | `409 {error: "version_conflict", current: X}` | Optimistic-concurrency conflict — another writer activated between this request's read and its CAS. **Folded toggles** (detectors/rules/tiers/upstreams/AI/response-filter) re-read the version server-side, so just **re-issue the same request** (the dashboard auto-retries these). A **full-doc `PUT /api/config`** carries your stale `expected_version` — re-read `GET /api/config`, rebuild on the new version, resend. |
 | Edit doesn't reach other nodes | Confirm `state.backend: redis` (not `in_memory`) on **all** nodes + same `state.redis.urls`. Check `GET /api/config` `.applied[]` for a node stuck on an old version → read its logs for `config_reload_failed` (bad blob → node keeps last-good, fail-static). |
@@ -354,5 +405,6 @@ replicas — no HAProxy sidecar needed.
 
 - [`../docs/operations/cluster-config-distribution.md`](../docs/operations/cluster-config-distribution.md) — config-plane design + key/endpoint reference.
 - [`../docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md) — cluster topology + LB recipes.
+- [`../docs/security/zero-trust-mtls.md`](../docs/security/zero-trust-mtls.md) — Zero Trust mTLS (both directions), used in step 10.
 - [`./GUIDE.md`](./GUIDE.md) — production deployment guide.
 - [`../config/README.md`](../config/README.md) — full YAML reference (incl. `rules.inline`, `detectors.per_tier`).
