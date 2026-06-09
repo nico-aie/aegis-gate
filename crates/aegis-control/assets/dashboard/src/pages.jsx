@@ -5594,7 +5594,7 @@ function ConfigVersionsCard() {
 // rebuilds on cfg.tls swaps today.
 function MtlsModeCard() {
   const api = window.useApi
-    ? window.useApi('/api/mtls/mode', { intervalMs: 10000, fallback: null })
+    ? window.useApi('/api/zero-trust/downstream/mode', { intervalMs: 10000, fallback: null })
     : { data: null };
   const [busy, setBusy] = useStateP(false);
 
@@ -5617,7 +5617,7 @@ function MtlsModeCard() {
     setBusy(true);
     try {
       const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-      const r = await fetch('/api/mtls/mode', {
+      const r = await fetch('/api/zero-trust/downstream/mode', {
         method: 'PUT',
         headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
         body: JSON.stringify({ mode: target }),
@@ -5635,7 +5635,7 @@ function MtlsModeCard() {
     setBusy(true);
     try {
       const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-      const r = await fetch('/api/mtls/mode', {
+      const r = await fetch('/api/zero-trust/downstream/mode', {
         method: 'PUT',
         headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
         body: JSON.stringify({ clear: true }),
@@ -5695,7 +5695,7 @@ function MtlsModeCard() {
 // store ships with the listener-rebuild track (Phase 2).
 function MtlsCaBundleCard() {
   const cap = window.useApi
-    ? window.useApi('/api/mtls/ca-bundle/capability', { intervalMs: 60000, fallback: { allow_ca_upload: false } })
+    ? window.useApi('/api/zero-trust/downstream/ca-bundle/capability', { intervalMs: 60000, fallback: { allow_ca_upload: false } })
     : { data: { allow_ca_upload: false } };
   const [pem, setPem] = useStateP('');
   const [preview, setPreview] = useStateP(null);
@@ -5725,7 +5725,7 @@ function MtlsCaBundleCard() {
     setBusy(true); setErrMsg(null); setPreview(null);
     try {
       const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-      const r = await fetch('/api/mtls/ca-bundle', {
+      const r = await fetch('/api/zero-trust/downstream/ca-bundle', {
         method: 'PUT',
         headers: { 'content-type': 'application/x-pem-file', 'x-csrf-token': csrf },
         body: pem,

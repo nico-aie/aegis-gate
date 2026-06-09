@@ -457,21 +457,21 @@ pub(crate) async fn handle_admin_request(
 
     // MTLS-T7 — Allowed SAN allowlist mutations. Audit-mutated;
     // CSRF-gated. Three handlers:
-    //   PUT    /api/mtls/sans              whole-list replace
-    //   DELETE /api/mtls/sans/{san}        single remove
-    //   POST   /api/mtls/sans/{san}/test   synthetic admit check
+    //   PUT    /api/zero-trust/downstream/sans              whole-list replace
+    //   DELETE /api/zero-trust/downstream/sans/{san}        single remove
+    //   POST   /api/zero-trust/downstream/sans/{san}/test   synthetic admit check
     // MTLS-T8 — runtime mode override.
-    if method == hyper::Method::PUT && path == "/api/mtls/mode" {
+    if method == hyper::Method::PUT && path == "/api/zero-trust/downstream/mode" {
         return crate::admin_mutate::handle_mtls_mode_put(req, services).await;
     }
     // MTLS-T10 — CA bundle validation + audit-emit (Phase 1).
-    if method == hyper::Method::PUT && path == "/api/mtls/ca-bundle" {
+    if method == hyper::Method::PUT && path == "/api/zero-trust/downstream/ca-bundle" {
         return crate::admin_mutate::handle_mtls_ca_bundle_put(req, services).await;
     }
-    if method == hyper::Method::PUT && path == "/api/mtls/sans" {
+    if method == hyper::Method::PUT && path == "/api/zero-trust/downstream/sans" {
         return handle_mtls_sans_put(req, services).await;
     }
-    if let Some(suffix) = path.strip_prefix("/api/mtls/sans/") {
+    if let Some(suffix) = path.strip_prefix("/api/zero-trust/downstream/sans/") {
         if method == hyper::Method::POST {
             if let Some(san) = suffix.strip_suffix("/test") {
                 if !san.is_empty() && !san.contains('/') {

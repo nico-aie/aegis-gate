@@ -978,7 +978,7 @@ pub(crate) async fn handle_mtls_ca_bundle_put(
             csrf_header: pre.csrf_header.as_deref(),
             actor: &pre.actor,
             request_id: &pre.request_id,
-            resource: "/api/mtls/ca-bundle",
+            resource: "/api/zero-trust/downstream/ca-bundle",
             action: "mtls_ca_bundle_validated",
             reason: "operator previewed CA bundle (no swap)",
         };
@@ -1052,7 +1052,7 @@ pub(crate) async fn handle_mtls_ca_bundle_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
-        resource: "/api/mtls/ca-bundle",
+        resource: "/api/zero-trust/downstream/ca-bundle",
         action: "mtls_ca_bundle_swapped",
         reason: "operator hot-swapped CA bundle",
     };
@@ -1173,7 +1173,7 @@ pub(crate) async fn handle_mtls_mode_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
-        resource: "/api/mtls/mode",
+        resource: "/api/zero-trust/downstream/mode",
         action: action_label,
         reason: "operator changed mtls mode override",
     };
@@ -3462,7 +3462,7 @@ pub(crate) async fn handle_access_list_delete(
 // MTLS-T7 — Allowed SAN allowlist mutations
 // ---------------------------------------------------------------------------
 
-/// `PUT /api/mtls/sans` — whole-list replace of the
+/// `PUT /api/zero-trust/downstream/sans` — whole-list replace of the
 /// `services.allowed_sans` store. Audit-mutated; CSRF-gated.
 /// Body: `{ "allowed": ["svc.example.com", "*.api.example.com", ...] }`.
 /// Empty list is allowed and means "admit anything" (back-compat).
@@ -3557,7 +3557,7 @@ pub(crate) async fn handle_mtls_sans_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
-        resource: "/api/mtls/sans",
+        resource: "/api/zero-trust/downstream/sans",
         action: "mtls_sans_set",
         reason: "operator updated allowed SAN list",
     };
@@ -3589,7 +3589,7 @@ pub(crate) async fn handle_mtls_sans_put(
     }
 }
 
-/// `DELETE /api/mtls/sans/{san}` — remove a single entry.
+/// `DELETE /api/zero-trust/downstream/sans/{san}` — remove a single entry.
 /// Returns 422 with a validation error when the SAN isn't
 /// present (so the dashboard can surface "no such SAN"
 /// without a 500). Audit-mutated; CSRF-gated.
@@ -3616,7 +3616,7 @@ pub(crate) async fn handle_mtls_sans_delete(
 
     let before = serde_json::json!({"allowed": current.clone()});
     let after = serde_json::json!({"allowed": next.clone()});
-    let resource = format!("/api/mtls/sans/{san}");
+    let resource = format!("/api/zero-trust/downstream/sans/{san}");
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "DELETE",
         csrf_cookie: pre.csrf_cookie.as_deref(),
@@ -3655,7 +3655,7 @@ pub(crate) async fn handle_mtls_sans_delete(
     }
 }
 
-/// `POST /api/mtls/sans/{san}/test` — synthetic admit check.
+/// `POST /api/zero-trust/downstream/sans/{san}/test` — synthetic admit check.
 /// Returns `{ admitted, matched }` so operators can verify
 /// that a wildcard / exact pattern is doing what they expect
 /// without making a real mTLS handshake. Read-only — no

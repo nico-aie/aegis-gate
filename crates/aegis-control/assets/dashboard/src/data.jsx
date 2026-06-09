@@ -751,10 +751,10 @@ const ROLLBACKABLE_ACTIONS = [
 // aggressive polling. The mutation helpers below are the
 // audit-mutated PUT / DELETE / POST-test endpoints.
 function useMtlsSansApi() {
-  return useApi('/api/mtls/sans', { intervalMs: 15000, fallback: { allowed: [] } });
+  return useApi('/api/zero-trust/downstream/sans', { intervalMs: 15000, fallback: { allowed: [] } });
 }
 async function mtlsSansPut(allowed) {
-  return csrfMutate('/api/mtls/sans', { method: 'PUT', body: JSON.stringify({ allowed }) });
+  return csrfMutate('/api/zero-trust/downstream/sans', { method: 'PUT', body: JSON.stringify({ allowed }) });
 }
 
 // M002 (2026-05-07) — operator override for the LoadGauge mode.
@@ -787,7 +787,7 @@ function useIntegrationsApi() {
   return useApi('/api/integrations', { intervalMs: 60000, fallback: null });
 }
 async function mtlsSansDelete(san) {
-  return csrfMutate(`/api/mtls/sans/${encodeURIComponent(san)}`, {
+  return csrfMutate(`/api/zero-trust/downstream/sans/${encodeURIComponent(san)}`, {
     method: 'DELETE',
     headers: { 'x-csrf-token': csrf },
     credentials: 'same-origin',
@@ -795,7 +795,7 @@ async function mtlsSansDelete(san) {
   return { status: r.status, ...(await r.json().catch(() => ({}))) };
 }
 async function mtlsSansTest(san) {
-  return csrfMutate(`/api/mtls/sans/${encodeURIComponent(san)}/test`, { method: 'POST' });
+  return csrfMutate(`/api/zero-trust/downstream/sans/${encodeURIComponent(san)}/test`, { method: 'POST' });
 }
 
 // CQF-T2 — Blacklist + Whitelist add / delete. Audit-mutated;
