@@ -39,7 +39,7 @@ show me the contract checks before declaring done.
 | Observability | **Full SigNoz** (UI `:8090`, OTLP `:4317`) | OTel-native single pane |
 | WAF runtime | **Native binary** (`cargo build --release`) | contract wants `./waf`; best perf |
 | Build features | **`redis geoip alerts ai affinity otel llm`** | = `make run-copilot` set |
-| `ai` / ONNX (`ort`) | **built (load-dynamic) but OFF** | glibc 2.35 can't link the prebuilt → load-dynamic. ON this 128-core host ORT **deadlocks** at session create; `waf.yaml` **omits `ai.model_path`** (model loads at boot whenever model_path is set, regardless of `enabled`). Re-enable on ≤8 cores (cpuset) or glibc≥2.38+prebuilt — guide §5/§14 |
+| `ai` / ONNX (`ort`) | **ON** (load-dynamic + onnxruntime 1.24.2) | glibc 2.35 can't link the prebuilt → load-dynamic; the `.so` version MUST equal `ort-sys/.../dist.txt` (**1.24.2** for rc.12 — 1.22.0 hung at boot, a C-API mismatch, NOT a deadlock/glibc/core issue). `ai.enabled`+`model_path` in `waf.yaml`; **`ORT_DYLIB_PATH` required at launch** (kept in `.env`). Guide §5 |
 | Copilot (`llm`) | **ON** | key in gitignored `.env`; **`set -a; . ./.env; set +a` before `./waf run`** (bare run doesn't read `.env`). Endpoint `console.bizbrain.app`, model `Qwen3.6-35B-A3B` |
 | Logs → SigNoz | **per-node otel-collector** (`filelog`) | WAF only exports traces; logs need `./waf run … >> logs/waf.json` + a collector tailing it. ONE agent per VM. Guide §13 |
 | Resource limits | **cpuset+mem** to match 8 vCPU/16 GB | use `cpuset` (not just `cpus`) so the WAF sees 8 CPUs — caps tokio + ORT threads. Guide §14 |

@@ -142,42 +142,41 @@ Validate before running:
 
 ---
 
-## 5. ONNX `ai` detector — ⚠️ disabled on the current host (ORT deadlock)
+## 5. ONNX `ai` detector — ✅ ON (needs the version-matched onnxruntime)
 
-**Status:** the `ai` feature is **compiled in**, the model exists
-(`data/ai_model/waf_model.onnx`), but it is **left OFF** on the infra host
-because **ORT deadlocks at boot here**.
+**Status:** ON — `ai` compiled in (load-dynamic), model at
+`data/ai_model/waf_model.onnx`, loads in <1s (`AI detector loaded … sessions=1`).
 
-**Two non-obvious facts learned the hard way:**
-1. The ONNX session is built at boot **whenever `ai.model_path` is set + the file
-   exists — independent of `ai.enabled`** (`run.rs:531`; `enabled` only flips the
-   per-request toggle). So to *not* load ORT, you must **omit `model_path`**, not
-   just set `enabled: false`. The committed `waf.contract.yaml` omits it.
-2. On this host (128 cores, glibc 2.35) `ort` 2.0.0-rc.12 via **`load-dynamic`
-   deadlocks** in `commit_from_file`: boot spawns the 128-thread intra-op pool
-   then hangs before binding listeners (readiness never flips). `OMP_NUM_THREADS`
-   / `ORT_INTRA_OP_NUM_THREADS` are ignored (ORT sets intra-op in code).
+**⚠️ The one thing that matters: the onnxruntime `.so` version MUST match `ort`.**
+`ort` 2.0.0-rc.12 expects **onnxruntime 1.24.2** (see `ort-sys/build/download/dist.txt`).
+We first shipped **1.22.0** and boot **hung in `commit_from_file`** — that was a
+**C-API version mismatch**, NOT glibc, threads, or cores (core-pinning to 8 did
+*not* help; the correct `.so` fixed it instantly). Always match `dist.txt`.
 
-**To actually run the `ai` detector**, use one of:
-- a **glibc ≥ 2.38 host** with the **stock `download-binaries`** `ort` (revert the
-  `Cargo.toml` `load-dynamic` change) — avoids the load-dynamic path entirely; **or**
-- resolve the `load-dynamic` deadlock (e.g. pin a matching onnxruntime build, set
-  intra-op threads in code, or `ort`'s `preload-dylibs`).
-
-Then provide the `.so`, set `model_path` + `enabled: true`, and export
-`ORT_DYLIB_PATH`:
-
+**Fetch the right `.so` + set `ORT_DYLIB_PATH`** (per node; `runtime/` is gitignored):
 ```sh
 mkdir -p runtime/onnxruntime
-curl -fsSL https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-linux-x64-1.22.0.tgz \
+curl -fsSL https://github.com/microsoft/onnxruntime/releases/download/v1.24.2/onnxruntime-linux-x64-1.24.2.tgz \
   | tar -xz -C /tmp
-cp /tmp/onnxruntime-linux-x64-1.22.0/lib/libonnxruntime.so* runtime/onnxruntime/
-export ORT_DYLIB_PATH="$PWD/runtime/onnxruntime/libonnxruntime.so"
-# in ./waf.yaml:  ai: { enabled: true, model_path: "data/ai_model/waf_model.onnx", confidence_threshold: 0.95 }
+cp /tmp/onnxruntime-linux-x64-1.24.2/lib/libonnxruntime.so* runtime/onnxruntime/
+export ORT_DYLIB_PATH="$PWD/runtime/onnxruntime/libonnxruntime.so"   # we keep this in .env
 ```
 
+**Config** (`waf.yaml` / `waf.contract.yaml`):
+```yaml
+ai: { enabled: true, model_path: "data/ai_model/waf_model.onnx", confidence_threshold: 0.95 }
+```
+
+> **Two boot facts:** (1) the ONNX session is built whenever `ai.model_path` is
+> set + exists — *independent of* `enabled` (`run.rs:531`; `enabled` only flips
+> the per-request toggle). (2) With `ai` enabled, **`ORT_DYLIB_PATH` must be set
+> at launch or boot fails** to find onnxruntime — keep it in `.env` (sourced
+> before `./waf run`) or a systemd `Environment=`. The new `POST /api/ai/reload`
+> hot-swaps the model from `model_path` without a restart (admin-authed).
+
 Signature detectors (sqli/xss/path-traversal/command-injection) + risk + DDoS are
-**on** and do the WAF work regardless — `ai` is an additive ML layer.
+on regardless — `ai` is an additive ML layer. Threshold kept HIGH (0.95): QA Run-2
+saw ~75% FP at 0.85 on benign traffic.
 
 ---
 
@@ -314,7 +313,8 @@ tail -1 ./waf_audit.log                                                         
 | Traces missing in SigNoz | SigNoz onboarding not done / wrong endpoint | onboard once (admin org), confirm `otel.endpoint=http://10.20.0.72:4317` |
 | Traces show but **no logs** in SigNoz | WAF doesn't push logs over OTLP — only stdout | run a per-node otel-collector with the `filelog` receiver (§13) |
 | `copilot disabled` in logs | `LLM_API_KEY` not set / `.env` not sourced | `set -a; . ./.env; set +a` before `./waf run` (§6) |
-| WAF hangs at boot after "fresh-bind" with `ai` | ORT session deadlock (128-core thread pool) | omit `ai.model_path` (§5), or pin to ≤8 cores (§14), or use glibc≥2.38 + prebuilt |
+| WAF hangs at boot after "fresh-bind" with `ai` | onnxruntime `.so` version ≠ what `ort` expects (C-API mismatch) | use the version in `ort-sys/build/download/dist.txt` (1.24.2 for rc.12), not an older one (§5) |
+| Boot fails: can't find onnxruntime, with `ai` enabled | `ORT_DYLIB_PATH` unset (load-dynamic) | set it (we keep it in `.env`, sourced before `./waf run`) — or disable `ai` |
 | collector crashes: `redaction … telemetry type is not supported` | otelcol-contrib 0.103 redaction has no logs support | keep `redaction` out of the logs pipeline (done in `collector.yaml`) |
 | SigNoz logs flooded with TRACE/DEBUG | dependency crates log verbosely | set `RUST_LOG="info,hyper=warn,hyper_util=warn,h2=warn,tower=warn,rustls=warn"` (§13) |
 | `pkill -f "waf run …"` kills nothing / kills itself | the pkill shell's own argv matches the pattern | kill by PID: `kill $(pgrep -f '\./waf run' | head -1)` |
@@ -398,6 +398,7 @@ ExecStart=/home/USER/aegis-gate/waf run --config /home/USER/aegis-gate/waf.yaml
 or ad-hoc: `taskset -c 0-7 ./waf run --config ./waf.yaml`. Also set
 `runtime.workers: 8` in `waf.yaml` to fix the tokio pool explicitly.
 
-> **Bonus:** pinning to 8 cores likely **un-sticks the `ai` detector** — the ORT
-> deadlock (§5) is the 128-thread intra-op pool; at 8 cores ORT builds an
-> 8-thread pool that should commit cleanly. Worth retrying `ai` under `cpuset`.
+> **Note:** core count is **not** what blocked `ai` — that was an onnxruntime
+> version mismatch (§5), fixed by the right `.so`. `cpuset` is purely about
+> matching the real node spec; `ai` runs fine at 8 or 128 cores once the
+> onnxruntime version matches `ort` (1.24.2).

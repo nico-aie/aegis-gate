@@ -56,12 +56,13 @@ source ~/.cargo/env
 cargo build -p aegis-bin --release --features "redis geoip alerts ai affinity otel llm"
 cp target/release/waf ./waf
 cp deploy/waf.contract.yaml ./waf.yaml        # then set node.id / IPs as needed
-set -a; . ./.env; set +a                       # LLM_API_KEY → activates copilot
+set -a; . ./.env; set +a                       # LLM_API_KEY (copilot) + ORT_DYLIB_PATH (ai)
 export RUST_LOG="info,hyper=warn,hyper_util=warn,h2=warn,tower=warn,rustls=warn,tonic=warn"
 AEGIS_INSECURE_COOKIES=1 ./waf run --config ./waf.yaml >> logs/waf.json 2>&1 &
-# (ai is OFF: waf.yaml omits ai.model_path. The model loads at boot whenever
-#  model_path is set+exists — and ORT load-dynamic DEADLOCKS on this 128-core host.
-#  Pin to ≤8 cores (cpuset/taskset) to retry ai; see PRE-PROD-DEPLOY.md §5/§14.)
+# ai is ON (waf.yaml: ai.enabled + model_path). It needs onnxruntime 1.24.2 in
+# runtime/onnxruntime/ + ORT_DYLIB_PATH (kept in .env). The earlier boot hang was
+# a VERSION MISMATCH (1.22.0 vs required 1.24.2), not a deadlock — see §5 of the
+# deploy guide. Loads in <1s.
 ```
 
 **Verified against the contract:**
@@ -72,7 +73,9 @@ AEGIS_INSECURE_COOKIES=1 ./waf run --config ./waf.yaml >> logs/waf.json 2>&1 &
 - §6 — `waf_audit.log` is JSONL with `request_id, ts_ms, ip(peer), method, path, action, risk_score, mode`; `request_id` matches the response header.
 - Traces (`serviceName=aegis-gate`) land in SigNoz; **logs** ship via the
   otel-collector `filelog` pipeline (below); AI **hot-reload** API merged from
-  develop (`PUT`-style reload, no restart — `crates/*/src/ai_reload.rs`).
+  develop (`POST /api/ai/reload`, no restart — `crates/*/src/ai_reload.rs`).
+- **`ai` ONNX detector ON** — `AI detector loaded … sessions=1, enabled=true`
+  from `data/ai_model/waf_model.onnx` (onnxruntime 1.24.2).
 
 **Copilot** is **ON** — `llm` compiled in + `LLM_API_KEY` loaded from `.env`
 (`set -a; . ./.env; set +a` before `./waf run`; the bare command does NOT read
@@ -91,9 +94,15 @@ __isoc23_strtoll`, masked by the Dockerfile's `cargo build … || true` → late
 `COPY waf: not found`). **Fix (in `Cargo.toml`):** the workspace `ort` dep now
 uses **`load-dynamic`** (keeping `std, ndarray, tracing, api-24`) so the binary
 `dlopen`s a glibc-compatible `libonnxruntime.so` at runtime instead of linking the
-prebuilt. The `.so` (onnxruntime 1.22, needs only GLIBC_2.27) lives in
-`runtime/onnxruntime/` (gitignored — re-fetch per host, see the deploy guide).
-This makes the full `run-copilot` set build on **any** glibc.
+prebuilt. This makes the full `run-copilot` set build on **any** glibc.
+
+**Then a second gotcha (now also resolved):** the `.so` version must match what
+`ort` rc.12 expects — **onnxruntime 1.24.2** (`ort-sys/build/download/dist.txt`).
+The first `.so` shipped was 1.22.0, and boot **hung in `commit_from_file`** — a
+C-API version mismatch, *not* a thread/glibc/core issue (pinning to 8 cores did
+not help). Swapping to **1.24.2** (needs only GLIBC_2.27) made `ai` load in <1s.
+The `.so` lives in `runtime/onnxruntime/` (gitignored — re-fetch the **1.24.2**
+build per host). With `ai` enabled, set `ORT_DYLIB_PATH` at launch (kept in `.env`).
 
 ## ⚠️ SigNoz onboarding (one-time, done)
 

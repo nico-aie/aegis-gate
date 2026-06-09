@@ -74,13 +74,14 @@ detectors:
 # glibc>=2.38 host with the stock `download-binaries` ort build (revert Cargo.toml),
 # or resolve the load-dynamic deadlock. Then flip enabled:true (hot via PUT /api/ai/enabled).
 # Threshold kept HIGH (0.95): QA Run-2 saw ~75% FP at 0.85 on benign traffic.
+# ONNX ML detector — ON. Needs onnxruntime 1.24.2 (the version ort 2.0.0-rc.12
+# expects, per ort-sys dist.txt) at runtime/onnxruntime/ + ORT_DYLIB_PATH set at
+# launch. NOTE: earlier boot hangs were a VERSION MISMATCH (1.22.0 .so vs required
+# 1.24.2) — not glibc, threads, or cores. With the right .so it loads in <1s.
+# confidence_threshold kept HIGH (0.95): QA Run-2 saw ~75% FP at 0.85 on benign.
 ai:
-  enabled: false
-  # model_path INTENTIONALLY OMITTED: the ORT session is built at boot whenever
-  # model_path is set+exists (run.rs:531 — independent of `enabled`), and that
-  # commit_from_file DEADLOCKS here. Leaving model_path unset = no ORT session,
-  # clean boot. Re-add it (+ enabled:true) only on a host where ort loads OK.
-  # model_path: "data/ai_model/waf_model.onnx"
+  enabled: true
+  model_path: "data/ai_model/waf_model.onnx"
   confidence_threshold: 0.95
 
 risk:
