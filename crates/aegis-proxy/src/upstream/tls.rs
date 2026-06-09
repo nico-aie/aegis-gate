@@ -57,7 +57,7 @@ pub fn build_upstream_client_config(
 /// P2 — build the upstream `rustls::ClientConfig` from a pool's
 /// resolved mTLS material ([`aegis_core::config::UpstreamMtlsResolved`]).
 ///
-/// - Trust anchors: the custom `trust_ca_path` CA bundle when set,
+/// - Trust anchors: the custom `trust` CA bundle when set,
 ///   otherwise the public webpki roots (so a public-internet backend
 ///   still verifies).
 /// - Client identity: always presented (P2 only resolves material for
@@ -72,21 +72,14 @@ pub fn build_upstream_client_config(
 pub fn client_config_from_resolved(
     m: &aegis_core::config::UpstreamMtlsResolved,
 ) -> Result<rustls::ClientConfig, Box<dyn std::error::Error + Send + Sync>> {
+    use aegis_core::config::CertSource;
+
     let mut root_store = rustls::RootCertStore::empty();
-    match &m.trust_ca_path {
-        Some(ca_path) => {
-            let ca_file = fs::File::open(ca_path).map_err(|e| {
-                format!("upstream_mtls.trust: failed to read {}: {e}", ca_path.display())
-            })?;
-            let mut reader = BufReader::new(ca_file);
-            let certs: Vec<CertificateDer<'static>> =
-                rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?;
+    match &m.trust {
+        Some(src) => {
+            let certs = certs_from_source(src, "upstream_mtls.trust")?;
             if certs.is_empty() {
-                return Err(format!(
-                    "upstream_mtls.trust: no certificates found in {}",
-                    ca_path.display()
-                )
-                .into());
+                return Err("upstream_mtls.trust: no certificates found".into());
             }
             for cert in certs {
                 root_store.add(cert)?;
@@ -99,12 +92,39 @@ pub fn client_config_from_resolved(
         }
     }
 
-    let certs = load_certs(&m.client_cert_path)?;
+    let certs = certs_from_source(&m.client_cert, "upstream_mtls client cert")?;
+    if certs.is_empty() {
+        return Err("upstream_mtls: empty client cert chain".into());
+    }
+    // The private key is ALWAYS a reference resolved here — never
+    // carried in config or the resolved struct. (P4 reference-only:
+    // even state-source identities keep the key as a `key_ref`.)
     let key = load_key(Path::new(&m.client_key_ref))?;
     let client_config = rustls::ClientConfig::builder()
         .with_root_certificates(root_store)
         .with_client_auth_cert(certs, key)?;
     Ok(client_config)
+}
+
+/// Load a PUBLIC cert chain from a [`CertSource`] — a file on disk or
+/// in-memory PEM (materialized from the config plane).
+fn certs_from_source(
+    src: &aegis_core::config::CertSource,
+    what: &str,
+) -> Result<Vec<CertificateDer<'static>>, Box<dyn std::error::Error + Send + Sync>> {
+    use aegis_core::config::CertSource;
+    match src {
+        CertSource::File(path) => {
+            let file = fs::File::open(path)
+                .map_err(|e| format!("{what}: failed to read {}: {e}", path.display()))?;
+            let mut reader = BufReader::new(file);
+            Ok(rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?)
+        }
+        CertSource::Pem(pem) => {
+            let mut reader = BufReader::new(pem.as_bytes());
+            Ok(rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?)
+        }
+    }
 }
 
 fn load_certs(
@@ -450,9 +470,9 @@ mod tests {
 
         // WAF client config: present our cert, but TRUST only CA_B.
         let resolved = UpstreamMtlsResolved {
-            client_cert_path: cli_cert_path.into(),
+            client_cert: aegis_core::config::CertSource::File(cli_cert_path.into()),
             client_key_ref: cli_key_path,
-            trust_ca_path: Some(ca_b_path.into()),
+            trust: Some(aegis_core::config::CertSource::File(ca_b_path.into())),
             verify: true,
             allowed_sans: Vec::new(),
             fingerprint: "v1|wrong-ca".into(),
@@ -468,5 +488,33 @@ mod tests {
         );
 
         srv.abort();
+    }
+
+    /// P4 foundation — `client_config_from_resolved` accepts in-memory
+    /// PEM material (`CertSource::Pem`) for both the client cert and
+    /// the trust anchor, not just files. This is what a state-backed
+    /// identity (cert materialized from the config plane) will use; the
+    /// private key still comes from a `key_ref` on disk (reference-only).
+    #[test]
+    fn client_config_from_resolved_accepts_pem_source() {
+        use aegis_core::config::{CertSource, UpstreamMtlsResolved};
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let dir = TempDir::new().unwrap();
+        // (ca_pem, leaf_cert_pem, leaf_key_pem, _ca_key_pem)
+        let (ca_pem, cert_pem, key_pem, _) = generate_ca_and_leaf(&["waf"]);
+        // Key stays a file ref (reference-only); cert + trust are PEM.
+        let key_path = write_pem(&dir, "waf.key", &key_pem);
+        let resolved = UpstreamMtlsResolved {
+            client_cert: CertSource::Pem(cert_pem),
+            client_key_ref: key_path,
+            trust: Some(CertSource::Pem(ca_pem)),
+            verify: true,
+            allowed_sans: Vec::new(),
+            fingerprint: "v1|pem-source".into(),
+        };
+        let cfg = client_config_from_resolved(&resolved)
+            .expect("in-memory PEM material must build a valid client config");
+        // Sanity: a client cert was installed (mTLS, not server-auth-only).
+        assert!(cfg.client_auth_cert_resolver.has_certs());
     }
 }

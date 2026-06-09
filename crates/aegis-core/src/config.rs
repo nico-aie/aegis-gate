@@ -1419,9 +1419,9 @@ pub fn resolve_upstream_mtls(
         m.allowed_sans.join(","),
     );
     Some(UpstreamMtlsResolved {
-        client_cert_path: cert_path,
+        client_cert: CertSource::File(cert_path),
         client_key_ref,
-        trust_ca_path,
+        trust: trust_ca_path.map(CertSource::File),
         verify: m.verify,
         allowed_sans: m.allowed_sans.clone(),
         fingerprint,
@@ -1612,23 +1612,38 @@ pub struct ConnectionPoolConfig {
     pub upstream_mtls: Option<UpstreamMtlsResolved>,
 }
 
-/// Resolved, ready-to-use upstream-mTLS material for one pool (P2).
+/// Source of a PUBLIC cert/CA used in upstream mTLS — either a file
+/// on disk (file-source identity / per-pool trust path) or in-memory
+/// PEM bytes materialized from the Redis config plane (state-source,
+/// P4). PUBLIC material only; private keys are never represented here
+/// (they stay a `client_key_ref` resolved at client-build time).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CertSource {
+    /// PEM file read from disk at client-build time.
+    File(PathBuf),
+    /// In-memory PEM, materialized from the config plane before the
+    /// (sync) build path. Safe to hold/Debug — it is public cert material.
+    Pem(String),
+}
+
+/// Resolved, ready-to-use upstream-mTLS material for one pool.
 ///
-/// Plain data only: the cert/key are referenced by **path**, never
-/// loaded into bytes here, so this struct is safe to `Debug` and to
-/// store on the (Debug-deriving) [`ConnectionPoolConfig`]. The
-/// rustls parsing happens lazily in `forward::build_client`.
+/// The PUBLIC cert + trust anchors are carried as a [`CertSource`]
+/// (file path or in-memory PEM). The private key is **never** loaded
+/// into this struct — only its `client_key_ref` (resolved lazily in
+/// `forward::build_client`), so the struct stays Debug-safe and the
+/// key never lands in config / the client cache key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpstreamMtlsResolved {
-    /// PUBLIC client cert chain (PEM file) the WAF presents to the
-    /// backend. The shared fleet identity (`zero_trust.upstream_identity`).
-    pub client_cert_path: PathBuf,
+    /// PUBLIC client cert chain the WAF presents to the backend
+    /// (the shared fleet identity, `zero_trust.upstream_identity`).
+    pub client_cert: CertSource,
     /// Path / ref to the client private key. Loaded only inside
     /// `build_client`; never read into this struct.
     pub client_key_ref: String,
-    /// Custom CA bundle (PEM file) to verify the BACKEND's server
-    /// cert against. `None` ⇒ fall back to webpki roots.
-    pub trust_ca_path: Option<PathBuf>,
+    /// Custom CA bundle to verify the BACKEND's server cert against.
+    /// `None` ⇒ fall back to webpki roots.
+    pub trust: Option<CertSource>,
     /// Verify the backend server cert (fail closed on failure).
     pub verify: bool,
     /// Optional SAN allowlist gate on the backend's server cert.
@@ -5146,12 +5161,12 @@ state: {{ backend: in_memory }}
         let pool = &cfg.upstreams["api"];
         let resolved = resolve_upstream_mtls(pool, id).expect("enabled ⇒ Some");
         assert_eq!(
-            resolved.client_cert_path.to_string_lossy(),
-            "/etc/waf/client.pem"
+            resolved.client_cert,
+            CertSource::File("/etc/waf/client.pem".into())
         );
         assert_eq!(resolved.client_key_ref, "/etc/waf/client.key");
         assert!(resolved.verify);
-        assert!(resolved.trust_ca_path.is_none()); // webpki fallback
+        assert!(resolved.trust.is_none()); // webpki fallback
         assert!(!resolved.fingerprint.is_empty());
     }
 

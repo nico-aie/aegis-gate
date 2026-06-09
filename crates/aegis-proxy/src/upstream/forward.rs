@@ -1072,7 +1072,7 @@ mod tests {
     /// certs.
     #[test]
     fn poolkey_isolates_upstream_mtls_pools() {
-        use aegis_core::config::UpstreamMtlsResolved;
+        use aegis_core::config::{CertSource, UpstreamMtlsResolved};
         let base = ConnectionPoolConfig {
             max_idle_per_host: 32,
             idle_timeout: Duration::from_secs(30),
@@ -1084,9 +1084,9 @@ mod tests {
             upstream_mtls: None,
         };
         let resolved = |fp: &str, trust: Option<&str>| UpstreamMtlsResolved {
-            client_cert_path: "/x/client.pem".into(),
+            client_cert: CertSource::File("/x/client.pem".into()),
             client_key_ref: "/x/client.key".into(),
-            trust_ca_path: trust.map(Into::into),
+            trust: trust.map(|t| CertSource::File(t.into())),
             verify: true,
             allowed_sans: Vec::new(),
             fingerprint: fp.into(),
@@ -1117,7 +1117,7 @@ mod tests {
     /// client cert.
     #[test]
     fn build_client_fails_closed_on_missing_cert() {
-        use aegis_core::config::UpstreamMtlsResolved;
+        use aegis_core::config::{CertSource, UpstreamMtlsResolved};
         let cfg = ConnectionPoolConfig {
             max_idle_per_host: 32,
             idle_timeout: Duration::from_secs(30),
@@ -1127,9 +1127,9 @@ mod tests {
             max_response_body_bytes: 10 * 1024 * 1024,
             response_body_read_timeout: Duration::from_secs(30),
             upstream_mtls: Some(UpstreamMtlsResolved {
-                client_cert_path: "/nonexistent/waf-client.pem".into(),
+                client_cert: CertSource::File("/nonexistent/waf-client.pem".into()),
                 client_key_ref: "/nonexistent/waf-client.key".into(),
-                trust_ca_path: None,
+                trust: None,
                 verify: true,
                 allowed_sans: Vec::new(),
                 fingerprint: "v1|missing".into(),
