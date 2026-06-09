@@ -44,9 +44,29 @@ pub fn load_config(path: &std::path::Path) -> crate::Result<WafConfig> {
     Ok(cfg)
 }
 
-/// Load configuration from a YAML string (useful for tests and embedded configs).
+/// Load configuration from a YAML string (config-plane validation,
+/// tests, embedded configs).
+///
+/// BUG-config-plane-audit-sinks-yaml-enum (2026-06-09): this MUST use
+/// the **same deserializer as [`load_config`] (figment)**, not raw
+/// `serde_yaml::from_str`. Under serde_yaml 0.9 an externally-tagged
+/// enum (e.g. `AuditSinkConfig`, `AccessLogSink`) only deserializes
+/// from a YAML **tag** (`- !jsonl { … }`), and rejects the single-key
+/// **map** form (`- jsonl: { … }`) that the file loader, `waf validate`,
+/// and every shipped profile use. Because the config plane round-trips
+/// the doc through this function (`admin_mutate` re-validates the
+/// patched config), raw serde_yaml made *every* config-plane mutation
+/// (detector toggle, AI toggle, pool edit, `PUT /api/config`, …) fail
+/// on any node whose config has an `audit.sinks` entry. figment's YAML
+/// provider accepts both forms, so the boot path and the config-plane
+/// path now agree.
 pub fn load_config_str(yaml: &str) -> crate::Result<WafConfig> {
-    let cfg: WafConfig = serde_yaml::from_str(yaml)
+    use figment::providers::{Format, Yaml};
+    use figment::Figment;
+
+    let cfg: WafConfig = Figment::new()
+        .merge(Yaml::string(yaml))
+        .extract()
         .map_err(|e| crate::error::WafError::Config(format!("invalid config: {e}")))?;
     cfg.validate()?;
     Ok(cfg)
@@ -4599,6 +4619,73 @@ rules:
     fn rules_inline_defaults_empty() {
         let cfg = super::load_config_str(minimal_yaml()).unwrap();
         assert!(cfg.rules.inline.is_empty());
+    }
+
+    // BUG-config-plane-audit-sinks-yaml-enum — `load_config_str` (the
+    // config-plane validation path) MUST accept the single-key **map**
+    // form of externally-tagged enums (`- jsonl: { … }`), exactly like
+    // the boot loader / `waf validate` / the shipped profiles. Before
+    // the figment switch, raw serde_yaml 0.9 required the YAML **tag**
+    // form (`- !jsonl { … }`) and every config-plane mutation failed on
+    // any config carrying an `audit.sinks` entry.
+    #[test]
+    fn load_config_str_accepts_audit_sink_map_form() {
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:9000"
+state:
+  backend: in_memory
+audit:
+  sinks:
+    - jsonl: { path: "/tmp/aegis-audit.jsonl" }
+  chain: { enabled: true }
+"#;
+        let cfg = super::load_config_str(yaml)
+            .expect("map-form audit sink must round-trip through the config plane");
+        assert_eq!(cfg.audit.sinks.len(), 1);
+        assert!(
+            matches!(cfg.audit.sinks[0], super::AuditSinkConfig::Jsonl { .. }),
+            "single-key map `jsonl:` must deserialize to the Jsonl variant"
+        );
+    }
+
+    // The YAML **tag** form must keep working too (no regression for
+    // anyone who authored `- !jsonl`).
+    #[test]
+    fn load_config_str_still_accepts_audit_sink_tag_form() {
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:9000"
+state:
+  backend: in_memory
+audit:
+  sinks:
+    - !jsonl { path: "/tmp/aegis-audit.jsonl" }
+"#;
+        let cfg = super::load_config_str(yaml).expect("tag-form audit sink still valid");
+        assert!(matches!(cfg.audit.sinks[0], super::AuditSinkConfig::Jsonl { .. }));
     }
 
     // -----------------------------------------------------------------------
