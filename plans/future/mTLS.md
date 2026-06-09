@@ -410,8 +410,17 @@ traffic yet, so the temporary downstream-enforcement gap during the hard cut is 
       consolidate `api/mtls*.rs` files into `api/zero_trust`. Decision (2026-06-09): P3 uploads/downloads
       PUBLIC material only; private-key upload + encryption-at-rest is P4 (key stays a YAML `key_ref` path).
       **Verification owed:** live visual/E2E render of the page (build + JS parse + unit tests pass; browser not yet checked).
-- [ ] **P4** Shared identity in config plane (key envelope-encrypted); rotate; per-upstream
-      override; expiry badges; upstream failure surface.
+- [~] **P4** Shared identity in config plane. **Decision (2026-06-09): REFERENCE-ONLY** (not
+      envelope-encrypted) — repo has no AEAD primitive; `source:state` stores the PUBLIC cert +
+      backend CAs in the config plane (cas_set, multi-node), private key stays a `${secret:...}`/path
+      ref via `secrets/mod.rs::resolve_secret`. Satisfies §6 "key at rest" (reference path).
+      Remaining backend: (a) lift the `source:state` validation guard + async state→PEM resolution
+      threaded into the resolve/build path (build_pools is sync + has no StateBackend — materialize
+      PEM in the async boot/apply step before build_pools); (b) audited `POST /api/zero-trust/upstream/
+      trust/{bundle}` (upload PUBLIC backend CA → state) + state-backed CA loading in build_client;
+      (c) per-pool `upstream_mtls` editing ALREADY round-trips via existing `PUT /api/upstreams/pool/{id}`
+      (it's a PoolConfig field) — needs the global cross-ref validation added to that path + a frontend drawer.
+      Frontend: drawer editing, backend-CA upload, expiry badges, upstream handshake-failure surface.
 - [ ] **P5** Hot rotation on cas_set; session resumption; optional SPIFFE-SAN matcher.
 - [ ] **Tests/gates** §6 checklist all green before default-on.
 
