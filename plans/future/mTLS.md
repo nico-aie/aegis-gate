@@ -422,12 +422,29 @@ traffic yet, so the temporary downstream-enforcement gap during the hard cut is 
       PUBLIC cert/trust anchor as in-memory PEM (materialized from the config plane) or a file path;
       `client_config_from_resolved` handles both; key stays a `client_key_ref`. Test:
       client_config_from_resolved_accepts_pem_source. This is the prerequisite for state-backed certs.
-      Remaining backend: (a) lift the `source:state` validation guard + async state→PEM resolution
-      threaded into the resolve/build path (build_pools is sync + has no StateBackend — materialize
-      PEM in the async boot/apply step before build_pools); (b) audited `POST /api/zero-trust/upstream/
-      trust/{bundle}` (upload PUBLIC backend CA → state) + state-backed CA loading in build_client;
-      (c) per-pool `upstream_mtls` editing ALREADY round-trips via existing `PUT /api/upstreams/pool/{id}`
-      (it's a PoolConfig field) — needs the global cross-ref validation added to that path + a frontend drawer.
+      **4a-ii DONE (commit 1839f89):** state-backed shared WAF client identity, reference-only.
+      (a) `validate_zero_trust` accepts `source: state` (YAML need only declare the source; PUBLIC cert
+      + key_ref come from the config plane). `UpstreamIdentityConfig.cert_pem` (`#[serde(skip)]`) carries
+      the in-memory PUBLIC PEM; `resolve_upstream_mtls` emits `CertSource::Pem` (fingerprint marks `pem:`).
+      `UPSTREAM_IDENTITY_STATE_KEY` (`aegis:zt:upstream:identity`) + `UpstreamIdentityRecord{cert_pem,key_ref}`.
+      (b) `upstream::identity::materialize_upstream_identity` reads the record on the async boot path
+      (`run::run`, before the sync `ProxyContext::build`) and folds the PUBLIC PEM into the cfg snapshot;
+      the seeded registry identity then carries it, so config-doc reloads (which reuse the seed via
+      `PoolRegistry::apply`) preserve it — no separate reseed needed. **Fail-closed:** a `source: state`
+      identity with no stored record / unreadable / corrupt aborts boot (proven live with the `waf` binary).
+      (c) audited `PUT /api/zero-trust/upstream/identity` (admin_mutate + dispatch): CSRF + allow_ca_upload
+      gated, validates PUBLIC cert, rejects a PRIVATE KEY block in the cert field, persists via `cas_set`;
+      audit projection carries PUBLIC cert metadata only — never the key. `GET .../upstream/identity`
+      surfaces the materialized `cert_pem` for the state source. Tests: core 23 upstream, control zero_trust 9,
+      proxy upstream::identity 5 (fail-closed matrix); full lib core 282 / control 1073 / proxy 760 green.
+      **Live (2026-06-09, in_memory):** fail-closed boot aborts with the clear error; PUT 200 returns
+      public-only metadata (CN=waf.internal); no-CSRF→403, PRIVATE-KEY-in-cert→400, empty key_ref→400;
+      upstream/identity + upstream/config + downstream all 200. Positive boot-materialization round-trip
+      across a restart is covered by unit tests (in_memory doesn't persist; redis round-trip deferred).
+      Remaining backend: (a) audited `POST /api/zero-trust/upstream/trust/{bundle}` (upload PUBLIC backend
+      CA → state) + state-backed CA loading in build_client; (b) per-pool `upstream_mtls` editing ALREADY
+      round-trips via existing `PUT /api/upstreams/pool/{id}` (it's a PoolConfig field) — needs the global
+      cross-ref validation added to that path + a frontend drawer.
       Frontend: drawer editing, backend-CA upload, expiry badges, upstream handshake-failure surface.
 - [ ] **P5** Hot rotation on cas_set; session resumption; optional SPIFFE-SAN matcher.
 - [ ] **Tests/gates** §6 checklist all green before default-on.
