@@ -424,3 +424,49 @@ or ad-hoc: `taskset -c 0-7 ./waf run --config ./waf.yaml`. Also set
 > version mismatch (§5), fixed by the right `.so`. `cpuset` is purely about
 > matching the real node spec; `ai` runs fine at 8 or 128 cores once the
 > onnxruntime version matches `ort` (1.24.2).
+
+---
+
+## 15. Testing multiple nodes with an nginx LB (alternative to DNS-RR)
+
+For a single test entry point in front of ≥2 WAF nodes, nginx works and — unlike
+HAProxy+TPROXY — needs **no root/caps** (runs under rootless Docker). Two modes,
+pick by whether you need client-IP forwarding:
+
+| Mode | Config | TLS / JA3 | Client IP to WAF | Use when |
+|---|---|---|---|---|
+| **L4 `stream`** | [`../nginx/nginx-stream.conf`](../nginx/nginx-stream.conf) | ✅ WAF terminates (preserved) | ❌ nginx IP (SNAT) | keep protocols + JA3; don't need client IP |
+| **L7 `http` + XFF** | [`../nginx/nginx-http.conf`](../nginx/nginx-http.conf) | ❌ nginx terminates | via `X-Forwarded-For` | want client IP forwarded (pending WAF XFF-resolution) |
+
+**Run a 2-node cluster + LB on this host:**
+```sh
+# 2nd WAF node (unique node.id + ports, same Redis → same fleet). waf2.yaml is
+# waf.yaml with node.id=waf-infra-2, data :8081, admin :9444, audit ./waf_audit-2.log.
+set -a; . ./.env; set +a
+AEGIS_INSECURE_COOKIES=1 ./waf run --config ./waf2.yaml >> logs/waf2.json 2>&1 &
+
+cd deploy/compose
+docker compose -f nginx-lb.docker-compose.yml up -d        # VIP :8088 → {8080,8081}
+curl http://10.20.0.72:8088/api/health                     # round-robins
+```
+Verified: 10 requests → **5 node1 / 5 node2**; both nodes share the Redis cluster
+(members `waf-infra-1` + `waf-infra-2`, shared leader lease).
+
+**Gotchas learned here:**
+- **Round-robin looked "pinned to node1"** — `worker_processes auto` on a many-core
+  host gives each worker its own RR counter; low-volume sequential requests scatter
+  across fresh workers that all start at server #1. Fix: `worker_processes 1` (test)
+  or an upstream `zone` for shared state. Under real concurrent load `auto` evens out.
+- **X-Forwarded-For needs L7** — `stream` (L4) can't add headers. The L7 config sets
+  `X-Forwarded-For $proxy_add_x_forwarded_for` (appends client-sent XFF), verified as
+  `fwd_for="5.195.235.51, <nginx-src>"` toward the WAF.
+- ⚠️ **The WAF currently IGNORES XFF** (default `trusted_proxies` empty / not plumbed),
+  so it still keys on nginx's peer IP until **XFF-resolution lands + nginx's IP is in
+  `trusted_proxies`**. The nginx side is ready; the WAF side is the pending piece.
+- ⚠️ Rootless Docker SNATs published-port traffic too, so nginx sees the docker
+  gateway as the source for host-originated curls — send a real client XFF to test
+  the chain end-to-end.
+
+> **This is a test harness, not the production topology.** Production stays
+> **DNS round-robin** (no LB) so the WAF is the edge with real client IP + JA3/JA4
+> (§0). Use the nginx LB to exercise multi-node fan-out + cluster behaviour.

@@ -110,3 +110,6 @@ __pycache__
 
 # Runtime WAF JSON logs (tailed by the otel-collector)
 /logs/
+/waf2.yaml
+/waf_audit-2.log
+/logs/

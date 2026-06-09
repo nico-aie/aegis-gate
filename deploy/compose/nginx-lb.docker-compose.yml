@@ -1,0 +1,22 @@
+# nginx L4 (stream) load balancer for the WAF fleet — TEST/cluster harness.
+#
+# Fronts the WAF nodes (10.20.0.72:8080 + :8081) with a single VIP on :8088,
+# round-robin per connection. TCP passthrough → WAF keeps TLS/JA3/all protocols.
+# NOTE: SNATs the client (WAF sees nginx's IP) — see nginx-stream.conf. Unlike
+# HAProxy+TPROXY this needs NO root/caps, so it runs under rootless Docker.
+#
+#   cd deploy/compose
+#   docker compose -f nginx-lb.docker-compose.yml up -d
+#   curl http://10.20.0.72:8088/        # → round-robins to a WAF node
+name: aegis-nginx-lb
+
+services:
+  nginx-lb:
+    image: nginx:1.27-alpine          # official image includes the stream module
+    restart: unless-stopped
+    volumes:
+      # L7 http + X-Forwarded-For (current). Swap to nginx-stream.conf for L4
+      # passthrough (keeps TLS/JA3, but cannot add XFF).
+      - ../nginx/nginx-http.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "10.20.0.72:8088:8088"        # the LB VIP
