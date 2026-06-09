@@ -5255,6 +5255,25 @@ state: {{ backend: in_memory }}
     }
 
     #[test]
+    fn upstream_mtls_runtime_pool_upsert_path_is_fail_closed() {
+        // The runtime `PUT /api/upstreams/pool/{id}` handler patches
+        // the pool into the full config and re-runs `load_config_str`
+        // (→ WafConfig::validate). This locks that an operator can't
+        // enable upstream mTLS on a pool at runtime without a shared
+        // identity — the cross-ref check rejects it rather than
+        // silently dialing plaintext (fail-open).
+        let yaml = cfg_with_upstream("    upstream_mtls: { enabled: true }\n", "");
+        let err = crate::load_config_str(&yaml).unwrap_err().to_string();
+        assert!(
+            err.contains("zero_trust.upstream_identity"),
+            "runtime upsert path must reject enabled-without-identity, got: {err}"
+        );
+        // With an identity present, the same patched config loads.
+        let ok = cfg_with_upstream("    upstream_mtls: { enabled: true }\n", ID_FILE);
+        assert!(crate::load_config_str(&ok).is_ok());
+    }
+
+    #[test]
     fn upstream_identity_file_missing_paths_rejected() {
         let zt = "zero_trust:\n  upstream_identity:\n    source: file\n    cert_path: /etc/waf/client.pem\n";
         let yaml = cfg_with_upstream("", zt);
