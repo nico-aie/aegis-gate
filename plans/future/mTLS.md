@@ -398,12 +398,18 @@ traffic yet, so the temporary downstream-enforcement gap during the hard cut is 
       (public cert metadata via parse_ca_bundle, never the key) + `UpstreamConfigView`
       (per-pool off|mutual+verify); `GET /api/zero-trust/upstream/{identity,config}`
       wired (same dispatch/auth as /api/mtls). Additive — old /api/mtls/* untouched. 4 tests.
-- [ ] **P3 slice 2 (frontend)** `ZeroTrustPage` (WAF identity card + public download · downstream
-      section relocated from Settings · per-upstream list+drawer w/ backend-CA upload) + NAV entry;
-      **hard cut done here atomically**: rename /api/mtls/*→/api/zero-trust/downstream/* + delete the
-      3 PageSettings cards + data.jsx hooks + reconcile break-glass naming. Audited PUT + cas_set.
-      Decision (2026-06-09): P3 uploads PUBLIC material only (backend CA, WAF cert) + downloads public
-      WAF cert; private-key upload + encryption-at-rest deferred to P4 (key stays a YAML `key_ref` path).
+- [x] **P3 slice 2 (frontend)** `PageZeroTrust` (NAV: Policy group): upstream section = WAF
+      client-identity card (public cert metadata + Download WAF cert, public PEM only) +
+      per-pool upstream-mTLS status table (reads /api/zero-trust/upstream/*); downstream section =
+      mode/CA-bundle/SANs cards relocated off Settings (Settings keeps a breadcrumb). Bundle rebuilt.
+- [x] **P3 hard cut** `/api/mtls/*` → `/api/zero-trust/downstream/*` renamed in lockstep (backend
+      route matches + audit resource labels + frontend fetch URLs). control 1068 / proxy 754 / api_smoke 8 green.
+- [ ] **P3 deferred (cosmetic polish, non-blocking)** — backend-CA *upload* + per-pool drawer editing
+      (read-only today; needs audited PUT + cas_set, pairs with P4); rename audit ACTION names
+      `mtls_*`→`zero_trust_*`; rename break-glass env `AEGIS_MTLS_BREAK_GLASS`/`mtls_break_glass_active`;
+      consolidate `api/mtls*.rs` files into `api/zero_trust`. Decision (2026-06-09): P3 uploads/downloads
+      PUBLIC material only; private-key upload + encryption-at-rest is P4 (key stays a YAML `key_ref` path).
+      **Verification owed:** live visual/E2E render of the page (build + JS parse + unit tests pass; browser not yet checked).
 - [ ] **P4** Shared identity in config plane (key envelope-encrypted); rotate; per-upstream
       override; expiry badges; upstream failure surface.
 - [ ] **P5** Hot rotation on cas_set; session resumption; optional SPIFFE-SAN matcher.
