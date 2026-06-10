@@ -111,6 +111,13 @@ pub struct DashboardServices {
     /// drain task subscribes to. Used by `/dashboard/sse` (B4-T4)
     /// and any future streaming surface that needs live events.
     pub bus: AuditBus,
+    /// Cluster Phase 2 (§2b) — separate fleet-event bus carrying
+    /// **peers'** events for the cross-node SSE feed. `None` for
+    /// single-node / cluster-off; `Some` when `aegis-proxy` wires the
+    /// Redis fanout. Kept distinct from `bus` so remote events reach
+    /// the dashboard SSE only, never this node's durable sinks / audit
+    /// chain (which stay "this node's decisions" — cluster plan §10).
+    pub fleet_event_bus: Option<AuditBus>,
     /// Live leaderless cluster-roster view. `None` for single-node /
     /// test builds; `Some` when `aegis-proxy::run` wires the
     /// `members:*` roster-poll background task. See
@@ -585,6 +592,10 @@ impl DashboardServices {
                 session_idle_seconds,
                 environment,
                 bus: bus_handle,
+                // Cluster Phase 2 fleet-event bus is opted in by
+                // `aegis-proxy::accept` after construction (next to
+                // the roster wiring), gated on Redis + cluster config.
+                fleet_event_bus: None,
                 roster_view,
                 // Interop contract is opted in by the bin
                 // crate after construction (see

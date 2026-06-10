@@ -81,7 +81,7 @@ Stable identity for HA clustering. Required when `state.backend: redis`.
 
 | Field | Default | Notes |
 |---|---|---|
-| `id` | `waf-1` | Used for leader election + audit `node_id` field |
+| `id` | `waf-1` | Node identity — surfaces in `/api/cluster.our_node`, the `members:<id>` heartbeat key, and audit `node_id`. The cluster is leaderless (no election). |
 | `region` | `unknown` | Optional region tag — surfaces in audit + dashboard |
 
 ```yaml
@@ -89,6 +89,44 @@ node:
   id: waf-a
   region: us-east-1
 ```
+
+Deep-dive: [`docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md).
+
+---
+
+## `cluster`
+
+Leaderless multi-node sync. Optional — the whole block defaults off, and
+every mechanism is additionally gated at boot on a shared (`state.backend:
+redis`) backend, so a single-node deploy pays nothing.
+
+### `cluster.fleet_events`
+
+Cross-node **live event feed** (cluster plan Phase 2). When enabled (and Redis
+is present), each node publishes its security decisions to a shared Redis
+pub/sub channel and re-streams peers' events onto its own dashboard SSE feed —
+so an operator on *any* node sees the whole fleet's events within the ≤ 5 s SLA.
+
+| Field | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | Off ⇒ events are local-only (single-node behaviour). On + Redis ⇒ cross-node fanout. |
+| `channel` | `fleet:events` | Redis pub/sub channel. All nodes in one cluster must agree. |
+| `max_publish_rate_per_s` | `500` | Bounded-loss guard — above this a node samples/drops so a flood can't amplify the monitor feed. `0` = unlimited. |
+
+```yaml
+cluster:
+  fleet_events:
+    enabled: true
+    channel: "fleet:events"
+    max_publish_rate_per_s: 500
+```
+
+**Lossy by design:** this is a *monitor* feed, not the durable audit record.
+Redis down ⇒ cross-node events stop and each dashboard falls back to its own
+local feed; the request path is never affected. Remote events stream to the SSE
+console only — they do **not** enter this node's `waf_audit.log` / syslog sinks,
+which stay "this node's decisions" (SigNoz + local files remain the source of
+truth).
 
 Deep-dive: [`docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md).
 

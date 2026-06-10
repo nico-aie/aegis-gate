@@ -34,6 +34,75 @@ use crate::admin_dispatch::{handle_admin_request, read_cert_inventory, stamp_int
 use crate::admin_sse;
 use crate::data_plane::handle_data_request;
 
+#[cfg(feature = "redis")]
+/// Broadcast capacity for the fleet-event bus (cluster Phase 2). Peers'
+/// events fan in here for the SSE merge; a slow dashboard drops the
+/// oldest (lossy monitor feed).
+const FLEET_EVENT_BUS_CAP: usize = 1024;
+
+/// Cluster Phase 2 (§2b) — wire the cross-node event fanout when
+/// `cluster.fleet_events` is enabled AND a Redis state backend is
+/// configured. Spawns the publisher (drains the local bus → Redis) and
+/// subscriber (Redis → the returned fleet bus) tasks, and returns the
+/// fleet-event bus the dashboard SSE merges in. Returns `None` for
+/// single-node / cluster-off / non-redis builds — the SSE feed then
+/// stays local-only (today's behaviour), and nothing is spawned.
+fn spawn_fleet_event_fanout(
+    cfg: &WafConfig,
+    local_bus: &AuditBus,
+    our_node: &str,
+) -> Option<AuditBus> {
+    let fe = &cfg.cluster.fleet_events;
+    if !fe.enabled
+        || !matches!(cfg.state.backend, aegis_core::config::StateBackendKind::Redis)
+    {
+        return None;
+    }
+    #[cfg(feature = "redis")]
+    {
+        let Some(url) = cfg.state.redis.as_ref().and_then(|r| r.urls.first().cloned()) else {
+            tracing::warn!("cluster.fleet_events enabled but no redis url; cross-node feed disabled");
+            return None;
+        };
+        match crate::state::RedisFleetBus::connect(&url) {
+            Ok(fb) => {
+                let fb: Arc<dyn aegis_core::fleet::FleetBus> = Arc::new(fb);
+                let fleet_event_bus = AuditBus::new(FLEET_EVENT_BUS_CAP);
+                crate::fleet_events::spawn_fleet_publisher(
+                    local_bus.clone(),
+                    Arc::clone(&fb),
+                    fe.channel.clone(),
+                    our_node.to_string(),
+                    fe.max_publish_rate_per_s,
+                );
+                crate::fleet_events::spawn_fleet_subscriber(
+                    fb,
+                    fe.channel.clone(),
+                    fleet_event_bus.clone(),
+                    our_node.to_string(),
+                );
+                tracing::info!(
+                    channel = %fe.channel,
+                    "cluster fleet events: cross-node fanout active"
+                );
+                Some(fleet_event_bus)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "cluster.fleet_events: redis connect failed; cross-node feed disabled");
+                None
+            }
+        }
+    }
+    #[cfg(not(feature = "redis"))]
+    {
+        let _ = (local_bus, our_node);
+        tracing::warn!(
+            "cluster.fleet_events enabled but binary built without the `redis` feature; cross-node feed disabled"
+        );
+        None
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn admin_accept_loop(
     tcp: tokio::net::TcpListener,
@@ -350,6 +419,16 @@ pub(crate) async fn admin_accept_loop(
         });
     }
 
+    // Cluster Phase 2 (§2b) — cross-node fleet event fanout. Clones
+    // the local bus for the publisher BEFORE `bus` is moved into the
+    // services constructor below. `None` (single-node / cluster-off /
+    // non-redis) keeps the SSE feed local-only.
+    let fleet_event_bus = spawn_fleet_event_fanout(
+        &cfg,
+        &bus,
+        lease_store.self_id().as_str(),
+    );
+
     let (services, _drain) = aegis_control::dashboard_services::DashboardServices::spawn_with_mask_and_roster(
         bus,
         pool_provider,
@@ -382,6 +461,8 @@ pub(crate) async fn admin_accept_loop(
     services.blacklist = upstream_ctx.blacklist.clone();
     services.whitelist = upstream_ctx.whitelist.clone();
     services.interop = interop.clone();
+    // Cluster Phase 2 — the dashboard SSE handler merges this in.
+    services.fleet_event_bus = fleet_event_bus;
     // SC-1 — expose the data-plane response cache stats to GET /api/cache/stats
     // via a JSON-returning closure (keeps aegis-control free of aegis-proxy
     // types). Empty pools map until an upstream opts into `cache:`.
@@ -1137,6 +1218,7 @@ pub(crate) async fn admin_accept_loop(
                         let query = req.uri().query().unwrap_or("").to_string();
                         return Ok::<_, Infallible>(admin_sse::sse_response(
                             &services.bus,
+                            services.fleet_event_bus.as_ref(),
                             &query,
                         ));
                     }

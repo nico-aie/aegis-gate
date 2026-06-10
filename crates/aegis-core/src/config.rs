@@ -142,6 +142,12 @@ pub struct WafConfig {
     /// a stable per-pod identifier (k8s `${POD_NAME}`, hostname).
     #[serde(default)]
     pub node: NodeConfig,
+    /// Cluster-mode knobs (leaderless multi-node sync). Optional —
+    /// the whole block defaults off, and every mechanism is further
+    /// gated on a shared (Redis) state backend being present, so a
+    /// single-node deploy pays nothing. See [`ClusterConfig`].
+    #[serde(default)]
+    pub cluster: ClusterConfig,
     /// Tokio runtime tuning (Layer-1 worker scaling, post-HA).
     /// Surfaces the in-process knobs operators need to size the
     /// gateway against host CPU. Restart-only — tokio runtimes
@@ -301,6 +307,61 @@ pub struct NodeConfig {
     /// audit log entries, lease holder strings.
     #[serde(default)]
     pub id: Option<String>,
+}
+
+/// Cluster-mode configuration (leaderless multi-node sync). Every
+/// sub-block is opt-in and additionally gated at boot on a shared
+/// state backend being present — a single-node (`in_memory`) deploy
+/// never spawns the fleet tasks, so it pays nothing.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ClusterConfig {
+    /// Cross-node live event feed (cluster plan Phase 2, §2b — the
+    /// ≤ 5 s logs/events SLA path).
+    #[serde(default)]
+    pub fleet_events: FleetEventsConfig,
+}
+
+/// Cross-node event fanout over Redis pub/sub. When enabled (and a
+/// Redis backend is present), each node publishes its security
+/// decisions to a shared channel and re-streams peers' events onto its
+/// own dashboard SSE feed — so an operator on any node sees the whole
+/// fleet's events within the ≤ 5 s SLA. Lossy by design (a monitor
+/// feed, not the durable audit record); Redis down ⇒ each dashboard
+/// falls back to its own local events.
+#[derive(Clone, Debug, Deserialize)]
+pub struct FleetEventsConfig {
+    /// Off ⇒ events are local-only (today's single-node behaviour).
+    /// On + Redis present ⇒ cross-node fanout is wired.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Redis pub/sub channel the fleet shares. All nodes in one
+    /// cluster must agree on this value.
+    #[serde(default = "default_fleet_events_channel")]
+    pub channel: String,
+    /// Bounded-loss guard: cap on events published per second. Above
+    /// this the node samples/drops so a traffic flood can't turn the
+    /// monitor feed into a write amplifier (the local bus + SigNoz
+    /// stay the complete record).
+    #[serde(default = "default_fleet_events_max_rate")]
+    pub max_publish_rate_per_s: u32,
+}
+
+fn default_fleet_events_channel() -> String {
+    "fleet:events".to_string()
+}
+
+fn default_fleet_events_max_rate() -> u32 {
+    500
+}
+
+impl Default for FleetEventsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            channel: default_fleet_events_channel(),
+            max_publish_rate_per_s: default_fleet_events_max_rate(),
+        }
+    }
 }
 
 /// MaxMind GeoIP databases (CI-T8). Path-only — the actual

@@ -40,6 +40,7 @@ mod admin_mutate;
 mod ai_reload;
 pub mod cache;
 mod data_plane;
+pub mod fleet_events;
 mod responses;
 mod run;
 pub use run::{run, ConfigReloadSource};

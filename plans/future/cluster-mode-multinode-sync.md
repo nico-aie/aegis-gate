@@ -433,18 +433,32 @@ an L7 SNAT LB now works too once you set `proxy.trusted_proxies` to its CIDRs.
   auto-hides); the leaderless frontend cleanup (`app.jsx`/`pages.jsx`/`data.jsx`
   mock) + HA docs/openapi land in Phase 4.
 
-### Phase 2 — fleet **event fanout** (§2b) — *SLA-critical, do this first of the new work*
-- Needs a Redis pub/sub primitive on `StateBackend` (or a thin sibling trait):
-  `publish(channel, bytes)` + a `subscribe(channel) -> Stream`. The in-memory
-  backend stubs it (single-node = local bus already complete); the Redis backend
-  implements it over a **dedicated** pub/sub connection (separate from the
-  command pool so a slow subscriber can't stall state calls).
-- Fanout tap: where events hit the local `AuditBus`, also `PUBLISH fleet:events`
-  (best-effort, rate-capped, `remote`-flag to break loops).
-- One subscriber task per node re-injects remote events into the local bus.
-- **Test:** 2-node — an event generated on node A appears on node B's SSE stream
-  in < 5 s (assert < 1 s typical); Redis-down → node B still streams its **own**
-  events; loop guard verified (a republished event isn't re-emitted).
+### Phase 2 — fleet **event fanout** (§2b) — ✅ LANDED (2026-06-10, branch `feat/cluster-phase2-fleet-events`)
+- ✅ **Sibling trait** `aegis_core::fleet::FleetBus` (`publish(channel, bytes)` +
+  `subscribe(channel, bound) -> mpsc::Receiver`) — **not** on `StateBackend`
+  (9+ impls). `NoopFleetBus` for single-node; `aegis_proxy::state::RedisFleetBus`
+  (feature `redis`) over a **dedicated** `redis::Client` pub/sub connection,
+  separate from the deadpool command pool (§7 hot-path contract).
+- ✅ **Publisher** (`fleet_events::spawn_fleet_publisher`) drains the local
+  `AuditBus`, rate-caps (`max_publish_rate_per_s`), origin-tags, best-effort
+  `PUBLISH`es to `cluster.fleet_events.channel`.
+- ✅ **Subscriber** (`spawn_fleet_subscriber`) re-emits peers' events onto a
+  **separate** fleet-event bus the dashboard SSE merges in (`admin_sse` merges a
+  second broadcast receiver) — **SSE-only** (operator decision 2026-06-10): remote
+  events do NOT enter this node's durable sinks / audit chain (cluster plan §10).
+- ✅ **Loop/echo guard — structural, no `remote` flag.** The plan's per-event
+  `remote: bool` was dropped: `AuditEvent` has **128 construction sites**. Instead
+  (a) the publisher reads the *local* bus while remote events land on the *fleet*
+  bus it never reads, and (b) since Redis echoes a PUBLISH back to the publisher,
+  the subscriber drops events whose `origin_node` (stamped into `fields`, no struct
+  change) is *us*. End-to-end test proves B sees A's event and A doesn't loop.
+- ✅ Config `cluster.fleet_events.{enabled,channel,max_publish_rate_per_s}` (off by
+  default, gated on `state.backend: redis`); wired in `accept::spawn_fleet_event_fanout`
+  (single-node spawns nothing). `config/REFERENCE.md` updated.
+- **Tests:** aegis-core fleet 2, aegis-proxy fleet_events 6 (incl. in-process
+  end-to-end + echo-drop), admin_sse merge green; default 786 / redis 809 / core 291
+  / control 1074. **Live 2-node SSE-propagation verification deferred to the
+  `tests/cluster/` rig (Task 5 / Phase-1 follow-up) — needs Redis + 2 processes.**
 
 ### Phase 3 — fleet snapshot publish + merge (§5, §2a) — *metrics gauges*
 - `aegis-control/src/metrics/fleet_snapshot.rs`: snapshot serializer (incl.
