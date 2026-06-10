@@ -59,9 +59,12 @@ This breaks the contract's determinism guarantee (§2.4/§2.5) whenever the flee
    `control:waf:*` key) so a single call converges to all nodes (same mechanism that
    already syncs detectors/`ai.enabled`). Add a `scope: node|cluster` field
    (default `cluster`) to the request so the OC can pick.
-3. **Verification:** extend `tests/cluster/` with a 2-node test asserting
-   `set_profile` on node A changes node B's `X-WAF-Mode`, and `reset_state` clears
-   node B's local risk cache.
+3. **Verification:** ✅ DONE (2026-06-10) — `tests/cluster/07-control-plane-sync.sh`
+   asserts `set_profile {all,log_only}` on node A flips node B's `X-WAF-Mode`
+   (observed via the data-plane response header: SQLi probe goes 403→200+log_only),
+   and that `reset_state` is accepted fleet-wide. (Also fixed a config-path bug that
+   had been silently skipping the whole `tests/cluster/` rig.) The medium /
+   cluster-native propagation (#2) shipped as C-1 / cluster plan Phase 0.
 
 ---
 
