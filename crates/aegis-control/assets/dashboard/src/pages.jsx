@@ -111,6 +111,49 @@ const CAT_COLOR = {
 };
 function colorFor(name) { return CAT_COLOR[name] || stableHueColor(name); }
 
+// C-3 (multi-node consistency) — clarify that the per-node traffic
+// metrics on this page (RPS, Top Attackers, latency, action mix) reflect
+// THIS node's slice of the fleet's traffic, not cluster totals. The
+// admin console reads a node-local Prometheus registry, while shared
+// state (risk, block-list, config) is consistent via Redis — so a
+// single node's "Top Attackers" / "RPS" is only ~1/N of the picture
+// behind a load balancer. Rendered only when the cluster roster shows
+// more than one node, so single-node deployments stay uncluttered.
+// Fleet-wide aggregation lives in the observability stack (SigNoz),
+// keyed by host.name — see plans/issues/multi-node-consistency.md (C-3).
+function FleetNodeBanner() {
+  const cluster = window.useClusterApi ? window.useClusterApi() : { data: null };
+  const peers = cluster.data?.peers || [];
+  if (peers.length < 2) return null; // single node → no banner
+  const ourNode = cluster.data?.our_node || 'this node';
+  const leader = cluster.data?.leader_node;
+  const isLeader = cluster.data?.is_leader;
+  return (
+    <div
+      className="callout"
+      style={{
+        marginBottom: 12,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        borderLeft: '3px solid var(--accent)',
+      }}
+      role="note"
+    >
+      <span style={{ fontSize: 16 }} aria-hidden="true">🖧</span>
+      <div style={{ flex: 1, fontSize: 13 }}>
+        <strong>{peers.length}-node fleet — showing THIS node</strong>
+        <span style={{ marginLeft: 8, color: 'var(--ink-mute)' }}>
+          Traffic metrics below (RPS, Top Attackers, latency, action mix) are{' '}
+          <code>{ourNode}</code>{isLeader ? ' · leader' : ''}&apos;s slice, not fleet
+          totals.{leader && !isLeader ? <> Leader: <code>{leader}</code>.</> : null} For
+          fleet-wide totals use your observability dashboards.
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function PageOverview() {
   const stats = window.useStatsApi();              // /api/stats — request_rate, blocks_total, block_rate_pct
   // 2026-05-03 — Overview Upstream card used to read
@@ -298,6 +341,7 @@ function PageOverview() {
 
   return (
     <>
+      <FleetNodeBanner />
       <SecOpsPostureCard />
       <div className="page-head">
         <div>
