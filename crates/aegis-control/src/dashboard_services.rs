@@ -269,7 +269,7 @@ pub struct DashboardServices {
     /// Always present; starts at "no override" (resolves to the
     /// configured value). PUT /api/mtls/mode swaps the override
     /// in-process.
-    pub mtls_mode_store: std::sync::Arc<crate::api::mtls_mode::DownstreamMtlsModeStore>,
+    pub mtls_mode_store: std::sync::Arc<crate::api::zero_trust::mode::DownstreamMtlsModeStore>,
     /// MTLS-T10 — operator opt-in for the dashboard's CA bundle
     /// upload card. Mirrors `cfg.admin.dashboard_auth.allow_ca_upload`.
     /// Default `false` so trust anchors stay GitOps-managed
@@ -282,7 +282,7 @@ pub struct DashboardServices {
     /// invokes `swap_pem` to hot-swap roots; when the slot is
     /// `None` it falls back to the Phase 1 preview-only behaviour.
     pub trust_anchor_writer:
-        Option<std::sync::Arc<dyn crate::api::mtls_ca_bundle::TrustAnchorWriter>>,
+        Option<std::sync::Arc<dyn crate::api::zero_trust::ca_bundle::TrustAnchorWriter>>,
     /// HACK-T3 — shared detector list for the `/api/rules/simulate`
     /// preview endpoint (Tier-A bonus). Same `Vec<Box<dyn Detector>>`
     /// the data-plane `accept_loop` runs, so the simulator and live
@@ -314,7 +314,7 @@ pub struct DashboardServices {
     /// admission. `None` for test bundles → identity extraction
     /// behaves as before (no allowlist gate).
     pub allowed_sans:
-        Option<crate::api::mtls::AllowedSansStore>,
+        Option<crate::api::zero_trust::downstream::AllowedSansStore>,
     /// 2026-05-09 — DDoS request-flow gate runtime. Wired by
     /// `aegis-proxy::run` from `cfg.ddos`. `None` when
     /// `cfg.ddos.enabled = false` or for test bundles that don't
@@ -648,7 +648,7 @@ impl DashboardServices {
                 // MTLS-T8 — empty override at boot. The proxy may
                 // seed it from a persisted file or YAML if needed.
                 mtls_mode_store: std::sync::Arc::new(
-                    crate::api::mtls_mode::DownstreamMtlsModeStore::new(),
+                    crate::api::zero_trust::mode::DownstreamMtlsModeStore::new(),
                 ),
                 // MTLS-T10 — default off; proxy boot path overrides
                 // from cfg.admin.dashboard_auth.allow_ca_upload.

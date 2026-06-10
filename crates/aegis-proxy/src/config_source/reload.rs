@@ -633,7 +633,7 @@ pub enum ClientAuthReloadOutcome {
     /// New CA bundle parsed and atomic-swapped into the live
     /// store. `cert_count` is the number of trust anchors in
     /// the new bundle (operators see this in the
-    /// `mtls_reloaded` audit event).
+    /// `zero_trust_reloaded` audit event).
     Applied {
         cert_count: usize,
         mode: aegis_core::config::DownstreamMtlsMode,
@@ -653,7 +653,7 @@ pub enum ClientAuthReloadOutcome {
     MissingCaBundle,
     /// PEM parse / chain validation of the new bundle failed.
     /// The previous trust store stays live; operators see
-    /// `mtls_reload_failed` in the audit chain. Common
+    /// `zero_trust_reload_failed` in the audit chain. Common
     /// causes: missing file, no `BEGIN CERTIFICATE` blocks,
     /// or an unsupported CA encoding.
     Failed { reason: String },
@@ -670,7 +670,7 @@ pub enum ClientAuthReloadOutcome {
 ///
 /// **Disk read errors** + **PEM parse failures** keep the
 /// previous store live and return [`ClientAuthReloadOutcome::Failed`]
-/// so the watcher can emit `mtls_reload_failed` for audit.
+/// so the watcher can emit `zero_trust_reload_failed` for audit.
 pub fn apply_cfg_change_to_client_auth(
     new_cfg: &WafConfig,
     trust_store: Option<&ClientTrustStore>,

@@ -378,10 +378,13 @@ traffic yet, so the temporary downstream-enforcement gap during the hard cut is 
 - [x] **P1** Downstream parity green: config 270, tls_policy 21, reload(client_auth) 5,
       control mtls 37 — all pass. Real profile `config/profiles/prod-strict.yaml`
       migrated + `validate` CLI OK.
-- [ ] **P1→P3** Delete `api/mtls.rs`/`mtls_ca_bundle.rs`/`mtls_mode.rs`, rename routes
-      (`admin_get`/`admin_dispatch`/`admin_mutate`/`api/mod`) to `/api/zero-trust/*`,
-      remove the 3 `PageSettings` cards (pages.jsx 6252–6254) + defs + `data.jsx` hooks,
-      reconcile `AEGIS_MTLS_BREAK_GLASS` env/`mtls_break_glass_active` field. **(moved to P3)**
+- [x] **P1→P3** Routes already renamed to `/api/zero-trust/*` (P3 hard cut) + 3 `PageSettings`
+      cards relocated/removed (P3 slice 2). **Remnant cleanup DONE (2026-06-10, branch
+      `refactor/mtls-to-zero-trust-cleanup`):** the 3 `api/mtls*.rs` files are now
+      `api/zero_trust/{downstream,ca_bundle,mode}.rs` (directory module; ~30 internal ref sites
+      across both crates rewired); `AEGIS_MTLS_BREAK_GLASS` → `AEGIS_ZERO_TRUST_BREAK_GLASS`;
+      `/api/about` field `mtls_break_glass_active` → `zero_trust_break_glass_active` (+ `app.jsx`
+      reader in lockstep). See the consolidated entry below for audit-action renames.
 - [x] **P2** `zero_trust.upstream_identity` (`UpstreamIdentityConfig`, source file|state) +
       `PoolConfig.upstream_mtls` (`UpstreamMtlsConfig`) + `validate_upstream_mtls`
       (enabled⇒identity+TLS; client_cert_ref/verify:false/allowed_sans/source:state rejected as P4/P5).
@@ -404,10 +407,21 @@ traffic yet, so the temporary downstream-enforcement gap during the hard cut is 
       mode/CA-bundle/SANs cards relocated off Settings (Settings keeps a breadcrumb). Bundle rebuilt.
 - [x] **P3 hard cut** `/api/mtls/*` → `/api/zero-trust/downstream/*` renamed in lockstep (backend
       route matches + audit resource labels + frontend fetch URLs). control 1068 / proxy 754 / api_smoke 8 green.
-- [ ] **P3 deferred (cosmetic polish, non-blocking)** — backend-CA *upload* + per-pool drawer editing
-      (read-only today; needs audited PUT + cas_set, pairs with P4); rename audit ACTION names
-      `mtls_*`→`zero_trust_*`; rename break-glass env `AEGIS_MTLS_BREAK_GLASS`/`mtls_break_glass_active`;
-      consolidate `api/mtls*.rs` files into `api/zero_trust`. Decision (2026-06-09): P3 uploads/downloads
+- [x] **P3 deferred remnants — DONE (2026-06-10, branch `refactor/mtls-to-zero-trust-cleanup`).**
+      Backend-CA upload + per-pool drawer editing already landed in P4. This pass finished the
+      naming cleanup: **audit ACTION names** `mtls_*` → `zero_trust_*` (`zero_trust_sans_set`,
+      `zero_trust_sans_removed`, `zero_trust_ca_bundle_validated`, `zero_trust_ca_bundle_swapped`,
+      `zero_trust_mode_set`, `zero_trust_mode_clear`, `zero_trust_reloaded`,
+      `zero_trust_reload_failed`, `zero_trust_break_glass_active`,
+      `zero_trust_break_glass_heartbeat` — `rollback.rs` replay match arm + emitters updated in
+      lockstep); break-glass env + `/api/about` field renamed (see entry above);
+      `api/mtls*.rs` consolidated into the `api/zero_trust/` directory module. Full clean rename,
+      **no back-compat** (pre-prod, agreed with Nico 2026-06-10). **Kept intentionally** (protocol
+      terms, not stale branding): the `mtls_required` block-decision reason, the
+      `DownstreamMtlsMode*` types, the `handle_mtls_sans_*`/`apply_mtls_sans_rollback` handler
+      names, and the `admin.dashboard_auth.mtls_required` config key. Gates: workspace builds;
+      aegis-control 1080 + aegis-core 289 + aegis-proxy 781 + api_smoke/dod/dashboard_polish green;
+      dashboard bundle rebuilt. Decision (2026-06-09): P3 uploads/downloads
       PUBLIC material only; private-key upload + encryption-at-rest is P4 (key stays a YAML `key_ref` path).
       **Verification DONE (2026-06-09):** live headless-Chromium render against the running WAF
       (debug binary, in_memory config) — page renders, both sections present, relocated downstream

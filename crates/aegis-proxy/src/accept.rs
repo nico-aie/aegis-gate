@@ -718,7 +718,7 @@ pub(crate) async fn admin_accept_loop(
             .map(|ca| ca.mode)
             .unwrap_or(aegis_core::config::DownstreamMtlsMode::Disabled);
         services.mtls_mode_store = Arc::new(
-            aegis_control::api::mtls_mode::DownstreamMtlsModeStore::with_configured(configured_mode),
+            aegis_control::api::zero_trust::mode::DownstreamMtlsModeStore::with_configured(configured_mode),
         );
     }
     // MTLS-T10 — surface the operator's opt-in for the CA bundle
@@ -729,7 +729,7 @@ pub(crate) async fn admin_accept_loop(
     // writer so the audit-mutated PUT handler can hot-swap roots.
     services.trust_anchor_writer = client_trust
         .clone()
-        .map(|store| -> Arc<dyn aegis_control::api::mtls_ca_bundle::TrustAnchorWriter> {
+        .map(|store| -> Arc<dyn aegis_control::api::zero_trust::ca_bundle::TrustAnchorWriter> {
             Arc::new(store)
         });
     // SC-T1 — wire the live `StateBackend` so `/api/state` can
@@ -824,7 +824,7 @@ pub(crate) async fn admin_accept_loop(
             .map(|ca| ca.allowed_sans.clone())
             .unwrap_or_default();
         services.allowed_sans = Some(
-            aegis_control::api::mtls::AllowedSansStore::from(initial),
+            aegis_control::api::zero_trust::downstream::AllowedSansStore::from(initial),
         );
     }
 

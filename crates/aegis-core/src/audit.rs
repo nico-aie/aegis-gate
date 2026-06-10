@@ -9,7 +9,7 @@ use crate::tier::Tier;
 /// Six canonical wire actions from the v2.3 §3 decision-class
 /// table, plus an `Other(String)` escape hatch for admin /
 /// system events that emit free-form operation tags
-/// (`rule_create`, `mtls_ca_bundle_swapped`, `loadmode_set`, …).
+/// (`rule_create`, `zero_trust_ca_bundle_swapped`, `loadmode_set`, …).
 /// The escape hatch is necessary: the codebase has 60+ distinct
 /// admin-event action strings that don't fit a closed enum.
 ///
@@ -39,7 +39,7 @@ pub enum AuditAction {
     /// v2.3 §3 — circuit-breaker (upstream-protection rejection).
     CircuitBreaker,
     /// Admin / system event (e.g. `rule_create`, `mode_set`,
-    /// `mtls_ca_bundle_swapped`). Not part of the §3 wire
+    /// `zero_trust_ca_bundle_swapped`). Not part of the §3 wire
     /// action set; flows through the audit log for forensic
     /// correlation with the same field name.
     Other(String),
@@ -652,8 +652,8 @@ mod tests {
             AuditAction::Other("rule_create".into())
         );
         assert_eq!(
-            AuditAction::from("mtls_ca_bundle_swapped"),
-            AuditAction::Other("mtls_ca_bundle_swapped".into())
+            AuditAction::from("zero_trust_ca_bundle_swapped"),
+            AuditAction::Other("zero_trust_ca_bundle_swapped".into())
         );
     }
 
