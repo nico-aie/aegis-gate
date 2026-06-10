@@ -39,9 +39,9 @@
                           └─────────┬─────────┘
                                     ▼  (private network)
                  VM1  infra:  Redis :6379 · mock (http/ws/grpc/tcp) · SigNoz :4317
-                 both WAF nodes → VM1 Redis  ⇒ ONE cluster
-                 (shared rate-limit · cumulative risk · config plane · leader lease ·
-                  block-list union · fleet-wide metrics)
+                 both WAF nodes → VM1 Redis  ⇒ ONE cluster (leaderless)
+                 (shared rate-limit · cumulative risk · config plane · task leases ·
+                  block-list union · fleet events + merged metrics on every node)
 ```
 
 | VM | Role | Public | Private |
@@ -153,8 +153,9 @@ LLM_API_KEY="$(cat /etc/aegis/llm.key)"   # only if copilot enabled \
 ```
 
 Per-node requirements:
-- **Unique `node.id`** (`waf-a`, `waf-b`) — leader lease + per-node ACK +
-  metrics aggregation.
+- **Unique `node.id`** (`waf-a`, `waf-b`) — surfaces in `/api/cluster.our_node`,
+  the `members:<id>` heartbeat, per-node ACK, and fleet snapshots. The cluster is
+  **leaderless** — every node is equal (no leader election).
 - **Same `state.redis.urls`** (VM1) on both → that's what makes them **one
   cluster** (shared rate-limit, risk, config plane, leases, block-list union).
 - **Data listeners bind public** (`0.0.0.0:443` TLS, `0.0.0.0:80` redirect,
@@ -173,9 +174,24 @@ Default-deny everything else (cloud security group / nftables / ufw).
 
 ### Config once, converge everywhere
 Edit detectors / rules / tiers / upstream pools / AI-toggle on **either** node
-(dashboard or `PUT /api/config`) → converges on both within ~3 s, surviving
-restart + leader failover. Don't hand-edit each node's YAML.
+(dashboard or `PUT /api/config`) → converges on both within ~3 s (or ms with
+`cluster.pubsub_nudge`), surviving restart. Don't hand-edit each node's YAML.
 See [`CONFIG-PLANE-RUNBOOK.md`](./CONFIG-PLANE-RUNBOOK.md).
+
+### Cross-node console sync (leaderless)
+Hitting **any** node's dashboard shows the whole fleet, not just that node's slice:
+- **Live events** (`cluster.fleet_events.enabled`) — each node's security
+  decisions fan out via Redis pub/sub to every node's SSE feed within ≤ 5 s.
+- **Merged metrics** (`cluster.fleet_view.enabled`) — RPS / latency p50·p95·p99 /
+  top-attackers / by-detector / bot-mix merged across nodes; `/api/stats` reports
+  `fleet_nodes`, and the console banner flips to "Fleet view (N nodes)".
+- **`cluster.pubsub_nudge`** — config/control changes (`set_profile`,
+  `reset_state`) converge in ms instead of seconds.
+- **`/api/cluster`** is a flat roster (`peers` + `our_node`, no leader badge).
+- Forensic audit: each node keeps its own `waf_audit.log`; merge fleet-wide with
+  [`collect-audit.sh`](./collect-audit.sh) (joins by `request_id`, orders by `ts_ms`).
+See [`docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md) +
+[`config/REFERENCE.md`](../config/REFERENCE.md) §`cluster`.
 
 ---
 

@@ -46,6 +46,7 @@ show me the contract checks before declaring done.
 | Log verbosity | **cap via `RUST_LOG`** | deps log at TRACE → floods SigNoz. `RUST_LOG="info,hyper=warn,hyper_util=warn,h2=warn,tower=warn,rustls=warn"` |
 | TLS | **Deferred** (plaintext `:8080`) | add a shared cert per node when ready (guide §7) |
 | Control-plane secret | `waf-hackathon-2026-ctrl` | contract §2.2 `X-Benchmark-Secret` |
+| Cross-node console | **ON** — `cluster.{fleet_events,fleet_view}.enabled: true` + `pubsub_nudge: true` | leaderless; every node's dashboard shows the whole fleet (live events ≤5s + merged metrics), so the console can be hit on any node. PRE-PROD-DEPLOY §10a |
 
 **Things the assistant MUST still ask you** (don't pre-answer — they're real-time
 or sensitive): the actual **WAF node IPs/hostnames**, the **LLM_API_KEY** value,
@@ -61,7 +62,9 @@ the **TLS cert/domain** when you stop deferring, and confirmation before
   `/__waf_control/capabilities` 200 with the secret / 403 without; `reset_state`
   + `set_profile` work; audit log is JSONL with the §6 fields; traces
   (`serviceName=aegis-gate`) visible in SigNoz.
-- Cluster: every node shows the same `/api/config` version (shared Redis).
+- Cluster (leaderless): every node shows the same `/api/config` version (shared
+  Redis); `/api/cluster` lists both nodes as flat `peers` + `our_node` (no
+  `is_leader`); with fleet-view on, `/api/stats` carries `fleet_nodes` ≥ 2.
 
 ## 5. Gotchas the assistant should expect
 

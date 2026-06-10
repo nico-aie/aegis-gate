@@ -240,7 +240,8 @@ Test: `curl -k https://<node>:8443/` → 200, and now the WAF computes JA4 →
 before `./waf run`** or the `:8443` listener fails to bind.
 
 ### 7b. Production — one shared cert via DNS-01
-In-WAF ACME is **leader-only / not fleet-aware**, so don't use it for a fleet.
+In-WAF ACME runs on a **single node** (the `acme` task-lease holder) and is **not
+fleet-aware** (the cert isn't distributed to the other nodes), so don't use it for a fleet.
 Issue ONE wildcard / multi-SAN cert out-of-band with **DNS-01** (no per-node HTTP
 challenge to route), deploy the SAME PEM to every node, ACME off:
 ```sh
@@ -320,6 +321,47 @@ tail -1 ./waf_audit.log                                                         
 # Traces: open SigNoz http://10.20.0.72:8090 → Traces → serviceName=aegis-gate
 #   (one service, spans tagged by node via resource attributes / node.id)
 ```
+
+---
+
+## 10a. Cross-node admin console — LB to any node
+
+The cluster is **leaderless** and every node's console now renders the **whole
+fleet**, not just its own slice — so you can put an LB in front of the admin
+consoles and operators hit **any** node (round-robin / pick-any). No "must hit
+the leader" anymore. Enable the cross-node sync (shared Redis required):
+
+```yaml
+cluster:
+  fleet_events: { enabled: true }   # peers' live events → every node's SSE (≤5s)
+  fleet_view:   { enabled: true }   # RPS / latency / top-attackers merged on read
+  pubsub_nudge: true                # set_profile/reset_state converge in ms
+```
+
+With these on, `/api/stats` carries `fleet_nodes` and the dashboard banner shows
+**"Fleet view (N nodes)"**; `/api/cluster` is a flat roster (`peers` + `our_node`,
+no leader badge).
+
+**Three things to get right when LB-ing the console plane** (cluster plan §5.5):
+
+1. **Expose the admin listener.** It binds `127.0.0.1:9443` by default (that's why
+   you port-forward today). To LB it, bind admin to a routable interface and keep
+   it locked down — admin-auth is already on; add a network ACL / private subnet /
+   mTLS. **Never expose `:9443` to the public internet.**
+2. **Stream the SSE feed.** `/dashboard/sse` is a long-lived `text/event-stream`.
+   The LB must do **streaming pass-through** — disable response buffering + a
+   generous read timeout (nginx: `proxy_buffering off; proxy_read_timeout 1h;`).
+   Otherwise events stall in the LB buffer and you blow the ≤5s SLA at the *LB*.
+3. **Share the admin cookie-signing key.** Sessions live in the shared backend, so
+   a login on any node validates on all — but every node must use the **same**
+   `admin.dashboard_auth.csrf_secret`. Sticky affinity is then optional (it only
+   trims SSE-reconnect churn; correctness doesn't need it).
+
+Audit logs stay per-node (the live feed is a lossy monitor); for the complete
+fleet trail merge every node's `waf_audit.log` with
+[`collect-audit.sh`](./collect-audit.sh) (orders by `ts_ms`, joins by `request_id`)
+or query SigNoz. See [`config/REFERENCE.md`](../config/REFERENCE.md) §`cluster` +
+[`docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md).
 
 ---
 
@@ -527,8 +569,8 @@ AEGIS_INSECURE_COOKIES=1 ./waf run --config ./waf.yaml  >> logs/waf.json  2>&1 &
 AEGIS_INSECURE_COOKIES=1 ./waf run --config ./waf2.yaml >> logs/waf2.json 2>&1 &
 cd deploy/compose && docker compose -f nginx-lb.docker-compose.yml up -d   # VIP :8088 → {8443,8444}
 ```
-Verified: both nodes share the Redis cluster (members `waf-infra-1` + `waf-infra-2`,
-shared leader lease).
+Verified: both nodes share the Redis cluster (leaderless — members `waf-infra-1`
++ `waf-infra-2` in `/api/cluster.peers`, shared per-task leases).
 
 ### 15a. Deploying nodes on OTHER machines (the real cluster)
 

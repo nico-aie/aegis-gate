@@ -240,10 +240,12 @@ LLM_API_KEY="$(cat /etc/aegis/llm.key)"   # only if copilot enabled \
 ```
 
 Per-node requirements:
-- **Unique `node.id`** — drives leader lease, per-node ACK, metrics
-  aggregation. Duplicates corrupt the cluster view.
+- **Unique `node.id`** — surfaces in `/api/cluster.our_node`, the `members:<id>`
+  heartbeat, per-node ACK, and fleet snapshots. Duplicates corrupt the cluster
+  view. The cluster is **leaderless** — every node is equal.
 - **Same `state.redis.urls`** on every node — that's what makes one fleet
-  (shared rate-limit, leader lease, **config plane**, block-list union).
+  (shared rate-limit, per-task leases, **config plane**, block-list union,
+  fleet events + merged metrics).
 - **TLS certs on the node** (the WAF now terminates TLS): the profile's
   `tls.certificates`, or the WAF's ACME. HAProxy holds no certs.
 - **Upstream pools** point at the infra mock (`10.0.0.10:9991` etc.) — set in
@@ -256,15 +258,16 @@ Per-node requirements:
 In this topology every WAF node terminates TLS, so **every node needs the
 cert**. The WAF's built-in ACME is **not fleet-aware** (verified in code):
 
-- It's **HTTP-01 only**, **leader-only** (renewal runs on the Redis lease
-  holder), the challenge token lives in an **in-process** store, and the
-  issued cert is persisted **locally on the leader**.
+- It's **HTTP-01 only** and runs on **one node** (whichever holds the `acme`
+  task lease — a leaderless distributed mutex, *not* a cluster leader), the
+  challenge token lives in an **in-process** store, and the issued cert is
+  persisted **locally on that node**.
 - Behind an **L4 (`mode tcp`) LB this breaks two ways:** (1) the CA's
   `http://domain/.well-known/acme-challenge/<token>` request is round-robined
-  and may hit a **follower** that doesn't have the token → validation fails
-  (and L4 can't path-route the challenge to the leader); (2) even when the
-  leader renews, the new cert is **not distributed** to the followers, which
-  keep serving the old one.
+  and may hit a **different node** that doesn't have the token → validation
+  fails (and L4 can't path-route the challenge to the renewing node); (2) even
+  when that node renews, the new cert is **not distributed** to the others,
+  which keep serving the old one.
 
 **So: don't rely on in-WAF ACME in a load-balanced fleet.** Pick one:
 
@@ -272,20 +275,20 @@ cert**. The WAF's built-in ACME is **not fleet-aware** (verified in code):
   a wildcard / multi-SAN cert out-of-band (certbot/cert-manager on the infra
   host, or self-signed for the sim) and deploy the **same** PEM to every WAF
   node via `tls.certificates` (or a `${secret:...}` ref). Renew out-of-band
-  and re-push. No leader, no challenge routing, no distribution problem.
+  and re-push. No single-renewer node, no challenge routing, no distribution problem.
 - **Terminate TLS at the LB instead** — only if you switch to HAProxy
   `mode http` (L7), which gives one cert in one place + LB-side ACME, **but
   loses JA3/JA4** (you're no longer at the edge). Conflicts with this guide's
   goal; listed for completeness.
-- **(Roadmap) Redis-backed ACME** — leader renews, writes the challenge token
-  **and** the issued cert to Redis; followers serve the challenge + hot-load
-  the cert. The right fleet design, **not implemented today**.
+- **(Roadmap) Redis-backed ACME** — the lease-holding node renews, writes the
+  challenge token **and** the issued cert to Redis; the other nodes serve the
+  challenge + hot-load the cert. The right fleet design, **not implemented today**.
 
 **Turn the in-WAF renewal off explicitly:** set `tls.acme.auto_renew: false`
 (2026-06). The WAF then **never contacts the ACME directory** — it only serves
 certs you provision via `tls.certificates` — and logs a boot NOTICE. Use this
 for any of the above (LB-terminated TLS, or out-of-band issuance) so a doomed
-renewal loop doesn't run on the leader. Default is `true` (single-node / edge
+renewal loop doesn't run on the lease-holding node. Default is `true` (single-node / edge
 keeps auto-renewing); a **load-balanced fleet should set it `false`** (or omit
 the `tls.acme` block entirely).
 
@@ -312,24 +315,42 @@ tls:
   (`tls.certificates`) and set `auto_renew: false`. Keeps fingerprinting;
   costs you a cert-distribution step on renewal.
 
-> **Does the leader "need to renew"?** Yes — ACME renewal is leader-only — but
-> leader renewal **alone is not sufficient** in a fleet (challenge routing +
-> cert distribution gaps above). For the sim, a shared provisioned cert
-> sidesteps all of it.
+> **Does one node "need to renew"?** Yes — ACME renewal runs on a single node
+> (the `acme` task-lease holder) — but that renewal **alone is not sufficient**
+> in a fleet (challenge routing + cert distribution gaps above). For the sim, a
+> shared provisioned cert sidesteps all of it.
 
-> **Should HAProxy live on the leader node?** **No.** Leadership is **dynamic**
-> (the Redis lease moves on restart/failover), so pinning the LB to "the
-> leader" breaks the moment leadership shifts. Co-locating the LB with a WAF
-> node also couples lifecycles (draining/upgrading that node takes the whole
-> fleet's ingress down) and contends for resources. **Keep HAProxy on the
-> infra host, independent of every WAF node**, and solve certs with a shared
-> provisioned cert (above) — not by moving the LB.
+> **Should HAProxy live on a WAF node?** **No.** The cluster is leaderless, but
+> the `acme` task-lease holder is still **dynamic** (the Redis lease moves on
+> restart), so pinning the LB to "the renewing node" breaks the moment the lease
+> shifts. Co-locating the LB with a WAF node also couples lifecycles
+> (draining/upgrading that node takes the whole fleet's ingress down) and
+> contends for resources. **Keep HAProxy on the infra host, independent of every
+> WAF node**, and solve certs with a shared provisioned cert (above) — not by
+> moving the LB.
 
 ### Config once, converge everywhere
 With shared Redis, edit detectors / rules / tiers / **upstream pools** /
 AI-toggle on **any** node (dashboard or `PUT /api/config`) — it converges on
-every node within ~3 s, surviving restart + leader failover. **Don't
-hand-edit each node's YAML.** See [`CONFIG-PLANE-RUNBOOK.md`](./CONFIG-PLANE-RUNBOOK.md).
+every node within ~3 s (or ms with `cluster.pubsub_nudge`), surviving restart.
+**Don't hand-edit each node's YAML.** See [`CONFIG-PLANE-RUNBOOK.md`](./CONFIG-PLANE-RUNBOOK.md).
+
+### Cross-node console sync (leaderless)
+Every node's dashboard shows the **whole fleet**, so an operator hitting any node
+(or a VS Code port-forward) sees the same picture:
+- **Live events** — `cluster.fleet_events.enabled`: each node's security
+  decisions fan out via Redis pub/sub to every node's SSE feed (≤ 5 s SLA).
+- **Merged traffic metrics** — `cluster.fleet_view.enabled`: RPS / latency
+  percentiles / top-attackers / by-detector / bot-mix merged across nodes;
+  `/api/stats` carries `fleet_nodes` and the banner shows "Fleet view (N nodes)".
+- **`cluster.pubsub_nudge`** — control changes converge in ms.
+- **`/api/cluster`** — flat leaderless roster (`peers` + `our_node`).
+- Forensic audit stays per-node; merge with [`collect-audit.sh`](./collect-audit.sh)
+  (orders by `ts_ms`, joins by `request_id`). The live event feed is a lossy
+  monitor — local `waf_audit.log` + SigNoz remain the source of truth.
+
+See [`config/REFERENCE.md`](../config/REFERENCE.md) §`cluster` +
+[`docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md).
 
 ---
 
