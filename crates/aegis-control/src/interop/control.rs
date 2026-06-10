@@ -15,8 +15,10 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
+use aegis_core::state::StateBackend;
+
 use super::headers::Mode;
-use super::mode::ModeStore;
+use super::mode::{ModeSnapshot, ModeStore};
 
 /// Constant-time byte-slice equality. Returns `false` immediately
 /// on length mismatch (length is assumed not secret). On equal
@@ -101,6 +103,18 @@ pub struct SetProfileRequest {
     /// Required for `scope: "policies"`.
     #[serde(default)]
     pub policies: Option<Vec<String>>,
+    /// C-1 — propagation scope. `true` (default) publishes the change
+    /// to the shared config plane so every node converges; `false`
+    /// confines it to the node that received the request (the legacy
+    /// loopback-only behaviour). Independent of the `scope`
+    /// (all/features/policies) field above. No-op on single-node /
+    /// in-memory deployments, which don't wire cluster sync.
+    #[serde(default = "default_cluster_scope")]
+    pub cluster: bool,
+}
+
+fn default_cluster_scope() -> bool {
+    true
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -233,6 +247,16 @@ pub struct ControlContext {
     /// from `interop.control_secret` config; defaults to
     /// [`crate::interop::DEFAULT_CONTROL_SECRET`].
     pub secret: String,
+    /// C-1 — shared state backend for cluster-native control-plane
+    /// propagation. Installed via [`Self::set_cluster_state`] AFTER
+    /// construction (the runtime is built before the backend is wired,
+    /// same as `reset_in_progress`), and only when the deployment runs
+    /// on a shared backend (Redis). Empty for single-node / in-memory
+    /// builds, in which case `set_profile` / `reset_state` stay
+    /// node-local (the legacy behaviour). Used to publish the mode map
+    /// + reset epoch; a sibling poller (`aegis-proxy::accept`) reads
+    /// them back.
+    pub cluster_state: std::sync::OnceLock<Arc<dyn StateBackend>>,
 }
 
 /// Type alias for a reset callback. Wrapped in `Arc<dyn Fn>` so
@@ -377,6 +401,55 @@ impl ControlContext {
             unsupported,
             ts_ms: now_ms(),
         })
+    }
+
+    /// C-1 — publish the current mode snapshot to the shared config
+    /// plane so peers converge. Best-effort: no-op when cluster sync
+    /// isn't wired (single-node), errors are logged and swallowed so a
+    /// `set_profile` never fails on a backend hiccup. Called from the
+    /// async dispatch AFTER the local apply, when `req.cluster` is set.
+    pub async fn publish_modes(&self) {
+        if let Some(state) = self.cluster_state.get() {
+            let snap = self.modes.current();
+            super::cluster_sync::publish_modes(state, &snap).await;
+        }
+    }
+
+    /// C-1 — install the shared backend used for cluster propagation.
+    /// Called once at boot for Redis deployments. Idempotent (later
+    /// calls are ignored).
+    pub fn set_cluster_state(&self, state: Arc<dyn StateBackend>) {
+        let _ = self.cluster_state.set(state);
+    }
+
+    /// C-1 — true when cluster propagation is wired (Redis backend).
+    pub fn cluster_enabled(&self) -> bool {
+        self.cluster_state.get().is_some()
+    }
+
+    /// C-1 — bump the cluster reset epoch so peers flush their *local*
+    /// trackers (the shared-backend wipe already fanned out fleet-wide
+    /// in `reset_state_async`). Best-effort / no-op without cluster
+    /// sync.
+    pub async fn publish_reset_epoch(&self) {
+        if let Some(state) = self.cluster_state.get() {
+            super::cluster_sync::publish_reset_epoch(state).await;
+        }
+    }
+
+    /// C-1 — apply a mode snapshot published by another node. Called by
+    /// the cluster poller; replaces the whole local snapshot atomically.
+    pub fn apply_remote_snapshot(&self, snapshot: ModeSnapshot) {
+        self.modes.set_snapshot(snapshot);
+    }
+
+    /// C-1 — run only the *local* (in-process) reset chain, without the
+    /// async shared-backend wipe. Used by the cluster poller when a
+    /// peer bumps the reset epoch: that peer already wiped the shared
+    /// backend fleet-wide, so this node only needs to flush its own
+    /// trackers. Idempotent (clearing already-clear state is safe).
+    pub fn reset_local(&self) {
+        let _ = self.reset_state();
     }
 
     /// `POST /__waf_control/flush_cache`. When no cache is wired,
@@ -546,6 +619,7 @@ mod tests {
             async_reset_callbacks: Mutex::new(Vec::new()),
             flush_callback: std::sync::Mutex::new(None),
             secret: crate::interop::DEFAULT_CONTROL_SECRET.to_string(),
+            cluster_state: std::sync::OnceLock::new(),
         }
     }
 
@@ -620,6 +694,7 @@ mod tests {
             async_reset_callbacks: Mutex::new(Vec::new()),
             flush_callback: std::sync::Mutex::new(None),
             secret: crate::interop::DEFAULT_CONTROL_SECRET.to_string(),
+            cluster_state: std::sync::OnceLock::new(),
         }
     }
 
@@ -836,6 +911,7 @@ mod tests {
             features: None,
             feature: None,
             policies: None,
+            cluster: true,
         };
         let r = c.set_profile(&req).unwrap();
         assert!(r.ok);
@@ -852,6 +928,7 @@ mod tests {
             features: Some(vec!["access_control".into()]),
             feature: None,
             policies: None,
+            cluster: true,
         };
         let r = c.set_profile(&req).unwrap();
         assert!(r.ok);
@@ -872,6 +949,7 @@ mod tests {
             features: None,
             feature: Some("access_control".into()),
             policies: Some(vec!["blacklist".into()]),
+            cluster: true,
         };
         let r = c.set_profile(&req).unwrap();
         assert_eq!(
@@ -899,6 +977,7 @@ mod tests {
             features: None,
             feature: Some("rules_engine".into()),
             policies: Some(vec!["ai".into()]),
+            cluster: true,
         };
         let r = c.set_profile(&req).expect("set_profile must accept ai");
         assert!(r.unsupported.is_empty(), "ai must be supported, got {:?}", r.unsupported);
@@ -923,6 +1002,7 @@ mod tests {
             features: Some(vec!["does-not-exist".into()]),
             feature: None,
             policies: None,
+            cluster: true,
         };
         let r = c.set_profile(&req).unwrap();
         assert_eq!(r.unsupported, vec!["does-not-exist"]);
@@ -937,6 +1017,7 @@ mod tests {
             features: None,
             feature: Some("nope".into()),
             policies: Some(vec!["x".into()]),
+            cluster: true,
         };
         let err = c.set_profile(&req).unwrap_err();
         assert_eq!(err.status(), 422);
@@ -951,6 +1032,7 @@ mod tests {
             features: None,
             feature: Some("access_control".into()),
             policies: Some(vec!["unknown-policy".into()]),
+            cluster: true,
         };
         let r = c.set_profile(&req).unwrap();
         assert_eq!(r.unsupported, vec!["access_control.unknown-policy"]);
@@ -965,6 +1047,7 @@ mod tests {
             features: Some(vec!["access_control".into()]),
             feature: None,
             policies: None,
+            cluster: true,
         };
         let err = c.set_profile(&req).unwrap_err();
         assert_eq!(err.status(), 400);
@@ -979,6 +1062,7 @@ mod tests {
             features: Some(vec![]),
             feature: None,
             policies: None,
+            cluster: true,
         };
         let err = c.set_profile(&req).unwrap_err();
         assert_eq!(err.status(), 400);

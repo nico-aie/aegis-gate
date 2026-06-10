@@ -21,6 +21,7 @@
 //!   discovery, runtime-state reset, mode toggle, cache flush.
 
 pub mod audit;
+pub mod cluster_sync;
 pub mod control;
 pub mod headers;
 pub mod mode;

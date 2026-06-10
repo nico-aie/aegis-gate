@@ -945,8 +945,13 @@ pub(crate) async fn handle_interop_control_with_rt(
             // ephemeral wipe (nonces, rate windows, auto-block,
             // backend risk keys) so the reset is complete before
             // the 200 lands (§2.4 atomicity).
-            let body = serde_json::to_string(&rt.control.reset_state_async().await)
-                .unwrap_or_else(|_| "{}".into());
+            let resp = rt.control.reset_state_async().await;
+            // C-1 — bump the cluster reset epoch so every OTHER node
+            // flushes its LOCAL trackers too (the shared-backend wipe
+            // above already fanned out fleet-wide). No-op single-node.
+            rt.control.publish_reset_epoch().await;
+            let body =
+                serde_json::to_string(&resp).unwrap_or_else(|_| "{}".into());
             json_body_response(200, body, "no-store")
         }
         (hyper::Method::POST, "/__waf_control/set_profile") => {
@@ -974,6 +979,12 @@ pub(crate) async fn handle_interop_control_with_rt(
                 };
             match rt.control.set_profile(&parsed) {
                 Ok(resp) => {
+                    // C-1 — when cluster-scoped (the default), publish
+                    // the new mode map so peers converge. Best-effort;
+                    // no-op on single-node / in-memory deployments.
+                    if parsed.cluster {
+                        rt.control.publish_modes().await;
+                    }
                     let body = serde_json::to_string(&resp)
                         .unwrap_or_else(|_| "{}".into());
                     json_body_response(200, body, "no-store")
