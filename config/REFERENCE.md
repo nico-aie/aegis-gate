@@ -161,6 +161,28 @@ shared state for enforcement). Merged panels report a fixed snapshot window
 (currently 300 s) regardless of the client's `?window=`. Redis down ⇒ `SCAN`
 returns nothing ⇒ panels fall back to local; the request path is untouched.
 
+### `cluster.pubsub_nudge`
+
+Optional **state-convergence accelerator** (cluster plan Phase 3/§3 nudge). When
+on (and Redis is present), a config/control mutation — `set_profile`,
+`reset_state` — publishes a 1-byte `control:waf:bump` so every node's poller
+re-reads the shared control keys *immediately* instead of waiting for its next
+~2 s interval. Convergence drops from seconds to **milliseconds**.
+
+| Field | Default | Notes |
+|---|---|---|
+| `pubsub_nudge` | `false` | On ⇒ bump-on-mutation; off ⇒ interval polling only. |
+
+```yaml
+cluster:
+  pubsub_nudge: true
+```
+
+**Not load-bearing:** polling stays the backstop. A dropped/missed bump (Redis
+blip, reconnect) just means the next poll catches up — correctness lives in the
+versioned keys, never in the message. Safe to leave off; turn on only if a 1–2 s
+lag on fleet-wide `set_profile`/`reset_state` matters for your workflow.
+
 Deep-dive: [`docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md).
 
 ---

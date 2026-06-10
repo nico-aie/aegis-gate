@@ -41,6 +41,11 @@ use super::mode::ModeSnapshot;
 pub const MODES_KEY: &str = "control:waf:modes";
 /// Monotonic counter bumped once per cluster-scoped `reset_state`.
 pub const RESET_EPOCH_KEY: &str = "control:waf:reset_epoch";
+/// Phase 5 (§3) — pub/sub channel for the optional state *nudge*. A
+/// 1-byte message published here on any config/control mutation tells
+/// subscribing pollers to re-poll `MODES_KEY` / `RESET_EPOCH_KEY`
+/// immediately. Loss-tolerant: polling is the backstop.
+pub const CONTROL_BUMP_CHANNEL: &str = "control:waf:bump";
 
 /// Wire form of [`ModeSnapshot`] + a generation. `Mode` has no serde
 /// derive, so modes are carried as their `"enforce"` / `"log_only"`

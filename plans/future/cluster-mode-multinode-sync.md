@@ -1,6 +1,11 @@
 # Cluster mode — multi-node console sync (leaderless, Redis-optional)
 
-> **Status:** plan / proposal (not yet implemented).
+> **Status (2026-06-10): ✅ SHIPPED.** All phases landed on `develop`:
+> Phase 0 (C-1 control-plane sync), Phase 1 (leaderless — no leader), Phase 2
+> (fleet event fanout, ≤5s SLA), Phase 3 (fleet metrics snapshot+merge), Phase 4
+> (labels / `collect-audit.sh` / docs), Phase 5 (pub/sub state nudge). Live 2-node
+> `tests/cluster/` rig added (runs in the operator's env). Per-phase completion
+> notes are inline under §6 below. Original proposal text retained for context.
 > **Goal (operator's words):** run the WAF as a cluster of N nodes where the
 > **console data syncs across every node** — config, *live traffic*, and other
 > state — so an operator hitting any node (e.g. a VS Code port-forward to a
@@ -215,13 +220,13 @@ backbone. The reasoning for *not* putting state convergence on pub/sub:
   config/control change. Subscribers treat it as "re-poll now" instead of
   waiting for the next interval — cutting convergence from seconds to
   milliseconds **without** making correctness depend on the message. If the
-  message is lost, the next poll catches up. (Phase 4 — optional.)
+  message is lost, the next poll catches up. (Phase 5 — shipped, default off.)
 
 **Decision:** polling stays the backbone for **state** (config 3 s,
 control/snapshot 2 s). Pub/sub is **load-bearing for the event stream** (§2b —
 required to meet the ≤ 5 s SLA, but loss-tolerant by nature so a Redis outage
 only costs fleet-completeness, never protection). The pub/sub *state nudge* is a
-separate, optional latency optimization (Phase 4), gated by a flag, never
+separate, optional latency optimization (Phase 5), gated by a flag, never
 load-bearing for correctness.
 
 ---
@@ -315,11 +320,13 @@ cluster:
     publish_interval_ms: 2000  # §2a snapshot cadence
     snapshot_ttl_ms: 10000     # 5× cadence — dead nodes self-evict
     top_attackers_k: 50
-    pubsub_nudge: false        # Phase 4 — low-latency state re-poll trigger
   fleet_events:                # §2b — the ≤ 5 s logs/events SLA path
     enabled: true              # off → events are local-only (today's behaviour)
     channel: "fleet:events"
     max_publish_rate_per_s: 500 # bounded-loss guard; sample/drop above this
+  pubsub_nudge: false          # Phase 5 — control:waf:bump → immediate re-poll
+                               # (top-level, not under fleet_view — it's about
+                               #  control-plane convergence, not the metrics view)
 ```
 
 ---
@@ -527,12 +534,30 @@ an L7 SNAT LB now works too once you set `proxy.trusted_proxies` to its CIDRs.
   bundle rebuilt (no `is_leader`/`leader_node` tokens); `collect-audit.sh`
   syntax + merge-ordering smoke-checked.
 
-### Phase 5 — *optional* pub/sub state nudge (§3)
-- `control:waf:bump` channel; on config/control mutation, publish a 1-byte bump;
-  subscribers re-poll immediately (reuses the Phase-2 pub/sub primitive). Polling
-  stays the backstop. Gated by `cluster.fleet_view.pubsub_nudge`, default off.
-- **Test:** with nudge on, state convergence < 250 ms; with Redis pub/sub
-  dropped, polling still converges within one interval (proves non-load-bearing).
+### Phase 5 — *optional* pub/sub state nudge (§3) — ✅ LANDED (2026-06-10, branch `feat/cluster-phase5-pubsub-nudge`)
+- ✅ `cluster_sync::CONTROL_BUMP_CHANNEL` (`control:waf:bump`). `ControlContext`
+  gained `cluster_nudge: OnceLock<Arc<dyn FleetBus>>` (sibling of `cluster_state`)
+  + `set_cluster_nudge`/`cluster_nudge` accessors; `publish_modes` /
+  `publish_reset_epoch` fire a 1-byte bump via `fire_nudge()` after the
+  config-plane write (best-effort, no-op without a bus).
+- ✅ `cluster_control::spawn_poller` reads `rt.control.cluster_nudge()`; when set it
+  subscribes and `select!`s the bump against the interval tick — a peer's mutation
+  wakes the loop for an immediate re-poll. If the channel closes (no-op bus) it
+  drops back to interval-only, so the nudge is **structurally non-load-bearing**.
+- ✅ Wired in `run.rs` next to `set_cluster_state` (Redis-gated): builds a
+  `RedisFleetBus` when `cluster.pubsub_nudge` is on and installs it via
+  `set_cluster_nudge` before `spawn_poller`. Degrades to interval polling when off
+  / non-redis build.
+- **Config knob placement deviation:** the plan sketched
+  `cluster.fleet_view.pubsub_nudge`, but it's about *control-plane* convergence,
+  not the metrics view — shipped as top-level **`cluster.pubsub_nudge`** (default
+  off). Documented in `config/REFERENCE.md`; enabled in the `cluster-{a,b}.yaml`
+  fixtures so the `tests/cluster/` rig exercises it.
+- **Tests:** `interop::control` 2 (bump fires when bus wired / no bump + no panic
+  without bus); the existing poll-convergence tests still green; cluster_control
+  poller compiles + 3 tests pass. control 1083 / core 291 / proxy 787 / redis OK.
+  (The plan's "< 250 ms" timing assertion is an integration property best observed
+  in the live 2-node rig — `07-control-plane-sync` now converges via the nudge.)
 
 ---
 

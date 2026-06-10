@@ -105,6 +105,9 @@ cluster:
     enabled: true
     publish_interval_ms: 1000   # tight cadence so the rig converges fast
     snapshot_ttl_ms: 5000
+  # Phase 5 — pub/sub state nudge: set_profile/reset_state converge in ms
+  # (the rig's 07-control-plane-sync exercises this). Non-load-bearing.
+  pubsub_nudge: true
 
 detectors:
   sqli:             { enabled: true }

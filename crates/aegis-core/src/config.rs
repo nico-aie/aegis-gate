@@ -324,6 +324,14 @@ pub struct ClusterConfig {
     /// top-attackers merged across the fleet.
     #[serde(default)]
     pub fleet_view: FleetViewConfig,
+    /// Pub/sub **state nudge** (cluster plan Phase 5, §3). When on (and
+    /// Redis is present), a config/control mutation publishes a 1-byte
+    /// `control:waf:bump` so peers re-poll *immediately* instead of
+    /// waiting for their next interval — convergence drops from seconds
+    /// to ms. **Not load-bearing:** polling stays the backstop, so a
+    /// dropped bump just means the next poll catches up. Default off.
+    #[serde(default)]
+    pub pubsub_nudge: bool,
 }
 
 /// Leaderless fleet metrics view (cluster plan Phase 3, §2a). When
