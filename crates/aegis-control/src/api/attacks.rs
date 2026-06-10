@@ -925,6 +925,95 @@ impl AttacksHandler {
         body
     }
 
+    // ---- Cluster Phase 3 (§2a) fleet-merged renderers --------------
+    //
+    // Serve the same wire shapes from the merged fleet view instead of
+    // this node's local aggregator. Not cached — the fleet view is
+    // already refreshed on the snapshot publish tick. GeoIP fields ride
+    // through the snapshot (whichever node enriched them).
+
+    /// Fleet-merged `GET /api/attacks/top`.
+    pub fn render_top_from_fleet(
+        &self,
+        merged: &crate::metrics::fleet_snapshot::MergedFleet,
+        window_seconds: u32,
+        limit: u32,
+    ) -> String {
+        let attackers: Vec<Attacker> = merged
+            .top_attackers
+            .iter()
+            .take(limit as usize)
+            .map(|a| Attacker {
+                identifier: a.identifier.clone(),
+                hits: a.hits,
+                categories: a.categories.clone(),
+                risk: a.risk,
+                last_seen: chrono::DateTime::from_timestamp_millis(a.last_seen_ms)
+                    .unwrap_or_default(),
+                country: a.country.clone(),
+                asn: a.asn,
+                asn_class: a.asn_class.clone(),
+            })
+            .collect();
+        let response = TopResponse {
+            window_seconds,
+            limit,
+            attackers,
+            geoip_loaded: self.geoip_loaded(),
+        };
+        serde_json::to_string(&response).unwrap_or_else(|_| String::from("{}"))
+    }
+
+    /// Fleet-merged `GET /api/attacks/by-detector`.
+    pub fn render_by_detector_from_fleet(
+        &self,
+        merged: &crate::metrics::fleet_snapshot::MergedFleet,
+        window_seconds: u32,
+    ) -> String {
+        let mut detectors: Vec<DetectorCount> = merged
+            .detector_mix
+            .iter()
+            .map(|(name, count)| DetectorCount {
+                name: name.clone(),
+                count: *count,
+            })
+            .collect();
+        detectors.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
+        let response = ByDetectorResponse {
+            window_seconds,
+            detectors,
+        };
+        serde_json::to_string(&response).unwrap_or_else(|_| String::from("{}"))
+    }
+
+    /// Fleet-merged `GET /api/bots/mix`.
+    pub fn render_bot_mix_from_fleet(
+        &self,
+        merged: &crate::metrics::fleet_snapshot::MergedFleet,
+        window_seconds: u32,
+    ) -> String {
+        let total: u64 = merged.bot_mix.values().sum();
+        let mut categories: Vec<BotCategoryCount> = merged
+            .bot_mix
+            .iter()
+            .map(|(name, count)| BotCategoryCount {
+                name: name.clone(),
+                count: *count,
+                pct: if total > 0 {
+                    *count as f64 * 100.0 / total as f64
+                } else {
+                    0.0
+                },
+            })
+            .collect();
+        categories.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
+        let response = BotMixResponse {
+            window_seconds,
+            categories,
+        };
+        serde_json::to_string(&response).unwrap_or_else(|_| String::from("{}"))
+    }
+
     /// Render `GET /api/attacks/by-detector?window=<seconds>`.
     pub fn render_by_detector(&self, window_seconds: u32) -> String {
         let now = Instant::now();

@@ -377,6 +377,25 @@ impl StatsHandler {
         *cache = Some((now, response));
         body
     }
+
+    /// Cluster Phase 3 (§2a) — render `GET /api/stats` from the merged
+    /// fleet view instead of this node's local aggregator. The upstream
+    /// summary stays node-local (pool health is per-node). Not cached:
+    /// the fleet view is already refreshed on the publish tick.
+    pub fn render_from_fleet(
+        &self,
+        merged: &crate::metrics::fleet_snapshot::MergedFleet,
+    ) -> String {
+        let response = StatsResponse {
+            request_rate: merged.request_rate,
+            blocks_total: merged.blocks_total,
+            block_rate_pct: merged.block_rate_pct,
+            active_threats: merged.active_threats,
+            upstream: (self.upstream_provider)(),
+            ts: chrono::Utc::now(),
+        };
+        serde_json::to_string(&response).unwrap_or_else(|_| String::from("{}"))
+    }
 }
 
 /// Spawn a task that drains the audit bus and feeds events into the

@@ -103,6 +103,75 @@ fn spawn_fleet_event_fanout(
     }
 }
 
+/// Window (seconds) the fleet-snapshot captures + reports. Fixed for
+/// v1 — the merged traffic panels report this window regardless of the
+/// client's `?window=` (the snapshot fixes it).
+const FLEET_SNAPSHOT_WINDOW_SECS: u32 = 300;
+
+/// Cluster Phase 3 (§2a) — spawn the fleet-snapshot publish/merge task
+/// when `cluster.fleet_view` is enabled AND a shared (non-`in_memory`)
+/// state backend is present. Each tick: publish this node's traffic
+/// snapshot to `fleet:snap:<node>` (TTL self-evict), then scan+merge
+/// every peer's snapshot into the returned `FleetCache` (which the
+/// dashboard traffic GET handlers read). Returns `None` for single-node
+/// / `in_memory` — the panels then stay local-only (today's behaviour),
+/// and nothing is spawned.
+fn spawn_fleet_snapshot_task(
+    cfg: &WafConfig,
+    state_backend: Arc<dyn aegis_core::state::StateBackend>,
+    stats_agg: Arc<aegis_control::api::stats::StatsAggregator>,
+    attacks_agg: Arc<aegis_control::api::attacks::AttacksAggregator>,
+    hist: Arc<aegis_control::metrics::request_duration::RequestStageHistogram>,
+    our_node: &str,
+) -> Option<aegis_control::metrics::fleet_snapshot::FleetCache> {
+    use aegis_control::metrics::fleet_snapshot as fs;
+    let fv = &cfg.cluster.fleet_view;
+    if !fv.enabled || matches!(cfg.state.backend, aegis_core::config::StateBackendKind::InMemory) {
+        return None;
+    }
+    let cache = fs::FleetCache::new();
+    let cache_writer = cache.clone();
+    let node = our_node.to_string();
+    let publish_interval =
+        std::time::Duration::from_millis(fv.publish_interval_ms.max(250));
+    let ttl = std::time::Duration::from_millis(fv.snapshot_ttl_ms.max(fv.publish_interval_ms));
+    let top_k = fv.top_attackers_k;
+    tokio::spawn(async move {
+        let key = fs::snapshot_key(&node);
+        let mut tick = tokio::time::interval(publish_interval);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            // 1. Build + publish our own snapshot (best-effort, off the
+            //    hot path — reads already-collected local aggregates).
+            let snap = fs::build_snapshot(
+                &node,
+                FLEET_SNAPSHOT_WINDOW_SECS,
+                top_k as u32,
+                &stats_agg,
+                &attacks_agg,
+                &hist,
+                aegis_control::metrics::request_duration::stage::TOTAL,
+            );
+            let published = match serde_json::to_vec(&snap) {
+                Ok(bytes) => state_backend.set(&key, &bytes, ttl).await.is_ok(),
+                Err(_) => false,
+            };
+            // 2. Scan + merge every live peer snapshot (dead nodes have
+            //    already TTL'd out of the keyspace) into the cache.
+            let merged = fs::scan_and_merge(state_backend.as_ref(), top_k).await;
+            if merged.nodes == 0 && published {
+                // Backend without key enumeration → at least show our own.
+                cache_writer.store(fs::merge(std::slice::from_ref(&snap), top_k));
+            } else {
+                cache_writer.store(merged);
+            }
+        }
+    });
+    tracing::info!("cluster fleet view: snapshot publish/merge active");
+    Some(cache)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn admin_accept_loop(
     tcp: tokio::net::TcpListener,
@@ -463,6 +532,17 @@ pub(crate) async fn admin_accept_loop(
     services.interop = interop.clone();
     // Cluster Phase 2 — the dashboard SSE handler merges this in.
     services.fleet_event_bus = fleet_event_bus;
+    // Cluster Phase 3 — fleet metrics snapshot publish/merge. Reads the
+    // same local aggregators the dashboard does; the traffic GET
+    // handlers serve the merged view when this cache is populated.
+    services.fleet_cache = spawn_fleet_snapshot_task(
+        &cfg,
+        state_backend.clone(),
+        services.stats_agg.clone(),
+        services.attacks_agg.clone(),
+        request_stage_hist.clone(),
+        lease_store.self_id().as_str(),
+    );
     // SC-1 — expose the data-plane response cache stats to GET /api/cache/stats
     // via a JSON-returning closure (keeps aegis-control free of aegis-proxy
     // types). Empty pools map until an upstream opts into `cache:`.
