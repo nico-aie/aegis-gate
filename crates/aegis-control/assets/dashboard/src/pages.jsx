@@ -6224,6 +6224,154 @@ function ZtExpiryPill({ days }) {
   return <span className={`pill ${tone}`}>{txt}</span>;
 }
 
+// Anchor ids the upstream cards register so the stepper / inline banners
+// can jump straight to the card a control depends on.
+const ZT_ANCHOR = { identity: 'zt-identity', bundles: 'zt-bundles', pools: 'zt-pools' };
+
+// Scroll a target card into view, honouring prefers-reduced-motion (no
+// hash change — bare #anchors would confuse the hash router).
+function ztScrollTo(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const reduce = typeof matchMedia === 'function'
+    && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+}
+
+// A link-styled button that scrolls to a card without touching the hash.
+function ZtJumpLink({ to, children }) {
+  return (
+    <button
+      type="button"
+      onClick={() => ztScrollTo(to)}
+      style={{
+        background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+        color: 'var(--accent)', font: 'inherit', textDecoration: 'underline',
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+// Single source of truth for "when does the upstream identity take effect?",
+// reused by the identity card, its rotation pill, and the per-pool drawer so
+// the page never gives three different answers (issue improvement #5).
+const ZT_IDENTITY_APPLIES =
+  'Stored in the config plane. A first-time identity takes effect when each '
+  + 'node restarts (the cert materializes at boot); rotating an already-live '
+  + 'identity hot-applies fleet-wide with no restart.';
+const ZT_ROTATION_PILL_TITLE = 'Rotated live — hot-applied fleet-wide, no restart';
+
+// Compact "set up upstream mTLS" stepper. Reflects LIVE state and gates
+// steps 2–3 until the shared WAF client identity (step 1) is configured.
+// Each step scrolls to the card that owns it.
+function ZtUpstreamStepper() {
+  const idApi = window.useApi('/api/zero-trust/upstream/identity', {
+    intervalMs: 15000, fallback: { configured: false },
+  });
+  const trustApi = window.useApi('/api/zero-trust/upstream/trust', {
+    intervalMs: 30000, fallback: { bundles: [] },
+  });
+  const cfgApi = window.useApi('/api/zero-trust/upstream/config', {
+    intervalMs: 15000, fallback: { pools: [] },
+  });
+
+  const identityReady = !!idApi.data?.configured;
+  const bundleCount = (trustApi.data?.bundles || []).length;
+  const pools = cfgApi.data?.pools || [];
+  const enabledCount = pools.filter(p => p.enabled).length;
+
+  const steps = [
+    {
+      n: 1, anchor: ZT_ANCHOR.identity, title: 'WAF client identity',
+      done: identityReady, gated: false,
+      status: identityReady ? 'configured' : 'not set',
+      tone: identityReady ? 'ok' : 'neutral',
+      hint: identityReady
+        ? 'The cert every node presents to backends is set.'
+        : 'Required before any pool can present a client cert.',
+    },
+    {
+      n: 2, anchor: ZT_ANCHOR.bundles, title: 'Backend trust bundle',
+      done: bundleCount > 0, gated: !identityReady,
+      status: bundleCount > 0 ? `${bundleCount} uploaded` : 'optional',
+      tone: bundleCount > 0 ? 'ok' : 'neutral',
+      hint: bundleCount > 0
+        ? 'Pin a private backend CA, or leave a pool on public webpki roots.'
+        : 'Optional — pools fall back to public webpki roots without one.',
+    },
+    {
+      n: 3, anchor: ZT_ANCHOR.pools, title: 'Enable per pool',
+      done: enabledCount > 0, gated: !identityReady,
+      status: enabledCount > 0 ? `${enabledCount} enabled` : 'none enabled',
+      tone: enabledCount > 0 ? 'ok' : 'neutral',
+      hint: 'Open a pool, present the client cert + pick its backend trust.',
+    },
+  ];
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">Set up upstream mTLS</div>
+          <div className="card-sub">
+            WAF → backend client auth, in three steps — this page supports it
+            end to end
+          </div>
+        </div>
+      </div>
+      <ol
+        style={{
+          listStyle: 'none', margin: 0, padding: 4, display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10,
+        }}
+      >
+        {steps.map(s => (
+          <li
+            key={s.n}
+            style={{
+              display: 'flex', gap: 10, alignItems: 'flex-start',
+              padding: '10px 12px', borderRadius: 'var(--radius-lg)',
+              border: '1px solid var(--hairline)',
+              background: s.done ? 'rgba(14,203,129,0.05)' : 'var(--surface-2)',
+              opacity: s.gated ? 0.55 : 1,
+            }}
+          >
+            <span
+              aria-hidden="true"
+              style={{
+                flex: '0 0 auto', width: 26, height: 26, borderRadius: '50%',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 13, fontWeight: 700,
+                background: s.done ? 'var(--accent)' : 'var(--surface-3)',
+                color: s.done ? 'var(--canvas-1, #0b0e14)' : 'var(--ink-dim)',
+                border: s.done ? 'none' : '1px solid var(--hairline)',
+              }}
+            >
+              {s.done ? '✓' : s.n}
+            </span>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ fontWeight: 600, fontSize: 13 }}>{s.title}</span>
+                <span className={`pill ${s.tone}`}>{s.status}</span>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--ink-mute)', margin: '3px 0 4px' }}>
+                {s.gated
+                  ? <><span style={{ color: 'var(--ink-dim)' }}>🔒 Do step 1 first.</span> {s.hint}</>
+                  : s.hint}
+              </div>
+              <ZtJumpLink to={s.anchor}>
+                Go to {s.title.toLowerCase()} →
+              </ZtJumpLink>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 // Upstream WAF client identity — the shared fleet cert the WAF presents
 // to backends. Read-only metadata + a public-cert download, plus a
 // reference-only upload (PUBLIC cert + a key_ref) gated behind
@@ -6268,7 +6416,12 @@ function ZtIdentityCard() {
       });
       const body = await r.json().catch(() => ({}));
       if (r.ok && body.ok) {
-        window.aegisToast('Identity stored in the config plane · restart nodes to present it', 'ok');
+        window.aegisToast(
+          d.configured
+            ? 'Identity rotated · hot-applied live, no restart'
+            : 'Identity stored · restart nodes to present it (later rotations apply live)',
+          'ok',
+        );
         setCertPem(''); setKeyRef('');
         api.reload && api.reload();
       } else {
@@ -6295,10 +6448,10 @@ function ZtIdentityCard() {
   }
 
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <div id={ZT_ANCHOR.identity} className="card" style={{ marginBottom: 12 }}>
       <div className="card-head">
         <div>
-          <div className="card-title">WAF Client Identity</div>
+          <div className="card-title">Step 1 · WAF Client Identity</div>
           <div className="card-sub">
             The shared fleet cert every node presents when dialing a backend ·
             WAF-as-client
@@ -6308,7 +6461,7 @@ function ZtIdentityCard() {
           {rot.data?.generation > 0 && (
             <span
               className="pill ok"
-              title={`Last hot-rotated ${rot.data.applied_ms ? new Date(rot.data.applied_ms).toLocaleTimeString() : ''} — applied live, no restart`}
+              title={`${ZT_ROTATION_PILL_TITLE}${rot.data.applied_ms ? ' · last at ' + new Date(rot.data.applied_ms).toLocaleTimeString() : ''}`}
             >
               live · rotated ×{rot.data.generation}
             </span>
@@ -6318,11 +6471,16 @@ function ZtIdentityCard() {
           </span>
         </div>
       </div>
+      <div style={{ fontSize: 12, color: 'var(--ink-dim)', padding: '0 4px 8px' }}>
+        Paste the <strong>public</strong> cert chain plus a <strong>key
+        reference</strong>; the private key stays on each node and never reaches
+        the browser. {ZT_IDENTITY_APPLIES}
+      </div>
       {!d.configured ? (
         <div style={{ fontSize: 12, color: 'var(--ink-mute)', padding: 4 }}>
-          No client identity configured. Set{' '}
-          <code>zero_trust.upstream_identity</code> (cert_path + key_ref) so the
-          WAF can present a client cert to backends that require mTLS.
+          <strong>Not set.</strong> Add the WAF client identity below to dial
+          backends that require mTLS — or set{' '}
+          <code>zero_trust.upstream_identity</code> (cert_path + key_ref) in YAML.
         </div>
       ) : (
         <div style={{ padding: 4 }}>
@@ -6359,40 +6517,53 @@ function ZtIdentityCard() {
           </span>
         </div>
       )}
-      {canUpload && (
-        <div style={{ padding: 4, marginTop: 8, borderTop: '1px solid var(--hairline)' }}>
-          <div style={{ fontSize: 11, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, margin: '8px 0 6px' }}>
-            Store / rotate identity (config plane · reference-only)
+      <div style={{ padding: 4, marginTop: 8, borderTop: '1px solid var(--hairline)' }}>
+        <div style={{ fontSize: 11, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, margin: '8px 0 6px' }}>
+          Store / rotate identity (config plane · reference-only)
+        </div>
+        {!canUpload && (
+          <div className="banner info" style={{ marginBottom: 8 }}>
+            <div>
+              Upload is disabled by server policy
+              (<code>allow_ca_upload=false</code>). Provide the identity in YAML
+              via <code>zero_trust.upstream_identity</code> (
+              <code>cert_path</code> + <code>key_ref</code>, or{' '}
+              <code>source: state</code>) — see the <code>zero_trust</code>{' '}
+              section of <code>config/REFERENCE.md</code>. To enable in-console
+              uploads, set <code>admin.dashboard_auth.allow_ca_upload: true</code>.
+            </div>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <textarea
-              value={certPem}
-              onChange={e => setCertPem(e.target.value)}
-              placeholder="-----BEGIN CERTIFICATE-----&#10;PUBLIC client cert chain only&#10;-----END CERTIFICATE-----"
-              rows={5}
-              style={{ fontFamily: 'monospace', fontSize: 11, padding: 8, border: '1px solid var(--hairline)', borderRadius: 6, background: 'var(--surface-2)' }}
-            />
-            <input
-              type="text"
-              value={keyRef}
-              onChange={e => setKeyRef(e.target.value)}
-              placeholder="key_ref — path or ${secret:...} (the private key stays a reference)"
-              style={{ fontSize: 12, padding: '6px 8px', border: '1px solid var(--hairline)', borderRadius: 6, background: 'var(--surface-2)' }}
-            />
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <input type="file" accept=".pem,.crt,.cer,application/x-pem-file" onChange={onFile} />
-              <button className="btn primary" disabled={busy || !certPem.trim() || !keyRef.trim()} onClick={save}>
-                {busy ? 'Storing…' : 'Store identity'}
-              </button>
-            </div>
-            <div style={{ fontSize: 11, color: 'var(--ink-mute)' }}>
-              Public cert is stored in the config plane; the private key is never
-              uploaded. Use <code>source: state</code> in config; nodes materialize
-              the cert at boot.
-            </div>
+        )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, opacity: canUpload ? 1 : 0.55 }}>
+          <textarea
+            value={certPem}
+            onChange={e => setCertPem(e.target.value)}
+            disabled={!canUpload}
+            placeholder="-----BEGIN CERTIFICATE-----&#10;PUBLIC client cert chain only&#10;-----END CERTIFICATE-----"
+            rows={5}
+            style={{ fontFamily: 'monospace', fontSize: 11, padding: 8, border: '1px solid var(--hairline)', borderRadius: 6, background: 'var(--surface-2)' }}
+          />
+          <input
+            type="text"
+            value={keyRef}
+            onChange={e => setKeyRef(e.target.value)}
+            disabled={!canUpload}
+            placeholder="key_ref — e.g. ${secret:waf_client_key} or /etc/aegis/waf-client.key"
+            style={{ fontSize: 12, padding: '6px 8px', border: '1px solid var(--hairline)', borderRadius: 6, background: 'var(--surface-2)' }}
+          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input type="file" accept=".pem,.crt,.cer,application/x-pem-file" onChange={onFile} disabled={!canUpload} />
+            <button className="btn primary" disabled={!canUpload || busy || !certPem.trim() || !keyRef.trim()} onClick={save}>
+              {busy ? 'Storing…' : 'Store identity'}
+            </button>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--ink-mute)' }}>
+            Public cert is stored in the config plane; the private key is never
+            uploaded. <code>key_ref</code> points at a secret or file the nodes
+            already hold. {ZT_IDENTITY_APPLIES}
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -6470,19 +6641,23 @@ function ZtTrustBundlesCard() {
 
   const cell = { padding: '4px 8px', borderBottom: '1px solid var(--hairline)', textAlign: 'left' };
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <div id={ZT_ANCHOR.bundles} className="card" style={{ marginBottom: 12 }}>
       <div className="card-head">
         <div>
-          <div className="card-title">Backend-CA Trust Bundles</div>
+          <div className="card-title">Step 2 · Backend-CA Trust Bundles</div>
           <div className="card-sub">
-            PUBLIC CAs the WAF pins to verify each backend's server cert
+            PUBLIC CAs the WAF pins to verify each backend's server cert ·
+            optional (pools fall back to webpki roots)
           </div>
         </div>
       </div>
       {bundles.length === 0 ? (
         <div style={{ fontSize: 12, color: 'var(--ink-mute)', padding: 4 }}>
-          No trust bundles uploaded. Pools without a bundle verify against
-          public webpki roots.
+          No trust bundles uploaded. This step is optional — pools without a
+          bundle verify the backend against public webpki roots.{' '}
+          {canUpload
+            ? 'Upload one below to pin a private backend CA.'
+            : 'Add one via config to pin a private backend CA.'}
         </div>
       ) : (
         <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
@@ -6518,30 +6693,45 @@ function ZtTrustBundlesCard() {
           </tbody>
         </table>
       )}
-      {canUpload && (
-        <div style={{ padding: 4, marginTop: 8, borderTop: '1px solid var(--hairline)', display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <div style={{ fontSize: 11, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, margin: '8px 0 2px' }}>
-            Upload backend CA
+      <div style={{ padding: 4, marginTop: 8, borderTop: '1px solid var(--hairline)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ fontSize: 11, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, margin: '8px 0 2px' }}>
+          Upload backend CA
+        </div>
+        {!canUpload && (
+          <div className="banner info" style={{ marginBottom: 4 }}>
+            <div>
+              Upload is disabled by server policy
+              (<code>allow_ca_upload=false</code>). Add backend-trust CAs in YAML
+              and reference them per pool via{' '}
+              <code>&lt;pool&gt;.upstream_mtls.trust</code> (a bundle name or CA
+              file path) — see the <code>zero_trust</code> section of{' '}
+              <code>config/REFERENCE.md</code>. To enable in-console uploads, set{' '}
+              <code>admin.dashboard_auth.allow_ca_upload: true</code>.
+            </div>
           </div>
+        )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, opacity: canUpload ? 1 : 0.55 }}>
           <input
             type="text" value={name} onChange={e => setName(e.target.value)}
+            disabled={!canUpload}
             placeholder="bundle name (e.g. payments-ca)"
             style={{ fontSize: 12, padding: '6px 8px', border: '1px solid var(--hairline)', borderRadius: 6, background: 'var(--surface-2)' }}
           />
           <textarea
             value={pem} onChange={e => setPem(e.target.value)}
+            disabled={!canUpload}
             placeholder="-----BEGIN CERTIFICATE-----&#10;backend CA (public)&#10;-----END CERTIFICATE-----"
             rows={5}
             style={{ fontFamily: 'monospace', fontSize: 11, padding: 8, border: '1px solid var(--hairline)', borderRadius: 6, background: 'var(--surface-2)' }}
           />
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <input type="file" accept=".pem,.crt,.cer,application/x-pem-file" onChange={onFile} />
-            <button className="btn primary" disabled={busy || !pem.trim() || !name.trim()} onClick={upload}>
+            <input type="file" accept=".pem,.crt,.cer,application/x-pem-file" onChange={onFile} disabled={!canUpload} />
+            <button className="btn primary" disabled={!canUpload || busy || !pem.trim() || !name.trim()} onClick={upload}>
               {busy ? 'Uploading…' : 'Upload bundle'}
             </button>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -6556,8 +6746,13 @@ function ZtUpstreamPoolsCard() {
   const trustApi = window.useApi('/api/zero-trust/upstream/trust', {
     intervalMs: 30000, fallback: { bundles: [] },
   });
+  const idApi = window.useApi('/api/zero-trust/upstream/identity', {
+    intervalMs: 15000, fallback: { configured: false },
+  });
+  const identityReady = !!idApi.data?.configured;
   const pools = api.data?.pools || [];
   const bundleNames = (trustApi.data?.bundles || []).map(b => b.name);
+  const hasBundles = bundleNames.length > 0;
   const [openPool, setOpenPool] = useStateP(null);
   const [draft, setDraft] = useStateP({ enabled: false, trust: '' });
   const [busy, setBusy] = useStateP(false);
@@ -6604,18 +6799,30 @@ function ZtUpstreamPoolsCard() {
   }
 
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <div id={ZT_ANCHOR.pools} className="card" style={{ marginBottom: 12 }}>
       <div className="card-head">
         <div>
-          <div className="card-title">Upstream mTLS by Pool</div>
+          <div className="card-title">Step 3 · Upstream mTLS by Pool</div>
           <div className="card-sub">
             Whether the WAF presents its client cert + verifies each backend
           </div>
         </div>
       </div>
+      {!identityReady && (
+        <div className="banner info" style={{ marginBottom: 8 }}>
+          <div>
+            Configure the <ZtJumpLink to={ZT_ANCHOR.identity}>WAF client
+            identity (step 1)</ZtJumpLink> first — without it a pool can't
+            present a client cert, so enabling is blocked here.
+          </div>
+        </div>
+      )}
       {pools.length === 0 ? (
         <div style={{ fontSize: 12, color: 'var(--ink-mute)', padding: 4 }}>
-          No upstream pools.
+          No upstream pools yet — add one on the{' '}
+          <a href="#/upstreams" style={{ color: 'var(--accent)' }}>
+            Routing &amp; Upstreams page →
+          </a>{' '}then return here to enable mTLS for it.
         </div>
       ) : (
         <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
@@ -6646,13 +6853,22 @@ function ZtUpstreamPoolsCard() {
                     </button>
                   </td>
                 </tr>
-                {openPool === p.pool && (
+                {openPool === p.pool && (() => {
+                  // Guard against driving Save into a guaranteed apply-time
+                  // failure: you can't *enable* without a client identity. You
+                  // can always turn an already-enabled pool back off.
+                  const checkboxLocked = !identityReady && !draft.enabled;
+                  const saveBlocked = draft.enabled && !identityReady;
+                  return (
                   <tr>
                     <td colSpan={5} style={{ padding: 10, background: 'var(--surface-2)' }}>
                       <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
-                        <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
+                        <label
+                          title={checkboxLocked ? 'Configure the WAF client identity (step 1) first' : ''}
+                          style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, opacity: checkboxLocked ? 0.5 : 1 }}
+                        >
                           <input
-                            type="checkbox" checked={draft.enabled}
+                            type="checkbox" checked={draft.enabled} disabled={checkboxLocked}
                             onChange={e => setDraft({ ...draft, enabled: e.target.checked })}
                           />
                           Present WAF client cert + verify backend
@@ -6660,26 +6876,41 @@ function ZtUpstreamPoolsCard() {
                         <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, opacity: draft.enabled ? 1 : 0.5 }}>
                           Backend trust:
                           <select
-                            value={draft.trust} disabled={!draft.enabled}
+                            value={draft.trust} disabled={!draft.enabled || !hasBundles}
                             onChange={e => setDraft({ ...draft, trust: e.target.value })}
                             style={{ fontSize: 12, padding: '4px 6px', background: 'var(--surface-1)', border: '1px solid var(--hairline)', borderRadius: 6 }}
                           >
                             <option value="">webpki roots (public)</option>
                             {bundleNames.map(b => <option key={b} value={b}>{b}</option>)}
                           </select>
+                          {draft.enabled && !hasBundles && (
+                            <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>
+                              (webpki roots — <ZtJumpLink to={ZT_ANCHOR.bundles}>upload a trust bundle first</ZtJumpLink> to pin a private CA)
+                            </span>
+                          )}
                         </label>
-                        <button className="btn primary" disabled={busy} onClick={() => save(p.pool)}>
+                        <button className="btn primary" disabled={busy || saveBlocked} onClick={() => save(p.pool)}>
                           {busy ? 'Saving…' : 'Save'}
                         </button>
                       </div>
-                      <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 6 }}>
-                        Enabling requires a configured WAF client identity. A bundle
-                        must be uploaded above before it can be selected. Changes
-                        activate fleet-wide via the config plane.
-                      </div>
+                      {saveBlocked ? (
+                        <div className="banner info" style={{ marginTop: 8, marginBottom: 0 }}>
+                          <div>
+                            Save is blocked: enabling needs a WAF client identity.{' '}
+                            <ZtJumpLink to={ZT_ANCHOR.identity}>Configure it in step 1 →</ZtJumpLink>
+                          </div>
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 6 }}>
+                          Needs the <ZtJumpLink to={ZT_ANCHOR.identity}>WAF client identity</ZtJumpLink>;
+                          optionally pin a <ZtJumpLink to={ZT_ANCHOR.bundles}>backend-trust bundle</ZtJumpLink>.
+                          {' '}{ZT_IDENTITY_APPLIES}
+                        </div>
+                      )}
                     </td>
                   </tr>
-                )}
+                  );
+                })()}
               </React.Fragment>
             ))}
           </tbody>
@@ -6762,6 +6993,7 @@ function PageZeroTrust() {
       </div>
 
       <div style={sectionLabel}>Upstream — WAF → backend (client auth)</div>
+      <ZtUpstreamStepper />
       <ZtIdentityCard />
       <ZtTrustBundlesCard />
       <ZtUpstreamPoolsCard />

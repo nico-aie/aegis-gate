@@ -6,7 +6,9 @@
   WAF→backend mTLS per upstream from the page, and the upload UI silently
   disappears under a server flag with no explanation. The capability exists but
   reads as "not supported."
-- **Status:** open / needs UX pass.
+- **Status:** ✅ resolved — UX pass shipped on branch `feat/zt-upstream-mtls-ux`
+  (all six suggested improvements below implemented; frontend-only, no
+  protocol/backend change).
 - **Affects:** `crates/aegis-control/assets/dashboard/src/pages.jsx` — the
   Zero Trust page (`PageZeroTrust`, ~`:6683`) and its upstream cards
   (`ZtIdentityCard` `:6170`, `ZtTrustBundlesCard` `:6343`,
