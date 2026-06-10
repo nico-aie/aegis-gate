@@ -164,7 +164,7 @@ fn parse_pem_to_root_store(pem: &[u8]) -> Result<RootCertStore> {
 /// MTLS-T10 Phase 2 — bridge to the audit-mutated PUT handler in
 /// `aegis-control`. The handler stays type-blind to the proxy
 /// crate and drives swaps through this trait object.
-impl aegis_control::api::mtls_ca_bundle::TrustAnchorWriter for ClientTrustStore {
+impl aegis_control::api::zero_trust::ca_bundle::TrustAnchorWriter for ClientTrustStore {
     fn swap_pem(&self, pem: &[u8]) -> std::result::Result<usize, String> {
         ClientTrustStore::swap_pem(self, pem).map_err(|e| e.to_string())
     }
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn trust_anchor_writer_trait_swaps_via_pem() {
-        use aegis_control::api::mtls_ca_bundle::TrustAnchorWriter;
+        use aegis_control::api::zero_trust::ca_bundle::TrustAnchorWriter;
 
         let pem_a = make_test_ca_pem();
         let store = ClientTrustStore::load_from_pem_bytes(&pem_a).unwrap();

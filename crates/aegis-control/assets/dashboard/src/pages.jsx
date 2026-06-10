@@ -111,6 +111,66 @@ const CAT_COLOR = {
 };
 function colorFor(name) { return CAT_COLOR[name] || stableHueColor(name); }
 
+// C-3 (multi-node consistency) — clarify that the per-node traffic
+// metrics on this page (RPS, Top Attackers, latency, action mix) reflect
+// THIS node's slice of the fleet's traffic, not cluster totals. The
+// admin console reads a node-local Prometheus registry, while shared
+// state (risk, block-list, config) is consistent via Redis — so a
+// single node's "Top Attackers" / "RPS" is only ~1/N of the picture
+// behind a load balancer. Rendered only when the cluster roster shows
+// more than one node, so single-node deployments stay uncluttered.
+// Fleet-wide aggregation lives in the observability stack (SigNoz),
+// keyed by host.name — see plans/issues/multi-node-consistency.md (C-3).
+function FleetNodeBanner() {
+  const cluster = window.useClusterApi ? window.useClusterApi() : { data: null };
+  const stats = window.useStatsApi ? window.useStatsApi() : { data: null };
+  const peers = cluster.data?.peers || [];
+  if (peers.length < 2) return null; // single node → no banner
+  const ourNode = cluster.data?.our_node || 'this node';
+  // Cluster Phase 4 (§2a): the stats response self-declares whether
+  // it's a fleet-merged view. `fleet_nodes` present ⇒ traffic panels
+  // show fleet totals; absent ⇒ this node's slice. Leaderless — no
+  // leader badge.
+  const fleetNodes = stats.data?.fleet_nodes;
+  const fleetView = typeof fleetNodes === 'number' && fleetNodes > 0;
+  return (
+    <div
+      className="callout"
+      style={{
+        marginBottom: 12,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        borderLeft: `3px solid ${fleetView ? 'var(--ok, #2ea043)' : 'var(--accent)'}`,
+      }}
+      role="note"
+    >
+      <span style={{ fontSize: 16 }} aria-hidden="true">🖧</span>
+      <div style={{ flex: 1, fontSize: 13 }}>
+        {fleetView ? (
+          <>
+            <strong>{peers.length}-node fleet — Fleet view</strong>
+            <span style={{ marginLeft: 8, color: 'var(--ink-mute)' }}>
+              Traffic metrics below (RPS, Top Attackers, latency, by-detector,
+              bot mix) are merged across <code>{fleetNodes}</code>{' '}
+              node{fleetNodes === 1 ? '' : 's'}. This node: <code>{ourNode}</code>.
+            </span>
+          </>
+        ) : (
+          <>
+            <strong>{peers.length}-node fleet — showing THIS node</strong>
+            <span style={{ marginLeft: 8, color: 'var(--ink-mute)' }}>
+              Traffic metrics below are <code>{ourNode}</code>&apos;s slice, not
+              fleet totals. Enable <code>cluster.fleet_view</code> for merged
+              totals, or use your observability dashboards.
+            </span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function PageOverview() {
   const stats = window.useStatsApi();              // /api/stats — request_rate, blocks_total, block_rate_pct
   // 2026-05-03 — Overview Upstream card used to read
@@ -298,6 +358,7 @@ function PageOverview() {
 
   return (
     <>
+      <FleetNodeBanner />
       <SecOpsPostureCard />
       <div className="page-head">
         <div>
@@ -5691,7 +5752,7 @@ function MtlsModeCard() {
 //
 // **Phase 1**: paste / upload PEM → parse + preview metadata
 // (subject / issuer / fingerprint / expiry / is_ca). Audit-emits
-// `mtls_ca_bundle_validated`. The hot-swap of the live trust
+// `zero_trust_ca_bundle_validated`. The hot-swap of the live trust
 // store ships with the listener-rebuild track (Phase 2).
 function MtlsCaBundleCard() {
   const cap = window.useApi
@@ -7844,7 +7905,6 @@ function PageTracking() {
 
   const peers = cluster.data?.peers || [];
   const ourNode = cluster.data?.our_node;
-  const isLeader = cluster.data?.is_leader;
 
   return (
     <>
@@ -7854,8 +7914,8 @@ function PageTracking() {
           <p className="page-subtitle">
             Operational state · SLO · cluster · GitOps · cert health
             <span style={{ marginLeft: 8 }}>
-              <span className={`pill ${isLeader ? 'solid-yellow' : 'neutral'}`}>
-                {ourNode ? `node ${ourNode}${isLeader ? ' · leader' : ''}` : 'standalone'}
+              <span className="pill neutral">
+                {ourNode ? `node ${ourNode}` : 'standalone'}
               </span>
             </span>
           </p>
@@ -8055,7 +8115,7 @@ function PageTracking() {
         <div className="col-6 card">
           <window.SectionHeader
             title="Cluster peers"
-            sub={`${peers.length} ${peers.length === 1 ? 'node' : 'nodes'} · ${cluster.data?.leader_node ? `leader: ${cluster.data.leader_node}` : 'no leader observed'}`}
+            sub={`${peers.length} ${peers.length === 1 ? 'node' : 'nodes'} · leaderless`}
           />
           <table className="tbl tbl-compact">
             <thead><tr><th>ID</th><th>Address</th><th>Version</th><th>Role</th><th>Heartbeat</th><th>Leases</th></tr></thead>
@@ -8070,8 +8130,8 @@ function PageTracking() {
                   <td className="mono">{c.id}</td>
                   <td className="mono dim">{c.addr || '—'}</td>
                   <td><span className="pill neutral">{c.version || '—'}</span></td>
-                  <td><span className={`pill ${c.id === cluster.data?.leader_node ? 'solid-yellow' : 'neutral'}`}>
-                    {c.id === cluster.data?.leader_node ? 'leader' : 'follower'}
+                  <td><span className={`pill ${c.id === cluster.data?.our_node ? 'info' : 'neutral'}`}>
+                    {c.id === cluster.data?.our_node ? 'this node' : 'peer'}
                   </span></td>
                   {/* LOW-ADM-05 (2026-05-12) — 24h heartbeat. */}
                   <td className="num dim">{fmtClockTime(c.last_heartbeat)}</td>
@@ -9833,8 +9893,6 @@ function ScalingL1Card({ runtime }) {
 function ScalingL2Card({ cluster, onDrain, draining }) {
   const peers = cluster?.data?.peers || [];
   const ourNode = cluster?.data?.our_node;
-  const isLeader = cluster?.data?.is_leader;
-  const leaderNode = cluster?.data?.leader_node;
   const [confirmStep, setConfirmStep] = useStateP(0); // 0 idle, 1 first, 2 final
   const [drainResult, setDrainResult] = useStateP(null);
 
@@ -9863,9 +9921,8 @@ function ScalingL2Card({ cluster, onDrain, draining }) {
     const ts = p.last_heartbeat ? new Date(p.last_heartbeat).getTime() : NaN;
     const ageSec = Number.isFinite(ts) ? Math.max(0, Math.round((now - ts) / 1000)) : null;
     const healthy = ageSec != null && ageSec < 30;
-    const leader = leaderNode != null && p.id === leaderNode;
     const isMe = p.id === ourNode;
-    return { ...p, ageSec, healthy, leader, isMe };
+    return { ...p, ageSec, healthy, isMe };
   });
   const peersExcludingSelf = peersDecorated.filter(p => !p.isMe);
   // Single-node mode: either no peers at all, or only self-peer
@@ -9883,7 +9940,7 @@ function ScalingL2Card({ cluster, onDrain, draining }) {
           <div className="card-title">Layer 2 · Cluster peers</div>
           <div className="card-sub">
             {peerCountLabel}
-            {ourNode ? ` · this node ${ourNode}${isLeader ? ' · leader' : ''}` : ''}
+            {ourNode ? ` · this node ${ourNode}` : ''}
           </div>
         </div>
         <span className="pill neutral">L2</span>
@@ -9919,7 +9976,7 @@ function ScalingL2Card({ cluster, onDrain, draining }) {
                 <td style={{ textAlign: 'right' }} className="num">
                   {p.ageSec != null ? `${p.ageSec}s ago` : '—'}
                 </td>
-                <td>{p.leader ? <span className="pill solid-yellow">leader</span> : <span className="dim">replica</span>}</td>
+                <td>{p.isMe ? <span className="pill info">this node</span> : <span className="dim">peer</span>}</td>
               </tr>
             ))}
           </tbody>

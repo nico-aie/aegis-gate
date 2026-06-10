@@ -8,10 +8,15 @@
 //! | `/api/zero-trust/upstream/identity` | Shared fleet WAF client-cert metadata (subject / fingerprint / expiry — **never** the private key) |
 //! | `/api/zero-trust/upstream/config` | Per-pool upstream-mTLS state (off / mutual+verify) |
 //!
-//! The downstream (WAF-as-server) views still live in [`crate::api::mtls`]
-//! and are renamed onto `/api/zero-trust/downstream/*` in the frontend
-//! slice. Nothing here ever returns private-key material — the identity
-//! view parses only the PUBLIC cert at `cert_path` for display metadata.
+//! The downstream (WAF-as-server) views live in [`downstream`] (with the
+//! CA-bundle preview in [`ca_bundle`] and the mode store in [`mode`]) and
+//! are served on `/api/zero-trust/downstream/*`. Nothing here ever returns
+//! private-key material — the identity view parses only the PUBLIC cert at
+//! `cert_path` for display metadata.
+
+pub mod ca_bundle;
+pub mod downstream;
+pub mod mode;
 
 use std::path::Path;
 

@@ -17,13 +17,12 @@
 #   target/release/waf run --config config/cluster-b.yaml &
 #
 # Tear-down:
-#   pkill -f 'waf run --config config/waf.cluster-' ; \
+#   pkill -f 'waf run --config config/cluster-' ; \
 #     docker rm -f aegis-cluster-redis
 
-# HA-T3 — stable node identity. With this in place the
-# `LeaderView` reports `our_node: "waf-a"` instead of the
-# host-pid-nanos fallback, and the `leader:cluster` lease
-# survives restart of this binary cleanly.
+# HA-T3 — stable node identity. Leaderless (2026-06-10): this
+# surfaces as `/api/cluster.our_node: "waf-a"` and the node's
+# `members:waf-a` heartbeat key; survives restart cleanly.
 node:
   id: "waf-a"
 
@@ -92,6 +91,23 @@ state:
     timeout: "1s"
   reconcile:
     readiness_warm_ms: "5s"
+
+# ---------------------------------------------------------------------------
+# Leaderless multi-node console sync (cluster plan Phases 2 & 3). Both
+# enabled here so the tests/cluster/ rig exercises cross-node event
+# fanout (07/08) and the merged fleet-metrics view (09). Gated on the
+# Redis backend above — single-node deploys leave these off.
+# ---------------------------------------------------------------------------
+cluster:
+  fleet_events:
+    enabled: true
+  fleet_view:
+    enabled: true
+    publish_interval_ms: 1000   # tight cadence so the rig converges fast
+    snapshot_ttl_ms: 5000
+  # Phase 5 — pub/sub state nudge: set_profile/reset_state converge in ms
+  # (the rig's 07-control-plane-sync exercises this). Non-load-bearing.
+  pubsub_nudge: true
 
 detectors:
   sqli:             { enabled: true }

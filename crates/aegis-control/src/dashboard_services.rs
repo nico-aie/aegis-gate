@@ -111,12 +111,24 @@ pub struct DashboardServices {
     /// drain task subscribes to. Used by `/dashboard/sse` (B4-T4)
     /// and any future streaming surface that needs live events.
     pub bus: AuditBus,
-    /// Live cluster-leader view. `None` for single-node /
+    /// Cluster Phase 2 (§2b) — separate fleet-event bus carrying
+    /// **peers'** events for the cross-node SSE feed. `None` for
+    /// single-node / cluster-off; `Some` when `aegis-proxy` wires the
+    /// Redis fanout. Kept distinct from `bus` so remote events reach
+    /// the dashboard SSE only, never this node's durable sinks / audit
+    /// chain (which stay "this node's decisions" — cluster plan §10).
+    pub fleet_event_bus: Option<AuditBus>,
+    /// Cluster Phase 3 (§2a) — merged fleet **metrics** view. `None`
+    /// for single-node / cluster-off; `Some` when `aegis-proxy` wires
+    /// the snapshot publish/merge task. The traffic GET handlers read
+    /// it (when populated) to serve fleet totals instead of this node's
+    /// `1/N` slice.
+    pub fleet_cache: Option<crate::metrics::fleet_snapshot::FleetCache>,
+    /// Live leaderless cluster-roster view. `None` for single-node /
     /// test builds; `Some` when `aegis-proxy::run` wires the
-    /// leader-poll background task. See
-    /// [`crate::api::tracking::LeaderView`] (carry-over 3,
-    /// post 2026-04-29 cluster smoke).
-    pub leader_view: Option<Arc<crate::api::tracking::LeaderView>>,
+    /// `members:*` roster-poll background task. See
+    /// [`crate::api::tracking::RosterView`].
+    pub roster_view: Option<Arc<crate::api::tracking::RosterView>>,
     /// External interop surface — `/__waf_control/*` dispatch,
     /// `X-WAF-*` response stamping, minimal-schema audit log.
     /// See [`plans/interop-contract.md`].
@@ -269,7 +281,7 @@ pub struct DashboardServices {
     /// Always present; starts at "no override" (resolves to the
     /// configured value). PUT /api/mtls/mode swaps the override
     /// in-process.
-    pub mtls_mode_store: std::sync::Arc<crate::api::mtls_mode::DownstreamMtlsModeStore>,
+    pub mtls_mode_store: std::sync::Arc<crate::api::zero_trust::mode::DownstreamMtlsModeStore>,
     /// MTLS-T10 — operator opt-in for the dashboard's CA bundle
     /// upload card. Mirrors `cfg.admin.dashboard_auth.allow_ca_upload`.
     /// Default `false` so trust anchors stay GitOps-managed
@@ -282,7 +294,7 @@ pub struct DashboardServices {
     /// invokes `swap_pem` to hot-swap roots; when the slot is
     /// `None` it falls back to the Phase 1 preview-only behaviour.
     pub trust_anchor_writer:
-        Option<std::sync::Arc<dyn crate::api::mtls_ca_bundle::TrustAnchorWriter>>,
+        Option<std::sync::Arc<dyn crate::api::zero_trust::ca_bundle::TrustAnchorWriter>>,
     /// HACK-T3 — shared detector list for the `/api/rules/simulate`
     /// preview endpoint (Tier-A bonus). Same `Vec<Box<dyn Detector>>`
     /// the data-plane `accept_loop` runs, so the simulator and live
@@ -314,7 +326,7 @@ pub struct DashboardServices {
     /// admission. `None` for test bundles → identity extraction
     /// behaves as before (no allowlist gate).
     pub allowed_sans:
-        Option<crate::api::mtls::AllowedSansStore>,
+        Option<crate::api::zero_trust::downstream::AllowedSansStore>,
     /// 2026-05-09 — DDoS request-flow gate runtime. Wired by
     /// `aegis-proxy::run` from `cfg.ddos`. `None` when
     /// `cfg.ddos.enabled = false` or for test bundles that don't
@@ -394,7 +406,7 @@ impl DashboardServices {
         admin_identity: Arc<AdminIdentity>,
         session_idle_seconds: u64,
     ) -> (Self, tokio::task::JoinHandle<()>) {
-        Self::spawn_with_mask_and_leader(
+        Self::spawn_with_mask_and_roster(
             bus,
             pool_snapshot,
             environment,
@@ -414,14 +426,14 @@ impl DashboardServices {
     }
 
     /// Same as [`spawn_with_mask`] but accepts a live
-    /// [`crate::api::tracking::LeaderView`]. The proxy's
+    /// [`crate::api::tracking::RosterView`]. The proxy's
     /// `run()` builds one of these and threads it in so
-    /// `/api/cluster` reports `is_leader` + `leader_node`
-    /// correctly. Older call sites (tests, single-node
+    /// `/api/cluster` reports the leaderless flat peer list +
+    /// `our_node`. Older call sites (tests, single-node
     /// builds) keep using `spawn_with_mask` and get the
     /// `None` placeholder behaviour.
     #[allow(clippy::too_many_arguments)]
-    pub fn spawn_with_mask_and_leader(
+    pub fn spawn_with_mask_and_roster(
         bus: AuditBus,
         pool_snapshot: PoolSnapshotProvider,
         environment: Option<String>,
@@ -434,7 +446,7 @@ impl DashboardServices {
         login_rate_limiter: Arc<LoginRateLimiter>,
         admin_identity: Arc<AdminIdentity>,
         session_idle_seconds: u64,
-        leader_view: Option<Arc<crate::api::tracking::LeaderView>>,
+        roster_view: Option<Arc<crate::api::tracking::RosterView>>,
         // 2026-05-27 (config-plane fold-toggles) — the TierStore is now
         // created by `run()` so the same `Arc` can be threaded into the
         // config-plane watcher (which re-derives per-tier settings from
@@ -487,10 +499,10 @@ impl DashboardServices {
         let upstreams = Arc::new(UpstreamHandler::new(move || {
             upstreams_pool_provider()
         }));
-        let tracking = Arc::new(match leader_view.as_ref() {
-            Some(lv) => TrackingHandler::with_leader_view(
+        let tracking = Arc::new(match roster_view.as_ref() {
+            Some(rv) => TrackingHandler::with_roster_view(
                 Arc::clone(&upstreams),
-                Arc::clone(lv),
+                Arc::clone(rv),
             ),
             None => TrackingHandler::new(Arc::clone(&upstreams)),
         });
@@ -586,7 +598,13 @@ impl DashboardServices {
                 session_idle_seconds,
                 environment,
                 bus: bus_handle,
-                leader_view,
+                // Cluster Phase 2 fleet-event bus is opted in by
+                // `aegis-proxy::accept` after construction (next to
+                // the roster wiring), gated on Redis + cluster config.
+                fleet_event_bus: None,
+                // Cluster Phase 3 fleet-metrics cache — same opt-in.
+                fleet_cache: None,
+                roster_view,
                 // Interop contract is opted in by the bin
                 // crate after construction (see
                 // `aegis-bin/src/main.rs`).
@@ -648,7 +666,7 @@ impl DashboardServices {
                 // MTLS-T8 — empty override at boot. The proxy may
                 // seed it from a persisted file or YAML if needed.
                 mtls_mode_store: std::sync::Arc::new(
-                    crate::api::mtls_mode::DownstreamMtlsModeStore::new(),
+                    crate::api::zero_trust::mode::DownstreamMtlsModeStore::new(),
                 ),
                 // MTLS-T10 — default off; proxy boot path overrides
                 // from cfg.admin.dashboard_auth.allow_ca_upload.

@@ -100,11 +100,27 @@ pub fn client_config_from_resolved(
     // carried in config or the resolved struct. (P4 reference-only:
     // even state-source identities keep the key as a `key_ref`.)
     let key = load_key(Path::new(&m.client_key_ref))?;
-    let client_config = rustls::ClientConfig::builder()
+    let mut client_config = rustls::ClientConfig::builder()
         .with_root_certificates(root_store)
         .with_client_auth_cert(certs, key)?;
+    // P5 — TLS session resumption (mTLS.md §3.7): a reconnect to a
+    // backend skips the full handshake (TLS 1.3 tickets + TLS 1.2
+    // session IDs amortise the mTLS handshake cost off the hot path).
+    // rustls enables resumption by default; we set it explicitly so it
+    // can't silently regress, sized for our per-pool client model — one
+    // `ClientConfig` is built per pool / cert signature and a pool has a
+    // handful of backend members, so a modest cache is ample. 0-RTT
+    // early data stays OFF (replay risk) — `in_memory_sessions` does not
+    // enable it.
+    client_config.resumption =
+        rustls::client::Resumption::in_memory_sessions(UPSTREAM_SESSION_CACHE_SIZE);
     Ok(client_config)
 }
+
+/// Per-`ClientConfig` upstream TLS session cache size (resumption
+/// tickets / session IDs). One config exists per pool / cert signature,
+/// so this is per-pool headroom, not a global ceiling.
+const UPSTREAM_SESSION_CACHE_SIZE: usize = 256;
 
 /// Load a PUBLIC cert chain from a [`CertSource`] — a file on disk or
 /// in-memory PEM (materialized from the config plane).

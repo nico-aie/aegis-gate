@@ -121,16 +121,16 @@ function TopBar() {
   const env = (status.data?.environment || 'unknown').toLowerCase();
   const peers = cluster.data?.peers || [];
   const peerCount = peers.length;
-  const isLeader = cluster.data?.is_leader;
   // Health rollup: green when we know we have at least one node and
   // /api/about is reachable; warn when /api/about is up but cluster
   // has no peer info yet; err when /api/about itself is failing.
+  // Leaderless — every node is equal, so no leader badge.
   const healthTone = status.error ? 'err' : (peerCount === 0 ? 'warn' : 'ok');
   const healthLabel = status.error
     ? 'API unreachable'
     : peerCount === 0
       ? 'Standalone'
-      : `Cluster ${peerCount} node${peerCount === 1 ? '' : 's'}${isLeader ? ' · leader' : ''}`;
+      : `Cluster ${peerCount} node${peerCount === 1 ? '' : 's'}`;
 
   return (
     <div className="topbar">
@@ -162,10 +162,10 @@ function TopBar() {
             title={`Environment: ${env}`}
           >● {env.toUpperCase()}</span>
         )}
-        {status.data?.mtls_break_glass_active && (
+        {status.data?.zero_trust_break_glass_active && (
           <span
             className="pill down"
-            title="AEGIS_MTLS_BREAK_GLASS=1 was set at boot — mTLS `required` is downgraded to `optional`. Unset env + restart to return to enforced mode."
+            title="AEGIS_ZERO_TRUST_BREAK_GLASS=1 was set at boot — mTLS `required` is downgraded to `optional`. Unset env + restart to return to enforced mode."
             style={{ marginLeft: 4, animation: 'pulse 2s ease-in-out infinite' }}
           >
             ⚠ MTLS BREAK-GLASS

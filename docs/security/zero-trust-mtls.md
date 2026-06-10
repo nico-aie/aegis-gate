@@ -192,6 +192,22 @@ process-global histogram (`upstream::mtls_failures`) keyed by `(pool, reason)`:
 handshake_failed`. Read via `GET /api/zero-trust/upstream/failures`; rendered on
 the console. Expiry is surfaced as a badge on the identity + each trust bundle.
 
+## Performance & cost
+
+- **Connection pooling/keep-alive is per pool** — the handshake is paid once per
+  pooled connection, not per request.
+- **TLS session resumption** is enabled on the upstream mTLS client
+  (`Resumption::in_memory_sessions`, TLS 1.3 tickets + TLS 1.2 session IDs), so a
+  reconnect skips the full handshake. 0-RTT early data is **off** (replay risk).
+- `verify` does CA-chain validation; an `allowed_sans` gate is a cheap string check.
+
+## Future (not scheduled)
+
+- **SPIFFE-SAN matcher** — match a backend's server-cert SAN against a SPIFFE ID /
+  trust-domain pattern (interop with SPIFFE/SPIRE), layered on `allowed_sans`. A
+  real SPIFFE/SPIRE SDS data source (auto-rotating short-lived X.509-SVIDs) is a
+  separate, larger effort. Tracked in `plans/future/mTLS.md` §4.1 / §8.
+
 ## Operator quick-start
 
 1. Mint a WAF client cert+key out of band (your internal CA, EKU `clientAuth`,

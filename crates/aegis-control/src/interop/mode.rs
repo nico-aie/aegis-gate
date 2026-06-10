@@ -96,6 +96,15 @@ impl ModeStore {
         self.snapshot.store(std::sync::Arc::new(ModeSnapshot::empty(mode)));
     }
 
+    /// C-1 — replace the entire snapshot at once. Used by the cluster
+    /// poller to apply a mode map published by another node, so every
+    /// node converges on the same effective modes. Atomic from the
+    /// hot-path reader's POV (single `ArcSwap` store).
+    pub fn set_snapshot(&self, snapshot: ModeSnapshot) {
+        let _g = self.write_lock.lock().expect("mode write lock poisoned");
+        self.snapshot.store(std::sync::Arc::new(snapshot));
+    }
+
     /// Override one feature; `policy_overrides` for that feature
     /// stay in place. Other features unchanged.
     pub fn set_feature(&self, feature: impl Into<String>, mode: Mode) {

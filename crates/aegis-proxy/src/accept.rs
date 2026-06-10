@@ -34,6 +34,144 @@ use crate::admin_dispatch::{handle_admin_request, read_cert_inventory, stamp_int
 use crate::admin_sse;
 use crate::data_plane::handle_data_request;
 
+#[cfg(feature = "redis")]
+/// Broadcast capacity for the fleet-event bus (cluster Phase 2). Peers'
+/// events fan in here for the SSE merge; a slow dashboard drops the
+/// oldest (lossy monitor feed).
+const FLEET_EVENT_BUS_CAP: usize = 1024;
+
+/// Cluster Phase 2 (§2b) — wire the cross-node event fanout when
+/// `cluster.fleet_events` is enabled AND a Redis state backend is
+/// configured. Spawns the publisher (drains the local bus → Redis) and
+/// subscriber (Redis → the returned fleet bus) tasks, and returns the
+/// fleet-event bus the dashboard SSE merges in. Returns `None` for
+/// single-node / cluster-off / non-redis builds — the SSE feed then
+/// stays local-only (today's behaviour), and nothing is spawned.
+fn spawn_fleet_event_fanout(
+    cfg: &WafConfig,
+    local_bus: &AuditBus,
+    our_node: &str,
+) -> Option<AuditBus> {
+    let fe = &cfg.cluster.fleet_events;
+    if !fe.enabled
+        || !matches!(cfg.state.backend, aegis_core::config::StateBackendKind::Redis)
+    {
+        return None;
+    }
+    #[cfg(feature = "redis")]
+    {
+        let Some(url) = cfg.state.redis.as_ref().and_then(|r| r.urls.first().cloned()) else {
+            tracing::warn!("cluster.fleet_events enabled but no redis url; cross-node feed disabled");
+            return None;
+        };
+        match crate::state::RedisFleetBus::connect(&url) {
+            Ok(fb) => {
+                let fb: Arc<dyn aegis_core::fleet::FleetBus> = Arc::new(fb);
+                let fleet_event_bus = AuditBus::new(FLEET_EVENT_BUS_CAP);
+                crate::fleet_events::spawn_fleet_publisher(
+                    local_bus.clone(),
+                    Arc::clone(&fb),
+                    fe.channel.clone(),
+                    our_node.to_string(),
+                    fe.max_publish_rate_per_s,
+                );
+                crate::fleet_events::spawn_fleet_subscriber(
+                    fb,
+                    fe.channel.clone(),
+                    fleet_event_bus.clone(),
+                    our_node.to_string(),
+                );
+                tracing::info!(
+                    channel = %fe.channel,
+                    "cluster fleet events: cross-node fanout active"
+                );
+                Some(fleet_event_bus)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "cluster.fleet_events: redis connect failed; cross-node feed disabled");
+                None
+            }
+        }
+    }
+    #[cfg(not(feature = "redis"))]
+    {
+        let _ = (local_bus, our_node);
+        tracing::warn!(
+            "cluster.fleet_events enabled but binary built without the `redis` feature; cross-node feed disabled"
+        );
+        None
+    }
+}
+
+/// Window (seconds) the fleet-snapshot captures + reports. Fixed for
+/// v1 — the merged traffic panels report this window regardless of the
+/// client's `?window=` (the snapshot fixes it).
+const FLEET_SNAPSHOT_WINDOW_SECS: u32 = 300;
+
+/// Cluster Phase 3 (§2a) — spawn the fleet-snapshot publish/merge task
+/// when `cluster.fleet_view` is enabled AND a shared (non-`in_memory`)
+/// state backend is present. Each tick: publish this node's traffic
+/// snapshot to `fleet:snap:<node>` (TTL self-evict), then scan+merge
+/// every peer's snapshot into the returned `FleetCache` (which the
+/// dashboard traffic GET handlers read). Returns `None` for single-node
+/// / `in_memory` — the panels then stay local-only (today's behaviour),
+/// and nothing is spawned.
+fn spawn_fleet_snapshot_task(
+    cfg: &WafConfig,
+    state_backend: Arc<dyn aegis_core::state::StateBackend>,
+    stats_agg: Arc<aegis_control::api::stats::StatsAggregator>,
+    attacks_agg: Arc<aegis_control::api::attacks::AttacksAggregator>,
+    hist: Arc<aegis_control::metrics::request_duration::RequestStageHistogram>,
+    our_node: &str,
+) -> Option<aegis_control::metrics::fleet_snapshot::FleetCache> {
+    use aegis_control::metrics::fleet_snapshot as fs;
+    let fv = &cfg.cluster.fleet_view;
+    if !fv.enabled || matches!(cfg.state.backend, aegis_core::config::StateBackendKind::InMemory) {
+        return None;
+    }
+    let cache = fs::FleetCache::new();
+    let cache_writer = cache.clone();
+    let node = our_node.to_string();
+    let publish_interval =
+        std::time::Duration::from_millis(fv.publish_interval_ms.max(250));
+    let ttl = std::time::Duration::from_millis(fv.snapshot_ttl_ms.max(fv.publish_interval_ms));
+    let top_k = fv.top_attackers_k;
+    tokio::spawn(async move {
+        let key = fs::snapshot_key(&node);
+        let mut tick = tokio::time::interval(publish_interval);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            // 1. Build + publish our own snapshot (best-effort, off the
+            //    hot path — reads already-collected local aggregates).
+            let snap = fs::build_snapshot(
+                &node,
+                FLEET_SNAPSHOT_WINDOW_SECS,
+                top_k as u32,
+                &stats_agg,
+                &attacks_agg,
+                &hist,
+                aegis_control::metrics::request_duration::stage::TOTAL,
+            );
+            let published = match serde_json::to_vec(&snap) {
+                Ok(bytes) => state_backend.set(&key, &bytes, ttl).await.is_ok(),
+                Err(_) => false,
+            };
+            // 2. Scan + merge every live peer snapshot (dead nodes have
+            //    already TTL'd out of the keyspace) into the cache.
+            let merged = fs::scan_and_merge(state_backend.as_ref(), top_k).await;
+            if merged.nodes == 0 && published {
+                // Backend without key enumeration → at least show our own.
+                cache_writer.store(fs::merge(std::slice::from_ref(&snap), top_k));
+            } else {
+                cache_writer.store(merged);
+            }
+        }
+    });
+    tracing::info!("cluster fleet view: snapshot publish/merge active");
+    Some(cache)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn admin_accept_loop(
     tcp: tokio::net::TcpListener,
@@ -261,74 +399,25 @@ pub(crate) async fn admin_accept_loop(
     });
     let session_idle_seconds = auth.session_ttl_idle.as_secs();
 
-    // Carry-over 3 (post-2026-04-29 cluster smoke) — build a
-    // shared `LeaderView` and start a background poller that
-    // updates it from `lease_store.holder("leader:cluster")`
-    // every two seconds. The admin handler reads this view
-    // synchronously when `/api/cluster` is fetched.
+    // Leaderless roster (Phase 1) — build a shared `RosterView`
+    // and start a background poller that rebuilds the flat peer
+    // list from the `members:*` heartbeat keys. There is no
+    // cluster leader: every node is equal, and singleton
+    // side-tasks (ACME, GitOps) coordinate via their own per-task
+    // leases below — not a global leader lease. The admin handler
+    // reads this view synchronously when `/api/cluster` is fetched.
     let our_node_id = lease_store.self_id().as_str().to_string();
-    let leader_view = Arc::new(
-        aegis_control::api::tracking::LeaderView::new(our_node_id),
+    let roster_view = Arc::new(
+        aegis_control::api::tracking::RosterView::new(our_node_id),
     );
-
-    // Singleton "I am the cluster leader" lease — distinct
-    // from the per-task leases (`leader:acme`, `leader:gitops`,
-    // …) above. The runner does no work; it just holds the
-    // lease so exactly one node is identifiable as
-    // *the* cluster leader for admin / dashboard surfaces.
-    {
-        let lease_store_for_cluster = lease_store.clone();
-        // TTL kept tight (5 s) because this lease has zero
-        // task body — the failover budget is just
-        // TTL + retry-half-TTL + leader-view-poll-period
-        // (5 + 2.5 + 2 ≈ 10 s) which keeps
-        // `tests/cluster/02-leader-failover.sh` predictable.
-        crate::cluster_lease::spawn_with_lease(
-            lease_store_for_cluster,
-            "leader:cluster",
-            std::time::Duration::from_secs(5),
-            move |_holder, lost| async move {
-                // No-op factory — just wait until the lease
-                // is lost. The wrapper takes care of release.
-                lost.notified().await;
-            },
-        );
-    }
-
-    {
-        let store: Arc<dyn aegis_core::cluster::LeaseStore> =
-            Arc::clone(&lease_store);
-        let lv = Arc::clone(&leader_view);
-        tokio::spawn(async move {
-            let key = "leader:cluster".to_string();
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
-            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                tick.tick().await;
-                match store.holder(&key).await {
-                    Ok(holder) => {
-                        let h: Option<String> =
-                            holder.map(|n: aegis_core::cluster::NodeId| {
-                                n.as_str().to_string()
-                            });
-                        lv.set_holder(h);
-                    }
-                    Err(e) => {
-                        tracing::debug!(error = %e, "leader-view poll failed");
-                    }
-                }
-            }
-        });
-    }
 
     // HA-T4 — membership heartbeat + roster poller.
     //
     // Each node publishes its identity by holding the lease
     // `members:<our_node_id>` (15s TTL, refreshed every
-    // ~7.5s by the heartbeat layer). The same poller that
-    // tracks `leader:cluster` enumerates `members:*` keys
-    // every 5s and feeds the result into
-    // `LeaderView::members`, which the admin handler then
+    // ~7.5s by the heartbeat layer). The roster poller below
+    // enumerates `members:*` keys every 5s and feeds the result
+    // into `RosterView::members`, which the admin handler then
     // serialises as `/api/cluster.peers[]`.
     {
         let lease_store_for_membership = Arc::clone(&lease_store);
@@ -348,7 +437,7 @@ pub(crate) async fn admin_accept_loop(
     {
         let store: Arc<dyn aegis_core::cluster::LeaseStore> =
             Arc::clone(&lease_store);
-        let lv = Arc::clone(&leader_view);
+        let lv = Arc::clone(&roster_view);
         let cfg_version = env!("CARGO_PKG_VERSION").to_string();
         tokio::spawn(async move {
             let prefix = "members:".to_string();
@@ -399,7 +488,17 @@ pub(crate) async fn admin_accept_loop(
         });
     }
 
-    let (services, _drain) = aegis_control::dashboard_services::DashboardServices::spawn_with_mask_and_leader(
+    // Cluster Phase 2 (§2b) — cross-node fleet event fanout. Clones
+    // the local bus for the publisher BEFORE `bus` is moved into the
+    // services constructor below. `None` (single-node / cluster-off /
+    // non-redis) keeps the SSE feed local-only.
+    let fleet_event_bus = spawn_fleet_event_fanout(
+        &cfg,
+        &bus,
+        lease_store.self_id().as_str(),
+    );
+
+    let (services, _drain) = aegis_control::dashboard_services::DashboardServices::spawn_with_mask_and_roster(
         bus,
         pool_provider,
         cfg.admin.environment.clone(),
@@ -412,7 +511,7 @@ pub(crate) async fn admin_accept_loop(
         login_rate_limiter,
         admin_identity,
         session_idle_seconds,
-        Some(Arc::clone(&leader_view)),
+        Some(Arc::clone(&roster_view)),
         Arc::clone(&tiers),
         Arc::clone(&rules),
     );
@@ -431,6 +530,19 @@ pub(crate) async fn admin_accept_loop(
     services.blacklist = upstream_ctx.blacklist.clone();
     services.whitelist = upstream_ctx.whitelist.clone();
     services.interop = interop.clone();
+    // Cluster Phase 2 — the dashboard SSE handler merges this in.
+    services.fleet_event_bus = fleet_event_bus;
+    // Cluster Phase 3 — fleet metrics snapshot publish/merge. Reads the
+    // same local aggregators the dashboard does; the traffic GET
+    // handlers serve the merged view when this cache is populated.
+    services.fleet_cache = spawn_fleet_snapshot_task(
+        &cfg,
+        state_backend.clone(),
+        services.stats_agg.clone(),
+        services.attacks_agg.clone(),
+        request_stage_hist.clone(),
+        lease_store.self_id().as_str(),
+    );
     // SC-1 — expose the data-plane response cache stats to GET /api/cache/stats
     // via a JSON-returning closure (keeps aegis-control free of aegis-proxy
     // types). Empty pools map until an upstream opts into `cache:`.
@@ -718,7 +830,7 @@ pub(crate) async fn admin_accept_loop(
             .map(|ca| ca.mode)
             .unwrap_or(aegis_core::config::DownstreamMtlsMode::Disabled);
         services.mtls_mode_store = Arc::new(
-            aegis_control::api::mtls_mode::DownstreamMtlsModeStore::with_configured(configured_mode),
+            aegis_control::api::zero_trust::mode::DownstreamMtlsModeStore::with_configured(configured_mode),
         );
     }
     // MTLS-T10 — surface the operator's opt-in for the CA bundle
@@ -729,7 +841,7 @@ pub(crate) async fn admin_accept_loop(
     // writer so the audit-mutated PUT handler can hot-swap roots.
     services.trust_anchor_writer = client_trust
         .clone()
-        .map(|store| -> Arc<dyn aegis_control::api::mtls_ca_bundle::TrustAnchorWriter> {
+        .map(|store| -> Arc<dyn aegis_control::api::zero_trust::ca_bundle::TrustAnchorWriter> {
             Arc::new(store)
         });
     // SC-T1 — wire the live `StateBackend` so `/api/state` can
@@ -824,7 +936,7 @@ pub(crate) async fn admin_accept_loop(
             .map(|ca| ca.allowed_sans.clone())
             .unwrap_or_default();
         services.allowed_sans = Some(
-            aegis_control::api::mtls::AllowedSansStore::from(initial),
+            aegis_control::api::zero_trust::downstream::AllowedSansStore::from(initial),
         );
     }
 
@@ -1186,6 +1298,7 @@ pub(crate) async fn admin_accept_loop(
                         let query = req.uri().query().unwrap_or("").to_string();
                         return Ok::<_, Infallible>(admin_sse::sse_response(
                             &services.bus,
+                            services.fleet_event_bus.as_ref(),
                             &query,
                         ));
                     }

@@ -56,6 +56,18 @@ state:
   reconcile:
     readiness_warm_ms: "5s"
 
+# Leaderless multi-node console sync (cluster plan Phases 2 & 3) —
+# must match cluster-a.yaml so both nodes share the same fleet channel
+# + snapshot keyspace. See cluster-a.yaml for the rationale.
+cluster:
+  fleet_events:
+    enabled: true
+  fleet_view:
+    enabled: true
+    publish_interval_ms: 1000
+    snapshot_ttl_ms: 5000
+  pubsub_nudge: true   # Phase 5 — see cluster-a.yaml
+
 detectors:
   sqli:             { enabled: true }
   xss:              { enabled: true }

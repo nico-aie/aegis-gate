@@ -7,6 +7,6 @@ pub mod totp;
 // deleted — `verify_client_cert` had zero production callers
 // (the live TLS-handshake-layer mTLS lives in
 // `crates/aegis-proxy/src/listener/tls.rs`). The unrelated
-// `api::mtls::MtlsConfigView` (the dashboard's config-rendering
+// `api::zero_trust::downstream::MtlsConfigView` (the dashboard's config-rendering
 // view) is unaffected.
 // pub mod mtls;

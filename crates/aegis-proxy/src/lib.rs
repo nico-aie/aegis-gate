@@ -25,6 +25,7 @@ pub mod benchmark;
 // in place returning `{ok: true, supported: false}` per
 // v2.3 §9 (caching not operational is an acceptable report).
 pub mod cluster;
+mod cluster_control;
 pub mod cluster_lease;
 pub mod config_source;
 mod accept;
@@ -39,6 +40,7 @@ mod admin_mutate;
 mod ai_reload;
 pub mod cache;
 mod data_plane;
+pub mod fleet_events;
 mod responses;
 mod run;
 pub use run::{run, ConfigReloadSource};

@@ -50,6 +50,16 @@ fn now_unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// Cluster Phase 3 (§2a) — the merged fleet metrics view, if the
+/// snapshot publish/merge task is wired (`cluster.fleet_view` enabled +
+/// shared backend) AND it has produced at least one merge. `None` ⇒ the
+/// traffic GET handlers fall back to this node's local aggregators.
+fn fleet_view(
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Option<aegis_control::metrics::fleet_snapshot::MergedFleet> {
+    services.fleet_cache.as_ref().and_then(|c| c.load())
+}
+
 pub(crate) fn admin_router(
     req: hyper::Request<hyper::body::Incoming>,
     cfg: &WafConfig,
@@ -89,19 +99,11 @@ pub(crate) fn admin_router(
             json_response(code, &serde_json::json!({"status": msg}))
         }
         "/healthz/ready" => {
-            // HA-T5 — `?strict=1` returns 503 unless this node also
-            // holds the cluster lease. Lets active/standby LB
-            // topologies route singleton traffic to one node only.
-            let strict = matches!(parse_query_str(query, "strict"), Some("1"));
-            let (code, resp) = if strict {
-                let is_leader = services
-                    .leader_view
-                    .as_ref()
-                    .map(|lv| lv.is_leader());
-                aegis_control::health::check_ready_strict(readiness, is_leader)
-            } else {
-                aegis_control::health::check_ready(readiness)
-            };
+            // Phase 1 (leaderless): readiness is purely node-local —
+            // state rehydrated + listeners bound + not draining. The
+            // old `?strict=1` "503 unless leader" mode was removed
+            // with the global leader concept.
+            let (code, resp) = aegis_control::health::check_ready(readiness);
             // F-CRITICAL-003 (2026-05-17 control audit): populate
             // the three Round-1 mandated fields — uptime / mode /
             // active rule count. Mode is "enforce" today (the
@@ -306,7 +308,7 @@ pub(crate) fn admin_router(
                 "version": v,
                 "applied_at_ms": chrono::Utc::now().timestamp_millis(),
                 "applied_on_node": services
-                    .leader_view
+                    .roster_view
                     .as_ref()
                     .map(|lv| lv.our_node.clone())
                     .unwrap_or_default(),
@@ -324,7 +326,13 @@ pub(crate) fn admin_router(
             )
         }
         "/api/stats" => {
-            json_body_response(200, services.stats.render(), "private, max-age=1")
+            // Cluster Phase 3 (§2a): serve the merged fleet view when
+            // the snapshot cache is populated, else this node's local.
+            let body = match fleet_view(services) {
+                Some(m) => services.stats.render_from_fleet(&m),
+                None => services.stats.render(),
+            };
+            json_body_response(200, body, "private, max-age=1")
         }
         "/api/stats/timeseries" => {
             let window = parse_query_u32(query, "window", 900);
@@ -358,11 +366,11 @@ pub(crate) fn admin_router(
         "/api/attacks/top" => {
             let window = parse_query_u32(query, "window", 900);
             let limit = parse_query_u32(query, "limit", 5);
-            json_body_response(
-                200,
-                services.attacks.render_top(window, limit),
-                "private, max-age=10",
-            )
+            let body = match fleet_view(services) {
+                Some(m) => services.attacks.render_top_from_fleet(&m, window, limit),
+                None => services.attacks.render_top(window, limit),
+            };
+            json_body_response(200, body, "private, max-age=10")
         }
         "/api/audit/since" => {
             // PR-UX-A2 (2026-05-12) — parse the optional pivot
@@ -467,9 +475,13 @@ pub(crate) fn admin_router(
         }
         "/api/attacks/by-detector" => {
             let window = parse_query_u32(query, "window", 900);
+            let body = match fleet_view(services) {
+                Some(m) => services.attacks.render_by_detector_from_fleet(&m, window),
+                None => services.attacks.render_by_detector(window),
+            };
             json_body_response(
                 200,
-                services.attacks.render_by_detector(window),
+                body,
                 "private, max-age=10",
             )
         }
@@ -550,11 +562,11 @@ pub(crate) fn admin_router(
         }
         "/api/bots/mix" => {
             let window = parse_query_u32(query, "window", 3600);
-            json_body_response(
-                200,
-                services.attacks.render_bot_mix(window),
-                "private, max-age=10",
-            )
+            let body = match fleet_view(services) {
+                Some(m) => services.attacks.render_bot_mix_from_fleet(&m, window),
+                None => services.attacks.render_bot_mix(window),
+            };
+            json_body_response(200, body, "private, max-age=10")
         }
         "/api/audit/witness" => {
             json_body_response(200, services.witness.render(), "private, max-age=2")
@@ -1038,7 +1050,7 @@ pub(crate) fn admin_router(
         // process restart to land at the handshake layer).
         "/api/zero-trust/downstream/mode" => {
             let store = &services.mtls_mode_store;
-            let body = aegis_control::api::mtls_mode::render_mode_response(
+            let body = aegis_control::api::zero_trust::mode::render_mode_response(
                 store.configured(),
                 store.current(),
             );
@@ -1046,7 +1058,7 @@ pub(crate) fn admin_router(
         }
         "/api/zero-trust/downstream" => json_body_response(
             200,
-            aegis_control::api::mtls::MtlsConfigView::from_config(cfg).render(),
+            aegis_control::api::zero_trust::downstream::MtlsConfigView::from_config(cfg).render(),
             "private, max-age=2",
         ),
         // Zero Trust (P3) — upstream (WAF-as-client) read views.
@@ -1108,21 +1120,21 @@ pub(crate) fn admin_router(
         ),
         "/api/zero-trust/downstream/connections" => json_body_response(
             200,
-            aegis_control::api::mtls::render_connections(
+            aegis_control::api::zero_trust::downstream::render_connections(
                 services.identity_tracker.as_ref(),
             ),
             "private, max-age=2",
         ),
         "/api/zero-trust/downstream/failures" => json_body_response(
             200,
-            aegis_control::api::mtls::render_failures(
+            aegis_control::api::zero_trust::downstream::render_failures(
                 services.identity_tracker.as_ref(),
             ),
             "private, max-age=2",
         ),
         "/api/zero-trust/downstream/ca-summary" => json_body_response(
             200,
-            aegis_control::api::mtls::render_ca_summary(
+            aegis_control::api::zero_trust::downstream::render_ca_summary(
                 services.identity_tracker.as_ref(),
             ),
             "private, max-age=2",

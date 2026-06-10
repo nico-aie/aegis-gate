@@ -7,10 +7,13 @@
 #   - the release binary at target/release/waf is missing
 #
 # Otherwise runs in dependency order:
-#   1. 01-shared-counter   — proves Redis-backed sharing
-#   2. 02-leader-failover  — proves cross-node lease
+#   1. 01-shared-counter      — proves Redis-backed state sharing
+#   2. 02-leaderless-roster   — proves the flat leaderless roster (P1)
 #   3. 03-rehydrate-readiness — proves the readiness gate
 #   4. 04-partition-fallback  — proves partition + heal
+#   5. 07-control-plane-sync  — proves cluster-native set_profile (C-1)
+#   6. 08-fleet-events        — proves cross-node event fanout (P2)
+#   7. 09-fleet-view          — proves merged fleet metrics view (P3)
 
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -27,8 +30,9 @@ fi
 
 trap 'echo "tests/cluster/run-all.sh aborted"; exit 1' ERR
 
-for script in 01-shared-counter.sh 02-leader-failover.sh \
-              03-rehydrate-readiness.sh 04-partition-fallback.sh; do
+for script in 01-shared-counter.sh 02-leaderless-roster.sh \
+              03-rehydrate-readiness.sh 04-partition-fallback.sh \
+              07-control-plane-sync.sh 08-fleet-events.sh 09-fleet-view.sh; do
   echo "==================== $script ===================="
   "$HERE/$script"
   echo

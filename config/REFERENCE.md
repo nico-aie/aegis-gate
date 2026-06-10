@@ -81,7 +81,7 @@ Stable identity for HA clustering. Required when `state.backend: redis`.
 
 | Field | Default | Notes |
 |---|---|---|
-| `id` | `waf-1` | Used for leader election + audit `node_id` field |
+| `id` | `waf-1` | Node identity — surfaces in `/api/cluster.our_node`, the `members:<id>` heartbeat key, and audit `node_id`. The cluster is leaderless (no election). |
 | `region` | `unknown` | Optional region tag — surfaces in audit + dashboard |
 
 ```yaml
@@ -89,6 +89,99 @@ node:
   id: waf-a
   region: us-east-1
 ```
+
+Deep-dive: [`docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md).
+
+---
+
+## `cluster`
+
+Leaderless multi-node sync. Optional — the whole block defaults off, and
+every mechanism is additionally gated at boot on a shared (`state.backend:
+redis`) backend, so a single-node deploy pays nothing.
+
+### `cluster.fleet_events`
+
+Cross-node **live event feed** (cluster plan Phase 2). When enabled (and Redis
+is present), each node publishes its security decisions to a shared Redis
+pub/sub channel and re-streams peers' events onto its own dashboard SSE feed —
+so an operator on *any* node sees the whole fleet's events within the ≤ 5 s SLA.
+
+| Field | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | Off ⇒ events are local-only (single-node behaviour). On + Redis ⇒ cross-node fanout. |
+| `channel` | `fleet:events` | Redis pub/sub channel. All nodes in one cluster must agree. |
+| `max_publish_rate_per_s` | `500` | Bounded-loss guard — above this a node samples/drops so a flood can't amplify the monitor feed. `0` = unlimited. |
+
+```yaml
+cluster:
+  fleet_events:
+    enabled: true
+    channel: "fleet:events"
+    max_publish_rate_per_s: 500
+```
+
+**Lossy by design:** this is a *monitor* feed, not the durable audit record.
+Redis down ⇒ cross-node events stop and each dashboard falls back to its own
+local feed; the request path is never affected. Remote events stream to the SSE
+console only — they do **not** enter this node's `waf_audit.log` / syslog sinks,
+which stay "this node's decisions" (SigNoz + local files remain the source of
+truth).
+
+### `cluster.fleet_view`
+
+Cross-node live-traffic **metrics** view (cluster plan Phase 3). When enabled
+(and a shared backend is present) each node publishes a TTL'd traffic snapshot to
+`fleet:snap:<node_id>` and merges every peer's snapshot on read, so the
+dashboard's traffic panels (RPS, decision latency p50/p95/p99, top-attackers,
+by-detector, bot-mix) show **fleet totals** instead of one node's `1/N` slice.
+Off ⇒ panels stay per-node.
+
+| Field | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | On + shared backend ⇒ snapshot publish/merge task runs. |
+| `publish_interval_ms` | `2000` | Snapshot cadence. Cross-node gauge lands in ~cadence + dashboard poll; keep the sum ≤ 5 s. |
+| `snapshot_ttl_ms` | `10000` | Snapshot key TTL — 5× the cadence so a dead node self-evicts (no sweeper, no leader). |
+| `top_attackers_k` | `50` | Per-node top-attacker cap carried + the merged truncation cap. |
+
+```yaml
+cluster:
+  fleet_view:
+    enabled: true
+    publish_interval_ms: 2000
+    snapshot_ttl_ms: 10000
+    top_attackers_k: 50
+```
+
+**Merge semantics:** sums for RPS / blocks / mixes; decision-latency percentiles
+are recomputed from **bucket-wise-summed histograms** (you can't average p95s);
+top-attackers sum per-identifier, union categories, max risk, then re-sort +
+truncate (slightly lossy at the long tail — exact per-IP risk stays correct in
+shared state for enforcement). Merged panels report a fixed snapshot window
+(currently 300 s) regardless of the client's `?window=`. Redis down ⇒ `SCAN`
+returns nothing ⇒ panels fall back to local; the request path is untouched.
+
+### `cluster.pubsub_nudge`
+
+Optional **state-convergence accelerator** (cluster plan Phase 3/§3 nudge). When
+on (and Redis is present), a config/control mutation — `set_profile`,
+`reset_state` — publishes a 1-byte `control:waf:bump` so every node's poller
+re-reads the shared control keys *immediately* instead of waiting for its next
+~2 s interval. Convergence drops from seconds to **milliseconds**.
+
+| Field | Default | Notes |
+|---|---|---|
+| `pubsub_nudge` | `false` | On ⇒ bump-on-mutation; off ⇒ interval polling only. |
+
+```yaml
+cluster:
+  pubsub_nudge: true
+```
+
+**Not load-bearing:** polling stays the backstop. A dropped/missed bump (Redis
+blip, reconnect) just means the next poll catches up — correctness lives in the
+versioned keys, never in the message. Safe to leave off; turn on only if a 1–2 s
+lag on fleet-wide `set_profile`/`reset_state` matters for your workflow.
 
 Deep-dive: [`docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md).
 
@@ -672,11 +765,35 @@ Global request-body cap. Per-route override:
 | Field | Default | Notes |
 |---|---|---|
 | `max_body_bytes` | `10485760` (10 MiB) | Requests over this return 413 |
+| `trusted_proxies` | `[]` (empty) | CIDRs of reverse proxies / LBs whose `X-Forwarded-For` the WAF trusts to resolve the real client IP |
 
 ```yaml
 proxy:
   max_body_bytes: 52428800       # 50 MiB
+  trusted_proxies:               # empty default → XFF ignored, TCP peer wins
+    - "10.0.0.0/8"               # the L7/SNAT LB fronting the fleet
 ```
+
+**`trusted_proxies` — when the WAF sits behind a load balancer.** By
+default the list is empty: the WAF keys per-IP risk, rate-limit, DDoS,
+audit `client_ip`, and geoip on the **TCP peer** and ignores
+`X-Forwarded-For` entirely. That is the safe posture for a WAF at the
+edge (DNS round-robin / TPROXY) — a client cannot spoof its own risk key.
+
+Set `trusted_proxies` to the CIDRs of proxies **you control** only when
+the WAF is fronted by a trusted L7 / SNAT load balancer. When the TCP
+peer falls inside a trusted CIDR, the data plane walks `X-Forwarded-For`
+right-to-left and uses the first hop *outside* the trusted set as the
+client IP — so per-IP features stay correct instead of collapsing every
+client onto the LB's address.
+
+> ⚠️ **Spoofing risk.** Trusting a proxy that forwards a
+> **client-supplied** `X-Forwarded-For` (rather than overwriting/appending
+> it) re-opens the F-HIGH-002 spoofing hole — an attacker could then move
+> their own risk key by setting the header. Only trust proxies that
+> sanitize XFF. Each entry is validated as a CIDR at boot; the value
+> converges fleet-wide through the config plane and applies on (re)start
+> (like `max_body_bytes`).
 
 ---
 

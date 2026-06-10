@@ -673,14 +673,14 @@ components:
                       items: { type: string }
 
     ClusterResponse:
+      # Leaderless (2026-06-10): flat peer roster + our_node. The former
+      # is_leader / leader_node fields were removed with the cluster leader.
       type: object
-      required: [peers, is_leader]
+      required: [peers, our_node]
       properties:
         peers:
           type: array
           items: { $ref: '#/components/schemas/ClusterPeer' }
-        is_leader: { type: boolean }
-        leader_node: { type: string, nullable: true }
         our_node: { type: string }
 
     ClusterPeer:
@@ -1732,10 +1732,10 @@ paths:
   /api/cluster:
     get:
       tags: [Tracking]
-      summary: Cluster peers + leader
+      summary: Cluster peers (leaderless roster)
       responses:
         '200':
-          description: "OK. `peers: []` and `is_leader: true` in single-node mode."
+          description: "OK. Flat peer roster + `our_node`; `peers: []` in single-node mode."
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ClusterResponse' }

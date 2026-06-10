@@ -1,0 +1,236 @@
+//! C-1 (multi-node consistency) — cluster-native propagation of the
+//! interop control plane.
+//!
+//! `POST /__waf_control/set_profile` and `/__waf_control/reset_state`
+//! historically changed only the node that received the request: the
+//! `ModeStore` is an in-process `ArcSwap`, and while `reset_state`
+//! wipes the shared `StateBackend` fleet-wide, the *local* trackers on
+//! the other N-1 nodes stayed warm. Behind a load balancer that breaks
+//! the determinism contract (§2.4/§2.5).
+//!
+//! This module converges both through the shared `StateBackend` (the
+//! same Redis the data/state plane already shares), with no new
+//! transport:
+//!
+//! - **Modes** ride a single versioned doc at [`MODES_KEY`]: a
+//!   generation counter embedded in the JSON, written with `cas_set`
+//!   (persistent — no TTL). A node that changes modes publishes the
+//!   new snapshot; every node polls the key and applies the snapshot
+//!   to its local `ModeStore` when the generation advances.
+//! - **`reset_state`** bumps the [`RESET_EPOCH_KEY`] counter
+//!   (`incrby`). Each node polls it and runs its *local* reset chain
+//!   when the epoch advances — the shared-backend wipe already fanned
+//!   out fleet-wide, so peers only need to flush in-process trackers.
+//!
+//! Best-effort by design: a backend hiccup logs and is swallowed so a
+//! control call never turns into a 500. Single-node / in-memory
+//! deployments don't wire this at all (see `aegis-proxy::run`), so the
+//! local-only path is unchanged there.
+
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+
+use aegis_core::state::StateBackend;
+
+use super::headers::Mode;
+use super::mode::ModeSnapshot;
+
+/// Persistent doc holding the fleet-wide interop mode map + its
+/// monotonic generation.
+pub const MODES_KEY: &str = "control:waf:modes";
+/// Monotonic counter bumped once per cluster-scoped `reset_state`.
+pub const RESET_EPOCH_KEY: &str = "control:waf:reset_epoch";
+/// Phase 5 (§3) — pub/sub channel for the optional state *nudge*. A
+/// 1-byte message published here on any config/control mutation tells
+/// subscribing pollers to re-poll `MODES_KEY` / `RESET_EPOCH_KEY`
+/// immediately. Loss-tolerant: polling is the backstop.
+pub const CONTROL_BUMP_CHANNEL: &str = "control:waf:bump";
+
+/// Wire form of [`ModeSnapshot`] + a generation. `Mode` has no serde
+/// derive, so modes are carried as their `"enforce"` / `"log_only"`
+/// strings (the same repr the contract uses) and the tuple-keyed
+/// `policy_overrides` map is flattened to a `(feature, policy, mode)`
+/// list — JSON has no tuple-key maps.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClusterModeDoc {
+    /// Monotonic — readers apply a doc only when this exceeds the
+    /// generation they last applied, so re-reads are idempotent.
+    pub generation: u64,
+    pub default: String,
+    /// `(feature, mode)`.
+    pub feature_overrides: Vec<(String, String)>,
+    /// `(feature, policy, mode)`.
+    pub policy_overrides: Vec<(String, String, String)>,
+}
+
+fn mode_str(m: Mode) -> String {
+    m.as_str().to_string()
+}
+
+fn parse_mode(s: &str) -> Mode {
+    // Anything that isn't an explicit `log_only` is `enforce` — the
+    // fail-safe default (a malformed shared doc must never silently
+    // drop enforcement).
+    match s {
+        "log_only" => Mode::LogOnly,
+        _ => Mode::Enforce,
+    }
+}
+
+impl ClusterModeDoc {
+    /// Project a live snapshot into the wire form at `generation`.
+    pub fn from_snapshot(snap: &ModeSnapshot, generation: u64) -> Self {
+        let mut feature_overrides: Vec<(String, String)> = snap
+            .feature_overrides
+            .iter()
+            .map(|(f, m)| (f.clone(), mode_str(*m)))
+            .collect();
+        feature_overrides.sort();
+        let mut policy_overrides: Vec<(String, String, String)> = snap
+            .policy_overrides
+            .iter()
+            .map(|((f, p), m)| (f.clone(), p.clone(), mode_str(*m)))
+            .collect();
+        policy_overrides.sort();
+        Self {
+            generation,
+            default: mode_str(snap.default),
+            feature_overrides,
+            policy_overrides,
+        }
+    }
+
+    /// Rebuild a [`ModeSnapshot`] from the wire form.
+    pub fn to_snapshot(&self) -> ModeSnapshot {
+        let mut snap = ModeSnapshot::empty(parse_mode(&self.default));
+        for (f, m) in &self.feature_overrides {
+            snap.feature_overrides.insert(f.clone(), parse_mode(m));
+        }
+        for (f, p, m) in &self.policy_overrides {
+            snap.policy_overrides
+                .insert((f.clone(), p.clone()), parse_mode(m));
+        }
+        snap
+    }
+}
+
+/// Read the current published modes doc, if any. `None` when the key
+/// is absent or unreadable/corrupt (the caller keeps its local view).
+pub async fn read_modes(state: &Arc<dyn StateBackend>) -> Option<ClusterModeDoc> {
+    match state.get(MODES_KEY).await {
+        Ok(Some(bytes)) => match serde_json::from_slice::<ClusterModeDoc>(&bytes) {
+            Ok(doc) => Some(doc),
+            Err(e) => {
+                tracing::warn!(error = %e, "cluster modes doc unparseable — ignoring");
+                None
+            }
+        },
+        Ok(None) => None,
+        Err(e) => {
+            tracing::debug!(error = %e, "cluster modes read failed");
+            None
+        }
+    }
+}
+
+/// Publish `snap` as the next generation. Reads the current doc to
+/// compute `generation + 1` and `cas_set`s it (one retry on a
+/// concurrent-writer conflict). Best-effort: returns the published
+/// generation on success, `None` on any backend error.
+pub async fn publish_modes(state: &Arc<dyn StateBackend>, snap: &ModeSnapshot) -> Option<u64> {
+    for _ in 0..2 {
+        let current = state.get(MODES_KEY).await.ok().flatten();
+        let cur_gen = current
+            .as_deref()
+            .and_then(|b| serde_json::from_slice::<ClusterModeDoc>(b).ok())
+            .map(|d| d.generation)
+            .unwrap_or(0);
+        let doc = ClusterModeDoc::from_snapshot(snap, cur_gen + 1);
+        let bytes = match serde_json::to_vec(&doc) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = %e, "cluster modes serialize failed");
+                return None;
+            }
+        };
+        match state
+            .cas_set(MODES_KEY, current.as_deref(), &bytes, None)
+            .await
+        {
+            Ok(true) => return Some(doc.generation),
+            Ok(false) => continue, // lost the race — re-read and retry
+            Err(e) => {
+                tracing::debug!(error = %e, "cluster modes publish failed");
+                return None;
+            }
+        }
+    }
+    None
+}
+
+/// Bump the cluster reset epoch. Returns the new epoch, or `None` on a
+/// backend error. Peers run their local reset chain when they observe
+/// the increase.
+pub async fn publish_reset_epoch(state: &Arc<dyn StateBackend>) -> Option<u64> {
+    match state.incrby(RESET_EPOCH_KEY, 1).await {
+        Ok(epoch) => Some(epoch),
+        Err(e) => {
+            tracing::debug!(error = %e, "cluster reset-epoch publish failed");
+            None
+        }
+    }
+}
+
+/// Read the current reset epoch (absent/error → 0).
+pub async fn read_reset_epoch(state: &Arc<dyn StateBackend>) -> u64 {
+    state.get_counter(RESET_EPOCH_KEY).await.unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn doc_round_trips_through_snapshot() {
+        let mut snap = ModeSnapshot::empty(Mode::LogOnly);
+        snap.feature_overrides.insert("sqli".into(), Mode::Enforce);
+        snap.policy_overrides
+            .insert(("xss".into(), "reflected".into()), Mode::LogOnly);
+
+        let doc = ClusterModeDoc::from_snapshot(&snap, 7);
+        assert_eq!(doc.generation, 7);
+        assert_eq!(doc.default, "log_only");
+
+        let back = doc.to_snapshot();
+        assert_eq!(back.default, Mode::LogOnly);
+        assert_eq!(back.feature_overrides.get("sqli"), Some(&Mode::Enforce));
+        assert_eq!(
+            back.policy_overrides
+                .get(&("xss".to_string(), "reflected".to_string())),
+            Some(&Mode::LogOnly)
+        );
+    }
+
+    #[test]
+    fn doc_serializes_to_json() {
+        let snap = ModeSnapshot::empty(Mode::Enforce);
+        let doc = ClusterModeDoc::from_snapshot(&snap, 1);
+        let json = serde_json::to_vec(&doc).unwrap();
+        let back: ClusterModeDoc = serde_json::from_slice(&json).unwrap();
+        assert_eq!(doc, back);
+    }
+
+    #[test]
+    fn unknown_mode_string_fails_safe_to_enforce() {
+        let doc = ClusterModeDoc {
+            generation: 1,
+            default: "garbage".into(),
+            feature_overrides: vec![("f".into(), "also-garbage".into())],
+            policy_overrides: vec![],
+        };
+        let snap = doc.to_snapshot();
+        assert_eq!(snap.default, Mode::Enforce);
+        assert_eq!(snap.feature_overrides.get("f"), Some(&Mode::Enforce));
+    }
+}

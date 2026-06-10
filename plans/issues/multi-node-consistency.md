@@ -59,36 +59,24 @@ This breaks the contract's determinism guarantee (§2.4/§2.5) whenever the flee
    `control:waf:*` key) so a single call converges to all nodes (same mechanism that
    already syncs detectors/`ai.enabled`). Add a `scope: node|cluster` field
    (default `cluster`) to the request so the OC can pick.
-3. **Verification:** extend `tests/cluster/` with a 2-node test asserting
-   `set_profile` on node A changes node B's `X-WAF-Mode`, and `reset_state` clears
-   node B's local risk cache.
+3. **Verification:** ✅ DONE (2026-06-10) — `tests/cluster/07-control-plane-sync.sh`
+   asserts `set_profile {all,log_only}` on node A flips node B's `X-WAF-Mode`
+   (observed via the data-plane response header: SQLi probe goes 403→200+log_only),
+   and that `reset_state` is accepted fleet-wide. (Also fixed a config-path bug that
+   had been silently skipping the whole `tests/cluster/` rig.) The medium /
+   cluster-native propagation (#2) shipped as C-1 / cluster plan Phase 0.
 
 ---
 
-## C-2. `/healthz/ready` is upstream-blind
+## C-2. `/healthz/ready` is upstream-blind — DROPPED (2026-06-10)
 
-### Current behaviour
-`/healthz/ready` is an **admin-plane open endpoint** (`admin_auth_middleware.rs`)
-returning the node's own readiness — **state backend rehydrated + listeners bound +
-not draining** (`state/rehydrate.rs`, `health.rs::check_ready`). It does **not**
-proxy to, probe, or depend on the upstream. The LB uses it purely to gate traffic to
-the node.
-
-### The concern
-A node can report **ready** while its **upstream pool is unreachable** → the LB keeps
-sending it traffic, which then 502s at forward time. Readiness reflects WAF health,
-not end-to-end serviceability.
-
-### Suggested improvements
-1. **Optional upstream-aware readiness:** add `health.upstream_gate: true` that folds
-   a cheap upstream liveness signal (passive: recent forward success rate; or active:
-   periodic `GET healthcheck_path`) into `check_ready`, so a node with all upstreams
-   down de-registers itself from the LB.
-2. **Keep the default OFF** — many deployments *want* the node to stay in rotation and
-   surface upstream errors as 502/`circuit_breaker` rather than yank the whole node.
-   Document the trade-off; let operators opt in per environment.
-3. Expose a separate `/healthz/upstream` (admin) for observability regardless of the
-   gate, so dashboards/LBs can see upstream health without coupling it to readiness.
+Removed from the roadmap by operator decision. `/healthz/ready` stays **node-local
+by design** (state rehydrated + listeners bound + not draining; `health.rs::check_ready`).
+Rationale: in the shared-upstream topology every node reaches the same backends, so an
+upstream outage hits all nodes equally — yanking one from the LB via readiness helps
+nothing. The circuit breaker (`upstream/circuit.rs`) already surfaces upstream failures
+as 502/`circuit_breaker`, which is the right signal. Re-open only if a topology with
+per-node upstream-reachability divergence ever appears.
 
 ---
 
@@ -219,7 +207,7 @@ cannot rescue it yet.
 | **C-5** XFF ignored / no trusted-proxy | **High** *if fronting with an L7/SNAT LB* | Med (plumb `trusted_proxies`) | DNS-RR/TPROXY now; plumb trusted_proxies to enable L7-LB |
 | **C-3** console aggregation | Med (observability) | Low (SigNoz dashboards) | aggregate in SigNoz; label console per-node |
 | **C-4** log aggregation | Med | Low (SigNoz) → Med (shared sink) | SigNoz + `request_id` correlation; document |
-| **C-2** readiness upstream-blind | Low–Med | Med | opt-in upstream gate; `/healthz/upstream` |
+| ~~**C-2** readiness upstream-blind~~ | — | — | **DROPPED (2026-06-10)** — upstream-blind readiness is the correct default for shared upstreams; circuit breaker already surfaces failures |
 
 **Common thread:** the **data/state plane is already cluster-consistent** (config +
 risk + block-list + challenge via Redis); the gaps are in the **control plane**

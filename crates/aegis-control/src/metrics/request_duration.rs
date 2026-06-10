@@ -128,6 +128,33 @@ impl RequestStageHistogram {
             samples: total,
         })
     }
+
+    /// Cluster Phase 3 (§2a) — export the stage's cumulative histogram
+    /// as `(total_samples, [(upper_bound_ms, cumulative_count)])` for
+    /// the fleet snapshot. Returns `None` when the stage has zero
+    /// samples. Bucket bounds are the fixed [`BUCKETS_MS`] layout, so
+    /// every node ships identical bounds and the merge can sum them
+    /// bucket-wise before recomputing percentiles.
+    pub fn stage_buckets(&self, stage: &str) -> Option<(u64, Vec<(f64, u64)>)> {
+        use prometheus::core::Collector;
+        let h = self.inner.with_label_values(&[stage]);
+        let families = h.collect();
+        let metric = families.first()?.get_metric().first()?;
+        let proto = metric.get_histogram();
+        let total = proto.get_sample_count();
+        if total == 0 {
+            return None;
+        }
+        let buckets: Vec<(f64, u64)> = proto
+            .get_bucket()
+            .iter()
+            .map(|b| (b.get_upper_bound(), b.get_cumulative_count()))
+            .collect();
+        if buckets.is_empty() {
+            return None;
+        }
+        Some((total, buckets))
+    }
 }
 
 /// p50/p95/p99 in milliseconds plus the sample count behind them.
