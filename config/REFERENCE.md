@@ -672,11 +672,35 @@ Global request-body cap. Per-route override:
 | Field | Default | Notes |
 |---|---|---|
 | `max_body_bytes` | `10485760` (10 MiB) | Requests over this return 413 |
+| `trusted_proxies` | `[]` (empty) | CIDRs of reverse proxies / LBs whose `X-Forwarded-For` the WAF trusts to resolve the real client IP |
 
 ```yaml
 proxy:
   max_body_bytes: 52428800       # 50 MiB
+  trusted_proxies:               # empty default → XFF ignored, TCP peer wins
+    - "10.0.0.0/8"               # the L7/SNAT LB fronting the fleet
 ```
+
+**`trusted_proxies` — when the WAF sits behind a load balancer.** By
+default the list is empty: the WAF keys per-IP risk, rate-limit, DDoS,
+audit `client_ip`, and geoip on the **TCP peer** and ignores
+`X-Forwarded-For` entirely. That is the safe posture for a WAF at the
+edge (DNS round-robin / TPROXY) — a client cannot spoof its own risk key.
+
+Set `trusted_proxies` to the CIDRs of proxies **you control** only when
+the WAF is fronted by a trusted L7 / SNAT load balancer. When the TCP
+peer falls inside a trusted CIDR, the data plane walks `X-Forwarded-For`
+right-to-left and uses the first hop *outside* the trusted set as the
+client IP — so per-IP features stay correct instead of collapsing every
+client onto the LB's address.
+
+> ⚠️ **Spoofing risk.** Trusting a proxy that forwards a
+> **client-supplied** `X-Forwarded-For` (rather than overwriting/appending
+> it) re-opens the F-HIGH-002 spoofing hole — an attacker could then move
+> their own risk key by setting the header. Only trust proxies that
+> sanitize XFF. Each entry is validated as a CIDR at boot; the value
+> converges fleet-wide through the config plane and applies on (re)start
+> (like `max_body_bytes`).
 
 ---
 

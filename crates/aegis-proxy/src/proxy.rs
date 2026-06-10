@@ -127,6 +127,16 @@ pub struct ProxyContext {
     /// `data_plane.rs`; surfaced here so the data-plane hot path
     /// reads the live value via the context it already holds.
     pub max_body_bytes: usize,
+    /// C-5 (multi-node consistency) — trusted reverse-proxy / LB CIDRs,
+    /// parsed once from `cfg.proxy.trusted_proxies` at build time (like
+    /// `max_body_bytes`). The data plane walks `X-Forwarded-For`
+    /// right-to-left through this set to resolve the real client IP when
+    /// the WAF sits behind a trusted L7/SNAT load balancer. Empty (the
+    /// default) ⇒ the TCP peer always wins and XFF is ignored — the
+    /// F-HIGH-002-safe posture. Retired the hard-coded
+    /// `data_plane::default_trusted_proxies()` (which was always empty
+    /// with no way to configure it).
+    pub trusted_proxies: Vec<ipnet::IpNet>,
     /// 2026-05-17 F-HIGH-005 — clone of `InteropRuntime.reset_in_progress`,
     /// installed once after the interop runtime is built. Data plane
     /// reads via `.get()`; absent (test fixtures without interop) is
@@ -235,6 +245,9 @@ impl ProxyContext {
             // are unsupported anyway) to avoid silent truncation.
             max_body_bytes: usize::try_from(cfg.proxy.max_body_bytes)
                 .unwrap_or(usize::MAX),
+            // C-5 — parse trusted-proxy CIDRs once; validate() already
+            // rejected malformed entries at boot.
+            trusted_proxies: cfg.proxy.parsed_trusted_proxies(),
             reset_in_progress: std::sync::OnceLock::new(),
             load_shedder: std::sync::OnceLock::new(),
             active_ruleset: std::sync::OnceLock::new(),
@@ -526,6 +539,47 @@ state:
   backend: in_memory
 "#
         )
+    }
+
+    // C-5 — `cfg.proxy.trusted_proxies` must be parsed into the
+    // long-lived ProxyContext so the data-plane handler can resolve the
+    // real client IP behind a trusted LB. Empty config ⇒ empty set
+    // (XFF ignored — the F-HIGH-002-safe default).
+    #[test]
+    fn proxy_context_carries_trusted_proxies() {
+        let base = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:0"
+  admin:
+    bind: "127.0.0.1:0"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:9000"
+state:
+  backend: in_memory
+"#;
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+
+        // No proxy block ⇒ empty trusted set.
+        let cfg: WafConfig = serde_yaml::from_str(base).unwrap();
+        cfg.validate().unwrap();
+        let ctx = ProxyContext::build(&cfg, Arc::clone(&pipeline)).unwrap();
+        assert!(ctx.trusted_proxies.is_empty());
+
+        // Configured CIDRs ⇒ parsed into the context.
+        let with_proxies = format!("{base}proxy:\n  trusted_proxies:\n    - \"10.0.0.0/8\"\n");
+        let cfg: WafConfig = serde_yaml::from_str(&with_proxies).unwrap();
+        cfg.validate().unwrap();
+        let ctx = ProxyContext::build(&cfg, pipeline).unwrap();
+        assert_eq!(ctx.trusted_proxies.len(), 1);
+        let probe: std::net::IpAddr = "10.9.9.9".parse().unwrap();
+        assert!(ctx.trusted_proxies.iter().any(|n| n.contains(&probe)));
     }
 
     #[tokio::test]

@@ -274,16 +274,22 @@ pub(crate) async fn handle_data_request_inner(
     // dashboard's "live attack origins" map shows the actual
     // origin country, not the LB's private IP.
     //
-    // Default trusted_proxies covers RFC1918 + loopback (the
-    // common deployment); operator-configurable list lands in
-    // a follow-up that plumbs `cfg.ip_lists` into the handler.
+    // C-5 — trusted_proxies comes from `cfg.proxy.trusted_proxies`,
+    // parsed once into the long-lived ProxyContext (same pattern as
+    // max_body_bytes). Empty (the default) ⇒ the TCP peer always wins
+    // and XFF is ignored, which is the F-HIGH-002-safe posture.
+    // Operators fronting the fleet with a *trusted* L7/SNAT LB set the
+    // LB's CIDRs so `resolve_client_ip` walks XFF to the real client.
     let peer_ip = {
         let xff = req
             .headers()
             .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok());
-        let trusted = default_trusted_proxies();
-        aegis_security::ip_rep::xff::resolve_client_ip(peer.ip(), xff, &trusted)
+        aegis_security::ip_rep::xff::resolve_client_ip(
+            peer.ip(),
+            xff,
+            &upstream_ctx.trusted_proxies,
+        )
     };
     // 2026-05-24 — resolve the route's tier ONCE here (read-only trie
     // walk) so EVERY block path labels its audit event with the real
@@ -3206,34 +3212,15 @@ fn is_sensitive_header(lower_name: &str) -> bool {
         || lower_name.contains("api-key")
 }
 
-/// loopback + RFC1918 + IPv6 link-local. Operators behind an LB
-/// in a private subnet (the typical case) get correct XFF
-/// resolution out of the box. Operator-configurable list via
-/// `cfg.ip_lists.trusted_proxies` is a follow-up that plumbs
-/// the cfg into the handler.
-fn default_trusted_proxies() -> Vec<ipnet::IpNet> {
-    // F-HIGH-002 (2026-05-17 s-tester audit): default is now empty.
-    // Pre-fix this returned `[127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12,
-    // 192.168.0.0/16, ::1/128, fc00::/7]`, which silently trusted XFF
-    // from any loopback or RFC1918 peer. Two contract problems with
-    // that:
-    //
-    //  1. v2.3 §10 mandates distinct `127.0.0.x` addresses are
-    //     distinct clients. With loopback trusted, an OC client
-    //     sending `X-Forwarded-For: 1.2.3.4` from `127.0.0.5`
-    //     resolves to `1.2.3.4` — collapsing every sandbox client
-    //     onto one synthetic key.
-    //  2. v2.3 §6 contract test (`tests/contract/v2.3_compliance.sh`
-    //     line 299-302) asserts audit `ip` is the TCP peer when
-    //     XFF is present from `127.0.0.1`. The previous default
-    //     resolved to the XFF value and failed that assertion.
-    //
-    // Operators with a real edge proxy (CDN, k8s ingress) opt-in
-    // via `cfg.ip_lists.trusted_proxies` once that plumbing lands.
-    // Default = empty = peer.ip() wins, which is the safe and
-    // contract-compliant posture.
-    Vec::new()
-}
+// C-5 (2026-06-10): the hard-coded `default_trusted_proxies()` (which
+// always returned an empty Vec with no way to configure it) was retired
+// in favour of `cfg.proxy.trusted_proxies`, parsed once into
+// `ProxyContext.trusted_proxies` and read by the data-plane handler.
+// The F-HIGH-002 default is preserved: an empty `trusted_proxies` means
+// the TCP peer always wins and XFF is ignored. Operators fronting the
+// fleet with a *trusted* L7/SNAT LB set the LB CIDRs so
+// `resolve_client_ip` walks XFF right-to-left to the real client; the
+// v2.3 §6/§10 contract assertions hold because the default stays empty.
 
 /// 2026-05-25 — emit a Detection audit for the CHALLENGE action.
 /// Mirrors [`blocked_response`]'s audit shape (`action: "challenge"`,

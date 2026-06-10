@@ -4,7 +4,13 @@
 - **Severity:** High — blocks the entire config plane (detector toggles, AI toggle,
   DDoS/risk edits, any `PUT /api/config`) for **any** deployment whose config has an
   `audit.sinks` entry — which **includes the shipped profiles**.
-- **Status:** open / needs dev fix. (Workaround below.)
+- **Status:** ✅ FIXED — PR #14 (commit `aa25b21`), merged to `develop` 2026-06-10.
+  `load_config_str` now validates through figment's `Yaml::string` provider (same
+  deserializer as boot), so both the map form (`- jsonl: { … }`) and the tag form
+  (`- !jsonl { … }`) round-trip through the config plane. Regression tests
+  `load_config_str_accepts_audit_sink_map_form` +
+  `load_config_str_still_accepts_audit_sink_tag_form` pass (`aegis-core`).
+  Archived — kept for history. (Original triage below; workaround no longer needed.)
 - **Affects:** `aegis-proxy` config-plane mutate path + `aegis-core` config enums.
   Found on branch `pre-prod`.
 

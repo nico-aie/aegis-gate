@@ -1450,6 +1450,26 @@ pub async fn run(
                     }
                 })
             }));
+
+        // C-1 (multi-node consistency) — cluster-native control plane.
+        // On a shared backend (Redis), install the state handle so
+        // `set_profile` / `reset_state` publish to the config plane, and
+        // spawn a poller that converges THIS node's ModeStore + local
+        // reset state from peers' publishes. Single-node / in-memory
+        // deployments skip this entirely — `cluster_state` stays empty,
+        // so publish + poll are no-ops and the legacy node-local
+        // behaviour is preserved.
+        if matches!(cfg.state.backend, aegis_core::config::StateBackendKind::Redis) {
+            rt.control.set_cluster_state(std::sync::Arc::clone(&state));
+            crate::cluster_control::spawn_poller(
+                std::sync::Arc::clone(rt),
+                std::sync::Arc::clone(&state),
+            );
+            tracing::info!(
+                "interop: cluster-native control plane enabled (set_profile / \
+                 reset_state converge fleet-wide via the config plane)"
+            );
+        }
     }
 
     // Data-plane listeners.
@@ -2303,6 +2323,9 @@ pub(crate) fn build_interop_runtime(
             .control_secret
             .clone()
             .unwrap_or_else(|| aegis_control::interop::DEFAULT_CONTROL_SECRET.to_string()),
+        // C-1 — installed post-construction in `run` for Redis
+        // deployments (see `set_cluster_state`); empty single-node.
+        cluster_state: std::sync::OnceLock::new(),
     };
 
     Some(Arc::new(InteropRuntime {
