@@ -37,7 +37,7 @@ use serde::Serialize;
 
 use crate::api::audit::AuditRing;
 use crate::api::blacklist::AccessListStore;
-use crate::api::mtls::AllowedSansStore;
+use crate::api::zero_trust::downstream::AllowedSansStore;
 use crate::interop::headers::Mode;
 use crate::interop::mode::ModeStore;
 
@@ -47,8 +47,8 @@ use crate::interop::mode::ModeStore;
 /// action.
 ///
 /// **v1** — `mode_set` only.
-/// **v2** — adds `risk_thresholds_set`, `mtls_sans_set`,
-///          `mtls_sans_removed`.
+/// **v2** — adds `risk_thresholds_set`, `zero_trust_sans_set`,
+///          `zero_trust_sans_removed`.
 /// **v3** — adds `blacklist_add`, `blacklist_remove`,
 ///          `whitelist_add`, `whitelist_remove`.
 /// **v4** — adds `detector_mask_set` (base mask + per-tier overrides).
@@ -57,8 +57,8 @@ use crate::interop::mode::ModeStore;
 pub const ROLLBACKABLE_ACTIONS: &[&str] = &[
     "mode_set",
     "risk_thresholds_set",
-    "mtls_sans_set",
-    "mtls_sans_removed",
+    "zero_trust_sans_set",
+    "zero_trust_sans_removed",
     "blacklist_add",
     "blacklist_remove",
     "whitelist_add",
@@ -194,7 +194,7 @@ pub fn rollback_for_seq(
     match event.action.as_str() {
         "mode_set" => apply_mode_rollback(seq, &event, targets.mode_store),
         "risk_thresholds_set" => apply_risk_thresholds_rollback(seq, &event, targets.risk),
-        "mtls_sans_set" | "mtls_sans_removed" => {
+        "zero_trust_sans_set" | "zero_trust_sans_removed" => {
             apply_mtls_sans_rollback(seq, &event, targets.allowed_sans)
         }
         "blacklist_add" | "blacklist_remove" => {
@@ -445,7 +445,7 @@ fn apply_risk_thresholds_rollback(
     })
 }
 
-/// `mtls_sans_set` / `mtls_sans_removed` rollback — both stamp
+/// `zero_trust_sans_set` / `zero_trust_sans_removed` rollback — both stamp
 /// the full pre-mutation list under `before.allowed`, so the
 /// inverse is a single whole-list `store.store(before.allowed)`
 /// call. The two actions share this code path because the audit
@@ -1125,9 +1125,9 @@ mod tests {
         }
     }
 
-    // ---------------- v2 — mtls_sans_set / mtls_sans_removed ----------------
+    // ---------------- v2 — zero_trust_sans_set / zero_trust_sans_removed ----------------
 
-    fn mtls_sans_set_event(before: Vec<&str>, after: Vec<&str>) -> AuditEvent {
+    fn zero_trust_sans_set_event(before: Vec<&str>, after: Vec<&str>) -> AuditEvent {
         AuditEvent {
             schema_version: 1,
             ts: chrono::Utc::now(),
@@ -1135,7 +1135,7 @@ mod tests {
             class: AuditClass::Admin,
             tenant_id: None,
             tier: None,
-            action: "mtls_sans_set".into(),
+            action: "zero_trust_sans_set".into(),
             reason: "operator updated allowed SAN list".into(),
             client_ip: String::new(),
             route_id: None,
@@ -1159,7 +1159,7 @@ mod tests {
     fn mtls_sans_rollback_re_applies_full_list() {
         let ring = Arc::new(AuditRing::new());
         // Operator went [a, b] → [a, b, c]. Roll back to [a, b].
-        let seq = ring.record(mtls_sans_set_event(
+        let seq = ring.record(zero_trust_sans_set_event(
             vec!["a.example.com", "b.example.com"],
             vec!["a.example.com", "b.example.com", "c.example.com"],
         ));
@@ -1178,7 +1178,7 @@ mod tests {
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
 
-        assert_eq!(outcome.action, "mtls_sans_set");
+        assert_eq!(outcome.action, "zero_trust_sans_set");
         let before_arr: Vec<&str> = outcome.before["allowed"]
             .as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
         assert_eq!(before_arr, vec!["a.example.com", "b.example.com"]);
@@ -1192,15 +1192,15 @@ mod tests {
     }
 
     #[test]
-    fn mtls_sans_removed_rollback_re_adds_entry() {
+    fn zero_trust_sans_removed_rollback_re_adds_entry() {
         let ring = Arc::new(AuditRing::new());
         // Operator removed `c.example.com` from [a, b, c] → [a, b].
         // The handler stamps before with the FULL pre-remove list.
-        let mut ev = mtls_sans_set_event(
+        let mut ev = zero_trust_sans_set_event(
             vec!["a.example.com", "b.example.com", "c.example.com"],
             vec!["a.example.com", "b.example.com"],
         );
-        ev.action = "mtls_sans_removed".into();
+        ev.action = "zero_trust_sans_removed".into();
         let seq = ring.record(ev);
 
         let mode = ModeStore::new(Mode::Enforce);
@@ -1217,7 +1217,7 @@ mod tests {
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
 
-        assert_eq!(outcome.action, "mtls_sans_removed");
+        assert_eq!(outcome.action, "zero_trust_sans_removed");
         // After rolling back, the store should contain all 3 again.
         let live = sans.current();
         assert_eq!(live.len(), 3);
@@ -1227,7 +1227,7 @@ mod tests {
     #[test]
     fn mtls_sans_rollback_without_store_fails() {
         let ring = Arc::new(AuditRing::new());
-        let seq = ring.record(mtls_sans_set_event(vec!["a"], vec!["a", "b"]));
+        let seq = ring.record(zero_trust_sans_set_event(vec!["a"], vec!["a", "b"]));
         let mode = ModeStore::new(Mode::Enforce);
         let targets = RollbackTargets::mode_only(&mode);
         let err = rollback_for_seq(&ring, seq, &targets).unwrap_err();
@@ -1429,7 +1429,7 @@ mod tests {
     fn mtls_sans_rollback_to_empty_list() {
         // Operator went [] → [a]; rolling back drops [a] back to [].
         let ring = Arc::new(AuditRing::new());
-        let seq = ring.record(mtls_sans_set_event(vec![], vec!["a.example.com"]));
+        let seq = ring.record(zero_trust_sans_set_event(vec![], vec!["a.example.com"]));
         let mode = ModeStore::new(Mode::Enforce);
         let sans = AllowedSansStore::from(vec!["a.example.com".to_string()]);
         let targets = RollbackTargets {

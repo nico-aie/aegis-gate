@@ -1,6 +1,6 @@
 //! MTLS-T9 — break-glass emergency mTLS bypass.
 //!
-//! Triggered by `AEGIS_MTLS_BREAK_GLASS=1` at process boot.
+//! Triggered by `AEGIS_ZERO_TRUST_BREAK_GLASS=1` at process boot.
 //! Downgrades the **admin plane's** effective `client_auth.mode`
 //! to `Optional` so an operator who has lost their client cert
 //! (lost laptop, expired cert, CA rotation gone wrong) can still
@@ -16,7 +16,7 @@
 //!   on the chain so the trail can't be missed.
 //! - **Admin only**: data-plane listeners stay strict. The
 //!   recovery surface is the dashboard, not the data path.
-//! - **Documented exit**: `unset AEGIS_MTLS_BREAK_GLASS && systemctl
+//! - **Documented exit**: `unset AEGIS_ZERO_TRUST_BREAK_GLASS && systemctl
 //!   restart aegis-gate` returns to the configured mode.
 //!
 //! ## What it does NOT do
@@ -31,7 +31,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-const ENV_VAR: &str = "AEGIS_MTLS_BREAK_GLASS";
+const ENV_VAR: &str = "AEGIS_ZERO_TRUST_BREAK_GLASS";
 
 /// One-shot capture of the env-var state at boot. Subsequent
 /// calls reuse the cached value so a `set_var` in tests

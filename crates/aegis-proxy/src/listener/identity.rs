@@ -70,7 +70,7 @@ pub fn extract_identity_from_peer_certs(
 pub fn extract_identity_with_allowlist(
     peer_certs: Option<&[rustls_pki_types::CertificateDer<'static>]>,
     chain_ok: bool,
-    allowed_sans: Option<&aegis_control::api::mtls::AllowedSansStore>,
+    allowed_sans: Option<&aegis_control::api::zero_trust::downstream::AllowedSansStore>,
 ) -> ClientIdentity {
     let identity = extract_identity_inner(peer_certs, chain_ok);
     match (&identity, allowed_sans) {
@@ -526,7 +526,7 @@ mod tests {
     #[test]
     fn allowlist_empty_admits_any_san() {
         // Empty list = no gate. Same shape as `None`.
-        use aegis_control::api::mtls::AllowedSansStore;
+        use aegis_control::api::zero_trust::downstream::AllowedSansStore;
         let store = AllowedSansStore::from(Vec::<String>::new());
         let der = issue_leaf_with_sans(vec![rcgen::SanType::DnsName(
             "svc.example.com".try_into().unwrap(),
@@ -538,7 +538,7 @@ mod tests {
 
     #[test]
     fn allowlist_admits_matching_san() {
-        use aegis_control::api::mtls::AllowedSansStore;
+        use aegis_control::api::zero_trust::downstream::AllowedSansStore;
         let store = AllowedSansStore::from(vec!["svc.example.com".into()]);
         let der = issue_leaf_with_sans(vec![rcgen::SanType::DnsName(
             "svc.example.com".try_into().unwrap(),
@@ -553,7 +553,7 @@ mod tests {
 
     #[test]
     fn allowlist_downgrades_unmatched_san_to_anonymous() {
-        use aegis_control::api::mtls::AllowedSansStore;
+        use aegis_control::api::zero_trust::downstream::AllowedSansStore;
         let store = AllowedSansStore::from(vec!["allowed.example.com".into()]);
         let der = issue_leaf_with_sans(vec![rcgen::SanType::DnsName(
             "rogue.example.com".try_into().unwrap(),
@@ -567,7 +567,7 @@ mod tests {
 
     #[test]
     fn allowlist_admits_wildcard_subdomain() {
-        use aegis_control::api::mtls::AllowedSansStore;
+        use aegis_control::api::zero_trust::downstream::AllowedSansStore;
         let store = AllowedSansStore::from(vec!["*.example.com".into()]);
         let der = issue_leaf_with_sans(vec![rcgen::SanType::DnsName(
             "svc.example.com".try_into().unwrap(),
@@ -583,7 +583,7 @@ mod tests {
         // doesn't apply (skipping it would be a security bug
         // by promoting Anonymous to Mtls). Result stays
         // Anonymous regardless of the allowlist contents.
-        use aegis_control::api::mtls::AllowedSansStore;
+        use aegis_control::api::zero_trust::downstream::AllowedSansStore;
         let store = AllowedSansStore::from(vec!["anything".into()]);
         let id = extract_identity_with_allowlist(None, false, Some(&store));
         assert_eq!(id, ClientIdentity::Anonymous);
@@ -591,7 +591,7 @@ mod tests {
 
     #[test]
     fn allowlist_admits_spiffe_uri_on_match() {
-        use aegis_control::api::mtls::AllowedSansStore;
+        use aegis_control::api::zero_trust::downstream::AllowedSansStore;
         let store = AllowedSansStore::from(vec![
             "spiffe://prod.example.com/payments-api".into(),
         ]);

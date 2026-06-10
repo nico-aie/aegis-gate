@@ -311,7 +311,7 @@ pub async fn run(
     let break_glass = aegis_core::break_glass::init_from_env();
     if break_glass {
         tracing::warn!(
-            "MTLS BREAK-GLASS ACTIVE — `AEGIS_MTLS_BREAK_GLASS=1` set; \
+            "MTLS BREAK-GLASS ACTIVE — `AEGIS_ZERO_TRUST_BREAK_GLASS=1` set; \
              `client_auth.mode: required` is downgraded to `optional` \
              on every TLS listener for the duration of this process. \
              Unset the env var and restart to return to enforced mode."
@@ -325,8 +325,8 @@ pub async fn run(
             class: aegis_core::audit::AuditClass::System,
             tenant_id: None,
             tier: None,
-            action: "mtls_break_glass_active".into(),
-            reason: "AEGIS_MTLS_BREAK_GLASS=1 captured at boot".into(),
+            action: "zero_trust_break_glass_active".into(),
+            reason: "AEGIS_ZERO_TRUST_BREAK_GLASS=1 captured at boot".into(),
             client_ip: String::new(),
             route_id: None,
             rule_id: None,
@@ -355,8 +355,8 @@ pub async fn run(
                     class: aegis_core::audit::AuditClass::System,
                     tenant_id: None,
                     tier: None,
-                    action: "mtls_break_glass_heartbeat".into(),
-                    reason: "AEGIS_MTLS_BREAK_GLASS still active".into(),
+                    action: "zero_trust_break_glass_heartbeat".into(),
+                    reason: "AEGIS_ZERO_TRUST_BREAK_GLASS still active".into(),
                     client_ip: String::new(),
                     route_id: None,
                     rule_id: None,

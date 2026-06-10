@@ -731,8 +731,8 @@ async function configRollback(seq) {
 const ROLLBACKABLE_ACTIONS = [
   'mode_set',                // v1
   'risk_thresholds_set',     // v2
-  'mtls_sans_set',           // v2
-  'mtls_sans_removed',       // v2
+  'zero_trust_sans_set',           // v2
+  'zero_trust_sans_removed',       // v2
   'blacklist_add',           // v3
   'blacklist_remove',        // v3
   'whitelist_add',           // v3

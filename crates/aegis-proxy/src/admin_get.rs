@@ -1038,7 +1038,7 @@ pub(crate) fn admin_router(
         // process restart to land at the handshake layer).
         "/api/zero-trust/downstream/mode" => {
             let store = &services.mtls_mode_store;
-            let body = aegis_control::api::mtls_mode::render_mode_response(
+            let body = aegis_control::api::zero_trust::mode::render_mode_response(
                 store.configured(),
                 store.current(),
             );
@@ -1046,7 +1046,7 @@ pub(crate) fn admin_router(
         }
         "/api/zero-trust/downstream" => json_body_response(
             200,
-            aegis_control::api::mtls::MtlsConfigView::from_config(cfg).render(),
+            aegis_control::api::zero_trust::downstream::MtlsConfigView::from_config(cfg).render(),
             "private, max-age=2",
         ),
         // Zero Trust (P3) — upstream (WAF-as-client) read views.
@@ -1108,21 +1108,21 @@ pub(crate) fn admin_router(
         ),
         "/api/zero-trust/downstream/connections" => json_body_response(
             200,
-            aegis_control::api::mtls::render_connections(
+            aegis_control::api::zero_trust::downstream::render_connections(
                 services.identity_tracker.as_ref(),
             ),
             "private, max-age=2",
         ),
         "/api/zero-trust/downstream/failures" => json_body_response(
             200,
-            aegis_control::api::mtls::render_failures(
+            aegis_control::api::zero_trust::downstream::render_failures(
                 services.identity_tracker.as_ref(),
             ),
             "private, max-age=2",
         ),
         "/api/zero-trust/downstream/ca-summary" => json_body_response(
             200,
-            aegis_control::api::mtls::render_ca_summary(
+            aegis_control::api::zero_trust::downstream::render_ca_summary(
                 services.identity_tracker.as_ref(),
             ),
             "private, max-age=2",

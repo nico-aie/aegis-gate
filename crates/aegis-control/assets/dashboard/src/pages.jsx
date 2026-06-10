@@ -5735,7 +5735,7 @@ function MtlsModeCard() {
 //
 // **Phase 1**: paste / upload PEM → parse + preview metadata
 // (subject / issuer / fingerprint / expiry / is_ca). Audit-emits
-// `mtls_ca_bundle_validated`. The hot-swap of the live trust
+// `zero_trust_ca_bundle_validated`. The hot-swap of the live trust
 // store ships with the listener-rebuild track (Phase 2).
 function MtlsCaBundleCard() {
   const cap = window.useApi

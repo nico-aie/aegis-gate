@@ -1039,7 +1039,7 @@ pub(crate) async fn handle_mtls_ca_bundle_put(
     }
 
     let now = chrono::Utc::now().timestamp();
-    let preview = aegis_control::api::mtls_ca_bundle::parse_and_preview(body_bytes.as_ref(), now);
+    let preview = aegis_control::api::zero_trust::ca_bundle::parse_and_preview(body_bytes.as_ref(), now);
 
     if !preview.valid {
         return json_response(
@@ -1065,7 +1065,7 @@ pub(crate) async fn handle_mtls_ca_bundle_put(
             actor: &pre.actor,
             request_id: &pre.request_id,
             resource: "/api/zero-trust/downstream/ca-bundle",
-            action: "mtls_ca_bundle_validated",
+            action: "zero_trust_ca_bundle_validated",
             reason: "operator previewed CA bundle (no swap)",
         };
         let outcome = services
@@ -1111,10 +1111,10 @@ pub(crate) async fn handle_mtls_ca_bundle_put(
     let before_preview = if before_pem.is_empty() {
         Vec::new()
     } else {
-        aegis_control::api::mtls_ca_bundle::parse_and_preview(&before_pem, now).certificates
+        aegis_control::api::zero_trust::ca_bundle::parse_and_preview(&before_pem, now).certificates
     };
     let diff =
-        aegis_control::api::mtls_ca_bundle::diff_previews(&before_preview, &preview.certificates);
+        aegis_control::api::zero_trust::ca_bundle::diff_previews(&before_preview, &preview.certificates);
 
     let before_payload = serde_json::json!({
         "blocks_seen": before_preview.len(),
@@ -1139,7 +1139,7 @@ pub(crate) async fn handle_mtls_ca_bundle_put(
         actor: &pre.actor,
         request_id: &pre.request_id,
         resource: "/api/zero-trust/downstream/ca-bundle",
-        action: "mtls_ca_bundle_swapped",
+        action: "zero_trust_ca_bundle_swapped",
         reason: "operator hot-swapped CA bundle",
     };
 
@@ -1208,13 +1208,13 @@ pub(crate) async fn handle_mtls_mode_put(
     ) = if clear {
         let store_cl = store.clone();
         (
-            "mtls_mode_clear",
+            "zero_trust_mode_clear",
             serde_json::json!({
-                "configured": aegis_control::api::mtls_mode::mode_label(configured),
-                "override": prev_override.map(aegis_control::api::mtls_mode::mode_label),
+                "configured": aegis_control::api::zero_trust::mode::mode_label(configured),
+                "override": prev_override.map(aegis_control::api::zero_trust::mode::mode_label),
             }),
             serde_json::json!({
-                "configured": aegis_control::api::mtls_mode::mode_label(configured),
+                "configured": aegis_control::api::zero_trust::mode::mode_label(configured),
                 "override": serde_json::Value::Null,
             }),
             Box::new(move || {
@@ -1223,7 +1223,7 @@ pub(crate) async fn handle_mtls_mode_put(
             }),
         )
     } else {
-        let parsed = match mode_str.and_then(aegis_control::api::mtls_mode::parse_mode) {
+        let parsed = match mode_str.and_then(aegis_control::api::zero_trust::mode::parse_mode) {
             Some(m) => m,
             None => {
                 return json_response(
@@ -1237,14 +1237,14 @@ pub(crate) async fn handle_mtls_mode_put(
         };
         let store_cl = store.clone();
         (
-            "mtls_mode_set",
+            "zero_trust_mode_set",
             serde_json::json!({
-                "configured": aegis_control::api::mtls_mode::mode_label(configured),
-                "override": prev_override.map(aegis_control::api::mtls_mode::mode_label),
+                "configured": aegis_control::api::zero_trust::mode::mode_label(configured),
+                "override": prev_override.map(aegis_control::api::zero_trust::mode::mode_label),
             }),
             serde_json::json!({
-                "configured": aegis_control::api::mtls_mode::mode_label(configured),
-                "override": aegis_control::api::mtls_mode::mode_label(parsed),
+                "configured": aegis_control::api::zero_trust::mode::mode_label(configured),
+                "override": aegis_control::api::zero_trust::mode::mode_label(parsed),
             }),
             Box::new(move || {
                 store_cl.set(parsed);
@@ -1278,7 +1278,7 @@ pub(crate) async fn handle_mtls_mode_put(
             // Echo the new effective state in the response so the
             // dashboard doesn't need an immediate GET round-trip.
             let body =
-                aegis_control::api::mtls_mode::render_mode_response(configured, store.current());
+                aegis_control::api::zero_trust::mode::render_mode_response(configured, store.current());
             json_response(
                 200,
                 &serde_json::json!({
@@ -4087,7 +4087,7 @@ pub(crate) async fn handle_mtls_sans_put(
         actor: &pre.actor,
         request_id: &pre.request_id,
         resource: "/api/zero-trust/downstream/sans",
-        action: "mtls_sans_set",
+        action: "zero_trust_sans_set",
         reason: "operator updated allowed SAN list",
     };
 
@@ -4153,7 +4153,7 @@ pub(crate) async fn handle_mtls_sans_delete(
         actor: &pre.actor,
         request_id: &pre.request_id,
         resource: &resource,
-        action: "mtls_sans_removed",
+        action: "zero_trust_sans_removed",
         reason: "operator removed allowed SAN",
     };
 
