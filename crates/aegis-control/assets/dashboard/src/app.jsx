@@ -121,16 +121,16 @@ function TopBar() {
   const env = (status.data?.environment || 'unknown').toLowerCase();
   const peers = cluster.data?.peers || [];
   const peerCount = peers.length;
-  const isLeader = cluster.data?.is_leader;
   // Health rollup: green when we know we have at least one node and
   // /api/about is reachable; warn when /api/about is up but cluster
   // has no peer info yet; err when /api/about itself is failing.
+  // Leaderless — every node is equal, so no leader badge.
   const healthTone = status.error ? 'err' : (peerCount === 0 ? 'warn' : 'ok');
   const healthLabel = status.error
     ? 'API unreachable'
     : peerCount === 0
       ? 'Standalone'
-      : `Cluster ${peerCount} node${peerCount === 1 ? '' : 's'}${isLeader ? ' · leader' : ''}`;
+      : `Cluster ${peerCount} node${peerCount === 1 ? '' : 's'}`;
 
   return (
     <div className="topbar">

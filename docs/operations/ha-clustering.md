@@ -3,12 +3,20 @@
 > **Status:** Implemented (single-node + Redis primary +
 > local-fallback). Two cluster nodes against one Redis primary
 > share rate-limit counters (named buckets via
-> `StateBackend`), block lists, challenge nonces, leader
-> identity, and risk scores. Split-brain safe via
+> `StateBackend`), block lists, challenge nonces, control-plane
+> modes, and risk scores. Split-brain safe via
 > `ReconcilingBackend` (block lists strictly additive on heal,
 > counters fall through to local on `WafError::State`).
-> Singleton `leader:cluster` lease elects exactly one node;
-> `/api/cluster` reports `is_leader`.
+>
+> **Leaderless (2026-06-10).** There is no cluster leader: every
+> node is equal, `/api/cluster` returns a flat peer roster + `our_node`
+> (no `is_leader`/`leader_node`), and `/healthz/ready` is purely
+> node-local. Singleton side-tasks (ACME, GitOps) still coordinate via
+> per-task leases — leaderless distributed mutexes, not a global leader.
+> Cross-node console sync: live events via `cluster.fleet_events`
+> (Phase 2, Redis pub/sub) and merged traffic metrics via
+> `cluster.fleet_view` (Phase 3, TTL'd `fleet:snap:*` snapshots). See
+> [`plans/future/cluster-mode-multinode-sync.md`](../../plans/future/cluster-mode-multinode-sync.md).
 >
 > **Not yet implemented:** `redis_cluster` slot-hashing,
 > `raft` (`openraft`-based), `foca_swim` gossip, the front-of-cluster
@@ -61,8 +69,8 @@ orthogonal: tune workers per pod, then add more pods.
                       ▼
             ┌────────────────────┐
             │  Redis primary     │  ← shared state: rate-limit counters,
-            │  (+ optional       │     leader lease, block lists,
-            │   replica for HA)  │     challenge nonces
+            │  (+ optional       │     task leases, block lists,
+            │   replica for HA)  │     challenge nonces, fleet snapshots
             └────────────────────┘
                       │
                       ▼
@@ -156,23 +164,52 @@ explicitly:
 See [`docs/security/rate-limiting.md`](../security/rate-limiting.md)
 for the full schema.
 
-## Leader-only tasks
+## Per-task singleton leases (no cluster leader)
 
-Some tasks must run on exactly one node:
+Some side-tasks must run on exactly one node at a time. These are
+**per-task leases** — leaderless distributed mutexes (whoever grabs the
+key first runs that one task), **not** a global cluster leader. The
+old `leader:cluster` "I am the leader" lease was removed (2026-06-10):
+nothing gated on it, `/api/cluster` is a flat roster, and `/healthz/ready`
+is node-local.
 
 | Lease key | Task | Today |
 |---|---|---|
-| `leader:cluster` | Singleton "I am the cluster leader" — drives `/api/cluster` `is_leader` field. No-op factory; just holds the lease. | shipped |
-| `leader:acme` | ACME cert issuance + renewal scheduler. | shipped |
-| `leader:gitops` | GitOps poll-and-pull driver wrap (per `B3-T1` carry-over). | code lives, wrap not yet wired at boot site |
-| `leader:taxii` | STIX/TAXII fetcher loop wrap (per `B3-T2` carry-over). | code lives, wrap not yet wired at boot site |
-| `leader:witness` | Audit-chain witness export. | shipped behind feature flag |
+| `acme` | ACME cert issuance + renewal scheduler. | shipped |
+| `gitops` | GitOps poll-and-pull driver wrap (per `B3-T1` carry-over). | code lives, wrap not yet wired at boot site |
+| `taxii` | STIX/TAXII fetcher loop wrap (per `B3-T2` carry-over). | code lives, wrap not yet wired at boot site |
+| `witness` | Audit-chain witness export. | shipped behind feature flag |
 
-Lease election uses Redis `SET NX PX` with heartbeat renewal
+Lease acquisition uses Redis `SET NX PX` with heartbeat renewal
 (half-TTL) and a fence counter (monotonic per acquire).
 Losing the lease → the wrapped task receives a
 `tokio::Notify` and exits cleanly. The runner re-acquires
-after a half-TTL backoff.
+after a half-TTL backoff. On a Redis partition these leases are
+**deliberately not reconciled** (`ReconcilingBackend` invariant) — an
+unreachable Redis *pauses* ACME/GitOps rather than risk two nodes both
+"winning" (double cert issuance). Cert renewal pausing for a Redis blip
+is safe — certs have weeks of validity.
+
+## Cross-node console sync + fleet logs
+
+| Surface | Mechanism | Config | Redis down |
+|---|---|---|---|
+| **Config / modes / risk / block-list** | versioned doc + shared `g:*` keys, polled | (always on with Redis) | local fallback; converges on heal |
+| **Live events** (≤ 5 s SLA) | Redis pub/sub fanout → each node's dashboard SSE | `cluster.fleet_events.enabled` | cross-node feed stops; each dashboard shows its **own** events (still ≤ 5 s) |
+| **Traffic metrics** (RPS, p50/95/99, top-attackers, by-detector, bot-mix) | TTL'd `fleet:snap:<node>` snapshots, scan + merge on read | `cluster.fleet_view.enabled` | `SCAN` empty → panels fall back to **local** ("This node") |
+| **Forensic audit log** | per-node `waf_audit.log` (+ SigNoz), correlated by `request_id` | (always) | unaffected — local files are the source of truth |
+
+The fleet-event feed is a **lossy live monitor**, not the durable record.
+For the complete fleet audit trail, every response carries
+`X-WAF-Request-Id` and every node stamps it into `waf_audit.log`; merge
+all nodes' files with [`deploy/collect-audit.sh`](../../deploy/collect-audit.sh)
+(scp + time-order by `ts_ms`) and join on `request_id`, or query SigNoz.
+
+The data plane never blocks on any of this — every cross-node mechanism
+is a background task + best-effort write + local-fallback read. **Losing
+Redis costs monitoring completeness for the outage window, never
+protection.** See knob reference: [`config/REFERENCE.md`](../../config/REFERENCE.md)
+§`cluster`.
 
 ## Identity reconciliation
 
@@ -368,7 +405,7 @@ Every node exposes the same surfaces, scrape every node:
 | `GET /healthz/ready` | Ready to serve — used by Pod readiness + LB health checks. 503 during state-backend rehydrate. |
 | `GET /healthz/startup` | Boot complete — used by k8s `startupProbe`. |
 | `GET /metrics` | Prometheus counters + histograms. Scrape every node and aggregate fleet-wide via `sum(...)` / `histogram_quantile(...)`. |
-| `GET /api/cluster` | `is_leader`, `leader_node`, `our_node` (carry-over 3 wired this). Use to drive a "current leader" badge in dashboards. |
+| `GET /api/cluster` | Flat leaderless roster: `peers[]` + `our_node`. Drives the dashboard's peer list + "this node" label (no leader badge). |
 
 ## Roadmap
 
