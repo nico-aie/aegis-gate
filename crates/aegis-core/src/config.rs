@@ -450,16 +450,54 @@ pub struct ProxyConfig {
     /// so a high cap costs more memory per concurrent request.
     #[serde(default = "default_proxy_max_body_bytes")]
     pub max_body_bytes: u64,
+    /// Trusted reverse-proxy / load-balancer CIDRs. When a request's
+    /// TCP peer falls inside one of these networks, the data plane
+    /// walks `X-Forwarded-For` right-to-left and treats the first
+    /// hop *outside* the trusted set as the real client IP (used for
+    /// per-IP risk, rate-limit, DDoS keys, audit `client_ip`, geoip).
+    ///
+    /// **Default empty** — with no trusted proxy the TCP peer always
+    /// wins and XFF is ignored, which is the F-HIGH-002-safe posture
+    /// (a client sending a spoofed `X-Forwarded-For` from an
+    /// untrusted peer cannot move its own risk key). Set this ONLY to
+    /// the CIDRs of proxies you control and that overwrite/append XFF
+    /// safely — trusting a proxy that forwards a client-supplied XFF
+    /// re-opens the spoofing hole.
+    ///
+    /// Entries are CIDR strings (`10.0.0.0/8`, `192.168.1.5/32`,
+    /// `fc00::/7`); each is validated as an `ipnet::IpNet` at boot.
+    /// Applied at context build (boot) like `max_body_bytes`; the
+    /// value still converges fleet-wide through the config plane, so
+    /// every node agrees on which proxies to trust.
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
 }
 
 impl Default for ProxyConfig {
     fn default() -> Self {
-        Self { max_body_bytes: default_proxy_max_body_bytes() }
+        Self {
+            max_body_bytes: default_proxy_max_body_bytes(),
+            trusted_proxies: Vec::new(),
+        }
     }
 }
 
 fn default_proxy_max_body_bytes() -> u64 {
     10 * 1024 * 1024 // 10 MiB — matches QuotaConfig::default()
+}
+
+impl ProxyConfig {
+    /// Parse `trusted_proxies` into `ipnet::IpNet`. Invalid entries
+    /// are rejected at boot by [`WafConfig::validate`], so this
+    /// `filter_map` cannot silently drop a real entry on the live
+    /// path. Returns an empty vec when no proxies are configured —
+    /// the data plane then keeps the TCP peer (XFF ignored).
+    pub fn parsed_trusted_proxies(&self) -> Vec<ipnet::IpNet> {
+        self.trusted_proxies
+            .iter()
+            .filter_map(|s| s.trim().parse::<ipnet::IpNet>().ok())
+            .collect()
+    }
 }
 
 /// Adaptive load-shedder knobs. See
@@ -825,6 +863,18 @@ impl WafConfig {
         // Zero Trust: validate per-pool upstream (WAF-as-client) mTLS
         // against the shared identity (cross-references upstreams + zero_trust).
         validate_upstream_mtls(&self.upstreams, self.zero_trust.as_ref())?;
+        // C-5: every `proxy.trusted_proxies` entry must parse as a CIDR.
+        // Parse-don't-validate at the boundary so the data-plane hot path
+        // (`ProxyConfig::parsed_trusted_proxies`) can assume well-formed
+        // input. An empty list is valid (XFF ignored — the safe default).
+        for cidr in &self.proxy.trusted_proxies {
+            if cidr.trim().parse::<ipnet::IpNet>().is_err() {
+                return Err(crate::error::WafError::Config(format!(
+                    "proxy.trusted_proxies: '{cidr}' is not a valid CIDR \
+                     (expected e.g. 10.0.0.0/8, 192.168.1.5/32, fc00::/7)",
+                )));
+            }
+        }
         // 2026-05-19 committee bind contract: `/__waf_control/*`
         // MUST be local-only on the team's server. The control
         // surface is now peer-IP-gated to loopback at both mounts
@@ -4686,6 +4736,83 @@ audit:
 "#;
         let cfg = super::load_config_str(yaml).expect("tag-form audit sink still valid");
         assert!(matches!(cfg.audit.sinks[0], super::AuditSinkConfig::Jsonl { .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // C-5 — proxy.trusted_proxies (XFF trusted-proxy plumbing)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn trusted_proxies_defaults_empty() {
+        // Omitting the block ⇒ no trusted proxies ⇒ data plane keeps
+        // the TCP peer (XFF ignored), the F-HIGH-002-safe default.
+        let cfg = super::load_config_str(minimal_yaml()).unwrap();
+        assert!(cfg.proxy.trusted_proxies.is_empty());
+        assert!(cfg.proxy.parsed_trusted_proxies().is_empty());
+    }
+
+    #[test]
+    fn load_config_str_accepts_trusted_proxies() {
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:9000"
+state:
+  backend: in_memory
+proxy:
+  trusted_proxies:
+    - "10.0.0.0/8"
+    - "192.168.1.5/32"
+    - "fc00::/7"
+"#;
+        let cfg = super::load_config_str(yaml)
+            .expect("valid trusted_proxies CIDRs must pass validation");
+        assert_eq!(cfg.proxy.trusted_proxies.len(), 3);
+        let nets = cfg.proxy.parsed_trusted_proxies();
+        assert_eq!(nets.len(), 3, "every entry parses to an IpNet");
+        // A peer inside a trusted CIDR is matched.
+        let probe: std::net::IpAddr = "10.1.2.3".parse().unwrap();
+        assert!(nets.iter().any(|n| n.contains(&probe)));
+    }
+
+    #[test]
+    fn load_config_str_rejects_malformed_trusted_proxy() {
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:9000"
+state:
+  backend: in_memory
+proxy:
+  trusted_proxies:
+    - "not-a-cidr"
+"#;
+        let err = super::load_config_str(yaml)
+            .expect_err("a malformed CIDR must fail validation, not silently drop");
+        assert!(
+            err.to_string().contains("trusted_proxies"),
+            "error should name the offending field, got: {err}"
+        );
     }
 
     // -----------------------------------------------------------------------
