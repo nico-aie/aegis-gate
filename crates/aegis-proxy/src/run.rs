@@ -1461,6 +1461,39 @@ pub async fn run(
         // behaviour is preserved.
         if matches!(cfg.state.backend, aegis_core::config::StateBackendKind::Redis) {
             rt.control.set_cluster_state(std::sync::Arc::clone(&state));
+            // Phase 5 (§3) — optional pub/sub state nudge. Built BEFORE
+            // spawn_poller so the poller picks up the bus via
+            // `rt.control.cluster_nudge()`. Gated on cluster.pubsub_nudge
+            // + the `redis` feature; degrades to interval-only polling
+            // when off / unbuilt.
+            if cfg.cluster.pubsub_nudge {
+                #[cfg(feature = "redis")]
+                {
+                    if let Some(url) =
+                        cfg.state.redis.as_ref().and_then(|r| r.urls.first())
+                    {
+                        match crate::state::RedisFleetBus::connect(url) {
+                            Ok(bus) => {
+                                rt.control.set_cluster_nudge(std::sync::Arc::new(bus));
+                                tracing::info!(
+                                    "interop: pub/sub state nudge enabled \
+                                     (control:waf:bump → immediate re-poll)"
+                                );
+                            }
+                            Err(e) => tracing::warn!(
+                                error = %e,
+                                "cluster.pubsub_nudge: redis connect failed; \
+                                 falling back to interval polling"
+                            ),
+                        }
+                    }
+                }
+                #[cfg(not(feature = "redis"))]
+                tracing::warn!(
+                    "cluster.pubsub_nudge enabled but binary built without the \
+                     `redis` feature; falling back to interval polling"
+                );
+            }
             crate::cluster_control::spawn_poller(
                 std::sync::Arc::clone(rt),
                 std::sync::Arc::clone(&state),
@@ -2326,6 +2359,9 @@ pub(crate) fn build_interop_runtime(
         // C-1 — installed post-construction in `run` for Redis
         // deployments (see `set_cluster_state`); empty single-node.
         cluster_state: std::sync::OnceLock::new(),
+        // Phase 5 — installed post-construction when cluster.pubsub_nudge
+        // is on (see `set_cluster_nudge`); empty otherwise.
+        cluster_nudge: std::sync::OnceLock::new(),
     };
 
     Some(Arc::new(InteropRuntime {

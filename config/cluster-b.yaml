@@ -66,6 +66,7 @@ cluster:
     enabled: true
     publish_interval_ms: 1000
     snapshot_ttl_ms: 5000
+  pubsub_nudge: true   # Phase 5 — see cluster-a.yaml
 
 detectors:
   sqli:             { enabled: true }

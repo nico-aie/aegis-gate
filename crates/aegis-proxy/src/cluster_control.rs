@@ -47,8 +47,34 @@ pub(crate) fn spawn_poller(rt: Arc<InteropRuntime>, state: Arc<dyn StateBackend>
 
         let mut tick = tokio::time::interval(POLL_INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        // Phase 5 (§3) — optional pub/sub nudge: when wired, a peer's
+        // config/control mutation publishes a 1-byte bump that wakes
+        // this loop for an immediate re-poll (convergence ms instead of
+        // up to POLL_INTERVAL). Polling stays the backstop — if the
+        // nudge channel is absent or closes, the interval alone drives
+        // convergence, so a dropped bump never breaks correctness.
+        let mut bump_rx = rt
+            .control
+            .cluster_nudge()
+            .map(|bus| bus.subscribe(cluster_sync::CONTROL_BUMP_CHANNEL, 64));
+
         loop {
-            tick.tick().await;
+            // Wake on the interval tick OR a nudge, whichever comes first.
+            if let Some(rx) = bump_rx.as_mut() {
+                tokio::select! {
+                    _ = tick.tick() => {}
+                    msg = rx.recv() => {
+                        if msg.is_none() {
+                            // Channel closed (e.g. a no-op bus) — drop
+                            // the nudge and fall back to interval-only.
+                            bump_rx = None;
+                        }
+                    }
+                }
+            } else {
+                tick.tick().await;
+            }
 
             // --- modes ---
             if let Some(doc) = cluster_sync::read_modes(&state).await {

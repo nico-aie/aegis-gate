@@ -13,12 +13,17 @@
 > - **P3 / C-3 — ✅ shipped:** `FleetNodeBanner` "showing THIS node" on the
 >   Overview page. Fleet metric *aggregation* itself stays in SigNoz (and is
 >   expanded in [`future/cluster-mode-multinode-sync.md`](./future/cluster-mode-multinode-sync.md)).
-> - **P4 / C-2 — deferred** (opt-in upstream-aware readiness; build on request).
+> - **P4 / C-2 — DROPPED (2026-06-10, operator decision):** upstream-aware
+>   readiness removed from the roadmap. Upstream-blind readiness is the correct
+>   default for the shared-upstream topology (all nodes reach the same backends,
+>   so yanking one from the LB on an upstream outage helps nothing); the circuit
+>   breaker already surfaces upstream failures as 502/`circuit_breaker`.
 >
 > The deeper fleet-console work (leaderless roster, ≤5s event fanout,
 > fleet-snapshot merge) is carried forward in
 > [`future/cluster-mode-multinode-sync.md`](./future/cluster-mode-multinode-sync.md).
-> Move this doc to `archive/` once P4 lands or is formally dropped.
+> With C-2 dropped, every concern in this doc is now shipped or dropped — this
+> doc can move to `archive/`.
 
 ## Framing — triage by topology, don't "fix all 5"
 
@@ -36,7 +41,7 @@ So this plan sequences by **leverage-per-effort**, not by C-number:
 | **P1** | C-5 — plumb `trusted_proxies` | Small, self-contained; unblocks the **entire** L7-LB topology + per-client risk correctness. Highest leverage. | Med | ✅ yes |
 | **P2** | C-1 — control-plane sync | Make `set_profile` + the local half of `reset_state` converge cluster-wide through the config plane (real code). | Med | ✅ yes |
 | **P3** | C-3 / C-4 — observability | Mostly **already covered by SigNoz**. Only a per-node console banner + an audit-collect script are worth WAF-side effort. | Low | minimal |
-| **P4** | C-2 — readiness | Upstream-blind readiness is arguably the *correct* default. Opt-in only, build on request. | Med | ✅ (opt-in) |
+| ~~**P4**~~ | ~~C-2 — readiness~~ | **DROPPED (2026-06-10)** — upstream-blind readiness is the correct default; the circuit breaker already surfaces upstream failures. | — | — |
 
 **If only two things get scheduled:** P1 (C-5) + P2 (C-1 cluster-native
 propagation). Together they turn "works as a single edge node" into "works
@@ -225,28 +230,15 @@ console stays per-node, clearly labelled.
 
 ---
 
-## P4 — C-2: upstream-aware readiness (optional, on request)
+## P4 — C-2: upstream-aware readiness — DROPPED (2026-06-10)
 
-### Goal
-Let a node de-register from the LB when all its upstreams are down — **opt-in
-only**.
-
-### Default stance — leave OFF
-Upstream-blind readiness is arguably correct: many deployments *want* the
-node in rotation surfacing upstream errors as 502/`circuit_breaker` rather
-than yanking the whole node. Only build when an operator asks.
-
-### Changes (when scheduled)
-1. `health.upstream_gate: bool` (default **false**) folding a cheap upstream
-   liveness signal (passive recent-forward-success-rate, or active periodic
-   `GET healthcheck_path`) into `health.rs::check_ready`.
-2. Separate `/healthz/upstream` (admin) for observability regardless of the
-   gate, so dashboards/LBs see upstream health without coupling it to
-   readiness.
-
-### Acceptance
-- Default behavior unchanged; with the gate on, a node with all upstreams
-  down fails `/healthz/ready` and the LB drains it.
+Removed from the roadmap by operator decision. Rationale: in the shared-upstream
+topology every node reaches the same backends, so an upstream outage hits all
+nodes equally — de-registering one from the LB on `/healthz/ready` helps nothing.
+The circuit breaker (`upstream/circuit.rs`) already surfaces upstream failures as
+502/`circuit_breaker`, which is the correct signal. Upstream-blind readiness
+(WAF-health only) stays the intended behaviour. Re-open only if a per-node
+upstream-reachability-divergence topology ever appears.
 
 ---
 
@@ -258,8 +250,7 @@ than yanking the whole node. Only build when an operator asks.
    `reset_state` converge fleet-wide through the config plane.
 3. **P3 (C-3/C-4)** — cheap clarity: console banner + collect-audit script +
    SigNoz dashboards. Mostly ops.
-4. **P4 (C-2)** — only if an operator requests upstream-gated readiness.
 
 > The two code changes worth real engineering time are **P1** and **P2**;
-> P3 is a console banner + an ops script + SigNoz dashboards, and P4 is
-> opt-in.
+> P3 is a console banner + an ops script + SigNoz dashboards. (P4/C-2 was
+> dropped — see above.)
