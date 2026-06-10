@@ -75,6 +75,12 @@ pub struct StatsResponse {
     pub active_threats: u32,
     pub upstream: UpstreamSummary,
     pub ts: chrono::DateTime<chrono::Utc>,
+    /// Cluster Phase 4 (§2a) — when present, this response is a
+    /// **fleet-merged** view and the value is the number of live nodes
+    /// it merged. Absent ⇒ this node's local view. Lets the dashboard
+    /// label "Fleet view (N nodes)" vs "This node" unambiguously.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fleet_nodes: Option<u32>,
 }
 
 /// One bucket of the timeseries response. `ts` is the bucket's start
@@ -231,6 +237,7 @@ impl StatsAggregator {
             active_threats,
             upstream: UpstreamSummary::placeholder(),
             ts: chrono::Utc::now(),
+            fleet_nodes: None,
         }
     }
 
@@ -393,6 +400,7 @@ impl StatsHandler {
             active_threats: merged.active_threats,
             upstream: (self.upstream_provider)(),
             ts: chrono::Utc::now(),
+            fleet_nodes: Some(merged.nodes as u32),
         };
         serde_json::to_string(&response).unwrap_or_else(|_| String::from("{}"))
     }

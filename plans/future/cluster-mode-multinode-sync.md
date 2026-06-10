@@ -490,17 +490,30 @@ an L7 SNAT LB now works too once you set `proxy.trusted_proxies` to its CIDRs.
   (300 s) regardless of the client `?window=`. Tightening the dashboard poll to
   ≤ 3 s for these panels (§2c) is a frontend tweak deferred to Phase 4.
 
-### Phase 4 — labels, durable logs, docs
-- Console header: drop "leader" badge; show "Fleet view (N nodes)" vs
-  "This node" toggle so per-node vs fleet is never ambiguous.
-- Durable/forensic logs (C-4): the **live** ≤ 5 s feed is Phase 2; for the
-  *complete historical* record keep SigNoz as the heavy path, document
-  `request_id` correlation across nodes, ship `collect-audit.sh` (scp+merge by
-  `ts_ms`). The pub/sub feed is lossy-by-design (monitor), so SigNoz/local files
-  remain the source of truth for audit. No in-WAF durable log bus — out of scope.
-- Update `docs/operations/ha-clustering.md` + `deploy/PRE-PROD-DEPLOY.md`:
-  leaderless model, fleet-view + fleet-events knobs, ≤ 5 s budget, Redis-down
-  behaviour table.
+### Phase 4 — labels, durable logs, docs — ✅ LANDED (2026-06-10, branch `feat/cluster-phase4-labels-docs`)
+- ✅ **Leader-badge removal** across the dashboard (`app.jsx` cluster status,
+  `pages.jsx` Health/SLO pill + Cluster-peers table + Layer-2 card + the fleet
+  banner; `data.jsx` mock `role`). Cluster tables now show `this node`/`peer`
+  instead of `leader`/`follower`.
+- ✅ **"Fleet view (N nodes)" vs "This node" indicator** — `StatsResponse` gained
+  `fleet_nodes: Option<u32>` (set by `render_from_fleet` to the merged node count,
+  absent for local). `FleetNodeBanner` reads it and self-labels unambiguously; the
+  old "showing THIS node" warning now flips to "Fleet view — merged across N nodes"
+  when fleet-view is active.
+- ✅ **≤ 3 s poll** on the fleet-merged panels (`/api/attacks/top`,
+  `/api/attacks/by-detector`) so publish (~2 s) + poll stays inside the 5 s budget (§2c).
+- ✅ **`deploy/collect-audit.sh`** — scp every node's `waf_audit.log` + merge,
+  time-ordered by `ts_ms` (jq, sed/sort fallback), join on `request_id`. Documented
+  the live feed is a lossy monitor; SigNoz + local files are the source of truth.
+- ✅ **Docs:** `docs/operations/ha-clustering.md` (leaderless model, per-task-lease
+  table replacing "Leader-only tasks", cross-node console-sync + fleet-logs +
+  Redis-down behaviour table, `request_id` correlation + `collect-audit.sh`);
+  `config/REFERENCE.md` (cluster knobs, done in P2/P3); `api.openapi.yaml`
+  `ClusterResponse` schema → flat `{peers, our_node}`.
+  (No `deploy/PRE-PROD-DEPLOY.md` exists — folded into `ha-clustering.md`.)
+- **Tests/gates:** workspace builds; control 1081 + core 291 green; dashboard
+  bundle rebuilt (no `is_leader`/`leader_node` tokens); `collect-audit.sh`
+  syntax + merge-ordering smoke-checked.
 
 ### Phase 5 — *optional* pub/sub state nudge (§3)
 - `control:waf:bump` channel; on config/control mutation, publish a 1-byte bump;

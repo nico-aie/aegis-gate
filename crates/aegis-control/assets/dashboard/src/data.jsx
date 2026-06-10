@@ -113,7 +113,7 @@ const UPSTREAMS = [
 ];
 
 const CLUSTER = [
-  { id: 'aegis-01', addr: '10.32.4.11:8443',  ver: 'v0.5.16', role: 'leader',   lastHB: '0s',  leases: ['witness', 'state-snap'] },
+  { id: 'aegis-01', addr: '10.32.4.11:8443',  ver: 'v0.5.16', role: 'node',     lastHB: '0s',  leases: ['witness', 'state-snap'] },
   { id: 'aegis-02', addr: '10.32.4.12:8443',  ver: 'v0.5.16', role: 'follower', lastHB: '1s',  leases: [] },
   { id: 'aegis-03', addr: '10.32.4.13:8443',  ver: 'v0.5.16', role: 'follower', lastHB: '0s',  leases: ['gitops-sync'] },
   { id: 'aegis-04', addr: '10.32.4.14:8443',  ver: 'v0.5.15', role: 'follower', lastHB: '2s',  leases: [], skew: true },
@@ -553,7 +553,9 @@ function useAttacksDistributionApi(window = 900) {
   return useApi(`/api/attacks/distribution?window=${window}`, { intervalMs: 5000, fallback: null });
 }
 function useAttacksTopApi(window = 900, limit = 10) {
-  return useApi(`/api/attacks/top?window=${window}&limit=${limit}`, { intervalMs: 5000, fallback: null });
+  // ≤3s poll so the fleet-merged gauge (publish ~2s) stays inside the
+  // ≤5s budget (cluster plan §2c).
+  return useApi(`/api/attacks/top?window=${window}&limit=${limit}`, { intervalMs: 3000, fallback: null });
 }
 // HACK-T4 — Tier-B bonus: config-change timeline. Filters
 // the audit ring to `class = Admin` events and returns them
@@ -860,7 +862,8 @@ async function rulesSimulate(body) {
 // already wired server-side; this is just the dashboard
 // adapter so the page can stop using `Math.random`.
 function useAttacksByDetectorApi(window = 3600) {
-  return useApi(`/api/attacks/by-detector?window=${window}`, { intervalMs: 5000, fallback: null });
+  // ≤3s poll for the fleet-merged gauge (cluster plan §2c).
+  return useApi(`/api/attacks/by-detector?window=${window}`, { intervalMs: 3000, fallback: null });
 }
 function useBotMixApi(window = 3600) {
   return useApi(`/api/bots/mix?window=${window}`, { intervalMs: 10000, fallback: null });
