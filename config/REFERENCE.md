@@ -128,6 +128,39 @@ console only — they do **not** enter this node's `waf_audit.log` / syslog sink
 which stay "this node's decisions" (SigNoz + local files remain the source of
 truth).
 
+### `cluster.fleet_view`
+
+Cross-node live-traffic **metrics** view (cluster plan Phase 3). When enabled
+(and a shared backend is present) each node publishes a TTL'd traffic snapshot to
+`fleet:snap:<node_id>` and merges every peer's snapshot on read, so the
+dashboard's traffic panels (RPS, decision latency p50/p95/p99, top-attackers,
+by-detector, bot-mix) show **fleet totals** instead of one node's `1/N` slice.
+Off ⇒ panels stay per-node.
+
+| Field | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | On + shared backend ⇒ snapshot publish/merge task runs. |
+| `publish_interval_ms` | `2000` | Snapshot cadence. Cross-node gauge lands in ~cadence + dashboard poll; keep the sum ≤ 5 s. |
+| `snapshot_ttl_ms` | `10000` | Snapshot key TTL — 5× the cadence so a dead node self-evicts (no sweeper, no leader). |
+| `top_attackers_k` | `50` | Per-node top-attacker cap carried + the merged truncation cap. |
+
+```yaml
+cluster:
+  fleet_view:
+    enabled: true
+    publish_interval_ms: 2000
+    snapshot_ttl_ms: 10000
+    top_attackers_k: 50
+```
+
+**Merge semantics:** sums for RPS / blocks / mixes; decision-latency percentiles
+are recomputed from **bucket-wise-summed histograms** (you can't average p95s);
+top-attackers sum per-identifier, union categories, max risk, then re-sort +
+truncate (slightly lossy at the long tail — exact per-IP risk stays correct in
+shared state for enforcement). Merged panels report a fixed snapshot window
+(currently 300 s) regardless of the client's `?window=`. Redis down ⇒ `SCAN`
+returns nothing ⇒ panels fall back to local; the request path is untouched.
+
 Deep-dive: [`docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md).
 
 ---

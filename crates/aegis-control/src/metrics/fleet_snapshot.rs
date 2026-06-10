@@ -75,6 +75,9 @@ pub struct FleetSnapshot {
     pub build: String,
     // --- stats (/api/stats) ---
     pub request_rate: f64,
+    /// Windowed block rate (%). Merged as a request-rate-weighted
+    /// average across nodes.
+    pub block_rate_pct: f64,
     pub blocks_total: u64,
     pub active_threats: u32,
     // --- decision latency (cumulative histogram) ---
@@ -103,6 +106,8 @@ pub struct MergedFleet {
     /// Number of live nodes whose snapshot fed this merge.
     pub nodes: usize,
     pub request_rate: f64,
+    /// Request-rate-weighted fleet block rate (%).
+    pub block_rate_pct: f64,
     pub blocks_total: u64,
     pub active_threats: u32,
     /// `None` when no node reported any latency samples.
@@ -120,14 +125,26 @@ pub fn merge(snaps: &[FleetSnapshot], top_k: usize) -> MergedFleet {
         nodes: snaps.len(),
         ..Default::default()
     };
+    let mut block_rate_weighted = 0.0_f64;
     for s in snaps {
         out.request_rate += s.request_rate;
+        block_rate_weighted += s.request_rate * s.block_rate_pct;
         out.blocks_total = out.blocks_total.saturating_add(s.blocks_total);
         out.active_threats = out.active_threats.saturating_add(s.active_threats);
         sum_into(&mut out.action_mix, &s.action_mix);
         sum_into(&mut out.detector_mix, &s.detector_mix);
         sum_into(&mut out.bot_mix, &s.bot_mix);
     }
+    // Request-rate-weighted fleet block rate (a node with no traffic
+    // doesn't skew the average). Falls back to a plain mean if every
+    // node is idle (request_rate == 0).
+    out.block_rate_pct = if out.request_rate > 0.0 {
+        block_rate_weighted / out.request_rate
+    } else if !snaps.is_empty() {
+        snaps.iter().map(|s| s.block_rate_pct).sum::<f64>() / snaps.len() as f64
+    } else {
+        0.0
+    };
     out.latency = merge_latency(snaps);
     out.top_attackers = merge_top_attackers(snaps, top_k);
     out
@@ -225,6 +242,104 @@ fn merge_top_attackers(snaps: &[FleetSnapshot], top_k: usize) -> Vec<SnapAttacke
     });
     rows.truncate(top_k);
     rows
+}
+
+/// Build this node's snapshot from its live local sources. Reads only
+/// already-collected aggregates (no hot-path work). `action_mix` is
+/// left empty for now — its canonical source (`DecisionMetrics`) isn't
+/// wired to the dashboard services and no endpoint serves a fleet
+/// action-mix; the field is kept for forward-compat.
+#[allow(clippy::too_many_arguments)]
+pub fn build_snapshot(
+    node_id: &str,
+    window_seconds: u32,
+    top_k: u32,
+    stats_agg: &crate::api::stats::StatsAggregator,
+    attacks_agg: &crate::api::attacks::AttacksAggregator,
+    hist: &crate::metrics::request_duration::RequestStageHistogram,
+    latency_stage: &str,
+) -> FleetSnapshot {
+    let stats = stats_agg.snapshot();
+    let (latency_count, latency_buckets) = hist
+        .stage_buckets(latency_stage)
+        .map(|(total, b)| {
+            (
+                total,
+                b.into_iter()
+                    .map(|(upper_bound, cumulative_count)| LatencyBucket {
+                        upper_bound,
+                        cumulative_count,
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or((0, Vec::new()));
+
+    let detector_mix = attacks_agg
+        .by_detector(window_seconds)
+        .detectors
+        .into_iter()
+        .map(|d| (d.name, d.count))
+        .collect();
+    let bot_mix = attacks_agg
+        .bot_mix(window_seconds)
+        .categories
+        .into_iter()
+        .map(|c| (c.name, c.count))
+        .collect();
+    let top_attackers = attacks_agg
+        .top(window_seconds, top_k)
+        .attackers
+        .into_iter()
+        .map(|a| SnapAttacker {
+            identifier: a.identifier,
+            hits: a.hits,
+            categories: a.categories,
+            risk: a.risk,
+            last_seen_ms: a.last_seen.timestamp_millis(),
+            country: a.country,
+            asn: a.asn,
+            asn_class: a.asn_class,
+        })
+        .collect();
+
+    FleetSnapshot {
+        node_id: node_id.to_string(),
+        ts_ms: chrono::Utc::now().timestamp_millis(),
+        build: env!("CARGO_PKG_VERSION").to_string(),
+        request_rate: stats.request_rate,
+        block_rate_pct: stats.block_rate_pct,
+        blocks_total: stats.blocks_total,
+        active_threats: stats.active_threats,
+        latency_count,
+        latency_buckets,
+        action_mix: BTreeMap::new(),
+        detector_mix,
+        bot_mix,
+        top_attackers,
+    }
+}
+
+/// Scan every live `fleet:snap:*` key off the shared backend, decode
+/// each, and [`merge`] them. Dead nodes' keys have already TTL'd out of
+/// the keyspace, so they simply don't appear. Used by the publish task;
+/// factored out for testability. Decode failures are skipped (a peer on
+/// a newer snapshot schema shouldn't poison the whole merge).
+pub async fn scan_and_merge(
+    backend: &dyn aegis_core::state::StateBackend,
+    top_k: usize,
+) -> MergedFleet {
+    let mut snaps: Vec<FleetSnapshot> = Vec::new();
+    if let Ok(keys) = backend.scan_prefix(FLEET_SNAP_PREFIX).await {
+        for k in keys {
+            if let Ok(Some(bytes)) = backend.get(&k).await {
+                if let Ok(s) = serde_json::from_slice::<FleetSnapshot>(&bytes) {
+                    snaps.push(s);
+                }
+            }
+        }
+    }
+    merge(&snaps, top_k)
 }
 
 /// `ArcSwap`-backed cache of the latest merged fleet view. The publish
@@ -384,6 +499,103 @@ mod tests {
         assert!(cache.load().is_none());
         cache.store(merge(&[snap("a")], 50));
         assert_eq!(cache.load().unwrap().nodes, 1);
+    }
+
+    /// Minimal in-memory `StateBackend` for the scan+merge test —
+    /// only the three methods `scan_and_merge` touches are real; the
+    /// rest defer to the trait defaults / unreachable stubs.
+    struct MockBackend {
+        kv: std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl aegis_core::state::StateBackend for MockBackend {
+        async fn get(&self, key: &str) -> aegis_core::Result<Option<Vec<u8>>> {
+            Ok(self.kv.lock().unwrap().get(key).cloned())
+        }
+        async fn set(&self, key: &str, val: &[u8], _: std::time::Duration) -> aegis_core::Result<()> {
+            self.kv.lock().unwrap().insert(key.to_string(), val.to_vec());
+            Ok(())
+        }
+        async fn scan_prefix(&self, prefix: &str) -> aegis_core::Result<Vec<String>> {
+            Ok(self
+                .kv
+                .lock()
+                .unwrap()
+                .keys()
+                .filter(|k| k.starts_with(prefix))
+                .cloned()
+                .collect())
+        }
+        // --- trivial stubs (not exercised by scan_and_merge) ---
+        async fn del(&self, _: &str) -> aegis_core::Result<()> {
+            Ok(())
+        }
+        async fn incr_window(
+            &self,
+            _: &str,
+            _: std::time::Duration,
+            _: u64,
+        ) -> aegis_core::Result<aegis_core::state::SlidingWindowResult> {
+            Ok(aegis_core::state::SlidingWindowResult {
+                count: 0,
+                allowed: true,
+                retry_after: None,
+            })
+        }
+        async fn token_bucket(&self, _: &str, _: u32, _: u32) -> aegis_core::Result<bool> {
+            Ok(true)
+        }
+        async fn get_risk(&self, _: &aegis_core::risk::RiskKey) -> aegis_core::Result<u32> {
+            Ok(0)
+        }
+        async fn add_risk(
+            &self,
+            _: &aegis_core::risk::RiskKey,
+            _: i32,
+            _: u32,
+        ) -> aegis_core::Result<u32> {
+            Ok(0)
+        }
+        async fn auto_block(&self, _: std::net::IpAddr, _: std::time::Duration) -> aegis_core::Result<()> {
+            Ok(())
+        }
+        async fn is_auto_blocked(&self, _: std::net::IpAddr) -> aegis_core::Result<bool> {
+            Ok(false)
+        }
+        async fn put_nonce(&self, _: &str, _: std::time::Duration) -> aegis_core::Result<bool> {
+            Ok(true)
+        }
+        async fn consume_nonce(&self, _: &str) -> aegis_core::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    #[tokio::test]
+    async fn scan_and_merge_sums_live_nodes_and_skips_ttld() {
+        use aegis_core::state::StateBackend as _;
+        let backend = MockBackend {
+            kv: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        // Three live nodes publish snapshots with RPS 10 / 20 / 30.
+        for (node, rps) in [("a", 10.0), ("b", 20.0), ("c", 30.0)] {
+            let mut s = snap(node);
+            s.request_rate = rps;
+            let bytes = serde_json::to_vec(&s).unwrap();
+            backend
+                .set(&snapshot_key(node), &bytes, std::time::Duration::from_secs(10))
+                .await
+                .unwrap();
+        }
+        let merged = scan_and_merge(&backend, 50).await;
+        assert_eq!(merged.nodes, 3);
+        assert_eq!(merged.request_rate, 60.0, "RPS = sum across live nodes");
+
+        // Node "c" TTLs out (key removed) → drops from the merge.
+        backend.kv.lock().unwrap().remove(&snapshot_key("c"));
+        let merged = scan_and_merge(&backend, 50).await;
+        assert_eq!(merged.nodes, 2, "TTL'd node dropped");
+        assert_eq!(merged.request_rate, 30.0);
     }
 
     #[test]

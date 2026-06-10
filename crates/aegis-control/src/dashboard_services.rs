@@ -118,6 +118,12 @@ pub struct DashboardServices {
     /// the dashboard SSE only, never this node's durable sinks / audit
     /// chain (which stay "this node's decisions" — cluster plan §10).
     pub fleet_event_bus: Option<AuditBus>,
+    /// Cluster Phase 3 (§2a) — merged fleet **metrics** view. `None`
+    /// for single-node / cluster-off; `Some` when `aegis-proxy` wires
+    /// the snapshot publish/merge task. The traffic GET handlers read
+    /// it (when populated) to serve fleet totals instead of this node's
+    /// `1/N` slice.
+    pub fleet_cache: Option<crate::metrics::fleet_snapshot::FleetCache>,
     /// Live leaderless cluster-roster view. `None` for single-node /
     /// test builds; `Some` when `aegis-proxy::run` wires the
     /// `members:*` roster-poll background task. See
@@ -596,6 +602,8 @@ impl DashboardServices {
                 // `aegis-proxy::accept` after construction (next to
                 // the roster wiring), gated on Redis + cluster config.
                 fleet_event_bus: None,
+                // Cluster Phase 3 fleet-metrics cache — same opt-in.
+                fleet_cache: None,
                 roster_view,
                 // Interop contract is opted in by the bin
                 // crate after construction (see

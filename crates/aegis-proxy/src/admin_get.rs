@@ -50,6 +50,16 @@ fn now_unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// Cluster Phase 3 (§2a) — the merged fleet metrics view, if the
+/// snapshot publish/merge task is wired (`cluster.fleet_view` enabled +
+/// shared backend) AND it has produced at least one merge. `None` ⇒ the
+/// traffic GET handlers fall back to this node's local aggregators.
+fn fleet_view(
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Option<aegis_control::metrics::fleet_snapshot::MergedFleet> {
+    services.fleet_cache.as_ref().and_then(|c| c.load())
+}
+
 pub(crate) fn admin_router(
     req: hyper::Request<hyper::body::Incoming>,
     cfg: &WafConfig,
@@ -316,7 +326,13 @@ pub(crate) fn admin_router(
             )
         }
         "/api/stats" => {
-            json_body_response(200, services.stats.render(), "private, max-age=1")
+            // Cluster Phase 3 (§2a): serve the merged fleet view when
+            // the snapshot cache is populated, else this node's local.
+            let body = match fleet_view(services) {
+                Some(m) => services.stats.render_from_fleet(&m),
+                None => services.stats.render(),
+            };
+            json_body_response(200, body, "private, max-age=1")
         }
         "/api/stats/timeseries" => {
             let window = parse_query_u32(query, "window", 900);
@@ -350,11 +366,11 @@ pub(crate) fn admin_router(
         "/api/attacks/top" => {
             let window = parse_query_u32(query, "window", 900);
             let limit = parse_query_u32(query, "limit", 5);
-            json_body_response(
-                200,
-                services.attacks.render_top(window, limit),
-                "private, max-age=10",
-            )
+            let body = match fleet_view(services) {
+                Some(m) => services.attacks.render_top_from_fleet(&m, window, limit),
+                None => services.attacks.render_top(window, limit),
+            };
+            json_body_response(200, body, "private, max-age=10")
         }
         "/api/audit/since" => {
             // PR-UX-A2 (2026-05-12) — parse the optional pivot
@@ -459,9 +475,13 @@ pub(crate) fn admin_router(
         }
         "/api/attacks/by-detector" => {
             let window = parse_query_u32(query, "window", 900);
+            let body = match fleet_view(services) {
+                Some(m) => services.attacks.render_by_detector_from_fleet(&m, window),
+                None => services.attacks.render_by_detector(window),
+            };
             json_body_response(
                 200,
-                services.attacks.render_by_detector(window),
+                body,
                 "private, max-age=10",
             )
         }
@@ -542,11 +562,11 @@ pub(crate) fn admin_router(
         }
         "/api/bots/mix" => {
             let window = parse_query_u32(query, "window", 3600);
-            json_body_response(
-                200,
-                services.attacks.render_bot_mix(window),
-                "private, max-age=10",
-            )
+            let body = match fleet_view(services) {
+                Some(m) => services.attacks.render_bot_mix_from_fleet(&m, window),
+                None => services.attacks.render_bot_mix(window),
+            };
+            json_body_response(200, body, "private, max-age=10")
         }
         "/api/audit/witness" => {
             json_body_response(200, services.witness.render(), "private, max-age=2")

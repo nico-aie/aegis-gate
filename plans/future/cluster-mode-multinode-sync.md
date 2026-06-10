@@ -460,18 +460,35 @@ an L7 SNAT LB now works too once you set `proxy.trusted_proxies` to its CIDRs.
   / control 1074. **Live 2-node SSE-propagation verification deferred to the
   `tests/cluster/` rig (Task 5 / Phase-1 follow-up) — needs Redis + 2 processes.**
 
-### Phase 3 — fleet snapshot publish + merge (§5, §2a) — *metrics gauges*
-- `aegis-control/src/metrics/fleet_snapshot.rs`: snapshot serializer (incl.
-  histogram buckets), merge fn, `FleetCache` (`ArcSwap`).
-- Background publish+merge task spawned in `aegis_proxy::run` alongside the
-  existing DNS-refresh / metrics-flush tasks (publish self, then `SCAN`+merge
-  into the cache on the same tick).
-- Switch dashboard traffic endpoints to read `FleetCache` when
-  `cluster.fleet_view.enabled && backend != in_memory`; else local rings. Keep
-  those panels' poll ≤ 3 s (§2c).
-- **Test:** mock 3-node `StateBackend`, assert merged RPS = sum, merged p95
-  recomputed from summed histograms, top-attackers merged & truncated, a node
-  whose snapshot TTL'd out drops from the view.
+### Phase 3 — fleet snapshot publish + merge (§5, §2a) — ✅ LANDED (2026-06-10, branch `feat/cluster-phase3-fleet-snapshot`)
+- ✅ `aegis-control/src/metrics/fleet_snapshot.rs`: `FleetSnapshot` (RPS / block-rate
+  / blocks / threats / decision-latency histogram buckets / action·detector·bot
+  mix / top-attackers), `merge()` (scalar sums + request-rate-weighted block-rate +
+  **bucket-wise histogram percentile recompute** via the shared `quantile_ms` +
+  top-attacker sum/union-categories/max-risk/truncate), `FleetCache`
+  (`ArcSwap<Option<MergedFleet>>`), `build_snapshot()` (reads the live local
+  aggregators), `scan_and_merge()` (decode-skip-on-error).
+- ✅ Publish+merge task `accept::spawn_fleet_snapshot_task` (gated on
+  `fleet_view.enabled` + non-`in_memory` backend): each `publish_interval_ms` sets
+  `fleet:snap:<node>` with TTL, then `scan_prefix` + `get` + merge → `FleetCache`.
+  Reads `services.stats_agg` + `services.attacks_agg` + the `total`-stage
+  histogram. Single-node spawns nothing.
+- ✅ Endpoint switches: `/api/stats`, `/api/attacks/top`, `/api/attacks/by-detector`,
+  `/api/bots/mix` serve `render_*_from_fleet` (new methods on `StatsHandler` /
+  `AttacksHandler`, MergedFleet → existing JSON shapes) when `FleetCache` is
+  populated, else the local aggregator (via the `fleet_view(services)` helper in
+  `admin_get`). `FleetCache` threaded on `DashboardServices` (like `fleet_event_bus`).
+- ✅ Config `cluster.fleet_view.{enabled,publish_interval_ms,snapshot_ttl_ms,
+  top_attackers_k}` (off by default); `config/REFERENCE.md` documented.
+- **Tests:** `fleet_snapshot` 7 (scalar sums, p50/95/99 from summed histograms,
+  top-attacker merge+truncate, latency-none, cache, JSON round-trip, **mock 3-node
+  `StateBackend` scan+merge: RPS=sum + TTL'd node drops**). default 787 / redis OK
+  / core 291 / control 1081 green.
+- **Scope notes / deferred:** `action_mix` carried in the snapshot but left empty
+  (canonical source `DecisionMetrics` isn't on `services` + no fleet action-mix
+  endpoint) — forward-compat field. Merged panels report a fixed snapshot window
+  (300 s) regardless of the client `?window=`. Tightening the dashboard poll to
+  ≤ 3 s for these panels (§2c) is a frontend tweak deferred to Phase 4.
 
 ### Phase 4 — labels, durable logs, docs
 - Console header: drop "leader" badge; show "Fleet view (N nodes)" vs
