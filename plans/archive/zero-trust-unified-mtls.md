@@ -1,6 +1,17 @@
 # Unified Zero Trust — downstream + upstream mTLS, rebuilt as one module + console page
 
-> **Status (2026-06-09): Design only — not started.**
+> **✅ ARCHIVED — SHIPPED (2026-06-10).** Phases 1–5 all landed (unified
+> `zero_trust` module + config block, hard cut + hard rename of `tls.client_auth`
+> with no alias, upstream identity + per-pool mTLS in the data plane, the unified
+> Zero Trust console page, state-backed fleet identity + backend-CA trust bundles,
+> hot rotation, and TLS session resumption). The console UX pass also shipped
+> (see `plans/issues/archived/UX-zero-trust-page-upstream-mtls-flow.md`). Only
+> **deferred-future** items remain and are tracked as such, NOT as outstanding
+> track work: the optional SPIFFE-SAN matcher (§4.1 P5-FUTURE / §8) and the
+> "default-on" §6 gate. Live feature spec: `docs/security/zero-trust-mtls.md`.
+> Moved from `plans/future/mTLS.md` → `plans/archive/` for history. The original
+> per-phase tracker (each box now `[x]`) is retained below.
+>
 > **This plan supersedes the old "upstream-mTLS complements downstream" design.**
 > Decision (2026-06-09, with Nico): **remove the existing fragmented downstream
 > mTLS feature (the `MTLS-T*` series) and rebuild BOTH mutual-TLS directions as a

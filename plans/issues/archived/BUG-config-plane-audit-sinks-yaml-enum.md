@@ -119,6 +119,6 @@ config-plane validator** (boot-OK ⇒ PUT-OK), and a test that the dashboard det
 toggle succeeds against `prod-balanced.yaml` + `deploy/waf.contract.yaml`.
 
 ## Related
-- `plans/issues/multi-node-consistency.md` (audit/observability gaps; C-4 audit log).
+- `plans/issues/archived/multi-node-consistency.md` (audit/observability gaps; C-4 audit log).
 - The audit-chain jsonl sink not producing a file in this deploy (same audit-sink
   area — worth checking together).

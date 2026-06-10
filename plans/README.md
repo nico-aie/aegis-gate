@@ -3,9 +3,11 @@
 Simplified 2026-06-01 to focus on the **main plan**. The top level
 holds the operating plan + the status matrix; forward-looking work is
 the roadmap + the open backlog; everything closed or parked lives in
-[`archive/`](./archive/). (Updated 2026-06-06: `future/` trimmed to just
-the world-class roadmap — the observability + routing backlog specs moved
-to `archive/`; no track is mid-build.)
+[`archive/`](./archive/). (Updated 2026-06-10: the cluster-sync, unified
+zero-trust/mTLS, and multi-node-consistency plans all shipped/dropped and
+moved to `archive/`; both `issues/` entries resolved → `issues/archived/`.
+`future/` now holds the world-class roadmap + `smart-caching.md`, whose
+Phase 4 is the only forward track still open.)
 
 ## Layout
 
@@ -15,7 +17,9 @@ plans/
 ├── plan.md                    ← MAIN PLAN — assistant protocol + repo conventions
 ├── implementation-matrix.md   ← doc-by-doc Implemented / Partial / Designed / Deferred
 ├── future/
-│   └── world-class-waf-roadmap.md         ← strategic ordering (Tiers 0–6)
+│   ├── world-class-waf-roadmap.md         ← strategic ordering (Tiers 0–6)
+│   └── smart-caching.md                    ← only active forward track (Phase 4 open)
+├── issues/                    ← field-found issues (Open / Resolved-archived); see its README
 └── archive/                   ← closed / shipped / parked plans (read-only history,
                                   incl. issue-fix/ QA sprints)
 ```
@@ -32,10 +36,24 @@ plans/
 ## `future/`
 
 - **[`world-class-waf-roadmap.md`](./future/world-class-waf-roadmap.md)** —
-  the only forward plan kept here: the ordering document that grades Aegis
-  against the 2025–2026 WAAP leaders, names code-verified gaps, and
-  sequences them into Tiers 0–6. Read it before picking up new capability
-  work; slot any new net-new capability into a tier.
+  the north-star plan: the ordering document that grades Aegis against the
+  2025–2026 WAAP leaders, names code-verified gaps, and sequences them into
+  Tiers 0–6. Read it before picking up new capability work; slot any new
+  net-new capability into a tier.
+- **[`smart-caching.md`](./future/smart-caching.md)** — the one feature track
+  with work still open: Phases 1–3 shipped (per-upstream L1 + L2/Redis-Cluster
+  cache); **Phase 4 remaining** (`stale-if-error`, ETag revalidation).
+
+> **Archived 2026-06-10.** Three docs left `future/`/`plans/` once their work
+> shipped or was dropped:
+> [`archive/cluster-mode-multinode-sync.md`](./archive/cluster-mode-multinode-sync.md)
+> (cluster console sync — all phases shipped),
+> [`archive/zero-trust-unified-mtls.md`](./archive/zero-trust-unified-mtls.md)
+> (the unified `zero_trust` downstream+upstream mTLS rebuild — P1–P5 shipped;
+> was `future/mTLS.md`), and
+> [`archive/multi-node-consistency-implementation.md`](./archive/multi-node-consistency-implementation.md)
+> (C-1…C-5 shipped or dropped). The two `plans/issues/` entries also resolved
+> and moved to [`issues/archived/`](./issues/archived/).
 
 > **Trimmed 2026-06-06.** The two detailed backlog specs that used to live
 > here moved to `archive/` so `future/` stays a single north-star doc:

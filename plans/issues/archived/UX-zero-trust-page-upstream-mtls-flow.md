@@ -123,7 +123,7 @@ uploaded above before it can be selected."):
   (identity/bundle prerequisites enforced in the UI).
 
 ## Related
-- `plans/issues/multi-node-consistency.md` (config-plane convergence — the same
+- `plans/issues/archived/multi-node-consistency.md` (config-plane convergence — the same
   plane these mTLS changes ride).
 - `docs/security/zero-trust-mtls.md` (feature spec; keep the "applies when?"
   wording in sync with whatever the UX pass settles on).

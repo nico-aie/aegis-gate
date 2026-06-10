@@ -16,7 +16,7 @@
 > Cross-node console sync: live events via `cluster.fleet_events`
 > (Phase 2, Redis pub/sub) and merged traffic metrics via
 > `cluster.fleet_view` (Phase 3, TTL'd `fleet:snap:*` snapshots). See
-> [`plans/future/cluster-mode-multinode-sync.md`](../../plans/future/cluster-mode-multinode-sync.md).
+> [`plans/archive/cluster-mode-multinode-sync.md`](../../plans/archive/cluster-mode-multinode-sync.md).
 >
 > **Not yet implemented:** `redis_cluster` slot-hashing,
 > `raft` (`openraft`-based), `foca_swim` gossip, the front-of-cluster

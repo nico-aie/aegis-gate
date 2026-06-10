@@ -1,5 +1,13 @@
 # Multi-node consistency — concerns & improvement plan
 
+> **✅ RESOLVED / ARCHIVED (2026-06-10).** Every concern (C-1…C-5) is shipped or
+> dropped — see the implementation plan
+> [`../../archive/multi-node-consistency-implementation.md`](../../archive/multi-node-consistency-implementation.md)
+> (P1/C-5, P2/C-1, P3/C-3·C-4 shipped; P4/C-2 dropped by operator decision) and
+> the forward fleet-console work in
+> [`../../archive/cluster-mode-multinode-sync.md`](../../archive/cluster-mode-multinode-sync.md).
+> Original analysis retained below for history.
+
 > **Status:** analysis / proposal (not yet implemented).
 > **Context:** the `pre-prod` fleet runs **N WAF nodes** sharing one Redis
 > (`state.redis.urls`), fronted by DNS round-robin or an nginx `stream` LB. Each
