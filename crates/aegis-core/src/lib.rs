@@ -8,6 +8,7 @@ pub mod config;
 pub mod context;
 pub mod decision;
 pub mod error;
+pub mod fleet;
 pub mod health;
 pub mod identity;
 pub mod load_mode;

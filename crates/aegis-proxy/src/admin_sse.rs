@@ -61,11 +61,17 @@ pub const PREAMBLE: &str =
 /// [`EventFilter::parse_query`].
 pub fn sse_response(
     bus: &AuditBus,
+    fleet_bus: Option<&AuditBus>,
     query: &str,
 ) -> Response<UnsyncBoxBody<Bytes, Infallible>> {
     let filter = EventFilter::parse_query(query);
     let rx = bus.subscribe();
-    let body = build_stream_body(rx, filter, HEARTBEAT_INTERVAL);
+    // Cluster Phase 2 (§2b): when a fleet-event bus is wired, merge
+    // peers' events into this node's SSE feed so any node's console
+    // shows the whole fleet. `None` (single-node / cluster off) keeps
+    // the local-only stream.
+    let fleet_rx = fleet_bus.map(|b| b.subscribe());
+    let body = build_stream_body(rx, fleet_rx, filter, HEARTBEAT_INTERVAL);
     Response::builder()
         .status(200)
         .header("content-type", "text/event-stream")
@@ -88,10 +94,11 @@ pub fn into_boxed(resp: Response<Full<Bytes>>) -> Response<UnsyncBoxBody<Bytes, 
 /// it without standing up an HTTP listener.
 pub fn build_stream_body(
     rx: broadcast::Receiver<AuditEvent>,
+    fleet_rx: Option<broadcast::Receiver<AuditEvent>>,
     filter: EventFilter,
     heartbeat: Duration,
 ) -> UnsyncBoxBody<Bytes, Infallible> {
-    let inner = SseFrameStream::new(rx, filter, heartbeat);
+    let inner = SseFrameStream::new(rx, fleet_rx, filter, heartbeat);
     StreamBody::new(inner).boxed_unsync()
 }
 
@@ -125,6 +132,7 @@ struct SseFrameStream {
 impl SseFrameStream {
     fn new(
         rx: broadcast::Receiver<AuditEvent>,
+        fleet_rx: Option<broadcast::Receiver<AuditEvent>>,
         filter: EventFilter,
         heartbeat: Duration,
     ) -> Self {
@@ -142,9 +150,19 @@ impl SseFrameStream {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let interval_stream =
             tokio_stream::wrappers::IntervalStream::new(interval).map(|_| SseSource::Tick);
-        let merged = events.merge(interval_stream);
+        let base = events.merge(interval_stream);
+        // Cluster Phase 2 (§2b): fold the fleet-event bus into the same
+        // frame stream when wired. Same `SseSource::Event` shape, so
+        // the rest of the pipeline (filter, format) is unchanged.
+        let inner: Pin<Box<dyn Stream<Item = SseSource> + Send>> = match fleet_rx {
+            Some(frx) => {
+                let fleet = BroadcastStream::new(frx).map(|r| SseSource::Event(Box::new(r)));
+                Box::pin(base.merge(fleet))
+            }
+            None => Box::pin(base),
+        };
         Self {
-            inner: Box::pin(merged),
+            inner,
             filter,
             sent_preamble: false,
         }
@@ -255,6 +273,7 @@ mod tests {
         let bus = AuditBus::new(8);
         let body = build_stream_body(
             bus.subscribe(),
+            None,
             EventFilter::default(),
             Duration::from_secs(60),
         );
@@ -269,6 +288,7 @@ mod tests {
         let rx = bus.subscribe();
         let body = build_stream_body(
             rx,
+            None,
             EventFilter::default(),
             Duration::from_secs(60),
         );
@@ -291,7 +311,7 @@ mod tests {
             ..Default::default()
         };
         let body =
-            build_stream_body(bus.subscribe(), filter, Duration::from_secs(60));
+            build_stream_body(bus.subscribe(), None, filter, Duration::from_secs(60));
         bus.emit(ev("admin-1", AuditClass::Admin));
         bus.emit(ev("det-1", AuditClass::Detection));
         // Preamble + the matching detection event = 2 frames.
@@ -309,6 +329,7 @@ mod tests {
         // Aggressive heartbeat so the test stays fast.
         let body = build_stream_body(
             bus.subscribe(),
+            None,
             EventFilter::default(),
             Duration::from_millis(50),
         );
@@ -323,6 +344,7 @@ mod tests {
         let bus = AuditBus::new(8);
         let body = build_stream_body(
             bus.subscribe(),
+            None,
             EventFilter::default(),
             Duration::from_secs(60),
         );
@@ -362,7 +384,7 @@ mod tests {
     #[tokio::test]
     async fn sse_response_sets_streaming_headers() {
         let bus = AuditBus::new(8);
-        let resp = sse_response(&bus, "");
+        let resp = sse_response(&bus, None, "");
         assert_eq!(resp.status(), 200);
         let h = resp.headers();
         assert_eq!(
@@ -376,7 +398,7 @@ mod tests {
     #[tokio::test]
     async fn sse_response_honours_class_filter_from_query() {
         let bus = AuditBus::new(16);
-        let resp = sse_response(&bus, "class=detection");
+        let resp = sse_response(&bus, None, "class=detection");
         bus.emit(ev("a", AuditClass::Admin));
         bus.emit(ev("d", AuditClass::Detection));
         let body = resp.into_body();
