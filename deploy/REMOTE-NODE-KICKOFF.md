@@ -30,6 +30,14 @@ Do this:
 4. Edit ./waf.yaml (§4): set node.id to a UNIQUE value (e.g. waf-<hostname>);
    keep state.redis.urls=["redis://10.20.0.72:6379"],
    observability.otel.endpoint=http://10.20.0.72:4317, upstreams → 10.20.0.72:999x.
+4b. LEADERLESS CLUSTER (§10a) — add the cluster block so this node joins the
+   cross-node console (every node shows the whole fleet):
+     cluster:
+       fleet_events: { enabled: true }
+       fleet_view:   { enabled: true }
+       pubsub_nudge: true
+   And keep admin.dashboard_auth.csrf_secret IDENTICAL to the other nodes (so a
+   console login on any node validates on all). Same redis.urls + UNIQUE node.id.
 5. ai (§5): fetch onnxruntime 1.24.2 (NOT 1.22) into runtime/onnxruntime/ and set
    ORT_DYLIB_PATH; geoip (§4): place data/geoip/GeoLite2-*.mmdb.
 6. TLS (§7): self-signed cert into certs/ with THIS node's IP in the SAN
@@ -51,8 +59,14 @@ Do this:
    TRACES (serviceName=aegis-gate) and LOGS (log_type=waf_audit, host.name=<node.id>)
    from THIS node. Then on the infra host add this node's <ip>:8443 to the nginx
    stream upstream (or a DNS A-record).
+10. CLUSTER (leaderless) verify: boot log shows "cluster-native control plane",
+   "fleet events: cross-node fanout active", "fleet view: snapshot publish/merge
+   active". On the dashboard /api/cluster is a flat roster (peers + our_node, NO
+   is_leader) and /api/stats fleet_nodes counts ALL up-to-date nodes (so older
+   nodes must be redeployed to this build to appear).
 
-Ask me for: this node's IP/hostname, the unique node.id, and the LLM_API_KEY.
+Ask me for: this node's IP/hostname, the unique node.id, the LLM_API_KEY, and the
+shared admin csrf_secret (must match the other nodes).
 Don't enable anything that egresses externally without confirming. Verify
 end-to-end and show me the checks before declaring done.
 ```

@@ -71,6 +71,14 @@ state:
     pool_size: 16
     timeout: "100ms"
 
+# Leaderless cluster — every node equal; every node's dashboard shows the whole
+# fleet (shared Redis). Needs the `redis` feature (built) + same redis.urls on all
+# nodes + same admin.dashboard_auth.csrf_secret. No-op on a lone node. See §10a.
+cluster:
+  fleet_events: { enabled: true }   # peers' live events → every node's SSE (≤5s)
+  fleet_view:   { enabled: true }   # RPS / latency / top-attackers merged on read
+  pubsub_nudge: true                # set_profile/reset_state converge in ms
+
 detectors:
   sqli: { enabled: true }
   xss: { enabled: true }
