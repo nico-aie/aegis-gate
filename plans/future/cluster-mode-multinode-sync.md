@@ -398,9 +398,21 @@ an L7 SNAT LB now works too once you set `proxy.trusted_proxies` to its CIDRs.
   `cluster_control::spawn_poller`), Redis-gated; `SetProfileRequest.cluster`
   (default true) selects cluster vs node-local. Unit + in-memory round-trip
   tests green.
-- **Remaining (follow-up):** a live 2-node `tests/cluster/` script —
-  `set_profile {all,log_only}` on node A flips node B's `X-WAF-Mode`;
-  `reset_state` on A clears B's local risk cache (needs a Redis + 2-process rig).
+- **Live 2-node rig — ✅ DELIVERED (2026-06-10, branch `test/cluster-2node-rig`).**
+  The `tests/cluster/` harness existed but was silently skipping (a config-path
+  bug: `_common.sh` looked for `config/waf.cluster-*.yaml`; the files are
+  `config/cluster-{a,b}.yaml`) — fixed. Added the `cluster.fleet_events` +
+  `cluster.fleet_view` blocks to both fixture configs (both validate OK). New /
+  rewritten scripts: `02-leaderless-roster` (P1 — flat roster, no
+  `is_leader`/`leader_node`, replaces the stale `02-leader-failover`),
+  `07-control-plane-sync` (C-1 — `set_profile {all,log_only}` on A flips B's
+  `X-WAF-Mode` via the data-plane header, no auth needed; `reset_state` accepted),
+  `08-fleet-events` (P2 — A's event reaches B's open `/dashboard/sse`, tagged
+  `origin_node=waf-a`, ≤5s), `09-fleet-view` (P3 — B's `/api/stats.fleet_nodes`
+  ≥2 + merged `request_rate`). `_common.sh` gained a `login`/`authed_get` helper;
+  `run-all.sh` updated. All scripts syntax-clean; **the live boot is run in the
+  operator's env** (`make`-style: docker + an AI-featured release binary + the
+  ONNX model the fixture's `ai.enabled` expects).
 - This is the control-plane half of "console data syncs". The remaining gaps are
   the **live-traffic** console (Phase 2/3) and the **leaderless** migration
   (Phase 1).

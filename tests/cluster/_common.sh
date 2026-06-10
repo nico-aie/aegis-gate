@@ -38,6 +38,54 @@ require() {
 ok() { echo "PASS: $*"; }
 skip() { echo "SKIP: $*"; exit 0; }
 
+# Admin creds — match the cluster-{a,b}.yaml dashboard_auth fixture
+# (hash is for `aegis-test-1234`). Test-only; never production values.
+ADMIN_USER="${ADMIN_USER:-admin}"
+ADMIN_PASS="${ADMIN_PASS:-aegis-test-1234}"
+# Populated by `login`. The two nodes do NOT share session state, so
+# re-`login` against whichever node you're about to query.
+COOKIE=""
+CSRF=""
+
+# `login <admin_url>` → POST /admin/login, capturing the session +
+# CSRF cookies into $COOKIE / $CSRF for subsequent authed /api calls.
+# Aborts (FAIL) on a non-200 so a broken fixture doesn't masquerade as
+# a test failure downstream.
+login() {
+  local admin_url="$1"
+  local resp_headers body code
+  resp_headers="$(mktemp)"
+  body="$(curl --silent --insecure --max-time 5 \
+       -D "$resp_headers" \
+       -H "content-type: application/json" \
+       --data "{\"user\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}" \
+       -o /dev/null -w '%{http_code}' \
+       "$admin_url/admin/login" 2>/dev/null || echo "000")"
+  code="$body"
+  if [[ "$code" != "200" ]]; then
+    rm -f "$resp_headers"
+    echo "FAIL: login: HTTP $code from $admin_url/admin/login" >&2
+    return 1
+  fi
+  COOKIE="$(grep -i '^set-cookie: aegis_session=' "$resp_headers" 2>/dev/null \
+              | sed -E 's/.*aegis_session=([^;]+).*/\1/' | tr -d '\r' | head -1 || true)"
+  CSRF="$(grep -i '^set-cookie: aegis_csrf=' "$resp_headers" 2>/dev/null \
+              | sed -E 's/.*aegis_csrf=([^;]+).*/\1/' | tr -d '\r' | head -1 || true)"
+  rm -f "$resp_headers"
+  if [[ -z "$COOKIE" ]]; then
+    echo "FAIL: login: HTTP 200 but no aegis_session cookie" >&2
+    return 1
+  fi
+}
+
+# `authed_get <admin_url> <path>` → GET with the session cookie from
+# the most recent `login`. Echoes the response body.
+authed_get() {
+  curl --silent --insecure --max-time 3 \
+       -H "Cookie: aegis_session=$COOKIE; aegis_csrf=$CSRF" \
+       "$1$2" 2>/dev/null || echo ""
+}
+
 # Bring up the cluster Redis. Idempotent — exits 0 quickly when
 # the container is already running.
 ensure_redis() {
@@ -78,7 +126,7 @@ start_node() {
   # `${var,,}` is bash 4+ — use tr for macOS bash 3 compatibility.
   local lower
   lower="$(printf '%s' "$letter" | tr '[:upper:]' '[:lower:]')"
-  local config="${2:-$AEGIS_REPO/config/waf.cluster-${lower}.yaml}"
+  local config="${2:-$AEGIS_REPO/config/cluster-${lower}.yaml}"
   if [[ ! -x "$AEGIS_BIN" ]]; then
     skip "release binary $AEGIS_BIN not built — \`cargo build -p aegis-bin --release\` first"
   fi
