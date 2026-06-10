@@ -319,6 +319,59 @@ pub struct ClusterConfig {
     /// ≤ 5 s logs/events SLA path).
     #[serde(default)]
     pub fleet_events: FleetEventsConfig,
+    /// Cross-node live-traffic **metrics** view (cluster plan Phase 3,
+    /// §2a) — RPS / latency percentiles / action·detector·bot mix /
+    /// top-attackers merged across the fleet.
+    #[serde(default)]
+    pub fleet_view: FleetViewConfig,
+}
+
+/// Leaderless fleet metrics view (cluster plan Phase 3, §2a). When
+/// enabled (and Redis is present) each node periodically publishes a
+/// self-owned, TTL'd traffic snapshot to `fleet:snap:<node_id>` and
+/// merges every peer's snapshot on read, so the dashboard's traffic
+/// panels show fleet totals instead of one node's `1/N` slice. Off ⇒
+/// the panels stay per-node ("this node", today's behaviour).
+#[derive(Clone, Debug, Deserialize)]
+pub struct FleetViewConfig {
+    /// Off ⇒ traffic panels are local-only (single-node behaviour).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Snapshot publish cadence (ms). The cross-node gauge lands in
+    /// ~`publish_interval_ms` + dashboard poll; keep the sum ≤ 5 s.
+    #[serde(default = "default_fleet_view_publish_ms")]
+    pub publish_interval_ms: u64,
+    /// Snapshot key TTL (ms). Default 5× the cadence so a dead node's
+    /// snapshot self-evicts (no sweeper, no leader).
+    #[serde(default = "default_fleet_view_ttl_ms")]
+    pub snapshot_ttl_ms: u64,
+    /// Per-node top-attacker cap carried in each snapshot (the merge
+    /// re-sorts + truncates to this across the fleet too).
+    #[serde(default = "default_fleet_view_top_k")]
+    pub top_attackers_k: usize,
+}
+
+fn default_fleet_view_publish_ms() -> u64 {
+    2000
+}
+
+fn default_fleet_view_ttl_ms() -> u64 {
+    10_000
+}
+
+fn default_fleet_view_top_k() -> usize {
+    50
+}
+
+impl Default for FleetViewConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            publish_interval_ms: default_fleet_view_publish_ms(),
+            snapshot_ttl_ms: default_fleet_view_ttl_ms(),
+            top_attackers_k: default_fleet_view_top_k(),
+        }
+    }
 }
 
 /// Cross-node event fanout over Redis pub/sub. When enabled (and a
