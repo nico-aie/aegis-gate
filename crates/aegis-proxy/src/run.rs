@@ -2264,7 +2264,7 @@ pub(crate) fn build_interop_runtime(
     // `DashboardServices`. accept.rs late-registers its reset
     // callback via `rt.control.register_reset_callback(...)`
     // once that aggregator exists — see accept.rs around the
-    // `DashboardServices::spawn_with_mask_and_leader` call.
+    // `DashboardServices::spawn_with_mask_and_roster` call.
     // NOTE: `aegis_security::behavior::BehavioralAnalyzer` exists
     // and exposes `.clear()`, but it isn't wired into the live
     // request path yet. When the analyzer lands in the data

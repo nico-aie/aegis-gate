@@ -481,14 +481,6 @@ pub fn format_event_text(
         AlertEvent::UpstreamPoolRecovered { pool, .. } => {
             ("Upstream pool recovered", format!("{pool} fully healthy"))
         }
-        AlertEvent::LeaderLost {
-            previous_leader,
-            our_node,
-            ..
-        } => (
-            "Cluster leader lost",
-            format!("Previous: {previous_leader}\nThis node: {our_node}"),
-        ),
         AlertEvent::HotReloadFailed {
             reason,
             last_known_good_version,

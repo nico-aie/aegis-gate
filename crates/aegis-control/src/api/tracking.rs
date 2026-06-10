@@ -102,18 +102,9 @@ pub struct ClusterPeer {
 #[derive(Clone, Debug, Serialize)]
 pub struct ClusterResponse {
     pub peers: Vec<ClusterPeer>,
-    /// True iff this node currently holds the
-    /// `leader:cluster` lease. Read by the dashboard's
-    /// "this is the leader" badge and by
-    /// `tests/cluster/02-leader-failover.sh`.
-    pub is_leader: bool,
-    /// `NodeId` of the lease holder, or `None` if the
-    /// lease is currently unheld / unreachable. Always
-    /// populated when `is_leader == true`.
-    pub leader_node: Option<String>,
-    /// `NodeId` of *this* node. Operators correlate
-    /// `is_leader` with this in dashboards that show
-    /// multiple node viewpoints.
+    /// `NodeId` of *this* node. The cluster is **leaderless**
+    /// (Phase 1) — every node is equal, so the console shows a
+    /// flat peer list and correlates panels against `our_node`.
     pub our_node: String,
 }
 
@@ -121,26 +112,24 @@ impl ClusterResponse {
     pub fn placeholder() -> Self {
         Self {
             peers: Vec::new(),
-            is_leader: false,
-            leader_node: None,
             our_node: String::new(),
         }
     }
 }
 
-/// Live leader-state view, kept in sync by a background
-/// polling task that reads `lease_store.holder("leader:cluster")`
+/// Live cluster-roster view, kept in sync by a background
+/// polling task that enumerates the `members:*` heartbeat keys
 /// every couple of seconds. The admin handler reads it
 /// synchronously through `TrackingHandler::render_cluster`.
+///
+/// The cluster is **leaderless** (Phase 1): this view carries
+/// no leader/holder state — singleton side-tasks (ACME, GitOps)
+/// coordinate via their own per-task leases, not a global leader.
 #[derive(Debug)]
-pub struct LeaderView {
+pub struct RosterView {
     /// `NodeId` of this process. Set once at startup; never
     /// changes for the lifetime of the binary.
     pub our_node: String,
-    /// Latest known holder of `leader:cluster`. `None` while
-    /// the first poll is in flight or the store is
-    /// unreachable.
-    pub current_holder: arc_swap::ArcSwapOption<String>,
     /// Live cluster membership (HA-T4). The polling task
     /// rebuilds this from `lease_store.list_keys_with_prefix("members:")`
     /// every couple of seconds. Empty until the first
@@ -149,11 +138,10 @@ pub struct LeaderView {
     pub members: arc_swap::ArcSwap<Vec<ClusterPeer>>,
 }
 
-impl LeaderView {
+impl RosterView {
     pub fn new(our_node: impl Into<String>) -> Self {
         Self {
             our_node: our_node.into(),
-            current_holder: arc_swap::ArcSwapOption::from(None),
             members: arc_swap::ArcSwap::from_pointee(Vec::new()),
         }
     }
@@ -170,26 +158,6 @@ impl LeaderView {
     /// don't pin the internal `Arc`.
     pub fn members(&self) -> Vec<ClusterPeer> {
         (*self.members.load_full()).clone()
-    }
-
-    /// True iff our node id matches the latest holder. Lock-free.
-    pub fn is_leader(&self) -> bool {
-        match self.current_holder.load_full() {
-            Some(h) => *h == self.our_node,
-            None => false,
-        }
-    }
-
-    /// Latest holder, copied out so callers don't pin the
-    /// internal `Arc`.
-    pub fn leader_node(&self) -> Option<String> {
-        self.current_holder.load_full().map(|h| (*h).clone())
-    }
-
-    /// Update the cached holder. The polling task calls this
-    /// after each `lease_store.holder(...)` round-trip.
-    pub fn set_holder(&self, holder: Option<String>) {
-        self.current_holder.store(holder.map(Arc::new));
     }
 }
 
@@ -376,10 +344,10 @@ pub type CertInventoryProvider =
 pub struct TrackingHandler {
     upstream_handler: Arc<crate::api::upstreams::UpstreamHandler>,
     cache: Arc<Mutex<Option<(Instant, String)>>>,
-    /// Live leader view. `None` (the default) keeps the older
+    /// Live cluster roster. `None` (the default) keeps the older
     /// "no cluster wired" placeholder behaviour for builds
     /// that don't run with a `LeaseStore`.
-    leader_view: Option<Arc<LeaderView>>,
+    roster_view: Option<Arc<RosterView>>,
     /// CI-T4 — live SLO engine. `None` keeps placeholder shape.
     /// `Mutex<Option<...>>` so the proxy can wire it post-construction
     /// through the existing `Arc<TrackingHandler>` shared with the
@@ -402,24 +370,24 @@ impl TrackingHandler {
         Self {
             upstream_handler,
             cache: Arc::new(Mutex::new(None)),
-            leader_view: None,
+            roster_view: None,
             slo_engine: Arc::new(Mutex::new(None)),
             cert_provider: Arc::new(Mutex::new(None)),
             ack_store: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
-    /// Same as `new`, but plugs in a live `LeaderView`. The
-    /// view's holder cell is updated by a background polling
-    /// task in `aegis-proxy::run`; this handler reads it
+    /// Same as `new`, but plugs in a live `RosterView`. The
+    /// view's membership snapshot is refreshed by a background
+    /// polling task in `aegis-proxy::run`; this handler reads it
     /// synchronously when the dashboard fetches
     /// `/api/cluster`.
-    pub fn with_leader_view(
+    pub fn with_roster_view(
         upstream_handler: Arc<crate::api::upstreams::UpstreamHandler>,
-        leader_view: Arc<LeaderView>,
+        roster_view: Arc<RosterView>,
     ) -> Self {
         let mut h = Self::new(upstream_handler);
-        h.leader_view = Some(leader_view);
+        h.roster_view = Some(roster_view);
         h
     }
 
@@ -499,14 +467,12 @@ impl TrackingHandler {
 
     /// Build the live `ClusterResponse`, falling back to the
     /// `ClusterResponse::placeholder()` shape when no
-    /// `LeaderView` is wired (single-node builds, tests).
+    /// `RosterView` is wired (single-node builds, tests).
     fn cluster_response(&self) -> ClusterResponse {
-        match self.leader_view.as_ref() {
+        match self.roster_view.as_ref() {
             None => ClusterResponse::placeholder(),
             Some(view) => ClusterResponse {
                 peers: view.members(),
-                is_leader: view.is_leader(),
-                leader_node: view.leader_node(),
                 our_node: view.our_node.clone(),
             },
         }
@@ -667,57 +633,52 @@ mod tests {
         assert!(alerts["firing"].as_array().unwrap().is_empty());
     }
 
-    // ---- carry-over 3: leader-state admin endpoint ---------------
+    // ---- leaderless cluster-roster admin endpoint ----------------
 
-    fn handler_with_leader(view: Arc<LeaderView>) -> TrackingHandler {
+    fn handler_with_roster(view: Arc<RosterView>) -> TrackingHandler {
         let up = Arc::new(crate::api::upstreams::UpstreamHandler::new(|| {
             empty_pool_provider()
         }));
-        TrackingHandler::with_leader_view(up, view)
+        TrackingHandler::with_roster_view(up, view)
     }
 
     #[test]
-    fn cluster_response_default_is_not_leader() {
+    fn cluster_response_default_is_empty_flat_roster() {
+        // Leaderless: no `is_leader`/`leader_node` fields at all;
+        // an unwired handler renders an empty peer list.
         let body = handler().render_cluster();
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(v["is_leader"], serde_json::json!(false));
-        assert!(v["leader_node"].is_null());
+        assert!(v["peers"].as_array().unwrap().is_empty());
         assert_eq!(v["our_node"], serde_json::json!(""));
+        assert!(v.get("is_leader").is_none(), "leaderless: no is_leader field");
+        assert!(v.get("leader_node").is_none(), "leaderless: no leader_node field");
     }
 
     #[test]
-    fn cluster_response_marks_us_as_leader_when_holder_matches() {
-        let view = Arc::new(LeaderView::new("node-A"));
-        view.set_holder(Some("node-A".to_string()));
-        let h = handler_with_leader(Arc::clone(&view));
+    fn cluster_response_surfaces_our_node_and_peers() {
+        let view = Arc::new(RosterView::new("node-A"));
+        view.set_members(vec![
+            ClusterPeer {
+                id: "node-A".into(),
+                addr: String::new(),
+                version: "v".into(),
+                last_heartbeat: chrono::Utc::now(),
+                leases: Vec::new(),
+            },
+            ClusterPeer {
+                id: "node-B".into(),
+                addr: String::new(),
+                version: "v".into(),
+                last_heartbeat: chrono::Utc::now(),
+                leases: Vec::new(),
+            },
+        ]);
+        let h = handler_with_roster(view);
         let v: serde_json::Value =
             serde_json::from_str(&h.render_cluster()).unwrap();
-        assert_eq!(v["is_leader"], serde_json::json!(true));
-        assert_eq!(v["leader_node"], serde_json::json!("node-A"));
         assert_eq!(v["our_node"], serde_json::json!("node-A"));
-    }
-
-    #[test]
-    fn cluster_response_marks_us_as_follower_when_holder_differs() {
-        let view = Arc::new(LeaderView::new("node-A"));
-        view.set_holder(Some("node-B".to_string()));
-        let h = handler_with_leader(view);
-        let v: serde_json::Value =
-            serde_json::from_str(&h.render_cluster()).unwrap();
-        assert_eq!(v["is_leader"], serde_json::json!(false));
-        assert_eq!(v["leader_node"], serde_json::json!("node-B"));
-        assert_eq!(v["our_node"], serde_json::json!("node-A"));
-    }
-
-    #[test]
-    fn cluster_response_no_holder_means_no_leader() {
-        let view = Arc::new(LeaderView::new("node-A"));
-        // First poll hasn't happened yet — holder is None.
-        let h = handler_with_leader(view);
-        let v: serde_json::Value =
-            serde_json::from_str(&h.render_cluster()).unwrap();
-        assert_eq!(v["is_leader"], serde_json::json!(false));
-        assert!(v["leader_node"].is_null());
+        assert_eq!(v["peers"].as_array().unwrap().len(), 2);
+        assert!(v.get("is_leader").is_none());
     }
 
     #[test]
@@ -725,28 +686,26 @@ mod tests {
         // HA-T3 round-trip — when an operator pins
         // `node.id: "pod-7"`, that string should appear as
         // `our_node` on every node's /api/cluster.
-        let view = Arc::new(LeaderView::new("pod-7"));
-        view.set_holder(Some("pod-7".to_string()));
-        let h = handler_with_leader(view);
+        let view = Arc::new(RosterView::new("pod-7"));
+        let h = handler_with_roster(view);
         let v: serde_json::Value =
             serde_json::from_str(&h.render_cluster()).unwrap();
         assert_eq!(v["our_node"], serde_json::json!("pod-7"));
-        assert_eq!(v["leader_node"], serde_json::json!("pod-7"));
-        assert_eq!(v["is_leader"], serde_json::json!(true));
     }
 
     #[test]
-    fn leader_view_set_holder_round_trip() {
-        let view = LeaderView::new("node-A");
-        assert!(view.leader_node().is_none());
-        view.set_holder(Some("node-X".to_string()));
-        assert_eq!(view.leader_node().as_deref(), Some("node-X"));
-        assert!(!view.is_leader());
-        view.set_holder(Some("node-A".to_string()));
-        assert!(view.is_leader());
-        view.set_holder(None);
-        assert!(!view.is_leader());
-        assert!(view.leader_node().is_none());
+    fn roster_view_set_members_round_trip() {
+        let view = RosterView::new("node-A");
+        assert!(view.members().is_empty());
+        view.set_members(vec![ClusterPeer {
+            id: "node-X".into(),
+            addr: String::new(),
+            version: "v".into(),
+            last_heartbeat: chrono::Utc::now(),
+            leases: Vec::new(),
+        }]);
+        assert_eq!(view.members().len(), 1);
+        assert_eq!(view.members()[0].id, "node-X");
     }
 
     #[test]

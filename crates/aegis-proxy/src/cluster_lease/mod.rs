@@ -11,7 +11,9 @@
 //!   `release` so only the holder can mutate a key.
 //!
 //! See [`heartbeat::spawn_heartbeat`] for the standard pattern
-//! that gates a leader-only task on continuous renewal.
+//! that gates a single-holder task (ACME, GitOps, …) on
+//! continuous renewal of its per-task lease. These are leaderless
+//! per-task mutexes, not a global cluster leader.
 
 pub mod heartbeat;
 pub mod in_process;

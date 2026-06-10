@@ -111,12 +111,11 @@ pub struct DashboardServices {
     /// drain task subscribes to. Used by `/dashboard/sse` (B4-T4)
     /// and any future streaming surface that needs live events.
     pub bus: AuditBus,
-    /// Live cluster-leader view. `None` for single-node /
+    /// Live leaderless cluster-roster view. `None` for single-node /
     /// test builds; `Some` when `aegis-proxy::run` wires the
-    /// leader-poll background task. See
-    /// [`crate::api::tracking::LeaderView`] (carry-over 3,
-    /// post 2026-04-29 cluster smoke).
-    pub leader_view: Option<Arc<crate::api::tracking::LeaderView>>,
+    /// `members:*` roster-poll background task. See
+    /// [`crate::api::tracking::RosterView`].
+    pub roster_view: Option<Arc<crate::api::tracking::RosterView>>,
     /// External interop surface — `/__waf_control/*` dispatch,
     /// `X-WAF-*` response stamping, minimal-schema audit log.
     /// See [`plans/interop-contract.md`].
@@ -394,7 +393,7 @@ impl DashboardServices {
         admin_identity: Arc<AdminIdentity>,
         session_idle_seconds: u64,
     ) -> (Self, tokio::task::JoinHandle<()>) {
-        Self::spawn_with_mask_and_leader(
+        Self::spawn_with_mask_and_roster(
             bus,
             pool_snapshot,
             environment,
@@ -414,14 +413,14 @@ impl DashboardServices {
     }
 
     /// Same as [`spawn_with_mask`] but accepts a live
-    /// [`crate::api::tracking::LeaderView`]. The proxy's
+    /// [`crate::api::tracking::RosterView`]. The proxy's
     /// `run()` builds one of these and threads it in so
-    /// `/api/cluster` reports `is_leader` + `leader_node`
-    /// correctly. Older call sites (tests, single-node
+    /// `/api/cluster` reports the leaderless flat peer list +
+    /// `our_node`. Older call sites (tests, single-node
     /// builds) keep using `spawn_with_mask` and get the
     /// `None` placeholder behaviour.
     #[allow(clippy::too_many_arguments)]
-    pub fn spawn_with_mask_and_leader(
+    pub fn spawn_with_mask_and_roster(
         bus: AuditBus,
         pool_snapshot: PoolSnapshotProvider,
         environment: Option<String>,
@@ -434,7 +433,7 @@ impl DashboardServices {
         login_rate_limiter: Arc<LoginRateLimiter>,
         admin_identity: Arc<AdminIdentity>,
         session_idle_seconds: u64,
-        leader_view: Option<Arc<crate::api::tracking::LeaderView>>,
+        roster_view: Option<Arc<crate::api::tracking::RosterView>>,
         // 2026-05-27 (config-plane fold-toggles) — the TierStore is now
         // created by `run()` so the same `Arc` can be threaded into the
         // config-plane watcher (which re-derives per-tier settings from
@@ -487,10 +486,10 @@ impl DashboardServices {
         let upstreams = Arc::new(UpstreamHandler::new(move || {
             upstreams_pool_provider()
         }));
-        let tracking = Arc::new(match leader_view.as_ref() {
-            Some(lv) => TrackingHandler::with_leader_view(
+        let tracking = Arc::new(match roster_view.as_ref() {
+            Some(rv) => TrackingHandler::with_roster_view(
                 Arc::clone(&upstreams),
-                Arc::clone(lv),
+                Arc::clone(rv),
             ),
             None => TrackingHandler::new(Arc::clone(&upstreams)),
         });
@@ -586,7 +585,7 @@ impl DashboardServices {
                 session_idle_seconds,
                 environment,
                 bus: bus_handle,
-                leader_view,
+                roster_view,
                 // Interop contract is opted in by the bin
                 // crate after construction (see
                 // `aegis-bin/src/main.rs`).

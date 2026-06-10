@@ -3811,7 +3811,7 @@ pub(crate) async fn handle_admin_drain(
             "status": "draining",
             "already": already,
             "node": services
-                .leader_view
+                .roster_view
                 .as_ref()
                 .map(|lv| lv.our_node.clone())
                 .unwrap_or_default(),

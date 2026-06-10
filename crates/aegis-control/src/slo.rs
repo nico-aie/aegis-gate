@@ -196,12 +196,9 @@ pub enum AlertEvent {
         fired_at: DateTime<Utc>,
         pool: String,
     },
-    /// Cluster leader lease was lost or rotated (not yet wired).
-    LeaderLost {
-        fired_at: DateTime<Utc>,
-        previous_leader: String,
-        our_node: String,
-    },
+    // Phase 1 (leaderless): the `LeaderLost` alert variant was
+    // removed with the global leader concept — it never had a
+    // producer (was "not yet wired").
     /// Hot-reload of config failed; last-known-good is still
     /// live (not yet wired — Phase B producer).
     HotReloadFailed {
@@ -254,7 +251,6 @@ impl AlertEvent {
             AlertEvent::StrikeBlockSurge { .. } => AlertSeverity::Page,
             AlertEvent::UpstreamPoolDegraded { .. } => AlertSeverity::Page,
             AlertEvent::UpstreamPoolRecovered { .. } => AlertSeverity::Info,
-            AlertEvent::LeaderLost { .. } => AlertSeverity::Page,
             AlertEvent::HotReloadFailed { .. } => AlertSeverity::Ticket,
             AlertEvent::GitOpsDrift { .. } => AlertSeverity::Ticket,
             AlertEvent::AuditChainBreak { .. } => AlertSeverity::Page,
@@ -272,7 +268,6 @@ impl AlertEvent {
             AlertEvent::StrikeBlockSurge { fired_at, .. } => *fired_at,
             AlertEvent::UpstreamPoolDegraded { fired_at, .. } => *fired_at,
             AlertEvent::UpstreamPoolRecovered { fired_at, .. } => *fired_at,
-            AlertEvent::LeaderLost { fired_at, .. } => *fired_at,
             AlertEvent::HotReloadFailed { fired_at, .. } => *fired_at,
             AlertEvent::GitOpsDrift { fired_at, .. } => *fired_at,
             AlertEvent::AuditChainBreak { fired_at, .. } => *fired_at,
@@ -324,12 +319,6 @@ impl AlertEvent {
             AlertEvent::UpstreamPoolRecovered { pool, .. } => {
                 "pool_recovered".hash(&mut h);
                 pool.hash(&mut h);
-            }
-            AlertEvent::LeaderLost {
-                previous_leader, ..
-            } => {
-                "leader_lost".hash(&mut h);
-                previous_leader.hash(&mut h);
             }
             AlertEvent::HotReloadFailed {
                 last_known_good_version,

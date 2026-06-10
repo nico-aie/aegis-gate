@@ -1,8 +1,10 @@
-//! Cluster membership and leader lease.
+//! Cluster membership and per-task leases.
 //!
 //! Default: SWIM gossip (via `foca`).
 //! Alternate: Redis-backed registry (`nodes:*` keys with TTL heartbeat).
-//! `acquire_lease(key, ttl)` ensures only one node runs ACME, GitOps, etc.
+//! `acquire_lease(key, ttl)` is a leaderless distributed mutex: whoever
+//! grabs the key first runs that singleton task (ACME, GitOps, …) — for
+//! that task only. It is **not** a cluster leader; the cluster has none.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
