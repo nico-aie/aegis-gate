@@ -126,9 +126,10 @@ pub trait LeaseStore: Send + Sync + 'static {
     async fn holder(&self, key: &str) -> Result<Option<NodeId>>;
 
     /// The identity *this* store acquires leases under. Used by
-    /// admin observability surfaces (carry-over 3, post
-    /// 2026-04-29 cluster smoke) to render
-    /// `is_leader = self_id() == holder("leader:cluster")`.
+    /// admin observability surfaces to label the node on
+    /// `/api/cluster` (`our_node`) and to suffix its own
+    /// membership heartbeat key (`members:<self_id>`). The cluster
+    /// is leaderless — there is no `holder("leader:cluster")`.
     /// Default impl returns "unknown" so existing concrete
     /// stores compile without change; in-tree impls override.
     fn self_id(&self) -> NodeId {

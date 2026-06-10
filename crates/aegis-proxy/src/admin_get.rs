@@ -89,19 +89,11 @@ pub(crate) fn admin_router(
             json_response(code, &serde_json::json!({"status": msg}))
         }
         "/healthz/ready" => {
-            // HA-T5 — `?strict=1` returns 503 unless this node also
-            // holds the cluster lease. Lets active/standby LB
-            // topologies route singleton traffic to one node only.
-            let strict = matches!(parse_query_str(query, "strict"), Some("1"));
-            let (code, resp) = if strict {
-                let is_leader = services
-                    .leader_view
-                    .as_ref()
-                    .map(|lv| lv.is_leader());
-                aegis_control::health::check_ready_strict(readiness, is_leader)
-            } else {
-                aegis_control::health::check_ready(readiness)
-            };
+            // Phase 1 (leaderless): readiness is purely node-local —
+            // state rehydrated + listeners bound + not draining. The
+            // old `?strict=1` "503 unless leader" mode was removed
+            // with the global leader concept.
+            let (code, resp) = aegis_control::health::check_ready(readiness);
             // F-CRITICAL-003 (2026-05-17 control audit): populate
             // the three Round-1 mandated fields — uptime / mode /
             // active rule count. Mode is "enforce" today (the
@@ -306,7 +298,7 @@ pub(crate) fn admin_router(
                 "version": v,
                 "applied_at_ms": chrono::Utc::now().timestamp_millis(),
                 "applied_on_node": services
-                    .leader_view
+                    .roster_view
                     .as_ref()
                     .map(|lv| lv.our_node.clone())
                     .unwrap_or_default(),

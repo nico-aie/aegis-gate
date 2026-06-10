@@ -405,14 +405,33 @@ an L7 SNAT LB now works too once you set `proxy.trusted_proxies` to its CIDRs.
   the **live-traffic** console (Phase 2/3) and the **leaderless** migration
   (Phase 1).
 
-### Phase 1 — remove the leader (§4a), keep task leases (§4b)
-- Delete `LeaderView`/`is_leader` gating; revert `/healthz/ready` to node-local.
-- Derive roster from `fleet:snap:*` liveness (or keep the heartbeat key, drop
-  the leader election on top of it).
-- Rename "leader lease" → "task lease" in `cluster.rs` + docs; leave ACME/GitOps
-  acquisition and the `reconcile.rs` no-reconcile-leases invariant untouched.
-- **Test:** ACME/GitOps still single-acquire under contention; `/api/cluster`
-  returns a flat roster with no `is_leader`.
+### Phase 1 — remove the leader (§4a), keep task leases (§4b) — ✅ LANDED (2026-06-10, branch `feat/cluster-phase1-remove-leader`)
+- ✅ `LeaderView` → `RosterView` (`api/tracking.rs`): dropped the `leader:cluster`
+  holder cell + `is_leader()`/`leader_node()`/`set_holder()`; kept the `members:*`
+  roster (`set_members`/`members`/`our_node`). `ClusterResponse` dropped
+  `is_leader`/`leader_node` → flat `{peers, our_node}`.
+- ✅ Reverted `/healthz/ready` to node-local: deleted `check_ready_strict` +
+  the `?strict=1` "503 not_leader" branch (`health.rs`, `admin_get.rs`); readiness
+  is state-rehydrated + listeners-bound + not-draining only.
+- ✅ Removed the `leader:cluster` singleton lease + its holder poller in
+  `accept.rs`; **kept** the `members:*` heartbeat + roster poller (the liveness
+  source — `fleet:snap:*` doesn't exist until Phase 3, so the roster stays on the
+  existing heartbeat keys, per the §4a "keep the heartbeat key" option).
+- ✅ Removed the unwired `LeaderLost` SLO alert variant (`slo.rs` + `slo/dispatch.rs`).
+- ✅ Renamed "leader lease" → "task lease" wording in `cluster.rs` /
+  `cluster_lease/mod.rs` / `aegis-core::cluster` docs; `acquire_lease` semantics
+  and the `reconcile.rs` no-reconcile-leases invariant **untouched**.
+- ✅ `dashboard_services`: `leader_view` → `roster_view`,
+  `spawn_with_mask_and_leader` → `spawn_with_mask_and_roster`.
+- **Tests:** ACME/GitOps single-acquire under contention still green
+  (`cluster.rs` `three_node_cluster_single_lease_holder` / `lease_blocked_by_holder`);
+  new `tracking.rs` tests assert `/api/cluster` is a flat roster with **no**
+  `is_leader`/`leader_node`. Gates: workspace + `--features redis` build;
+  aegis-control 1074 + aegis-core 289 + aegis-proxy 781 green.
+- **Deferred to Phase 4 (per phase split):** the dashboard still reads
+  `cluster.data?.is_leader` defensively (optional chaining ⇒ `undefined` ⇒ badge
+  auto-hides); the leaderless frontend cleanup (`app.jsx`/`pages.jsx`/`data.jsx`
+  mock) + HA docs/openapi land in Phase 4.
 
 ### Phase 2 — fleet **event fanout** (§2b) — *SLA-critical, do this first of the new work*
 - Needs a Redis pub/sub primitive on `StateBackend` (or a thin sibling trait):

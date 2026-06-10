@@ -261,74 +261,25 @@ pub(crate) async fn admin_accept_loop(
     });
     let session_idle_seconds = auth.session_ttl_idle.as_secs();
 
-    // Carry-over 3 (post-2026-04-29 cluster smoke) — build a
-    // shared `LeaderView` and start a background poller that
-    // updates it from `lease_store.holder("leader:cluster")`
-    // every two seconds. The admin handler reads this view
-    // synchronously when `/api/cluster` is fetched.
+    // Leaderless roster (Phase 1) — build a shared `RosterView`
+    // and start a background poller that rebuilds the flat peer
+    // list from the `members:*` heartbeat keys. There is no
+    // cluster leader: every node is equal, and singleton
+    // side-tasks (ACME, GitOps) coordinate via their own per-task
+    // leases below — not a global leader lease. The admin handler
+    // reads this view synchronously when `/api/cluster` is fetched.
     let our_node_id = lease_store.self_id().as_str().to_string();
-    let leader_view = Arc::new(
-        aegis_control::api::tracking::LeaderView::new(our_node_id),
+    let roster_view = Arc::new(
+        aegis_control::api::tracking::RosterView::new(our_node_id),
     );
-
-    // Singleton "I am the cluster leader" lease — distinct
-    // from the per-task leases (`leader:acme`, `leader:gitops`,
-    // …) above. The runner does no work; it just holds the
-    // lease so exactly one node is identifiable as
-    // *the* cluster leader for admin / dashboard surfaces.
-    {
-        let lease_store_for_cluster = lease_store.clone();
-        // TTL kept tight (5 s) because this lease has zero
-        // task body — the failover budget is just
-        // TTL + retry-half-TTL + leader-view-poll-period
-        // (5 + 2.5 + 2 ≈ 10 s) which keeps
-        // `tests/cluster/02-leader-failover.sh` predictable.
-        crate::cluster_lease::spawn_with_lease(
-            lease_store_for_cluster,
-            "leader:cluster",
-            std::time::Duration::from_secs(5),
-            move |_holder, lost| async move {
-                // No-op factory — just wait until the lease
-                // is lost. The wrapper takes care of release.
-                lost.notified().await;
-            },
-        );
-    }
-
-    {
-        let store: Arc<dyn aegis_core::cluster::LeaseStore> =
-            Arc::clone(&lease_store);
-        let lv = Arc::clone(&leader_view);
-        tokio::spawn(async move {
-            let key = "leader:cluster".to_string();
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
-            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                tick.tick().await;
-                match store.holder(&key).await {
-                    Ok(holder) => {
-                        let h: Option<String> =
-                            holder.map(|n: aegis_core::cluster::NodeId| {
-                                n.as_str().to_string()
-                            });
-                        lv.set_holder(h);
-                    }
-                    Err(e) => {
-                        tracing::debug!(error = %e, "leader-view poll failed");
-                    }
-                }
-            }
-        });
-    }
 
     // HA-T4 — membership heartbeat + roster poller.
     //
     // Each node publishes its identity by holding the lease
     // `members:<our_node_id>` (15s TTL, refreshed every
-    // ~7.5s by the heartbeat layer). The same poller that
-    // tracks `leader:cluster` enumerates `members:*` keys
-    // every 5s and feeds the result into
-    // `LeaderView::members`, which the admin handler then
+    // ~7.5s by the heartbeat layer). The roster poller below
+    // enumerates `members:*` keys every 5s and feeds the result
+    // into `RosterView::members`, which the admin handler then
     // serialises as `/api/cluster.peers[]`.
     {
         let lease_store_for_membership = Arc::clone(&lease_store);
@@ -348,7 +299,7 @@ pub(crate) async fn admin_accept_loop(
     {
         let store: Arc<dyn aegis_core::cluster::LeaseStore> =
             Arc::clone(&lease_store);
-        let lv = Arc::clone(&leader_view);
+        let lv = Arc::clone(&roster_view);
         let cfg_version = env!("CARGO_PKG_VERSION").to_string();
         tokio::spawn(async move {
             let prefix = "members:".to_string();
@@ -399,7 +350,7 @@ pub(crate) async fn admin_accept_loop(
         });
     }
 
-    let (services, _drain) = aegis_control::dashboard_services::DashboardServices::spawn_with_mask_and_leader(
+    let (services, _drain) = aegis_control::dashboard_services::DashboardServices::spawn_with_mask_and_roster(
         bus,
         pool_provider,
         cfg.admin.environment.clone(),
@@ -412,7 +363,7 @@ pub(crate) async fn admin_accept_loop(
         login_rate_limiter,
         admin_identity,
         session_idle_seconds,
-        Some(Arc::clone(&leader_view)),
+        Some(Arc::clone(&roster_view)),
         Arc::clone(&tiers),
         Arc::clone(&rules),
     );

@@ -87,29 +87,12 @@ pub fn check_ready(signal: &ReadinessSignal) -> (u16, HealthResponse) {
     )
 }
 
-/// Strict readiness check: 200 only when [`check_ready`] passes
-/// AND `is_leader` is true. Used by `/healthz/ready?strict=1`,
-/// the LB-side variant that lets only the lease-holding node
-/// receive the singleton-style traffic (e.g. cluster-wide
-/// reconciler ingress in active/standby topologies).
-///
-/// `is_leader` is provided by the caller — typically
-/// `services.leader_view.as_ref().map(|lv| lv.is_leader())`.
-/// `None` means "no cluster wired" (single-node build) — strict
-/// mode degrades to plain `check_ready`.
-pub fn check_ready_strict(
-    signal: &ReadinessSignal,
-    is_leader: Option<bool>,
-) -> (u16, HealthResponse) {
-    let (mut status, mut resp) = check_ready(signal);
-    if status == 200 {
-        if let Some(false) = is_leader {
-            status = 503;
-            resp.status = "not_leader";
-        }
-    }
-    (status, resp)
-}
+// Phase 1 (leaderless): `check_ready_strict` + the
+// `/healthz/ready?strict=1` "not_leader 503" mode were removed.
+// The cluster has no leader, so readiness is purely node-local
+// (`check_ready` — state rehydrated + listeners bound + not
+// draining). Singleton side-tasks coordinate via per-task leases,
+// not LB-gated leader ingress.
 
 /// Startup check: 200 after first config load completes.
 pub fn check_startup(probe: &StartupProbe) -> (u16, &'static str) {
@@ -270,39 +253,10 @@ mod tests {
         assert!(p2.is_started());
     }
 
-    // Strict-mode (HA-T5).
-    #[test]
-    fn strict_503_when_not_leader() {
-        let s = all_ready();
-        let (code, resp) = check_ready_strict(&s, Some(false));
-        assert_eq!(code, 503);
-        assert_eq!(resp.status, "not_leader");
-    }
-
-    #[test]
-    fn strict_200_when_leader() {
-        let s = all_ready();
-        let (code, resp) = check_ready_strict(&s, Some(true));
-        assert_eq!(code, 200);
-        assert_eq!(resp.status, "ok");
-    }
-
-    #[test]
-    fn strict_200_when_no_cluster_wired() {
-        // Single-node builds pass `None` — degrades to plain ready.
-        let s = all_ready();
-        let (code, _) = check_ready_strict(&s, None);
-        assert_eq!(code, 200);
-    }
-
-    #[test]
-    fn strict_503_when_underlying_not_ready() {
-        // Even if we're "the leader", failing pre-conditions
-        // keep us out of rotation.
-        let s = ReadinessSignal::default();
-        let (code, _) = check_ready_strict(&s, Some(true));
-        assert_eq!(code, 503);
-    }
+    // Phase 1 (leaderless): the HA-T5 strict-mode tests were
+    // removed alongside `check_ready_strict` / `?strict=1`.
+    // Readiness is node-local only — covered by the plain
+    // `check_ready` transition tests below.
 
     // Transition tests.
     #[test]
