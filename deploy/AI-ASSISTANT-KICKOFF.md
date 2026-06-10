@@ -7,15 +7,47 @@
 ## 1. Paste this prompt to start
 
 ```
-Deploy Aegis-Gate per deploy/PRE-PROD-DEPLOY.md and deploy/INFRA-HOST-STATUS.md.
-READ BOTH FIRST. We use the pre-prod topology: one infra host + native WAF nodes,
-DNS round-robin (NO HAProxy/TPROXY — this infra host is rootless Docker, no sudo).
+Deploy Aegis-Gate on the pre-prod branch per deploy/PRE-PROD-DEPLOY.md and
+deploy/INFRA-HOST-STATUS.md — READ BOTH FIRST, plus deploy/AI-ASSISTANT-KICKOFF.md
+(my pre-answered decisions are in §3; use them, don't re-ask unless reality differs).
+
+Topology: one infra host (Redis + multi-protocol mock + SigNoz) + native WAF nodes,
+DNS round-robin — NO HAProxy/TPROXY (this host is rootless Docker, no sudo). Build
+with the `make run-copilot` feature set (redis geoip alerts ai affinity otel llm);
+ai/ONNX is ON via load-dynamic (ORT_DYLIB_PATH in .env — see §3), copilot ON
+(`set -a; . ./.env; set +a` before `./waf run`).
+
 Honor the committee interop contract (Hackathon_Doc/EN_waf_interop_contract_v2.5.md
-§8: ./waf, ./waf.yaml, ./waf_audit.log). Build with the make run-copilot feature
-set. My answers to the usual decisions are in deploy/AI-ASSISTANT-KICKOFF.md §3 —
-use them, don't re-ask unless reality differs. Verify everything end-to-end and
-show me the contract checks before declaring done.
+§8: ./waf, ./waf.yaml, ./waf_audit.log).
+
+Cluster is LEADERLESS — every node is equal and every node's dashboard shows the
+WHOLE fleet. Enable cross-node console sync in each node's config (shared Redis):
+  cluster:
+    fleet_events: { enabled: true }   # peers' live events → every node's SSE (≤5s)
+    fleet_view:   { enabled: true }   # RPS / latency / top-attackers merged
+    pubsub_nudge: true                # set_profile/reset_state converge in ms
+Each node needs a UNIQUE node.id and the SAME state.redis.urls + the SAME
+admin.dashboard_auth.csrf_secret (so console sessions work on any node). For a
+second/third node use deploy/REMOTE-NODE-KICKOFF.md. If you front the admin
+consoles with an LB, follow PRE-PROD-DEPLOY §10a (expose admin off loopback +
+locked down, SSE streaming pass-through, shared signing key).
+
+Verify everything end-to-end and SHOW me the checks before declaring done:
+  - contract: legit→allow 200 with 6 X-WAF-* headers; SQLi→block 403;
+    /__waf_control/capabilities 200 with X-Benchmark-Secret / 403 without;
+    set_profile + reset_state work; waf_audit.log is JSONL with the §6 fields.
+  - cluster (leaderless): /api/config version equal across nodes; /api/cluster
+    lists all nodes as flat peers + our_node (NO is_leader); with fleet-view on,
+    /api/stats carries fleet_nodes ≥ 2 and the banner shows "Fleet view (N nodes)".
+  - traces (serviceName=aegis-gate) visible in SigNoz; logs shipping via the
+    per-node otel-collector.
+Things to still ask me (don't pre-answer): the WAF node IPs/hostnames, LLM_API_KEY,
+and the TLS cert/domain when we stop deferring. Don't stop/alter unrelated services
+on the shared host without confirming.
 ```
+
+> **Single-node redeploy?** Drop the `cluster:` block + the REMOTE-NODE bits — the
+> fleet sync is gated on Redis + multiple nodes, so a lone node just runs normally.
 
 ## 2. Environment facts (verify, don't assume — they may change)
 
