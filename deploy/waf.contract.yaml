@@ -15,8 +15,19 @@ listeners:
     - bind: "0.0.0.0:8080"          # plaintext
     - bind: "0.0.0.0:8443"          # TLS — WAF terminates → JA3/JA4 → device_fp
       tls: true
+      # PROXY protocol — when this node sits behind the nginx stream LB with
+      # `proxy_protocol on;`, the real client IP is read before TLS (per-IP
+      # rate-limit/risk/geoip keys on the real client; JA3/JA4 still from the
+      # client). `optional` tolerates direct hits (contract benchmarker) too.
+      # REQUIRES proxy.trusted_proxies below (boot fails otherwise).
+      accept_proxy: optional
   admin:
     bind: "127.0.0.1:9443"
+
+# PROXY/XFF trust boundary. The shared nginx LB reaches every node from the infra
+# host (10.20.0.72), so list it here. TIGHTEN to the exact LB IP in prod.
+proxy:
+  trusted_proxies: ["127.0.0.1/32", "10.20.0.72/32"]
 
 # TLS — self-signed cert for testing (curl -k). Replace with the shared DNS-01
 # wildcard/multi-SAN cert in production (same cert on every node, acme off).
