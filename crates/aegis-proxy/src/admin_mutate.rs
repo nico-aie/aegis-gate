@@ -657,6 +657,31 @@ pub(crate) async fn handle_pool_delete(
     }
 }
 
+/// N1 (2026-06-11) — set `cfg.alerting.receivers` in the YAML blob so the
+/// receiver list rides the shared config doc and propagates fleet-wide.
+/// Always writes the whole `alerting` block, so after any receiver edit the
+/// list is config-managed (an empty list is a valid, propagating state).
+fn patch_receivers(
+    base: &str,
+    receivers: &[aegis_control::slo::AlertReceiver],
+) -> Result<String, String> {
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(base).map_err(|e| format!("base config not YAML: {e}"))?;
+    let serde_yaml::Value::Mapping(map) = &mut doc else {
+        return Err("base config is not a YAML mapping".into());
+    };
+    let cfg_receivers: Vec<aegis_core::config::ReceiverConfig> = receivers
+        .iter()
+        .map(crate::config_source::reload::receiver_to_config)
+        .collect();
+    let alerting = serde_yaml::to_value(aegis_core::config::AlertingConfig {
+        receivers: cfg_receivers,
+    })
+    .map_err(|e| format!("alerting block not serialisable: {e}"))?;
+    map.insert(serde_yaml::Value::String("alerting".into()), alerting);
+    serde_yaml::to_string(&doc).map_err(|e| format!("re-serialize config: {e}"))
+}
+
 pub(crate) async fn handle_alert_receivers_put(
     req: hyper::Request<hyper::body::Incoming>,
     services: &aegis_control::dashboard_services::DashboardServices,
@@ -664,13 +689,6 @@ pub(crate) async fn handle_alert_receivers_put(
     use http_body_util::BodyExt;
 
     let pre = mutation_preamble(&req, "alert-receivers-put");
-
-    let Some(store) = services.alert_receivers_store.as_ref().cloned() else {
-        return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
-            "alert receivers store not wired".into(),
-        ));
-    };
-    let ring = services.alert_receivers_ring.clone();
 
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
@@ -705,9 +723,37 @@ pub(crate) async fn handle_alert_receivers_put(
         ));
     }
 
-    let current = (**store.load()).clone();
+    // N1 — fold the receiver list into the shared config doc (instead of
+    // swapping the node-local ArcSwap) so it propagates to every node and
+    // survives restart. The config-plane watcher re-derives the live store
+    // on apply; the N2 nudge makes that ~ms.
+    let (store, base_blob, expected) = match load_active_config_doc(services).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let new_blob = match patch_receivers(&base_blob, &parsed.receivers) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
+    };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
+    }
+
+    let current = services
+        .alert_receivers_store
+        .as_ref()
+        .map(|s| (**s.load()).clone())
+        .unwrap_or_default();
     let before = redact_receivers_for_audit(&current);
     let after = redact_receivers_for_audit(&parsed.receivers);
+    let names: Vec<String> = parsed.receivers.iter().map(|r| r.name.clone()).collect();
+    let count = parsed.receivers.len();
 
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "PUT",
@@ -720,28 +766,40 @@ pub(crate) async fn handle_alert_receivers_put(
         reason: "operator updated alert channel list",
     };
 
-    let store_for_apply = Arc::clone(&store);
-    let next_for_apply = parsed.receivers;
-    let ring_for_apply = ring.clone();
-    let outcome = services.mutate.apply(&req_ctx, before, after, || {
-        // Delegate to the pure helper in aegis-control so the
-        // validate→swap→prune sequence is unit-tested in one
-        // place. Validation already ran above; this call
-        // returns Ok in all reachable paths.
-        let placeholder_ring = aegis_control::api::alert_receivers::DispatchOutcomeRing::new();
-        let r = ring_for_apply.as_ref().unwrap_or(&placeholder_ring);
-        aegis_control::api::alert_receivers::apply_replace(&store_for_apply, r, next_for_apply)
-    });
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            store_for_apply
+                .activate(expected, blob, &actor, "update alert receivers")
+                .await
+        })
+        .await;
     match outcome {
-        Ok(out) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "count": out.value.count,
-                "names": out.value.names,
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "version": version,
+                    "count": count,
+                    "names": names,
+                    "note": "config activated; propagates to all nodes within a few seconds",
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
         Err(e) => mutation_error_response(e),
     }
 }
@@ -753,14 +811,13 @@ pub(crate) async fn handle_alert_receiver_delete(
 ) -> Response<Full<Bytes>> {
     let pre = mutation_preamble(&req, "alert-receiver-delete");
 
-    let Some(store) = services.alert_receivers_store.as_ref().cloned() else {
-        return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
-            "alert receivers store not wired".into(),
-        ));
-    };
-    let ring = services.alert_receivers_ring.clone();
-
-    let current = (**store.load()).clone();
+    // Current applied list (the shared store reflects the live config).
+    // Filter the named receiver out, then fold the result into the doc.
+    let current = services
+        .alert_receivers_store
+        .as_ref()
+        .map(|s| (**s.load()).clone())
+        .unwrap_or_default();
     let next: Vec<aegis_control::slo::AlertReceiver> =
         current.iter().filter(|r| r.name != name).cloned().collect();
     if next.len() == current.len() {
@@ -771,8 +828,29 @@ pub(crate) async fn handle_alert_receiver_delete(
         ));
     }
 
+    // N1 — fold into the shared config doc so the removal propagates.
+    let (store, base_blob, expected) = match load_active_config_doc(services).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let new_blob = match patch_receivers(&base_blob, &next) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
+    };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
+    }
+
     let before = redact_receivers_for_audit(&current);
     let after = redact_receivers_for_audit(&next);
+    let remaining: Vec<String> = next.iter().map(|r| r.name.clone()).collect();
+    let removed = name.to_string();
     let resource = format!("/api/alert-receivers/{name}");
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "DELETE",
@@ -785,24 +863,39 @@ pub(crate) async fn handle_alert_receiver_delete(
         reason: "operator removed alert channel",
     };
 
-    let store_for_apply = Arc::clone(&store);
-    let ring_for_apply = ring.clone();
-    let target_name = name.to_string();
-    let outcome = services.mutate.apply(&req_ctx, before, after, move || {
-        let placeholder_ring = aegis_control::api::alert_receivers::DispatchOutcomeRing::new();
-        let r = ring_for_apply.as_ref().unwrap_or(&placeholder_ring);
-        aegis_control::api::alert_receivers::apply_delete(&store_for_apply, r, &target_name)
-    });
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            store_for_apply
+                .activate(expected, blob, &actor, "delete alert receiver")
+                .await
+        })
+        .await;
     match outcome {
-        Ok(o) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "removed": o.value.removed,
-                "remaining": o.value.remaining,
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "removed": removed,
+                    "remaining": remaining,
+                    "version": version,
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
         Err(e) => mutation_error_response(e),
     }
 }

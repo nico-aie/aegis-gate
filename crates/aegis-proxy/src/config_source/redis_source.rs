@@ -77,6 +77,12 @@ pub struct ApplyTargets {
     /// rebuilds pools on every node.
     pub upstream_writer:
         Option<Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>>,
+    /// N1 (2026-06-11) — shared alert-receiver list, re-derived from
+    /// `cfg.alerting.receivers` on each swap so a receiver configured on
+    /// any node propagates to every node. `None` ⇒ not wired (the legacy
+    /// node-local receiver store stays as-is).
+    pub receiver_writer:
+        Option<Arc<arc_swap::ArcSwap<Vec<aegis_control::slo::AlertReceiver>>>>,
 }
 
 /// Spawn the shared-store config watcher. Exits when the last strong
@@ -263,6 +269,9 @@ async fn apply_and_swap(
         targets.response_filter_writer.as_ref(),
     );
     let _ = reload::apply_cfg_change_to_tiers(new_cfg, targets.tiers.as_ref());
+    // N1 — re-derive the alert-receiver list so a fleet-managed channel
+    // propagates to every node (no-op when `cfg.alerting` is unset).
+    let _ = reload::apply_cfg_change_to_receivers(new_cfg, targets.receiver_writer.as_ref());
     let _ = reload::apply_cfg_change_to_rules(
         new_cfg,
         targets.rules.as_ref(),

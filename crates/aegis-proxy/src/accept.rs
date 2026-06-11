@@ -335,6 +335,11 @@ pub(crate) async fn admin_accept_loop(
     // publish `config:waf:bump` on a successful activate. `None` for
     // single-node / cluster-off / nudge-disabled (interval polling only).
     config_nudge: Option<Arc<dyn aegis_core::fleet::FleetBus>>,
+    // N1 (2026-06-11) — shared alert-receiver list, created in `run()` so
+    // the config-plane watcher (`ApplyTargets.receiver_writer`) and this
+    // admin loop (GET/PUT/DELETE/test + SLO dispatch) share one ArcSwap.
+    // A receiver edit folds into `cfg.alerting` and propagates fleet-wide.
+    shared_receivers: Arc<arc_swap::ArcSwap<Vec<aegis_control::slo::AlertReceiver>>>,
 ) {
     let startup = aegis_control::health::StartupProbe::default();
     startup.mark_started();
@@ -751,11 +756,10 @@ pub(crate) async fn admin_accept_loop(
     // ArcSwap'd receiver list backs both the SLO dispatch task
     // (further below) and the GET `/api/alert-receivers` handler.
     // CC-T2.1.b adds the audit-mutated PUT/DELETE/POST-test
-    // handlers that mutate the same ArcSwap + ring.
-    let shared_receivers: Arc<arc_swap::ArcSwap<Vec<aegis_control::slo::AlertReceiver>>> =
-        Arc::new(arc_swap::ArcSwap::from_pointee(
-            aegis_control::slo::default_receivers(),
-        ));
+    // handlers; N1 (2026-06-11) routes those through the config
+    // doc so a receiver edit propagates fleet-wide. The ArcSwap is
+    // created in `run()` (seeded from `cfg.alerting` or env) and shared
+    // with the config-plane watcher, which re-derives it on each swap.
     let dispatch_ring =
         aegis_control::api::alert_receivers::DispatchOutcomeRing::new();
     {

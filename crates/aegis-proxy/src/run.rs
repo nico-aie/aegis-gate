@@ -1324,6 +1324,26 @@ pub async fn run(
     // the watcher is a harmless no-op — we always spawn it. ACKs the
     // applied version per node (`config:waf:applied:<node>`) for the
     // dashboard drift view; NACKs (keeps last-good) on a bad version.
+    //
+    // N1 (2026-06-11) — shared alert-receiver list. Seed from
+    // `cfg.alerting.receivers` when the operator has put receivers under
+    // config management; otherwise fall back to the env/boot defaults
+    // (`slo::default_receivers`). The config-plane watcher re-derives this
+    // on every swap (via `ApplyTargets.receiver_writer`) so a dashboard
+    // receiver edit — folded into `cfg.alerting` and activated — propagates
+    // to every node instead of staying node-local. Shared with
+    // `admin_accept_loop` (GET/PUT/DELETE/test + the SLO dispatch task).
+    let shared_receivers: Arc<arc_swap::ArcSwap<Vec<aegis_control::slo::AlertReceiver>>> = {
+        let initial: Vec<aegis_control::slo::AlertReceiver> = match cfg.alerting.as_ref() {
+            Some(a) => a
+                .receivers
+                .iter()
+                .map(crate::config_source::reload::receiver_from_config)
+                .collect(),
+            None => aegis_control::slo::default_receivers(),
+        };
+        Arc::new(arc_swap::ArcSwap::from_pointee(initial))
+    };
     {
         let node_id = lease_store.self_id().to_string();
         let store = crate::config_source::config_store::ConfigStore::new(state.clone());
@@ -1342,6 +1362,8 @@ pub async fn run(
             active_ruleset: Some(pipeline.rules_arc()),
             upstream_writer: Some(Arc::new(upstream_ctx.pools.clone())
                 as Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>),
+            // N1 — re-derive the alert-receiver list on each swap.
+            receiver_writer: Some(Arc::clone(&shared_receivers)),
         };
         tracing::info!(
             node_id = %node_id,
@@ -1985,6 +2007,7 @@ pub async fn run(
         tier_store,
         rule_store,
         config_nudge_bus,
+        shared_receivers,
     )));
 
     readiness.config_loaded.store(true, Ordering::Relaxed);
