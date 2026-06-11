@@ -5,7 +5,9 @@ severity, root cause, impact, workaround, and a suggested fix.
 
 ## Open
 
-_None._ All field-found issues from the `pre-prod` deployment are resolved — see below.
+| File | Type | Severity | Summary |
+|---|---|---|---|
+| [`UX-zero-trust-page-simplify-per-pool-cert-upload.md`](./UX-zero-trust-page-simplify-per-pool-cert-upload.md) | UX / refactor | Medium | 🟡 Zero Trust page upstream section: clean up layout + promote the WAF-cert download, **remove** the standalone Step 2 Backend-CA Trust Bundles card, and rework Step 3 into a per-pool table with inline cert upload (persisted to the Redis config plane) + an enable/disable mTLS toggle per pool. Frontend-first; reuses existing `aegis:zt:upstream:*` storage. Reported by liud 2026-06-11. |
 
 ## Resolved (archived)
 
