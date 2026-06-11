@@ -1,6 +1,6 @@
 # FEAT — PROXY protocol: real client IP behind an L4 load balancer
 
-> **Type:** FEAT (feature track) · **Status:** 🟠 P1+P2 shipped — P3 next · **Branch:** `feat/proxy-protocol-l4-client-ip`
+> **Type:** FEAT (feature track) · **Status:** 🟠 P1–P3 shipped — P4 (docs + LB wiring + cluster rig) next · **Branch:** `feat/proxy-protocol-l4-client-ip`
 > **Design doc:** [`../future/proxy-protocol.md`](../future/proxy-protocol.md) (decisions + justification live there)
 > **Roadmap slot:** [`../future/world-class-waf-roadmap.md`](../future/world-class-waf-roadmap.md) — HA/LB tier.
 > **Builds on (shipped):** C-5 `proxy.trusted_proxies` ([`../archive/multi-node-consistency-implementation.md`](../archive/multi-node-consistency-implementation.md) P1) — same trust set, extended from XFF to PROXY.
@@ -30,11 +30,12 @@ unchanged. (Design §0.)
   - `accept_loop` makes `peer` mut and rebinds it to the asserted client **before** `acc.accept(stream)`; fail-closed `return` on Close.
   - Boot validation in `WafConfig::validate`: any `accept_proxy != off` listener requires `proxy.trusted_proxies` non-empty (3 tests).
   - **Gate:** ✅ trust + override + close decisions unit-proven; ✅ boot validation enforced. ⏳ live differential-risk (attacker A gated, clean B unaffected through the real pipeline) is the P4 `tests/cluster/10-proxy-protocol-client-ip.sh` rig.
-- [ ] **P3 — Audit / XFF precedence + failure-mode hardening + metrics** — `~250 LoC · ~1.5d`
-  - `proxy_via` debug field (real LB hop); confirm PROXY→XFF composition (`resolve_client_ip` unchanged).
-  - Full failure-mode table (design §3.6): v2 LOCAL / UNSPEC / IPv6 / malformed / timeout.
-  - Metrics counter `proxy_protocol_events{result=...}`; document the audit-`ip` semantics shift.
-  - **Gate:** every §3.6 row maps to its documented outcome + metric label under test.
+- [x] **P3 — Audit / XFF precedence + failure-mode hardening + metrics** — *shipped*
+  - `proxy_via` additive audit field (real LB hop) via `with_proxy_via` on the HTTP request-decision events (ddos / rate-limit / detector blocks); WS/tunnel/challenge events carry none by design. PROXY→XFF composition confirmed — `resolve_client_ip` unchanged (PROXY sets the new peer, XFF walk runs on top).
+  - Failure-mode table (§3.6) labels all unit-covered: LOCAL → `local_command`, UNSPEC/UNIX → `unspec_family`, IPv6 parsed, malformed/oversize/strict-missing/absent, untrusted → `untrusted_source`. (Live 5s read-timeout test deferred — too slow for a unit; label tested.)
+  - Counter `waf_proxy_protocol_events_total{result}` (`aegis-control`), 10 labels pre-registered, recorded once per opted-in connection; label set owned by `listener::proxy_protocol::METRIC_LABELS` so hot path + registration can't drift.
+  - Audit-`ip` semantics shift documented in `docs/security/ip-reputation.md` (new PROXY section) + `risk-scoring.md`.
+  - **Gate:** ✅ every §3.6 row maps to a metric label + unit test (`every_outcome_label_is_a_registered_metric_label`); ✅ `with_proxy_via` unit-tested (object / none / null-fields).
 - [ ] **P4 — Docs + LB wiring + cluster rig** — `~300 LoC · ~2d` (+ `~300 LoC · ~1.5d` tests)
   - `config/REFERENCE.md` (`accept_proxy`); deploy topology matrix 4th row + nginx `stream` / HAProxy examples.
   - `tests/cluster/10-proxy-protocol-client-ip.sh` 2-node rig + `run-all.sh` entry; FEATURES/architecture cross-refs.

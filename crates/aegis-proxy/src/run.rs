@@ -826,6 +826,19 @@ pub async fn run(
         aegis_control::metrics::detector_hits::DetectorHitMetrics::register(&metrics)
             .expect("detector hit metrics registration failed"),
     );
+    // PROXY-T3 — PROXY-protocol event counter
+    // `waf_proxy_protocol_events_total{result}`. Recorded once per
+    // connection on an `accept_proxy` listener. The label set is owned
+    // by `listener::proxy_protocol` so the hot path and registration
+    // share one source of truth. Always registered (zero-valued series)
+    // so the panel exists even on fleets that never enable PROXY.
+    let proxy_protocol_metrics = std::sync::Arc::new(
+        aegis_control::metrics::proxy_protocol::ProxyProtocolMetrics::register(
+            &metrics,
+            &crate::listener::proxy_protocol::METRIC_LABELS,
+        )
+        .expect("proxy-protocol metrics registration failed"),
+    );
     // SC-T4 — tokio runtime metrics. Always registered so the
     // /metrics surface is stable; the gauges read 0 unless the
     // build was made with RUSTFLAGS="--cfg tokio_unstable", in
@@ -1584,6 +1597,8 @@ pub async fn run(
             state_l,
             // PROXY-T1 — per-listener PROXY-protocol mode (default off).
             listener_cfg.accept_proxy,
+            // PROXY-T3 — shared PROXY-protocol event counter.
+            proxy_protocol_metrics.clone(),
         )));
     }
 

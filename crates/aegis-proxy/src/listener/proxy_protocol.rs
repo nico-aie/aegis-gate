@@ -127,12 +127,20 @@ impl ProxyParse {
         )
     }
 
-    /// Short stable label for logs / the P3 metrics counter.
+    /// Short stable label for logs / the metrics counter, derived from
+    /// the parse outcome alone. (The trust decision adds one more label,
+    /// `untrusted_source` — see [`metric_label`].) Mirrors the design
+    /// §3.6 failure-mode table.
     pub fn label(self) -> &'static str {
         match self {
             ProxyParse::Parsed(h) => match h.command {
                 ProxyCommand::Local => "local_command",
-                ProxyCommand::Proxy => "parsed",
+                // A `Proxy` command with an address is a real client;
+                // without one it is UNSPEC / UNIX (no client asserted).
+                ProxyCommand::Proxy => match h.source {
+                    Some(_) => "parsed",
+                    None => "unspec_family",
+                },
             },
             ProxyParse::Absent => "absent_optional",
             ProxyParse::MissingStrict => "missing_strict",
@@ -142,6 +150,33 @@ impl ProxyParse {
             ProxyParse::Eof => "eof",
         }
     }
+}
+
+/// Every stable `result` label the PROXY-protocol metrics counter can
+/// emit. Pre-registered so `/metrics` shows the full series set from
+/// boot. Order is not significant.
+pub const METRIC_LABELS: [&str; 10] = [
+    "parsed",
+    "local_command",
+    "unspec_family",
+    "absent_optional",
+    "missing_strict",
+    "untrusted_source",
+    "malformed",
+    "oversize",
+    "read_timeout",
+    "eof",
+];
+
+/// The metrics `result` label for a connection, combining the parse
+/// outcome with the trust decision. A header that parsed cleanly but
+/// came from an untrusted source is reported as `untrusted_source`
+/// (it is closed, not applied) rather than `parsed`.
+pub fn metric_label(outcome: ProxyParse, trusted_lb: bool) -> &'static str {
+    if matches!(outcome, ProxyParse::Parsed(_)) && !trusted_lb {
+        return "untrusted_source";
+    }
+    outcome.label()
 }
 
 /// What the accept loop should do with a connection after a PROXY read
@@ -596,6 +631,55 @@ mod tests {
                 PeerAction::Close,
                 "{outcome:?} must fail closed"
             );
+        }
+    }
+
+    // ---- P3: metric labels -----------------------------------------
+
+    #[test]
+    fn proxy_command_without_address_labels_unspec_family() {
+        // v2 PROXY + UNSPEC / UNIX family asserts no client address.
+        assert_eq!(parsed(None, ProxyCommand::Proxy).label(), "unspec_family");
+    }
+
+    #[test]
+    fn metric_label_surfaces_untrusted_source() {
+        let client = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)), 443);
+        // Same clean parse, two trust contexts → two labels.
+        assert_eq!(
+            metric_label(parsed(Some(client), ProxyCommand::Proxy), true),
+            "parsed"
+        );
+        assert_eq!(
+            metric_label(parsed(Some(client), ProxyCommand::Proxy), false),
+            "untrusted_source"
+        );
+    }
+
+    #[test]
+    fn every_outcome_label_is_a_registered_metric_label() {
+        // Guards against a hot-path label that the counter never
+        // pre-registered (a dashboard-invisible series).
+        let client = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 1);
+        let samples = [
+            parsed(Some(client), ProxyCommand::Proxy),
+            parsed(None, ProxyCommand::Proxy),
+            parsed(None, ProxyCommand::Local),
+            ProxyParse::Absent,
+            ProxyParse::MissingStrict,
+            ProxyParse::Malformed,
+            ProxyParse::Oversize,
+            ProxyParse::Timeout,
+            ProxyParse::Eof,
+        ];
+        for outcome in samples {
+            for trusted in [true, false] {
+                let label = metric_label(outcome, trusted);
+                assert!(
+                    METRIC_LABELS.contains(&label),
+                    "label {label:?} for {outcome:?} (trusted={trusted}) is not registered"
+                );
+            }
         }
     }
 }

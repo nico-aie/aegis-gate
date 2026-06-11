@@ -246,7 +246,16 @@ Defaults **off**; operator opts in per listener. **~1,700 LoC · ~9 working days
       `accept_proxy ⇒ trusted_proxies non-empty`. 5 decision unit tests +
       3 boot-validation tests; core 295 / proxy 803 green. Live
       end-to-end differential-risk test deferred to P4's cluster rig.
-- [ ] **P3** audit/XFF precedence + failure-mode hardening + metrics
+- [x] **P3** audit/XFF precedence + failure-mode hardening + metrics —
+      `waf_proxy_protocol_events_total{result}` counter (10 labels incl.
+      `untrusted_source`/`unspec_family`, pre-registered); `proxy_via`
+      additive audit field on the HTTP request-decision events
+      (ddos/rate-limit/detector blocks) via `with_proxy_via`; PROXY→XFF
+      composition confirmed (`resolve_client_ip` unchanged); audit-`ip`
+      semantics documented in ip-reputation.md + risk-scoring.md.
+      Failure-mode §3.6 labels all covered by unit tests. (Live 5s
+      read-timeout test deferred — too slow for a unit; WS/tunnel/
+      challenge audit events carry no `proxy_via` by design.)
 - [ ] **P4** docs + nginx/HAProxy wiring + `tests/cluster` rig
 - [ ] **Gates** — §7 checklist green before recommending PROXY as a supported topology
 

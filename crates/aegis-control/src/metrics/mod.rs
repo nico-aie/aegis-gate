@@ -12,6 +12,7 @@ pub mod runtime;
 pub mod window_flush;
 #[cfg(feature = "ai")]
 pub mod ai;
+pub mod proxy_protocol;
 pub mod state_ops;
 pub mod upstream_pools;
 pub mod websocket;

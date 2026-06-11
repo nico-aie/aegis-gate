@@ -66,6 +66,41 @@ When sitting behind a CDN or L4 LB:
 
 This prevents spoofed XFF from upstream attackers.
 
+## PROXY protocol (L4 real client IP)
+
+For an L4 / TCP-passthrough load balancer that terminates no TLS (so XFF
+cannot be added and JA3/JA4 must stay intact), the WAF can read a
+**PROXY-protocol** header on the raw socket *before* the TLS handshake
+and adopt the carried client address as the effective peer. Enable it
+**per listener** with `accept_proxy` (`off` default · `strict` · `optional`):
+
+```yaml
+proxy:
+  trusted_proxies: ["10.0.0.0/8"]   # REQUIRED when accept_proxy is on
+listeners:
+  data:
+    - bind: "0.0.0.0:8443"
+      tls: true
+      accept_proxy: strict          # off (default) | strict | optional
+```
+
+Trust reuses the **same `trusted_proxies` set** as XFF: a PROXY header is
+honoured only when the real TCP peer (the LB) is inside it. A header from
+a source *outside* `trusted_proxies` closes the connection (never
+honoured) — the anti-spoofing boundary. A listener with `accept_proxy !=
+off` and an empty `trusted_proxies` is rejected at boot.
+
+Once a trusted header is adopted, the PROXY-asserted address becomes
+`peer`, and `resolve_client_ip(peer, xff, trusted)` then runs **unchanged**
+on top — so PROXY and XFF compose: with no XFF (the L4 case) the PROXY
+client wins cleanly; in a chained edge where the PROXY client is itself a
+trusted proxy, the XFF walk continues from it. TLS — and so JA3/JA4 and
+any `zero_trust.downstream` mTLS client-cert check — still runs on the
+client's own ClientHello.
+
+See [`../../plans/future/proxy-protocol.md`](../../plans/future/proxy-protocol.md)
+for the full design and the deployment topology matrix.
+
 ## Pipeline position
 
 Runs very early (right after XFF resolution):

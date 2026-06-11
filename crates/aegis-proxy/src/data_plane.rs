@@ -28,6 +28,29 @@ use hyper::Response;
 
 use aegis_core::AuditBus;
 
+/// PROXY-T3 — additively stamp the real load-balancer transport hop
+/// (`proxy_via`) onto an audit event's `fields` object. `proxy_via` is
+/// `Some` only when a trusted PROXY-protocol header overrode the
+/// effective peer for this connection (the audit `ip` is then the
+/// asserted client; `proxy_via` is the LB that fronted it). `None` (the
+/// default / no-PROXY case) and a non-object `fields` (e.g. `Null` under
+/// critical load) are left untouched, so the wire shape is unchanged for
+/// every existing deployment. Design §3.4.
+fn with_proxy_via(
+    mut fields: serde_json::Value,
+    proxy_via: Option<std::net::IpAddr>,
+) -> serde_json::Value {
+    if let Some(via) = proxy_via {
+        if let Some(obj) = fields.as_object_mut() {
+            obj.insert(
+                "proxy_via".to_string(),
+                serde_json::Value::String(via.to_string()),
+            );
+        }
+    }
+    fields
+}
+
 /// OTEL-T3 — root request-level span. Every per-request stage
 /// log inside the body (rate-limit, detect, forward) nests under
 /// one Span in Jaeger. `action` and `tier` are deferred via
@@ -55,6 +78,11 @@ use aegis_core::AuditBus;
 pub(crate) async fn handle_data_request(
     req: hyper::Request<hyper::body::Incoming>,
     peer: std::net::SocketAddr,
+    // PROXY-T3 — real LB transport hop when a trusted PROXY header
+    // overrode `peer` to the asserted client; `None` otherwise. Surfaced
+    // as the additive `proxy_via` audit field. Cosmetic for risk/RL
+    // (they key on `peer`); kept for operator forensics.
+    proxy_via: Option<std::net::IpAddr>,
     detectors: &[Box<dyn aegis_security::detectors::Detector>],
     mask: &aegis_security::detectors::SharedDetectorMask,
     risk: &aegis_security::risk::RiskTracker,
@@ -85,6 +113,7 @@ pub(crate) async fn handle_data_request(
     let result = handle_data_request_inner(
         req,
         peer,
+        proxy_via,
         detectors,
         mask,
         risk,
@@ -109,6 +138,9 @@ pub(crate) async fn handle_data_request(
 pub(crate) async fn handle_data_request_inner(
     req: hyper::Request<hyper::body::Incoming>,
     peer: std::net::SocketAddr,
+    // PROXY-T3 — see `handle_data_request`. Threaded to the audit sites
+    // via `with_proxy_via`.
+    proxy_via: Option<std::net::IpAddr>,
     detectors: &[Box<dyn aegis_security::detectors::Detector>],
     mask: &aegis_security::detectors::SharedDetectorMask,
     risk: &aegis_security::risk::RiskTracker,
@@ -475,12 +507,15 @@ pub(crate) async fn handle_data_request_inner(
                         method: None,
                         path: None,
                         mode: None,
-                        fields: serde_json::json!({
-                            "path": req.uri().to_string(),
-                            "method": req.method().to_string(),
-                            "ddos_observe_only": outcome.observe_only,
-                            "ddos_spike_active": outcome.spike_active,
-                        }),
+                        fields: with_proxy_via(
+                            serde_json::json!({
+                                "path": req.uri().to_string(),
+                                "method": req.method().to_string(),
+                                "ddos_observe_only": outcome.observe_only,
+                                "ddos_spike_active": outcome.spike_active,
+                            }),
+                            proxy_via,
+                        ),
                     };
                     bus.emit(ev);
                 }
@@ -636,13 +671,16 @@ pub(crate) async fn handle_data_request_inner(
                 fields: if load_mode.is_critical() {
                     serde_json::Value::Null
                 } else {
-                    serde_json::json!({
-                        "path": req.uri().to_string(),
-                        "method": req.method().to_string(),
-                        "rate_count": rate_decision.count,
-                        "rate_limit": rate_decision.limit,
-                        "strikes": post_state.strikes,
-                    })
+                    with_proxy_via(
+                        serde_json::json!({
+                            "path": req.uri().to_string(),
+                            "method": req.method().to_string(),
+                            "rate_count": rate_decision.count,
+                            "rate_limit": rate_decision.limit,
+                            "strikes": post_state.strikes,
+                        }),
+                        proxy_via,
+                    )
                 },
             };
             bus.emit(ev);
@@ -1008,7 +1046,7 @@ pub(crate) async fn handle_data_request_inner(
                 method: None,
                 path: None,
                 mode: None,
-                fields,
+                fields: with_proxy_via(fields, proxy_via),
             };
             bus.emit(ev);
         }
@@ -2577,6 +2615,36 @@ fn strip_uri_prefix(uri: &http::Uri, prefix: &str) -> http::Uri {
 }
 
 // ---- 2026-05-18 (QC TLS-wiring batch — Phase E activation) ----
+
+#[cfg(test)]
+mod proxy_via_tests {
+    use super::with_proxy_via;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn stamps_proxy_via_into_object_fields() {
+        let lb = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5));
+        let out = with_proxy_via(serde_json::json!({"path": "/x"}), Some(lb));
+        assert_eq!(out["proxy_via"], serde_json::json!("10.0.0.5"));
+        assert_eq!(out["path"], serde_json::json!("/x"));
+    }
+
+    #[test]
+    fn none_proxy_via_leaves_fields_untouched() {
+        let base = serde_json::json!({"path": "/x"});
+        let out = with_proxy_via(base.clone(), None);
+        assert_eq!(out, base, "no override → wire shape unchanged");
+    }
+
+    #[test]
+    fn null_fields_under_critical_load_are_left_null() {
+        // Rate-limit audit sets `fields: Null` in critical mode; the
+        // helper must not coerce it into an object.
+        let lb = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5));
+        let out = with_proxy_via(serde_json::Value::Null, Some(lb));
+        assert!(out.is_null());
+    }
+}
 
 #[cfg(test)]
 mod session_extraction_tests {
@@ -4251,6 +4319,7 @@ state: {{ backend: in_memory }}
                             let (resp, _tag) = super::handle_data_request(
                                 req,
                                 peer,
+                                None, // PROXY-T3 — no PROXY override in this test harness
                                 &a.detectors,
                                 &a.mask,
                                 &a.risk,
@@ -4470,6 +4539,7 @@ state: {{ backend: in_memory }}
                             let (resp, _tag) = super::handle_data_request(
                                 req,
                                 peer,
+                                None, // PROXY-T3 — no PROXY override in this test harness
                                 &a.detectors,
                                 &a.mask,
                                 &a.risk,
