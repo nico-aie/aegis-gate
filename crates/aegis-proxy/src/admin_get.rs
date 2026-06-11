@@ -41,6 +41,13 @@ use crate::responses::{
     dashboard_response, dashboard_shell_response, json_body_response, json_response,
 };
 
+/// F14 (2026-06-11) — log `/api/audit/since` renders slower than this.
+/// The in-process render (in-memory ring + 1 s cache) is normally
+/// sub-millisecond, so anything past this points outside the handler
+/// (TLS/connection churn, lock contention) — the source the cluster
+/// QC's remote-Chrome timing (~260 ms floor) couldn't pin down.
+const AUDIT_RENDER_SLOW_MS: u128 = 25;
+
 /// 2026-05-27 (Phase C) — wall-clock seconds for windowing the cached
 /// cluster-wide metric aggregates.
 fn now_unix_secs() -> u64 {
@@ -426,6 +433,13 @@ pub(crate) fn admin_router(
             } else {
                 None
             };
+            // F14 (2026-06-11) — time the render so the ~260 ms latency
+            // floor the cluster QC saw is attributed in production logs.
+            // The in-process render is sub-millisecond (in-memory ring +
+            // cache), so a slow sample points OUTSIDE this code (TLS
+            // handshake / connection churn / lock contention) — exactly
+            // what the QC's remote-Chrome measurement couldn't isolate.
+            let render_started = std::time::Instant::now();
             let body = if let Some(events) = fleet_tail {
                 aegis_control::metrics::fleet_audit::render_fleet_since(&events, limit, &filter)
             } else if tail {
@@ -433,6 +447,19 @@ pub(crate) fn admin_router(
             } else {
                 services.audit.render_since_filtered(cursor, limit, &filter)
             };
+            let render_ms = render_started.elapsed().as_millis();
+            if render_ms > AUDIT_RENDER_SLOW_MS {
+                tracing::warn!(
+                    render_ms,
+                    limit,
+                    scope = if want_fleet { "fleet" } else { "local" },
+                    tail,
+                    filtered = !filter.is_empty(),
+                    "/api/audit/since render exceeded the slow threshold — \
+                     in-process render is normally sub-ms; investigate lock \
+                     contention or move profiling to the transport layer",
+                );
+            }
             json_body_response(200, body, "private, no-store")
         }
         // Phase-3 reports: CSV export of the in-process audit ring.

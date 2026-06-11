@@ -17,7 +17,14 @@ the audit read-path, health-probe auth gating, or session UX — not the leaderl
   task merges peers newest-first into a sync `FleetAuditCache`. `GET /api/audit/since?scope=fleet`
   serves it; the dashboard backfills (Live Feed, Audit Trail, risk heatmap) request `scope=fleet`.
   `node_id` (F10) carries attribution; each event lives on one node so the merge needs no dedup.
-- ⏳ P4 (F14), P5 (F12/F8/F9), P6 (F13/F2/F3) — pending.
+- ✅ **P4 (F14)** — profiled. A test proves a full 10k-entry ring tail render is **sub-millisecond**,
+  so the ~260 ms floor is **environmental** (TLS/connection churn or lock contention on the remote
+  node), *not* this handler — confirming the report's "add a ring buffer" suggestion was a misdiagnosis
+  (the ring + cache already existed). Shipped: (a) self-reporting timing — the handler logs a `warn`
+  when a render exceeds 25 ms, so the next live run attributes the cost; (b) the previously-uncached
+  `tail` path (polled every 3 s) is now cached on its own `(limit)` slot. The real 260 ms source needs
+  the live-fleet log to confirm.
+- ⏳ P5 (F12/F8/F9), P6 (F13/F2/F3) — pending.
 
 > ⚠️ **Three of the report's suggested fixes are re-scoped below after reading the code:**
 > - **F14** — the audit ring + JSON cache the report asks for **already exist**
