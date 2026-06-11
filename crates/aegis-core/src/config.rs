@@ -997,6 +997,23 @@ impl WafConfig {
                 )));
             }
         }
+        // PROXY-T2: a data listener that accepts a PROXY-protocol header
+        // (`accept_proxy != off`) MUST have a non-empty
+        // `proxy.trusted_proxies` — it is the single boundary that
+        // decides who may assert the client IP. With it empty, `strict`
+        // would reject-all and `optional` would honour-none: fail-closed
+        // either way, but a silent footgun, so reject at boot. Design §3.3.
+        if self.proxy.trusted_proxies.is_empty() {
+            for listener in &self.listeners.data {
+                if listener.accept_proxy.is_enabled() {
+                    return Err(crate::error::WafError::Config(format!(
+                        "listener {}: accept_proxy requires proxy.trusted_proxies to list \
+                         the load balancer's CIDR(s)",
+                        listener.bind,
+                    )));
+                }
+            }
+        }
         // 2026-05-19 committee bind contract: `/__waf_control/*`
         // MUST be local-only on the team's server. The control
         // surface is now peer-IP-gated to loopback at both mounts
@@ -4882,6 +4899,45 @@ proxy:
             super::ProxyProtocolMode::Optional,
         );
         assert!(cfg.listeners.data[0].accept_proxy.is_enabled());
+    }
+
+    // PROXY-T2 — a listener that opts into PROXY parsing without a
+    // trusted-proxy set is a boot error (would reject-all / honour-none).
+    #[test]
+    fn accept_proxy_without_trusted_proxies_rejected() {
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8443"
+      accept_proxy: strict
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:9000"
+state:
+  backend: in_memory
+"#;
+        let err = super::load_config_str(yaml)
+            .expect_err("accept_proxy with empty trusted_proxies must fail boot validation");
+        assert!(
+            err.to_string().contains("accept_proxy requires proxy.trusted_proxies"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // The default-off listener never triggers the trusted-proxy
+    // requirement — existing configs keep validating unchanged.
+    #[test]
+    fn accept_proxy_off_does_not_require_trusted_proxies() {
+        let cfg = super::load_config_str(minimal_yaml())
+            .expect("default-off listeners must not require trusted_proxies");
+        assert!(cfg.proxy.trusted_proxies.is_empty());
     }
 
     // BUG-config-plane-audit-sinks-yaml-enum — `load_config_str` (the

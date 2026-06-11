@@ -1438,7 +1438,10 @@ pub(crate) async fn accept_loop(
     proxy_mode: aegis_core::config::ProxyProtocolMode,
 ) {
     loop {
-        let (mut stream, peer) = match tcp.accept().await {
+        // `peer` is `mut` because a trusted PROXY-protocol header
+        // (PROXY-T2) rebinds it to the asserted client address before
+        // TLS. Without `accept_proxy`, it is never reassigned.
+        let (mut stream, mut peer) = match tcp.accept().await {
             Ok(conn) => conn,
             Err(e) => {
                 tracing::error!("accept error: {e}");
@@ -1472,15 +1475,18 @@ pub(crate) async fn accept_loop(
         let conn_inflight = upstream_ctx.inflight.clone();
         tokio::spawn(async move {
             let _admit = conn_inflight.admit();
-            // PROXY-T1 (P1, observe-only) — when this listener opted in
-            // (`accept_proxy != off`), consume + parse the PROXY header
-            // off the raw socket BEFORE the TLS handshake, and log the
-            // asserted client IP. P1 does NOT override `peer` or enforce
-            // the `trusted_proxies` boundary (P2). The default-off path
-            // never enters this branch — no extra read, no parse.
+            // PROXY-T2 — when this listener opted in (`accept_proxy !=
+            // off`), consume + parse the PROXY header off the raw socket
+            // BEFORE the TLS handshake, enforce the trusted-proxy
+            // boundary, and rebind the effective `peer` to the asserted
+            // client IP. Everything downstream (rate-limit, risk, geoip,
+            // audit `ip`) then keys on the real client with no further
+            // change. TLS — and so JA3/JA4 and any mTLS client-cert
+            // check — still runs on the client's own ClientHello. The
+            // default-off path never enters this branch: no extra read.
             if proxy_mode.is_enabled() {
                 use crate::listener::proxy_protocol::{
-                    read_proxy_header, ProxyParse, ProxyProtocolModeRef,
+                    decide_peer_action, read_proxy_header, PeerAction, ProxyProtocolModeRef,
                 };
                 let mode_ref = match proxy_mode {
                     aegis_core::config::ProxyProtocolMode::Strict => ProxyProtocolModeRef::Strict,
@@ -1491,35 +1497,41 @@ pub(crate) async fn accept_loop(
                     aegis_core::config::ProxyProtocolMode::Off => return,
                 };
                 let outcome = read_proxy_header(&mut stream, mode_ref).await;
-                // Observe whether the real LB hop is a trusted proxy —
-                // P2 will gate on this; here it is logged only.
+                // Honour a header only when the real TCP peer (the LB) is
+                // a trusted proxy — the anti-spoofing boundary (§3.3).
                 let trusted_lb = upstream_ctx
                     .trusted_proxies
                     .iter()
                     .any(|net| net.contains(&peer.ip()));
-                match outcome {
-                    ProxyParse::Parsed(h) => tracing::info!(
-                        lb_peer = %peer,
-                        trusted_lb,
-                        asserted_client = ?h.source,
-                        version = ?h.version,
-                        command = ?h.command,
-                        result = outcome.label(),
-                        "proxy-protocol header observed (P1: peer not yet overridden)",
-                    ),
-                    _ => tracing::debug!(
-                        lb_peer = %peer,
-                        trusted_lb,
-                        result = outcome.label(),
-                        "proxy-protocol observe outcome",
-                    ),
-                }
-                // A partially-consumed bad header leaves the stream
-                // unusable for TLS — drop it. `MissingStrict`/`Absent`
-                // consumed nothing and fall through to TLS as a direct
-                // client (strict-close policy is deferred to P2).
-                if outcome.is_stream_corrupted() {
-                    return;
+                match decide_peer_action(outcome, trusted_lb) {
+                    PeerAction::Override(client) => {
+                        tracing::debug!(
+                            lb_peer = %peer,
+                            asserted_client = %client,
+                            result = outcome.label(),
+                            "proxy-protocol: effective peer overridden",
+                        );
+                        // The real LB hop is dropped here in P2; P3 keeps
+                        // it as the `proxy_via` audit/debug field.
+                        peer = client;
+                    }
+                    PeerAction::Proceed => {
+                        tracing::trace!(
+                            lb_peer = %peer,
+                            trusted_lb,
+                            result = outcome.label(),
+                            "proxy-protocol: proceeding with transport peer",
+                        );
+                    }
+                    PeerAction::Close => {
+                        tracing::debug!(
+                            lb_peer = %peer,
+                            trusted_lb,
+                            result = outcome.label(),
+                            "proxy-protocol: closing connection (fail-closed)",
+                        );
+                        return;
+                    }
                 }
             }
             // MTLS-T3 — per-connection identity. We set it from

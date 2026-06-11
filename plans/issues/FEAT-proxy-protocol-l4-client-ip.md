@@ -1,6 +1,6 @@
 # FEAT — PROXY protocol: real client IP behind an L4 load balancer
 
-> **Type:** FEAT (feature track) · **Status:** 🟠 P1 shipped — P2 next · **Branch:** `develop`
+> **Type:** FEAT (feature track) · **Status:** 🟠 P1+P2 shipped — P3 next · **Branch:** `feat/proxy-protocol-l4-client-ip`
 > **Design doc:** [`../future/proxy-protocol.md`](../future/proxy-protocol.md) (decisions + justification live there)
 > **Roadmap slot:** [`../future/world-class-waf-roadmap.md`](../future/world-class-waf-roadmap.md) — HA/LB tier.
 > **Builds on (shipped):** C-5 `proxy.trusted_proxies` ([`../archive/multi-node-consistency-implementation.md`](../archive/multi-node-consistency-implementation.md) P1) — same trust set, extended from XFF to PROXY.
@@ -25,11 +25,11 @@ unchanged. (Design §0.)
   - Threaded `accept_proxy` through `run.rs` → `accept_loop` (new `proxy_mode` param); reads `upstream_ctx.trusted_proxies` for the observe-only `trusted_lb` log field.
   - **Parse + log + observe only — peer NOT overridden; trust NOT enforced (P2).** Corrupted streams (malformed/oversize/timeout/eof) dropped; `strict`-missing/`absent` fall through to TLS (strict-close is P2).
   - **Gate:** ✅ parser unit matrix green (10/10); ✅ default-off path branch-skipped (798 aegis-proxy + config tests green, `run_binds_and_serves_200` unchanged).
-- [ ] **P2 — Trust + effective-peer override + boot validation** — `~250 LoC · ~2d`
-  - Honour header only from a TCP peer inside `proxy.trusted_proxies`; untrusted source → close (fail-closed).
-  - Rebind `peer: SocketAddr` in `accept_loop` after parse, **before** `acc.accept(stream)`.
-  - Boot validation: any listener with `accept_proxy != off` requires `proxy.trusted_proxies` non-empty.
-  - **Gate:** differential-risk behaviour live — attacker IP A gated while clean IP B (same LB) unaffected.
+- [x] **P2 — Trust + effective-peer override + boot validation** — *shipped*
+  - `decide_peer_action(outcome, trusted_lb) → Override(SocketAddr) | Proceed | Close` (pure, 5 unit tests). Honours a header **only** from a TCP peer inside `proxy.trusted_proxies`; an untrusted source sending a header → `Close` (anti-spoofing); LOCAL/UNSPEC trusted → keep real peer; `optional`-absent → proceed.
+  - `accept_loop` makes `peer` mut and rebinds it to the asserted client **before** `acc.accept(stream)`; fail-closed `return` on Close.
+  - Boot validation in `WafConfig::validate`: any `accept_proxy != off` listener requires `proxy.trusted_proxies` non-empty (3 tests).
+  - **Gate:** ✅ trust + override + close decisions unit-proven; ✅ boot validation enforced. ⏳ live differential-risk (attacker A gated, clean B unaffected through the real pipeline) is the P4 `tests/cluster/10-proxy-protocol-client-ip.sh` rig.
 - [ ] **P3 — Audit / XFF precedence + failure-mode hardening + metrics** — `~250 LoC · ~1.5d`
   - `proxy_via` debug field (real LB hop); confirm PROXY→XFF composition (`resolve_client_ip` unchanged).
   - Full failure-mode table (design §3.6): v2 LOCAL / UNSPEC / IPv6 / malformed / timeout.
@@ -75,15 +75,15 @@ unchanged. (Design §0.)
 
 ## Acceptance gates (merge bar — design §7)
 
-- [ ] PROXY header honoured **only** from a peer in `trusted_proxies`; untrusted source → closed.
-- [ ] `accept_proxy ⇒ trusted_proxies non-empty` enforced at boot (no silent reject-all / honour-all).
-- [ ] Default `off` proven zero-cost / zero-behaviour-change (no read on the accept path).
-- [ ] Exact-length read — no ClientHello byte consumed; JA3/JA4 unchanged (test asserts).
-- [ ] Malformed / truncated / oversized header closes the connection, never falls through to TLS.
-- [ ] Pre-TLS read is deadline-bounded (no slowloris on the raw socket).
-- [ ] Differential-risk test: attacker IP A gated while clean IP B (same LB) unaffected.
-- [ ] `proxy_via` recorded; audit-`ip` semantics documented.
-- [ ] mTLS (`zero_trust.downstream`) still verifies the client cert on a PROXY listener.
+- [x] PROXY header honoured **only** from a peer in `trusted_proxies`; untrusted source → closed. *(P2 `decide_peer_action`)*
+- [x] `accept_proxy ⇒ trusted_proxies non-empty` enforced at boot (no silent reject-all / honour-all). *(P2)*
+- [x] Default `off` proven zero-cost / zero-behaviour-change (no read on the accept path). *(P1 — branch-gated on `is_enabled()`)*
+- [x] Exact-length read — no ClientHello byte consumed (test asserts). *(P1 loopback tests)* — JA3/JA4-unchanged assertion needs the TLS path → P4.
+- [x] Malformed / truncated / oversized header closes the connection, never falls through to TLS. *(P1 parse + P2 close)*
+- [x] Pre-TLS read is deadline-bounded (no slowloris on the raw socket). *(P1 — 5s `PRE_TLS_READ_DEADLINE`)*
+- [ ] Differential-risk test: attacker IP A gated while clean IP B (same LB) unaffected. *(P4 cluster rig)*
+- [ ] `proxy_via` recorded; audit-`ip` semantics documented. *(P3)*
+- [ ] mTLS (`zero_trust.downstream`) still verifies the client cert on a PROXY listener. *(P4 verify)*
 
 ---
 

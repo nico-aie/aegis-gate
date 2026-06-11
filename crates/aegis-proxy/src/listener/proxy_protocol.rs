@@ -144,6 +144,58 @@ impl ProxyParse {
     }
 }
 
+/// What the accept loop should do with a connection after a PROXY read
+/// (P2 trust + effective-peer policy). Computed by [`decide_peer_action`]
+/// from the parse outcome and whether the real transport peer (the LB)
+/// is a trusted proxy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeerAction {
+    /// Honour the header: replace the effective peer with this asserted
+    /// client address, then continue to the TLS handshake.
+    Override(SocketAddr),
+    /// Continue to TLS with the real transport peer unchanged (an absent
+    /// header in `optional` mode, or a LOCAL / UNSPEC / UNIX header that
+    /// asserts no client address).
+    Proceed,
+    /// Close the connection (fail-closed): a header from an untrusted
+    /// source (anti-spoofing), a `strict`-mode miss, or any malformed /
+    /// oversize / timeout / EOF condition.
+    Close,
+}
+
+/// Decide what to do with a connection given the PROXY parse `outcome`
+/// and whether the real TCP peer is inside `proxy.trusted_proxies`.
+///
+/// The trust boundary is the whole security model (design §3.3): a valid
+/// header is honoured **only** from a trusted source. A direct attacker
+/// cannot forge a header to move its own — or a victim's — risk key,
+/// because its transport source is not in the trusted set, so its header
+/// closes the connection instead of being applied.
+pub fn decide_peer_action(outcome: ProxyParse, trusted_lb: bool) -> PeerAction {
+    match outcome {
+        ProxyParse::Parsed(header) => {
+            if !trusted_lb {
+                // Header from an untrusted source → never honour.
+                PeerAction::Close
+            } else if let Some(source) = header.source {
+                PeerAction::Override(source)
+            } else {
+                // Trusted LOCAL / UNSPEC / UNIX: no client asserted →
+                // keep the real transport peer.
+                PeerAction::Proceed
+            }
+        }
+        // `optional` with no header → a direct client; keep its peer.
+        ProxyParse::Absent => PeerAction::Proceed,
+        // Every remaining outcome is fail-closed.
+        ProxyParse::MissingStrict
+        | ProxyParse::Malformed
+        | ProxyParse::Oversize
+        | ProxyParse::Timeout
+        | ProxyParse::Eof => PeerAction::Close,
+    }
+}
+
 /// Read (and consume) a PROXY-protocol header from `stream`, if one is
 /// present, honouring `mode`. Deadline-bounded by
 /// [`PRE_TLS_READ_DEADLINE`]. Never reads past the end of the header,
@@ -486,5 +538,64 @@ mod tests {
         assert_eq!(ProxyParse::Absent.label(), "absent_optional");
         assert_eq!(ProxyParse::Malformed.label(), "malformed");
         assert_eq!(ProxyParse::Timeout.label(), "read_timeout");
+    }
+
+    // ---- P2: trust + effective-peer decision -----------------------
+
+    fn parsed(source: Option<SocketAddr>, command: ProxyCommand) -> ProxyParse {
+        ProxyParse::Parsed(ProxyHeader {
+            source,
+            command,
+            version: ProxyVersion::V2,
+        })
+    }
+
+    #[test]
+    fn trusted_header_with_source_overrides_peer() {
+        let client = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)), 56324);
+        let action = decide_peer_action(parsed(Some(client), ProxyCommand::Proxy), true);
+        assert_eq!(action, PeerAction::Override(client));
+    }
+
+    #[test]
+    fn untrusted_source_is_closed_not_honoured() {
+        // The anti-spoofing guarantee: a forged header from a source
+        // outside `trusted_proxies` closes the connection.
+        let attacker_claim = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 9, 9, 9)), 1234);
+        let action = decide_peer_action(parsed(Some(attacker_claim), ProxyCommand::Proxy), false);
+        assert_eq!(action, PeerAction::Close);
+    }
+
+    #[test]
+    fn trusted_local_command_keeps_real_peer() {
+        // LB health-check (LOCAL, no asserted address) → proceed with
+        // the real transport peer.
+        let action = decide_peer_action(parsed(None, ProxyCommand::Local), true);
+        assert_eq!(action, PeerAction::Proceed);
+    }
+
+    #[test]
+    fn optional_absent_proceeds_as_direct_client() {
+        assert_eq!(
+            decide_peer_action(ProxyParse::Absent, false),
+            PeerAction::Proceed
+        );
+    }
+
+    #[test]
+    fn strict_missing_and_errors_close() {
+        for outcome in [
+            ProxyParse::MissingStrict,
+            ProxyParse::Malformed,
+            ProxyParse::Oversize,
+            ProxyParse::Timeout,
+            ProxyParse::Eof,
+        ] {
+            assert_eq!(
+                decide_peer_action(outcome, true),
+                PeerAction::Close,
+                "{outcome:?} must fail closed"
+            );
+        }
     }
 }

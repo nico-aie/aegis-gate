@@ -239,7 +239,13 @@ Defaults **off**; operator opts in per listener. **~1,700 LoC · ~9 working days
       ClientHello over-read); `accept_loop` reads+logs+observes ahead of
       TLS, peer NOT yet overridden. Default-off path unchanged (798
       aegis-proxy tests green).
-- [ ] **P2** trust + effective-peer override + boot validation
+- [x] **P2** trust + effective-peer override + boot validation —
+      `decide_peer_action(outcome, trusted_lb) → Override/Proceed/Close`
+      (anti-spoof: a header from an untrusted source closes); `accept_loop`
+      rebinds `peer` to the asserted client before TLS; boot validation
+      `accept_proxy ⇒ trusted_proxies non-empty`. 5 decision unit tests +
+      3 boot-validation tests; core 295 / proxy 803 green. Live
+      end-to-end differential-risk test deferred to P4's cluster rig.
 - [ ] **P3** audit/XFF precedence + failure-mode hardening + metrics
 - [ ] **P4** docs + nginx/HAProxy wiring + `tests/cluster` rig
 - [ ] **Gates** — §7 checklist green before recommending PROXY as a supported topology
