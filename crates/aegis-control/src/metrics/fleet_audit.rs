@@ -116,6 +116,30 @@ pub async fn scan_and_merge_audit(
     merge_tails(&tails, limit)
 }
 
+/// PB / F6 (2026-06-11) — merge peers' audit tails by a KNOWN node roster
+/// (one `GET fleet:audit:<node>` per id) instead of a whole-keyspace
+/// `SCAN MATCH`. Bounded O(nodes): fits a tight Redis timeout, is immune to
+/// keyspace growth (the busy shared keyspace no longer gates the merge),
+/// and works on a sharded/cluster Redis where a single-connection `SCAN`
+/// only sees one shard. A node whose key has TTL'd out (dead) returns
+/// `None` and is skipped, so the roster may be slightly stale.
+pub async fn merge_audit_from_roster(
+    backend: &dyn aegis_core::state::StateBackend,
+    node_ids: &[String],
+    limit: usize,
+) -> Vec<AuditEvent> {
+    let mut tails: Vec<Vec<AuditEvent>> = Vec::new();
+    for id in node_ids {
+        let key = audit_key(id);
+        if let Ok(Some(bytes)) = backend.get(&key).await {
+            if let Ok(t) = serde_json::from_slice::<Vec<AuditEvent>>(&bytes) {
+                tails.push(t);
+            }
+        }
+    }
+    merge_tails(&tails, limit)
+}
+
 /// `ArcSwap`-backed cache of the latest merged fleet audit tail. The
 /// publish task refreshes it each tick; the synchronous
 /// `GET /api/audit/since?scope=fleet` handler reads it without `.await`.
@@ -224,5 +248,87 @@ mod tests {
         assert!(cache.load().is_none());
         cache.store(vec![ev("waf-1", "x", 1)]);
         assert_eq!(cache.load().unwrap().len(), 1);
+    }
+
+    // PB / F6 — roster-driven audit merge: GET each known node's tail key,
+    // no whole-keyspace SCAN. Minimal backend (only `get`/`set` are hit).
+    struct MockBackend {
+        kv: std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl aegis_core::state::StateBackend for MockBackend {
+        async fn get(&self, key: &str) -> aegis_core::Result<Option<Vec<u8>>> {
+            Ok(self.kv.lock().unwrap().get(key).cloned())
+        }
+        async fn set(&self, key: &str, val: &[u8], _: std::time::Duration) -> aegis_core::Result<()> {
+            self.kv.lock().unwrap().insert(key.to_string(), val.to_vec());
+            Ok(())
+        }
+        async fn del(&self, _: &str) -> aegis_core::Result<()> {
+            Ok(())
+        }
+        async fn incr_window(
+            &self,
+            _: &str,
+            _: std::time::Duration,
+            _: u64,
+        ) -> aegis_core::Result<aegis_core::state::SlidingWindowResult> {
+            Ok(aegis_core::state::SlidingWindowResult {
+                count: 0,
+                allowed: true,
+                retry_after: None,
+            })
+        }
+        async fn token_bucket(&self, _: &str, _: u32, _: u32) -> aegis_core::Result<bool> {
+            Ok(true)
+        }
+        async fn get_risk(&self, _: &aegis_core::risk::RiskKey) -> aegis_core::Result<u32> {
+            Ok(0)
+        }
+        async fn add_risk(&self, _: &aegis_core::risk::RiskKey, _: i32, _: u32) -> aegis_core::Result<u32> {
+            Ok(0)
+        }
+        async fn auto_block(&self, _: std::net::IpAddr, _: std::time::Duration) -> aegis_core::Result<()> {
+            Ok(())
+        }
+        async fn is_auto_blocked(&self, _: std::net::IpAddr) -> aegis_core::Result<bool> {
+            Ok(false)
+        }
+        async fn put_nonce(&self, _: &str, _: std::time::Duration) -> aegis_core::Result<bool> {
+            Ok(true)
+        }
+        async fn consume_nonce(&self, _: &str) -> aegis_core::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    #[tokio::test]
+    async fn merge_audit_from_roster_unions_known_nodes() {
+        use aegis_core::state::StateBackend as _;
+        let backend = MockBackend {
+            kv: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        let a = vec![ev("waf-1", "a1", 100), ev("waf-1", "a2", 300)];
+        let b = vec![ev("waf-2", "b1", 200), ev("waf-2", "b2", 400)];
+        for (node, tail) in [("waf-1", &a), ("waf-2", &b)] {
+            let bytes = serde_json::to_vec(tail).unwrap();
+            backend
+                .set(&audit_key(node), &bytes, std::time::Duration::from_secs(10))
+                .await
+                .unwrap();
+        }
+        // Roster knows both nodes → union, newest-first.
+        let ids = vec!["waf-1".to_string(), "waf-2".to_string()];
+        let merged = merge_audit_from_roster(&backend, &ids, 10).await;
+        let order: Vec<i64> = merged.iter().map(|e| e.ts.timestamp_millis()).collect();
+        assert_eq!(order, vec![400, 300, 200, 100]);
+
+        // A rostered id with no key (dead) is skipped; an unrostered node's
+        // key is never read.
+        let ids = vec!["waf-1".to_string(), "ghost".to_string()];
+        let merged = merge_audit_from_roster(&backend, &ids, 10).await;
+        assert_eq!(merged.len(), 2, "only the live, rostered node's tail");
+        assert!(merged.iter().all(|e| node_id_of(e) == "waf-1"));
     }
 }

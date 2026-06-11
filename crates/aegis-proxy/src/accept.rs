@@ -126,6 +126,12 @@ fn spawn_fleet_snapshot_task(
     // also ships this node's bounded audit tail for the fleet backfill.
     audit_ring: Arc<aegis_control::api::audit::AuditRing>,
     our_node: &str,
+    // PB / F6 (2026-06-11) — live cluster roster (in-memory, lease-poll
+    // backed). When it knows peers, the merge fans out by `GET
+    // fleet:*:<node>` per id instead of a whole-keyspace `SCAN MATCH`,
+    // which times out on a busy/remote/sharded Redis. `None` (or a
+    // roster that only knows self) falls back to the legacy scan.
+    roster: Option<Arc<aegis_control::api::tracking::RosterView>>,
 ) -> (
     Option<aegis_control::metrics::fleet_snapshot::FleetCache>,
     Option<aegis_control::metrics::fleet_audit::FleetAuditCache>,
@@ -174,21 +180,51 @@ fn spawn_fleet_snapshot_task(
             if let Ok(bytes) = serde_json::to_vec(&tail) {
                 let _ = state_backend.set(&audit_tail_key, &bytes, ttl).await;
             }
-            // 2. Scan + merge every live peer snapshot (dead nodes have
-            //    already TTL'd out of the keyspace) into the cache.
-            let merged = fs::scan_and_merge(state_backend.as_ref(), top_k).await;
+            // PB / F6 — node roster for the merge. When the lease-backed
+            // roster knows peers, fan out by `GET fleet:*:<node>` per id
+            // (bounded, timeout-safe, cluster-Redis-safe) instead of a
+            // whole-keyspace `SCAN MATCH`. `our_node` is always included
+            // (the roster may or may not list self). A roster that only
+            // knows self (cold start / single node / not wired) falls
+            // back to the legacy scan.
+            let node_ids: Vec<String> = match &roster {
+                Some(rv) => {
+                    let mut ids: Vec<String> =
+                        rv.members().into_iter().map(|p| p.id).collect();
+                    if !ids.iter().any(|i| i == &node) {
+                        ids.push(node.clone());
+                    }
+                    ids
+                }
+                None => Vec::new(),
+            };
+            let use_roster = node_ids.len() > 1;
+
+            // 2. Merge every live peer snapshot into the cache.
+            let merged = if use_roster {
+                fs::merge_from_roster(state_backend.as_ref(), &node_ids, top_k).await
+            } else {
+                fs::scan_and_merge(state_backend.as_ref(), top_k).await
+            };
             if merged.nodes == 0 && published {
-                // Backend without key enumeration → at least show our own.
+                // Nothing merged → at least show our own.
                 cache_writer.store(fs::merge(std::slice::from_ref(&snap), top_k));
             } else {
                 cache_writer.store(merged);
             }
-            // 2b. Same for the audit tail: merge every live peer's tail
-            //     newest-first into the fleet audit cache.
-            let merged_audit =
-                fa::scan_and_merge_audit(state_backend.as_ref(), fa::AUDIT_TAIL_LIMIT).await;
+            // 2b. Same for the audit tail.
+            let merged_audit = if use_roster {
+                fa::merge_audit_from_roster(
+                    state_backend.as_ref(),
+                    &node_ids,
+                    fa::AUDIT_TAIL_LIMIT,
+                )
+                .await
+            } else {
+                fa::scan_and_merge_audit(state_backend.as_ref(), fa::AUDIT_TAIL_LIMIT).await
+            };
             if merged_audit.is_empty() {
-                // Backend without key enumeration → at least show our own.
+                // Nothing merged → at least show our own.
                 audit_cache_writer.store(tail);
             } else {
                 audit_cache_writer.store(merged_audit);
@@ -580,6 +616,7 @@ pub(crate) async fn admin_accept_loop(
         request_stage_hist.clone(),
         services.audit_ring.clone(),
         lease_store.self_id().as_str(),
+        Some(Arc::clone(&roster_view)),
     );
     services.fleet_cache = fleet_cache;
     services.fleet_audit_cache = fleet_audit_cache;
