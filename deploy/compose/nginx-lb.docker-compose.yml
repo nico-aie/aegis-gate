@@ -23,8 +23,7 @@ services:
       # Bind all interfaces (incl. 127.0.0.1) so SSH/VS Code port-forwards that
       # target the server's localhost:8088 reach it. (Was 10.20.0.72:8088 only,
       # which left loopback empty → forwarded requests hung.)
-      - "56208:8088"                  # data VIP — host :56208 → nginx :8088 (TLS passthrough, NO PROXY hdr yet)
-      - "56260:56260"                 # PROXY-protocol VIP → waf-infra-1 :8443 only (real client IP)
+      - "56208:8088"                  # data VIP — host :56208 → nginx :8088 (TLS passthrough + PROXY hdr → real client IP)
       # Per-node admin-console ports (one per node, NOT a pool) — QC forwards each
       # from this machine to test an individual node's dashboard. See nginx-stream.conf.
       - "56243:56243"                 # admin console → waf-infra-1 (10.20.0.72, this host)

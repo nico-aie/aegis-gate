@@ -181,9 +181,12 @@ $R --scan --pattern 'config:waf:applied:*'   # per-node applied-version ACKs (al
   `host.name`) and Traces — cross-check that a decision QC sees in the UI is also logged.
 - **Convergence timing** — eyeball the SLA: events ≤ 5 s, modes/reset ≤ 2 s, config ~3 s,
   stats ~sub-second. Slower = nudge/pubsub not firing (falls back to polling, still correct).
-- **SNAT caveat (from QC-LOAD-TEST §1):** through `:56208` every client looks like nginx's
-  IP, so per-IP differentiation isn't meaningful here — but it's *ideal* for cluster tests,
-  because one shared bucket makes fleet-wide reset/convergence easy to observe.
+- **Real client IP via PROXY protocol:** `:56208` now sends the PROXY header, so the WAF
+  keys rate-limit/risk on the **real** client IP (the old SNAT collapse is gone). For the
+  cluster convergence tests in §4 this means: to poison "one client" fleet-wide you now use
+  one **source IP** (not "all traffic shares nginx's IP"); `reset_state` then clears that
+  real-IP bucket on every node. Bypassing the LB to a node's `:8443` directly (no header)
+  uses the real TCP peer — also fine.
 
 ## 7. QC pass/fail (cluster SLOs)
 

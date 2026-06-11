@@ -17,21 +17,25 @@ k6 ─ https ─▶ nginx stream :8088 (TLS passthrough) ─┬─▶ 10.20.0.72
 - **LB VIP (the fleet entry point):** `https://10.20.0.72:8088` (TLS — self-signed).
 - **A single node (direct):** `https://10.20.0.<id>:8443`.
 
-## 1. ⚠️ Read this FIRST — the LB collapses source IP (changes which tests are valid)
+## 1. ✅ Read this FIRST — PROXY protocol now preserves the real client IP
 
-The nginx `stream` LB **SNATs**, so every request reaches the WAF from **nginx's
-IP**. The WAF keys per-client risk on `{ip, device_fp, session}` — through the LB
-that becomes `{nginx-IP, k6's-JA4, none}`, i.e. **all load looks like ONE client**.
-Consequences:
+As of 2026-06-11 the data VIP (`:56208` → nginx `:8088`) sends the **PROXY protocol
+header**, and every node runs `accept_proxy`. So the WAF keys per-client risk on the
+**real client IP** even through the LB — the old SNAT collapse (all load looking like
+one client = nginx's IP) is **gone**. Consequences:
 
 | Test type | Target | Why |
 |---|---|---|
-| **Throughput / latency / fan-out / failover** | **LB `:8088`** ✅ | measures what real clients see; aggregate behavior |
-| **Single-source DDoS flood** (`ddos-burst`) | LB `:8088` ✅ | a flood from one IP is exactly what the LB presents |
-| **Multi-client differentiation** (legit NOT blocked while an attacker IP is; rate-limit/risk per distinct client) | **direct to a node `:8443`, from DISTINCT source IPs** ⚠️ | through the LB every "client" shares nginx's IP → legit gets blocked with the attacker. Run k6 **on a node** using `127.0.0.x` loopback aliases, or from several source hosts. |
+| **Throughput / latency / fan-out / failover** | **LB `:56208`** ✅ | aggregate behavior as real clients see it |
+| **Single-source DDoS flood** (`ddos-burst`) | LB `:56208` ✅ | a flood from one IP is presented as that IP |
+| **Multi-client differentiation** (legit NOT blocked while an attacker IP is; rate-limit/risk per distinct client) | **LB `:56208`, from DISTINCT source IPs** ✅ | the WAF now sees each real client IP via PROXY — a per-source k6 run differentiates correctly. (Generate from several source hosts / a fan-out runner; one host = one IP.) |
 
-> This is inherent to an SNAT LB + the WAF ignoring XFF today. For per-IP accuracy,
-> bypass the LB. For capacity/latency, use the LB.
+> Caveat: PROXY trust rides on `proxy.trusted_proxies` — only nginx's hop is trusted,
+> so a client **cannot** spoof its own IP. If you bypass the LB and hit a node's
+> `:8443` directly **without** a PROXY header, `accept_proxy: optional` still serves
+> using the real TCP peer — also fine for per-IP tests. A k6 container behind rootless
+> Docker still SNATs to the docker gateway as *its* source, so for true multi-IP
+> realism use multiple source hosts, not one container.
 
 ## 2. Prereqs
 
@@ -149,7 +153,9 @@ graceful shedding, clean failover, low FP) are the QC signal.
 - **Self-signed cert** → always `--insecure-skip-tls-verify` (or import the CA).
 - **Reset between runs** — accumulated risk/rate-limit state will skew the next run;
   `reset_state` on every node first. It preserves `./waf_audit.log`.
-- **LB SNAT** (§1) — don't trust per-IP/rate-limit numbers taken through `:8088`.
+- **Real client IP via PROXY** (§1) — per-IP/rate-limit numbers through `:56208` are
+  now valid (PROXY protocol). For multi-IP realism still use multiple source hosts
+  (one rootless-Docker k6 container SNATs to a single gateway IP).
 - **Mount, don't reload** — if you change the LB upstream mid-campaign, recreate
   nginx (`up -d --force-recreate`), don't `restart` (stale single-file bind mount).
 - **rootless Docker** — published-port SNAT also means the k6 container's source is
