@@ -103,6 +103,9 @@ x509-parser.workspace = true
 sha2.workspace = true
 hmac.workspace = true
 ipnet.workspace = true
+# PROXY-protocol v1/v2 header parsing (real client IP behind an L4
+# LB). We own the bounded pre-TLS read; `ppp` parses the bytes only.
+ppp.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde_yaml.workspace = true

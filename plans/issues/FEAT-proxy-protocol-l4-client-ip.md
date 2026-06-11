@@ -1,6 +1,6 @@
 # FEAT — PROXY protocol: real client IP behind an L4 load balancer
 
-> **Type:** FEAT (feature track) · **Status:** Designed — not started · **Branch:** `develop`
+> **Type:** FEAT (feature track) · **Status:** 🟠 P1 shipped — P2 next · **Branch:** `develop`
 > **Design doc:** [`../future/proxy-protocol.md`](../future/proxy-protocol.md) (decisions + justification live there)
 > **Roadmap slot:** [`../future/world-class-waf-roadmap.md`](../future/world-class-waf-roadmap.md) — HA/LB tier.
 > **Builds on (shipped):** C-5 `proxy.trusted_proxies` ([`../archive/multi-node-consistency-implementation.md`](../archive/multi-node-consistency-implementation.md) P1) — same trust set, extended from XFF to PROXY.
@@ -19,12 +19,12 @@ unchanged. (Design §0.)
 
 ## Phase checklist
 
-- [ ] **P1 — Parse + listener flag (observe-only)** — `~350 LoC · ~2d`
-  - New `crates/aegis-proxy/src/listener/proxy_protocol.rs`: bounded v1/v2 async read + `ppp` parse + unit tests.
-  - `ProxyProtocolMode` enum (`off | strict | optional`) on `ListenerConfig`, `#[serde(default)] = off`.
-  - Thread mode + parsed trusted nets through `run.rs:1509` → `accept_loop`.
-  - **Parse + log + count only — do NOT override the peer yet.**
-  - **Gate:** parser unit matrix green; default-off path proven to do zero extra reads.
+- [x] **P1 — Parse + listener flag (observe-only)** — *shipped*
+  - New `crates/aegis-proxy/src/listener/proxy_protocol.rs`: peek-sniff (1 byte, no consume) + exact-length v1/v2 async read + `ppp` v2.3.0 parse + deadline-bounded; 10 unit tests incl. "no ClientHello over-read" assertions.
+  - `ProxyProtocolMode` enum (`off | strict | optional`) on `ListenerConfig`, `#[serde(default)] = off` + `is_enabled()`; config-plane round-trip tests.
+  - Threaded `accept_proxy` through `run.rs` → `accept_loop` (new `proxy_mode` param); reads `upstream_ctx.trusted_proxies` for the observe-only `trusted_lb` log field.
+  - **Parse + log + observe only — peer NOT overridden; trust NOT enforced (P2).** Corrupted streams (malformed/oversize/timeout/eof) dropped; `strict`-missing/`absent` fall through to TLS (strict-close is P2).
+  - **Gate:** ✅ parser unit matrix green (10/10); ✅ default-off path branch-skipped (798 aegis-proxy + config tests green, `run_binds_and_serves_200` unchanged).
 - [ ] **P2 — Trust + effective-peer override + boot validation** — `~250 LoC · ~2d`
   - Honour header only from a TCP peer inside `proxy.trusted_proxies`; untrusted source → close (fail-closed).
   - Rebind `peer: SocketAddr` in `accept_loop` after parse, **before** `acc.accept(stream)`.
@@ -44,17 +44,17 @@ unchanged. (Design §0.)
 
 ---
 
-## Decisions to lock before P1 (design §10 — recommended defaults, confirm in review)
+## Decisions — locked at recommended defaults (operator: "use recommended defaults", 2026-06-11)
 
-| # | Decision | Recommended default | Locked? |
+| # | Decision | Locked value | Locked? |
 |---|---|---|---|
-| 1 | Parser crate: `ppp` vs `proxy-protocol` | `ppp` (pure-Rust v1+v2; pin + `cargo deny`) | [ ] |
-| 2 | Dedicated trust list vs reuse `proxy.trusted_proxies` | Reuse; add split only if a real split-trust topology appears | [ ] |
-| 3 | `UNIX` address family handling | Lenient — use real peer (TCP edge won't see it; treat like LOCAL) | [ ] |
-| 4 | Adopt PROXY source **port** into `peer` | Adopt (audit completeness; risk/RL key on IP so cosmetic) | [ ] |
-| 5 | `proxy_via` surface | Audit-only field, no `X-WAF-Proxy-Via` header injection | [ ] |
-| 6 | Canonical deploy doc for topology matrix | Confirm `deploy/HACKATHON-FLEET.md` is the live home | [ ] |
-| 7 | v2 TLV passthrough | Ignore TLVs in v1; AWS-NLB SNI TLVs are a future enhancement | [ ] |
+| 1 | Parser crate: `ppp` vs `proxy-protocol` | `ppp` v2.3.0, pinned (`=2.3.0`). No `deny.toml` in repo yet → not surfaced to `cargo deny` (follow-up if one is added). | [x] |
+| 2 | Dedicated trust list vs reuse `proxy.trusted_proxies` | Reuse `proxy.trusted_proxies` (P1 observes `trusted_lb`; P2 enforces). | [x] |
+| 3 | `UNIX` address family handling | Lenient — `source: None` → keep real peer (same as LOCAL/UNSPEC). | [x] |
+| 4 | Adopt PROXY source **port** into `peer` | Adopt — `ProxyHeader.source` carries source IP **and** port. | [x] |
+| 5 | `proxy_via` surface | Audit-only field, no header injection (P3). | [x] |
+| 6 | Canonical deploy doc for topology matrix | `deploy/HACKATHON-FLEET.md` (revisit in P4). | [x] |
+| 7 | v2 TLV passthrough | Ignore TLVs; payload read but not parsed (cap 1 KiB). | [x] |
 
 ---
 

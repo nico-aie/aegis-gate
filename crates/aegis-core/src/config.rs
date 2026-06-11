@@ -1323,11 +1323,52 @@ fn default_redirect_status() -> u16 {
     301
 }
 
+/// PROXY-protocol acceptance mode for a data listener (real client
+/// IP behind an L4 / TCP-passthrough load balancer).
+///
+/// Default `Off` ⇒ today's behaviour exactly: `tcp.accept()` → TLS,
+/// no extra read, no parse, no allocation on the accept path. The
+/// header is only ever read on a listener the operator explicitly
+/// opts in. See `plans/future/proxy-protocol.md` §3.2.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyProtocolMode {
+    /// No parse; the listener behaves exactly as it does today
+    /// (default). The peer is the real TCP transport peer.
+    #[default]
+    Off,
+    /// A PROXY header is REQUIRED on every connection. A connection
+    /// that arrives without one — or from a source outside
+    /// `proxy.trusted_proxies` — is closed (fail-closed). Correct for
+    /// a dedicated listener fronted by a PROXY-enabled LB.
+    Strict,
+    /// Sniff the v1/v2 signature; honour a header when present, and
+    /// fall back to treating the connection as a direct client when
+    /// absent. Migration aid for mixed fleets — prefer `Strict`.
+    Optional,
+}
+
+impl ProxyProtocolMode {
+    /// True when this listener should attempt to read a PROXY header.
+    /// The accept path branches on this so the default (`Off`) path
+    /// is byte-for-byte unchanged.
+    #[inline]
+    pub fn is_enabled(self) -> bool {
+        !matches!(self, ProxyProtocolMode::Off)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct ListenerConfig {
     pub bind: SocketAddr,
     #[serde(default)]
     pub tls: bool,
+    /// PROXY-protocol acceptance for this listener. Default `off`.
+    /// When `strict`/`optional`, `proxy.trusted_proxies` must list the
+    /// load balancer's CIDR(s) (enforced at boot in
+    /// [`WafConfig::validate`]).
+    #[serde(default)]
+    pub accept_proxy: ProxyProtocolMode,
 }
 
 // ---------------------------------------------------------------------------
@@ -4791,6 +4832,56 @@ rules:
     fn rules_inline_defaults_empty() {
         let cfg = super::load_config_str(minimal_yaml()).unwrap();
         assert!(cfg.rules.inline.is_empty());
+    }
+
+    // PROXY-T1 — `accept_proxy` defaults to `off` (today's behaviour)
+    // and round-trips `strict` / `optional` through the config plane.
+    #[test]
+    fn accept_proxy_defaults_off() {
+        let cfg = super::load_config_str(minimal_yaml()).unwrap();
+        assert_eq!(
+            cfg.listeners.data[0].accept_proxy,
+            super::ProxyProtocolMode::Off,
+        );
+        assert!(!cfg.listeners.data[0].accept_proxy.is_enabled());
+    }
+
+    #[test]
+    fn accept_proxy_parses_strict_and_optional() {
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8443"
+      tls: false
+      accept_proxy: strict
+    - bind: "127.0.0.1:8444"
+      accept_proxy: optional
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:9000"
+state:
+  backend: in_memory
+proxy:
+  trusted_proxies: ["10.0.0.0/8"]
+"#;
+        let cfg = super::load_config_str(yaml)
+            .expect("accept_proxy strict/optional must round-trip through the config plane");
+        assert_eq!(
+            cfg.listeners.data[0].accept_proxy,
+            super::ProxyProtocolMode::Strict,
+        );
+        assert_eq!(
+            cfg.listeners.data[1].accept_proxy,
+            super::ProxyProtocolMode::Optional,
+        );
+        assert!(cfg.listeners.data[0].accept_proxy.is_enabled());
     }
 
     // BUG-config-plane-audit-sinks-yaml-enum — `load_config_str` (the

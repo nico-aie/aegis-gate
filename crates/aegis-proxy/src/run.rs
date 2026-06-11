@@ -1582,6 +1582,8 @@ pub async fn run(
             Some(identity_tracker_l),
             // 2026-05-08 NEW-2 — state for /__waf_control/challenge_verify
             state_l,
+            // PROXY-T1 — per-listener PROXY-protocol mode (default off).
+            listener_cfg.accept_proxy,
         )));
     }
 

@@ -1430,9 +1430,15 @@ pub(crate) async fn accept_loop(
     // single-use enforcement. Same Arc the rest of the WAF uses
     // (rate-limit, risk, blacklist).
     state_backend: Arc<dyn aegis_core::state::StateBackend>,
+    // PROXY-T1 (P1, observe-only) — per-listener PROXY-protocol mode.
+    // `Off` (default) skips the pre-TLS read entirely; `Strict`/
+    // `Optional` read+parse+log the asserted client IP ahead of TLS
+    // without yet overriding the peer (that is P2). See
+    // `listener::proxy_protocol`.
+    proxy_mode: aegis_core::config::ProxyProtocolMode,
 ) {
     loop {
-        let (stream, peer) = match tcp.accept().await {
+        let (mut stream, peer) = match tcp.accept().await {
             Ok(conn) => conn,
             Err(e) => {
                 tracing::error!("accept error: {e}");
@@ -1466,6 +1472,56 @@ pub(crate) async fn accept_loop(
         let conn_inflight = upstream_ctx.inflight.clone();
         tokio::spawn(async move {
             let _admit = conn_inflight.admit();
+            // PROXY-T1 (P1, observe-only) — when this listener opted in
+            // (`accept_proxy != off`), consume + parse the PROXY header
+            // off the raw socket BEFORE the TLS handshake, and log the
+            // asserted client IP. P1 does NOT override `peer` or enforce
+            // the `trusted_proxies` boundary (P2). The default-off path
+            // never enters this branch — no extra read, no parse.
+            if proxy_mode.is_enabled() {
+                use crate::listener::proxy_protocol::{
+                    read_proxy_header, ProxyParse, ProxyProtocolModeRef,
+                };
+                let mode_ref = match proxy_mode {
+                    aegis_core::config::ProxyProtocolMode::Strict => ProxyProtocolModeRef::Strict,
+                    aegis_core::config::ProxyProtocolMode::Optional => {
+                        ProxyProtocolModeRef::Optional
+                    }
+                    // `is_enabled()` already excluded `Off`.
+                    aegis_core::config::ProxyProtocolMode::Off => return,
+                };
+                let outcome = read_proxy_header(&mut stream, mode_ref).await;
+                // Observe whether the real LB hop is a trusted proxy —
+                // P2 will gate on this; here it is logged only.
+                let trusted_lb = upstream_ctx
+                    .trusted_proxies
+                    .iter()
+                    .any(|net| net.contains(&peer.ip()));
+                match outcome {
+                    ProxyParse::Parsed(h) => tracing::info!(
+                        lb_peer = %peer,
+                        trusted_lb,
+                        asserted_client = ?h.source,
+                        version = ?h.version,
+                        command = ?h.command,
+                        result = outcome.label(),
+                        "proxy-protocol header observed (P1: peer not yet overridden)",
+                    ),
+                    _ => tracing::debug!(
+                        lb_peer = %peer,
+                        trusted_lb,
+                        result = outcome.label(),
+                        "proxy-protocol observe outcome",
+                    ),
+                }
+                // A partially-consumed bad header leaves the stream
+                // unusable for TLS — drop it. `MissingStrict`/`Absent`
+                // consumed nothing and fall through to TLS as a direct
+                // client (strict-close policy is deferred to P2).
+                if outcome.is_stream_corrupted() {
+                    return;
+                }
+            }
             // MTLS-T3 — per-connection identity. We set it from
             // the TLS handshake (when a TLS acceptor is wired)
             // before the service_fn is built; plain-HTTP

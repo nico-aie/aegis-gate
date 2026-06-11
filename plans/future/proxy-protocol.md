@@ -232,7 +232,13 @@ listener: **PROXY parse → TLS accept (incl. client-cert verify) → fingerprin
 Defaults **off**; operator opts in per listener. **~1,700 LoC · ~9 working days.**
 
 ### 4.1 Progress tracker (update as phases land)
-- [ ] **P1** parse + listener flag (observe-only)
+- [x] **P1** parse + listener flag (observe-only) — `ppp` v2.3.0 pinned;
+      `ProxyProtocolMode` (`off`/`strict`/`optional`, default off) on
+      `ListenerConfig`; new `listener/proxy_protocol.rs` (peek-sniff +
+      exact-length v1/v2 read, deadline-bounded, 10 unit tests proving no
+      ClientHello over-read); `accept_loop` reads+logs+observes ahead of
+      TLS, peer NOT yet overridden. Default-off path unchanged (798
+      aegis-proxy tests green).
 - [ ] **P2** trust + effective-peer override + boot validation
 - [ ] **P3** audit/XFF precedence + failure-mode hardening + metrics
 - [ ] **P4** docs + nginx/HAProxy wiring + `tests/cluster` rig
