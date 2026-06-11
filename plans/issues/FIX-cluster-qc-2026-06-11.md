@@ -30,7 +30,17 @@ the audit read-path, health-probe auth gating, or session UX — not the leaderl
   timeout → recovers to an actionable error instead of an indefinite spinner. **F8**: a real
   `↻ Refresh` control on the detector card re-pulls the authoritative mask + version (the
   `config_reload` SSE listener from P2 already auto-syncs; this is the manual escape hatch).
-- ⏳ P6 (F13/F2/F3) — pending.
+- ✅ **P6 (F13/F2/F3)** — consistency/docs. **F2**: `/api/config/version` field `version` →
+  `audit_chain_len` (server + all 4 client poll sites + OpenAPI schema) — disambiguated from the
+  cluster doc version. **F13**: in-repo docs already use `/api/zero-trust/*`; added a "renamed
+  endpoints" breadcrumb to the OpenAPI so a future sweep doesn't relist `/api/mtls/*` (stale only
+  in the external QC sweep + archived records). **F3**: documented that `/__waf_control/*` is an
+  interop-listener surface, not an admin-port route — the admin port returns 404 (authed) / 401
+  (not), so the "expect 401 via admin port" guidance was wrong.
+
+**All phases complete.** Suggested live re-check after deploy: F11 (probe 200s logged-out), F7
+(concurrent toggles → 412 + no clobber), F6 (`?scope=fleet` backfill shows peer rows), F14 (the
+new `render_ms>25` warn pinpoints the 260 ms source), F12 (session-expiry redirect).
 
 > ⚠️ **Three of the report's suggested fixes are re-scoped below after reading the code:**
 > - **F14** — the audit ring + JSON cache the report asks for **already exist**

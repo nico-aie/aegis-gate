@@ -1458,7 +1458,8 @@ async function currentConfigVersion() {
     const r = await fetch('/api/config/version', { credentials: 'same-origin', cache: 'no-store' });
     if (!r.ok) return 0;
     const j = await r.json();
-    return Number(j.version) || 0;
+    // F2 (2026-06-11) — field renamed `version` → `audit_chain_len`.
+    return Number(j.audit_chain_len) || 0;
   } catch (_) {
     return 0;
   }
@@ -1471,8 +1472,8 @@ async function waitForVersion(expectedVersion, timeoutMs = 10000) {
       const r = await fetch('/api/config/version', { credentials: 'same-origin', cache: 'no-store' });
       if (r.ok) {
         const j = await r.json();
-        if (j.version >= expectedVersion) {
-          return { applied: true, latencyMs: Date.now() - start, version: j.version, node: j.applied_on_node };
+        if (j.audit_chain_len >= expectedVersion) {
+          return { applied: true, latencyMs: Date.now() - start, version: j.audit_chain_len, node: j.applied_on_node };
         }
       }
     } catch (_) { /* retry */ }

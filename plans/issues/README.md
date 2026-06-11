@@ -8,7 +8,7 @@ severity, root cause, impact, workaround, and a suggested fix.
 | File | Type | Severity | Summary |
 |---|---|---|---|
 | [`QC-CLUSTER-RESULTS-2026-06-11.md`](./QC-CLUSTER-RESULTS-2026-06-11.md) | QC report | 3 HIGH · 6 MED · 2 LOW | Cluster-mode QC run. Consensus healthy; defects in dashboard client, audit read-path, health-probe auth, session UX. |
-| [`FIX-cluster-qc-2026-06-11.md`](./FIX-cluster-qc-2026-06-11.md) | fix plan | — | Phased fix plan (P1–P6) for the QC findings. Re-scopes F14/F13/F2 after code review. **Awaiting confirmation to implement.** |
+| [`FIX-cluster-qc-2026-06-11.md`](./FIX-cluster-qc-2026-06-11.md) | fix plan | — | Phased fix plan (P1–P6) for the QC findings. Re-scopes F14/F13/F2 after code review. **All phases implemented on `fix/cluster-qc-2026-06-11`** (commits 2c6d621 → P6); pending live re-check + merge. |
 
 ## Resolved (archived)
 

@@ -301,18 +301,24 @@ pub(crate) fn admin_router(
             }
         }
 
-        // DD-T7 — config-version visibility for hot-reload UI.
-        // Returns the current rules-store revision so the dashboard
-        // can poll after a mutation and surface "Applied in X.Xs".
-        // The version increments on every successful audit-mutation
-        // (rule CRUD, detector toggle, loadmode pin, etc.) — every
-        // surface that flows through `services.mutate.apply()` is
-        // counted automatically, so adding a new mutating endpoint
-        // doesn't need a parallel version bump.
+        // DD-T7 — mutation-progress signal for the hot-reload UI.
+        // Returns this node's audit-chain length, which increments on
+        // every successful audit-mutation (rule CRUD, detector toggle,
+        // loadmode pin, etc.) routed through `services.mutate.apply()`,
+        // so the dashboard can poll after a mutation and surface
+        // "Applied in X.Xs".
+        //
+        // F2 (2026-06-11 cluster QC): the field is now `audit_chain_len`,
+        // NOT `version` — it was confusingly named the same as
+        // `/api/config`'s cluster config-doc version (a DIFFERENT
+        // counter: the shared-doc version vs. this node's local
+        // audit-chain length). They diverge by design (e.g. doc v43 vs.
+        // chain_len 0 on a node that applied via propagation), which the
+        // QC flagged. Renamed to say what it is.
         "/api/config/version" => {
             let v = services.mutate.chain_len();
             let body = serde_json::json!({
-                "version": v,
+                "audit_chain_len": v,
                 "applied_at_ms": chrono::Utc::now().timestamp_millis(),
                 "applied_on_node": services
                     .roster_view

@@ -2505,7 +2505,8 @@ async function fetchCurrentVersion() {
     const r = await fetch('/api/config/version', { credentials: 'same-origin', cache: 'no-store' });
     if (!r.ok) return 0;
     const j = await r.json();
-    return Number(j.version) || 0;
+    // F2 (2026-06-11) — field renamed `version` → `audit_chain_len`.
+    return Number(j.audit_chain_len) || 0;
   } catch (_) {
     return 0;
   }
@@ -7116,7 +7117,7 @@ function PageSettings() {
     const next = isShadow ? 'enforce' : 'log_only';
     try {
       const before = await fetch('/api/config/version', { credentials: 'same-origin', cache: 'no-store' })
-        .then(r => r.json()).then(j => Number(j.version) || 0).catch(() => 0);
+        .then(r => r.json()).then(j => Number(j.audit_chain_len) || 0).catch(() => 0); // F2: renamed field
       const result = await window.settingsModePut(next);
       if (result && result.ok) {
         const v = await window.waitForVersion(before + 1, 10000);
