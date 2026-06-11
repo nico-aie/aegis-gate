@@ -57,6 +57,20 @@ impl WsBridgeConfig {
     }
 }
 
+/// The inspection verdict for one reassembled text message, returned by
+/// the caller-supplied hook. The hook owns the detector run, threshold,
+/// mode (enforce vs log_only), and any audit/metric emission; the bridge
+/// only acts on the I/O decision here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WsVerdict {
+    /// Forward the message to the upstream (clean, under threshold, or
+    /// `log_only` — the hook already audited the would-block).
+    Allow,
+    /// Enforce a block: drop the message and close the socket with WS
+    /// Close `1008` (policy violation).
+    Block,
+}
+
 /// Counters returned when the bridge tears down (folded into the
 /// `websocket_close` audit + metrics by the caller).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -68,8 +82,10 @@ pub struct WsBridgeStats {
     /// Text messages forwarded **without** inspection because they
     /// exceeded `max_message_bytes` (the skip policy above).
     pub messages_skipped_oversize: u64,
+    /// Text messages the inspection hook enforced a block on (→ close).
+    pub messages_blocked: u64,
     /// Set when the bridge closed the connection itself (protocol error
-    /// or, in later phases, a policy block).
+    /// or a policy block).
     pub close_code: Option<u16>,
 }
 
@@ -312,16 +328,19 @@ async fn read_more<R: AsyncRead + Unpin>(
 /// Run the inspecting bridge until either side closes. Returns the byte
 /// + message counters for the close audit.
 ///
-/// WS-MSG2: text messages are reassembled and forwarded; the
-/// `InspectText` action just forwards (no detector yet).
-pub async fn run_bridge<C, U>(
+/// `inspect` is called once per reassembled client→upstream **text**
+/// message with its unmasked payload; it returns [`WsVerdict`]. Binary,
+/// control, and oversize-skipped messages never reach it.
+pub async fn run_bridge<C, U, F>(
     client: C,
     upstream: U,
     cfg: WsBridgeConfig,
+    mut inspect: F,
 ) -> std::io::Result<WsBridgeStats>
 where
     C: AsyncRead + AsyncWrite + Unpin,
     U: AsyncRead + AsyncWrite + Unpin,
+    F: FnMut(&[u8]) -> WsVerdict,
 {
     let (mut client_read, mut client_write) = tokio::io::split(client);
     let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream);
@@ -353,11 +372,24 @@ where
                             }
                             FrameAction::Buffered => {}
                             FrameAction::InspectText { payload, raw } => {
-                                // WS-MSG3 inserts the detector verdict here.
-                                let _ = &payload;
-                                upstream_write.write_all(&raw).await?;
-                                stats.client_to_upstream += raw.len() as u64;
                                 stats.messages_inspected += 1;
+                                match inspect(&payload) {
+                                    WsVerdict::Allow => {
+                                        upstream_write.write_all(&raw).await?;
+                                        stats.client_to_upstream += raw.len() as u64;
+                                    }
+                                    WsVerdict::Block => {
+                                        // Enforce — drop the message, close
+                                        // the client with policy violation.
+                                        let code = ws_codec::close_code::POLICY_VIOLATION;
+                                        let _ = client_write
+                                            .write_all(&ws_codec::encode_close(code))
+                                            .await;
+                                        stats.messages_blocked += 1;
+                                        stats.close_code = Some(code);
+                                        break;
+                                    }
+                                }
                             }
                             FrameAction::Protocol(err) => {
                                 let code = err.close_code();
@@ -416,10 +448,34 @@ mod tests {
         out
     }
 
-    /// Drive the bridge: write `client_bytes` to the client side, run the
-    /// bridge against an echo-style upstream that records what it
-    /// received, and return (bytes upstream received, bridge stats).
+    /// Drive the bridge with a custom inspector.
+    async fn run_with_inspector<F>(
+        client_bytes: Vec<u8>,
+        cfg: WsBridgeConfig,
+        inspect: F,
+    ) -> (Vec<u8>, WsBridgeStats)
+    where
+        F: FnMut(&[u8]) -> WsVerdict + Send + 'static,
+    {
+        run_inner(client_bytes, cfg, inspect).await
+    }
+
+    /// Drive the bridge with an allow-all inspector (passthrough tests).
     async fn run_with(client_bytes: Vec<u8>, cfg: WsBridgeConfig) -> (Vec<u8>, WsBridgeStats) {
+        run_inner(client_bytes, cfg, |_: &[u8]| WsVerdict::Allow).await
+    }
+
+    /// Write `client_bytes` to the client side, run the bridge against an
+    /// echo-style upstream that records what it received, return (bytes
+    /// upstream received, bridge stats).
+    async fn run_inner<F>(
+        client_bytes: Vec<u8>,
+        cfg: WsBridgeConfig,
+        inspect: F,
+    ) -> (Vec<u8>, WsBridgeStats)
+    where
+        F: FnMut(&[u8]) -> WsVerdict + Send + 'static,
+    {
         let (client_a, mut client_b) = duplex(64 * 1024);
         let (upstream_a, mut upstream_b) = duplex(64 * 1024);
 
@@ -446,7 +502,9 @@ mod tests {
             let _ = client_b.read_to_end(&mut sink).await;
         });
 
-        let stats = run_bridge(client_a, upstream_a, cfg).await.unwrap();
+        let stats = run_bridge(client_a, upstream_a, cfg, inspect)
+            .await
+            .unwrap();
         client_task.await.unwrap();
         let got = upstream_task.await.unwrap();
         (got, stats)
@@ -527,5 +585,70 @@ mod tests {
         let frame = vec![0x81, 0x03, b'a', b'b', b'c'];
         let (_got, stats) = run_with(frame, big_cfg()).await;
         assert_eq!(stats.close_code, Some(ws_codec::close_code::PROTOCOL_ERROR));
+    }
+
+    // ---- WS-MSG3: inspection verdict ------------------------------
+
+    #[tokio::test]
+    async fn blocked_text_message_is_dropped_and_socket_closed() {
+        // Inspector blocks any message containing "ATTACK".
+        let frame = client_frame(Opcode::Text, b"x ATTACK x", true, KEY);
+        let (got, stats) = run_with_inspector(frame, big_cfg(), |payload| {
+            if payload.windows(6).any(|w| w == b"ATTACK") {
+                WsVerdict::Block
+            } else {
+                WsVerdict::Allow
+            }
+        })
+        .await;
+        assert!(
+            got.is_empty(),
+            "blocked message must NOT reach the upstream"
+        );
+        assert_eq!(stats.messages_blocked, 1);
+        assert_eq!(
+            stats.close_code,
+            Some(ws_codec::close_code::POLICY_VIOLATION)
+        );
+    }
+
+    #[tokio::test]
+    async fn benign_text_passes_when_inspector_allows() {
+        let frame = client_frame(Opcode::Text, b"just a chat message", true, KEY);
+        let (got, stats) = run_with_inspector(frame.clone(), big_cfg(), |payload| {
+            if payload.windows(6).any(|w| w == b"ATTACK") {
+                WsVerdict::Block
+            } else {
+                WsVerdict::Allow
+            }
+        })
+        .await;
+        assert_eq!(got, frame, "benign message forwarded verbatim");
+        assert_eq!(stats.messages_blocked, 0);
+        assert_eq!(stats.close_code, None);
+    }
+
+    #[tokio::test]
+    async fn fragmented_attack_blocked_after_reassembly() {
+        // Split "AT" + "TACK" across two frames — neither fragment
+        // contains "ATTACK", but the reassembled message does. Proves
+        // there's no fragmentation evasion.
+        let f1 = client_frame(Opcode::Text, b"x AT", false, KEY);
+        let f2 = client_frame(Opcode::Continuation, b"TACK x", true, KEY);
+        let mut input = f1;
+        input.extend_from_slice(&f2);
+        let (got, stats) = run_with_inspector(input, big_cfg(), |payload| {
+            if payload.windows(6).any(|w| w == b"ATTACK") {
+                WsVerdict::Block
+            } else {
+                WsVerdict::Allow
+            }
+        })
+        .await;
+        assert!(
+            got.is_empty(),
+            "fragmented attack blocked, nothing forwarded"
+        );
+        assert_eq!(stats.messages_blocked, 1);
     }
 }

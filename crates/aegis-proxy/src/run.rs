@@ -910,6 +910,11 @@ pub async fn run(
         // plane bridge code.  Done before Arc-wrap so the field
         // can stay non-OnceLock (it never changes after boot).
         ctx.websocket_metrics = Some(websocket_metrics.clone());
+        // WS-MSG3 — hand the detector chain + mask to the WS
+        // message-inspection bridge (it runs on a spawned task and needs
+        // owned handles). Same Arcs the accept loop / HTTP path use.
+        ctx.ws_detectors = Some(detectors.clone());
+        ctx.ws_detector_mask = Some(mask.clone());
         ctx
     });
 

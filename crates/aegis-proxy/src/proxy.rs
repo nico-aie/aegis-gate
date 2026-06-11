@@ -72,6 +72,15 @@ pub struct ProxyContext {
     /// nil when absent.  Production boot path installs this
     /// once at registration time.
     pub websocket_metrics: Option<Arc<aegis_control::metrics::websocket::WebSocketMetrics>>,
+    /// WS-MSG3 — detector chain + mask handles for the WebSocket
+    /// message-inspection bridge. The bridge runs on a spawned task that
+    /// outlives the request handler, so it needs owned `Arc`/`Shared`
+    /// handles rather than the borrowed slice the HTTP path uses. `None`
+    /// (tests / builds that don't wire detectors) ⇒ the bridge forwards
+    /// without inspecting. Set once at boot in `run`.
+    pub ws_detectors:
+        Option<Arc<Vec<Box<dyn aegis_security::detectors::Detector>>>>,
+    pub ws_detector_mask: Option<aegis_security::detectors::SharedDetectorMask>,
     /// v2.3 §2.5 — interop control plane's per-feature/policy
     /// `enforce | log_only` store. The data-plane block paths
     /// consult this via `aegis_control::interop::rule_map::
@@ -236,6 +245,8 @@ impl ProxyContext {
             ),
             access_list_country_lookup: std::sync::OnceLock::new(),
             websocket_metrics: None,
+            ws_detectors: None,
+            ws_detector_mask: None,
             interop_modes: std::sync::OnceLock::new(),
             pow_issuer: std::sync::OnceLock::new(),
             ddos: std::sync::OnceLock::new(),
