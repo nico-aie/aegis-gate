@@ -1845,6 +1845,15 @@ pub(crate) async fn forward_allow_to_upstream(
             );
         };
 
+        // WS-MSG5 — strip `permessage-deflate` from the forwarded
+        // handshake when this route inspects frames, so the negotiated
+        // connection is uncompressed (compressed frames can't be
+        // decoded for inspection in v1).
+        let strip_ws_extensions = route_ctx
+            .ws_inspect
+            .as_ref()
+            .map(|c| c.is_active())
+            .unwrap_or(false);
         let upstream_handshake = match crate::proto::ws_forward::forward_websocket_upgrade(
             &parts.method,
             &parts.uri,
@@ -1852,6 +1861,7 @@ pub(crate) async fn forward_allow_to_upstream(
             &body_bytes,
             member.addr,
             std::time::Duration::from_secs(5),
+            strip_ws_extensions,
         )
         .await
         {

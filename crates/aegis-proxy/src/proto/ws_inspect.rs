@@ -157,6 +157,14 @@ impl Reassembly {
     }
 
     fn accept(&mut self, frame: OwnedFrame) -> FrameAction {
+        // Fail closed on a compressed frame. WS-MSG5 strips
+        // `permessage-deflate` from the forwarded handshake, so RSV1
+        // should never be set on an inspecting listener; if it is, we
+        // can't decode the payload to inspect it — close rather than
+        // forward an un-inspected compressed message.
+        if frame.header.rsv1 {
+            return FrameAction::Protocol(WsCodecError::CompressionUnsupported);
+        }
         let fin = frame.header.fin;
         match frame.header.opcode {
             // Control frames never participate in fragmentation and are
@@ -626,6 +634,18 @@ mod tests {
         assert_eq!(got, frame, "benign message forwarded verbatim");
         assert_eq!(stats.messages_blocked, 0);
         assert_eq!(stats.close_code, None);
+    }
+
+    #[tokio::test]
+    async fn compressed_rsv1_frame_fails_closed() {
+        // RSV1 set on a text frame (permessage-deflate) — the bridge
+        // can't decode it to inspect, so it closes (defence-in-depth;
+        // WS-MSG5 strips the extension at handshake so this is rare).
+        let mut frame = client_frame(Opcode::Text, b"compressed?", true, KEY);
+        frame[0] |= 0x40; // set RSV1
+        let (got, stats) = run_with(frame, big_cfg()).await;
+        assert!(got.is_empty(), "compressed frame must not be forwarded");
+        assert_eq!(stats.close_code, Some(ws_codec::close_code::PROTOCOL_ERROR));
     }
 
     #[tokio::test]

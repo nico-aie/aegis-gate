@@ -75,6 +75,11 @@ pub struct RouteConfigPatch {
     /// the operator can pull it without deleting. Defaults to true.
     #[serde(default = "default_route_enabled_patch")]
     pub enabled: bool,
+    /// WS-MSG5 — per-route WebSocket message inspection. `None` (the
+    /// common case) keeps the zero-copy bridge; round-trips through the
+    /// config plane so a dashboard toggle survives reloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ws_inspect: Option<aegis_core::config::WsInspectConfig>,
 }
 
 fn default_route_enabled_patch() -> bool {
@@ -106,6 +111,7 @@ impl RouteConfigPatch {
             auth_required: r.auth_required.clone(),
             default: r.default,
             enabled: r.enabled,
+            ws_inspect: r.ws_inspect.clone(),
         }
     }
 
@@ -137,10 +143,9 @@ impl RouteConfigPatch {
             max_concurrent_tunnels_per_ip: 0,
             default: self.default,
             enabled: self.enabled,
-            // WS-MSG5 wires the dashboard/API surface; the boot-YAML
-            // path carries `ws_inspect` today, API-created routes default
-            // off.
-            ws_inspect: None,
+            // WS-MSG5 — carry the dashboard/API `ws_inspect` block onto
+            // the live RouteConfig so it threads to the bridge.
+            ws_inspect: self.ws_inspect,
         })
     }
 }
@@ -443,6 +448,7 @@ state:
             auth_required: Vec::new(),
             default: false,
             enabled: true,
+            ws_inspect: None,
         }
     }
 

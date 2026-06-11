@@ -1497,7 +1497,7 @@ fn default_route_enabled() -> bool {
 
 /// Enforcement mode for WebSocket frame inspection — mirrors the global
 /// enforce-vs-log_only model.
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WsInspectMode {
     /// Emit the `websocket_frame_block` audit event but forward the
@@ -1511,7 +1511,7 @@ pub enum WsInspectMode {
 }
 
 /// Per-route WebSocket message-inspection settings (WS-MSG).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WsInspectConfig {
     /// Master switch. `false` (or the whole block absent) ⇒ today's
     /// zero-copy bridge, byte-for-byte unchanged.

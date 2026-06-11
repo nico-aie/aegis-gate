@@ -111,6 +111,8 @@ pub enum WsCodecError {
     MessageTooLarge,
     #[error("64-bit length has the high bit set")]
     LengthHighBitSet,
+    #[error("compressed frame (RSV1/permessage-deflate) cannot be inspected")]
+    CompressionUnsupported,
 }
 
 impl WsCodecError {
