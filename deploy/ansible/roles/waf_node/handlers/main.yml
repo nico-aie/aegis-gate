@@ -1,12 +1,19 @@
 ---
+# Restart the WAF on a binary/config change. Stops the CURRENT admin-listener owner
+# by port (covers WAFs started manually OR by a prior ansible run — not just the
+# pidfile), then starts a fresh detached instance and records its pid.
 - name: restart waf
   ansible.builtin.shell: |
     cd {{ deploy_dir }}
-    if [ -f run/waf.pid ]; then
-      kill "$(cat run/waf.pid)" 2>/dev/null || true
-      sleep 2
-      kill -9 "$(cat run/waf.pid)" 2>/dev/null || true
-    fi
+    stop_listener() {
+      PID=$(ss -ltnp 2>/dev/null | grep ':9443' | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
+      [ -n "$PID" ] && kill "$1" "$PID" 2>/dev/null || true
+    }
+    stop_listener -TERM
+    [ -f run/waf.pid ] && kill "$(cat run/waf.pid)" 2>/dev/null || true
+    sleep 3
+    stop_listener -KILL
+    sleep 1
     set -a; . ./.env; set +a
     setsid bash -c 'echo $$ > run/waf.pid; exec env AEGIS_INSECURE_COOKIES=1 \
       RUST_LOG="{{ rust_log }}" ./waf run --config ./waf.yaml >> logs/waf.json 2>&1' </dev/null &

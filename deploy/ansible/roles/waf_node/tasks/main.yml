@@ -87,8 +87,7 @@
 # ── Run (detached; survives the SSH session) ──────────────────────────────────
 - name: Is the WAF already running?
   ansible.builtin.shell: >
-    if [ -f {{ deploy_dir }}/run/waf.pid ] && kill -0 "$(cat {{ deploy_dir }}/run/waf.pid)" 2>/dev/null;
-    then echo running; else echo stopped; fi
+    if ss -ltn 2>/dev/null | grep -q ':9443'; then echo running; else echo stopped; fi
   register: waf_state
   changed_when: false
 
@@ -121,6 +120,8 @@
     status_code: "{{ item.code }}"
   loop:
     - { path: "/products", code: 200 }
-    - { path: "/?q=1' OR '1'='1", code: 403 }
+    # SQLi payload URL-encoded (the uri module rejects raw spaces/quotes); the WAF
+    # decodes it and still detects → 403.  decoded: 1' OR '1'='1
+    - { path: "/?q=1%27%20OR%20%271%27%3D%271", code: 403 }
   loop_control: { label: "{{ item.path }} → {{ item.code }}" }
   tags: verify

@@ -16,5 +16,6 @@
   hosts: waf
   gather_facts: true        # needs ansible_env.HOME / ansible_host
   serial: 1                 # one node at a time → a bad config can't take the whole fleet down
+  force_handlers: true      # run the restart even if a later task (e.g. a smoke test) fails
   roles:
     - waf_node
