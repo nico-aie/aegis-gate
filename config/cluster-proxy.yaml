@@ -1,0 +1,124 @@
+# Aegis-Gate — PROXY-protocol test fixture (single node)
+#
+# Drives `tests/cluster/10-proxy-protocol-client-ip.sh`. A single WAF
+# node with a data listener in `accept_proxy: strict` mode, trusting
+# loopback as the load balancer. The test script *is* the trusted LB:
+# it opens a TCP connection from 127.0.0.1 (inside `trusted_proxies`)
+# and prepends a PROXY v1 header asserting the real client IP, exactly
+# as nginx `stream { proxy_protocol on; }` would in production.
+#
+# Deliberately self-contained: `state.backend: in_memory` and AI off so
+# the rig needs only `target/release/waf` — no Redis, no docker, no
+# model file. The differential-risk assertion is per-client and works
+# single-node (it proves per-IP buckets key on the real client, not the
+# collapsed LB IP).
+#
+# Bring-up:
+#   target/release/waf run --config config/cluster-proxy.yaml &
+
+node:
+  id: "waf-proxy"
+
+listeners:
+  data:
+    - bind: "0.0.0.0:8080"
+      tls: false
+      # The whole point of this fixture: every connection must arrive
+      # via the (loopback) LB carrying a PROXY header. A header-less or
+      # untrusted connection is closed.
+      accept_proxy: strict
+  admin:
+    bind: "127.0.0.1:9443"
+
+# REQUIRED when any listener sets accept_proxy: the CIDR(s) of the load
+# balancer permitted to assert the client IP. The test connects from
+# loopback, so 127.0.0.1/32 is the "LB". A PROXY header from any other
+# source is closed (anti-spoofing) — but at a loopback-only test edge
+# that path is exercised by the malformed/strict-missing cases.
+proxy:
+  trusted_proxies:
+    - "127.0.0.1/32"
+
+# Same dashboard_auth fixture as cluster-{a,b}.yaml so `_common.sh`
+# `login()` works with the shared test creds. Hash is for the password
+# `aegis-test-1234`. TEST-ONLY — never production values.
+admin:
+  dashboard_auth:
+    password_hash_ref: '$argon2id$v=19$m=19456,t=2,p=1$DfRgVNq6Cb+eN3BEMmExAQ$69SVZBNpMFjN4evfN8g+U5jnmP56Gwx3AGaZFr32ZzY'
+    csrf_secret_ref:   "test-csrf-secret-do-not-use-in-production-32b"
+    session_ttl_idle: "30m"
+    session_ttl_absolute: "8h"
+    ip_allowlist:
+      - "127.0.0.1/32"
+      - "::1/128"
+    totp_enabled: false
+
+# AI off — keeps the rig dependency-free (no ONNX model file needed).
+ai:
+  enabled: false
+
+routes:
+  - id: catch-all
+    path: "/"
+    match_type: prefix
+    upstream: stub-pool
+
+upstreams:
+  stub-pool:
+    members:
+      - addr: "127.0.0.1:8081"   # no real backend; benign reqs 502 (no risk)
+    lb: round_robin
+
+# In-memory state — single node, no Redis. The per-IP risk tracker the
+# `/api/risk/<ip>` endpoint reads works the same regardless of backend.
+state:
+  backend: in_memory
+
+detectors:
+  sqli:             { enabled: true }
+  xss:              { enabled: true }
+  path_traversal:   { enabled: true }
+  ssrf:             { enabled: true }
+  header_injection: { enabled: true }
+  body_abuse:       { enabled: true }
+  recon:            { enabled: true }
+  brute_force:      { enabled: true }
+
+risk:
+  weights:
+    bad_asn: 15
+    bad_ja4: 10
+    failed_auth: 20
+    detector_hit: 25
+    bot_unknown: 10
+    repeat_offender: 15
+  decay_half_life: "5m"
+  thresholds:
+    challenge_at: 40
+    block_at:     80
+    max:          100
+  trust_recovery:
+    per_hour: 30
+  strikes:
+    block_at: 50
+
+rate_limit:
+  buckets:
+    - id: global-ip
+      scope: global
+      key: ip
+      algo: sliding_window
+      limit: 10000000
+      window: "1m"
+
+rules:
+  paths: []
+  max_rule_count: 10000
+  strict_compile: false
+
+observability:
+  prometheus:
+    path: "/metrics"
+  access_log:
+    format: json
+    sink: stdout

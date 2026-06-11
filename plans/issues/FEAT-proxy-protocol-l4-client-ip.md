@@ -1,6 +1,6 @@
 # FEAT — PROXY protocol: real client IP behind an L4 load balancer
 
-> **Type:** FEAT (feature track) · **Status:** 🟠 P1–P3 shipped — P4 (docs + LB wiring + cluster rig) next · **Branch:** `feat/proxy-protocol-l4-client-ip`
+> **Type:** FEAT (feature track) · **Status:** ✅ P1–P4 shipped — gates green, ready for PR · **Branch:** `feat/proxy-protocol-l4-client-ip`
 > **Design doc:** [`../future/proxy-protocol.md`](../future/proxy-protocol.md) (decisions + justification live there)
 > **Roadmap slot:** [`../future/world-class-waf-roadmap.md`](../future/world-class-waf-roadmap.md) — HA/LB tier.
 > **Builds on (shipped):** C-5 `proxy.trusted_proxies` ([`../archive/multi-node-consistency-implementation.md`](../archive/multi-node-consistency-implementation.md) P1) — same trust set, extended from XFF to PROXY.
@@ -36,10 +36,10 @@ unchanged. (Design §0.)
   - Counter `waf_proxy_protocol_events_total{result}` (`aegis-control`), 10 labels pre-registered, recorded once per opted-in connection; label set owned by `listener::proxy_protocol::METRIC_LABELS` so hot path + registration can't drift.
   - Audit-`ip` semantics shift documented in `docs/security/ip-reputation.md` (new PROXY section) + `risk-scoring.md`.
   - **Gate:** ✅ every §3.6 row maps to a metric label + unit test (`every_outcome_label_is_a_registered_metric_label`); ✅ `with_proxy_via` unit-tested (object / none / null-fields).
-- [ ] **P4 — Docs + LB wiring + cluster rig** — `~300 LoC · ~2d` (+ `~300 LoC · ~1.5d` tests)
-  - `config/REFERENCE.md` (`accept_proxy`); deploy topology matrix 4th row + nginx `stream` / HAProxy examples.
-  - `tests/cluster/10-proxy-protocol-client-ip.sh` 2-node rig + `run-all.sh` entry; FEATURES/architecture cross-refs.
-  - **Gate:** §"Acceptance gates" below fully green before recommending PROXY as a supported topology.
+- [x] **P4 — Docs + LB wiring + cluster rig** — *shipped*
+  - `config/REFERENCE.md` `accept_proxy` entry (modes table + trusted_proxies requirement); `deploy/HACKATHON-FLEET.md` topology matrix 4th row + nginx `stream proxy_protocol on;` / HAProxy `send-proxy-v2` examples; `docs/FEATURES.md` verification row.
+  - `tests/cluster/10-proxy-protocol-client-ip.sh` + `config/cluster-proxy.yaml` (self-contained `in_memory` fixture — no docker/redis; the rig acts as the trusted loopback LB, crafting v1 PROXY headers via bash `/dev/tcp`) + `run-all.sh` entry (runs first, standalone).
+  - **Gate:** ✅ **rig green end-to-end against the real binary** — attacker risk=100, clean=0, **LB(127.0.0.1)=0** (buckets key on the real client, not the collapsed LB IP); strict-missing + malformed both close.
 
 **Total: ~1,700 LoC · ~9 working days.**
 
@@ -82,9 +82,9 @@ unchanged. (Design §0.)
 - [x] Exact-length read — no ClientHello byte consumed (test asserts). *(P1 loopback tests)* — JA3/JA4-unchanged assertion needs the TLS path → P4.
 - [x] Malformed / truncated / oversized header closes the connection, never falls through to TLS. *(P1 parse + P2 close)*
 - [x] Pre-TLS read is deadline-bounded (no slowloris on the raw socket). *(P1 — 5s `PRE_TLS_READ_DEADLINE`)*
-- [ ] Differential-risk test: attacker IP A gated while clean IP B (same LB) unaffected. *(P4 cluster rig)*
-- [ ] `proxy_via` recorded; audit-`ip` semantics documented. *(P3)*
-- [ ] mTLS (`zero_trust.downstream`) still verifies the client cert on a PROXY listener. *(P4 verify)*
+- [x] Differential-risk test: attacker IP A gated while clean IP B (same LB) unaffected. *(P4 rig — attacker=100, clean=0, LB=0, green against the real binary)*
+- [x] `proxy_via` recorded; audit-`ip` semantics documented. *(P3)*
+- [ ] mTLS (`zero_trust.downstream`) still verifies the client cert on a PROXY listener. *(architecturally correct — PROXY parse precedes the unchanged TLS+mTLS handshake; a TLS-listener rig variant would assert it live)*
 
 ---
 

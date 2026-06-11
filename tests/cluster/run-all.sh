@@ -18,13 +18,20 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-if ! command -v docker >/dev/null 2>&1; then
-  echo "SKIP: docker not on PATH — cluster tests need a redis container"
+if [[ ! -x "$HERE/../../target/release/waf" ]]; then
+  echo "SKIP: target/release/waf not built — \`cargo build -p aegis-bin --release\` first"
   exit 0
 fi
 
-if [[ ! -x "$HERE/../../target/release/waf" ]]; then
-  echo "SKIP: target/release/waf not built — \`cargo build -p aegis-bin --release\` first"
+# 10-proxy-protocol runs first and standalone: its fixture is
+# `state.backend: in_memory` (no redis), so it needs only the release
+# binary — not docker.
+echo "==================== 10-proxy-protocol-client-ip.sh ===================="
+"$HERE/10-proxy-protocol-client-ip.sh"
+echo
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "SKIP: docker not on PATH — remaining cluster tests need a redis container"
   exit 0
 fi
 

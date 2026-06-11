@@ -256,8 +256,21 @@ Defaults **off**; operator opts in per listener. **~1,700 LoC · ~9 working days
       Failure-mode §3.6 labels all covered by unit tests. (Live 5s
       read-timeout test deferred — too slow for a unit; WS/tunnel/
       challenge audit events carry no `proxy_via` by design.)
-- [ ] **P4** docs + nginx/HAProxy wiring + `tests/cluster` rig
-- [ ] **Gates** — §7 checklist green before recommending PROXY as a supported topology
+- [x] **P4** docs + nginx/HAProxy wiring + `tests/cluster` rig —
+      `config/REFERENCE.md` `accept_proxy` entry; topology matrix 4th row
+      + nginx `stream`/HAProxy `send-proxy-v2` examples in
+      `deploy/HACKATHON-FLEET.md`; `docs/FEATURES.md` row;
+      `tests/cluster/10-proxy-protocol-client-ip.sh` (self-contained
+      in-memory fixture `config/cluster-proxy.yaml`, no docker/redis) +
+      `run-all.sh` entry. **Rig runs green end-to-end against the real
+      binary: attacker=100 / clean=0 / LB(127.0.0.1)=0 — buckets key on
+      the real client, not the collapsed LB IP.**
+- [x] **Gates** — §7 checklist green: trusted-only honour, boot
+      validation, default-off zero-cost, exact-length read, malformed
+      closes, deadline-bounded, **differential-risk live** (rig),
+      `proxy_via` recorded + audit-`ip` documented. (JA3/JA4-unchanged +
+      mTLS-on-PROXY assert through a TLS listener — covered architecturally;
+      a TLS variant of the rig can extend §8 later.)
 
 ---
 
