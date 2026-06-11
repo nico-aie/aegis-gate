@@ -463,6 +463,18 @@ function useRealLiveFeed(maxLen = 60, paused = false) {
             : (typeof tsRaw === 'string' ? Date.parse(tsRaw) : Date.now());
           const risk = ev.risk_score || 0;
           const action = ev.action || 'allow';
+          // F7/F8 (2026-06-11) — when the config plane applies a new
+          // version fleet-wide, re-broadcast it so version-sensitive
+          // cards (e.g. the detector mask) re-sync to authoritative
+          // state without a hard page reload. Carries the applied
+          // version so listeners can refresh their `If-Match` basis.
+          if (action === 'config_reload') {
+            try {
+              window.dispatchEvent(new CustomEvent('aegis:config-reload', {
+                detail: { version: f.version ?? ev.version ?? null },
+              }));
+            } catch (_) { /* CustomEvent unsupported — non-fatal */ }
+          }
           const ip = ev.client_ip || ev.ip || '0.0.0.0';
           const ruleId = ev.rule_id || ev.reason || null;
           // WS-T6 — surface the application protocol so the
@@ -641,10 +653,17 @@ function useConfigVersionsApi(limit = 50) {
 //
 // `body` is JSON-stringified when present; pass null for
 // methods like DELETE / no-body POST.
-async function csrfMutate(url, { method = 'POST', body = null } = {}) {
+async function csrfMutate(url, { method = 'POST', body = null, ifMatch = undefined } = {}) {
   const csrf = document.cookie.split('; ')
     .find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
   const headers = { 'x-csrf-token': csrf };
+  // F7 (2026-06-11) — optimistic-concurrency precondition. Callers
+  // that read a versioned resource (e.g. the detector mask) echo the
+  // version here so the server rejects (412) a write built on a stale
+  // view instead of clobbering a concurrent change.
+  if (ifMatch !== undefined && ifMatch !== null) {
+    headers['if-match'] = String(ifMatch);
+  }
   let init = { method, credentials: 'same-origin', headers };
   if (body !== null && body !== undefined) {
     headers['content-type'] = 'application/json';
@@ -942,8 +961,15 @@ function useTopRiskPathsApi(limit = 200, top = 8) {
 function useDetectorsApi() {
   return useApi('/api/detectors', { intervalMs: 30000, fallback: null });
 }
-async function detectorsPut(body) {
-  return csrfMutate('/api/detectors', { method: 'PUT', body: JSON.stringify(body) });
+// F7 (2026-06-11) — `ifMatch` is the `config_version` the caller last
+// read from GET /api/detectors. The server uses it as the CAS
+// `expected`, returning 412 if the mask moved under the caller.
+async function detectorsPut(body, { ifMatch } = {}) {
+  return csrfMutate('/api/detectors', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+    ifMatch,
+  });
 }
 
 // Hook: cluster, slo, certs, alerts, gitops, upstreams (Tracking page)

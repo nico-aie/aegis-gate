@@ -923,6 +923,12 @@ pub(crate) fn admin_router(
         // plus compliance lock-list. PUT is handled in
         // `handle_admin_request` (async — needs to read body).
         "/api/detectors" => {
+            // F7 (2026-06-11): the cluster path intercepts this GET on
+            // the ASYNC dispatch (`admin_dispatch::handle_detectors_get`)
+            // to stamp `config_version` from the store. This sync arm is
+            // the fallback for non-cluster / test builds (no async store
+            // read available here) and renders without a version — the
+            // client then uses the legacy unconditional PUT.
             let modes: Vec<aegis_core::config::ComplianceMode> = cfg
                 .compliance
                 .as_ref()

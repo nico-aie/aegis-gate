@@ -3315,6 +3315,11 @@ function DetectorMaskCard() {
   const lockedClasses = api.data?.locked_classes || [];
   const complianceModes = api.data?.compliance_modes || [];
   const scoreTable = api.data?.score_table || [];
+  // F7 (2026-06-11) — the config version this mask was rendered from.
+  // Echoed in `If-Match` on every PUT so a concurrent toggle can't be
+  // silently clobbered. `undefined` (single-node / no config plane) →
+  // legacy unconditional PUT.
+  const configVersion = api.data?.config_version;
 
   // 2026-06-05 — redesign: the Base mask is now a list of rows, each
   // with an inline on/off switch that commits immediately (one PUT per
@@ -3378,6 +3383,18 @@ function DetectorMaskCard() {
     });
   }, [api.data]);
 
+  // F7/F8 (2026-06-11) — re-sync to authoritative mask + version when
+  // the config plane applies a new version anywhere in the fleet
+  // (config_reload SSE, re-broadcast by data.jsx). A soft route change
+  // no longer leaves the switches stale vs. the engine; no hard reload
+  // needed. The reconcile effect above then drops any optimistic flip
+  // the fresh mask has caught up to.
+  useEffectP(() => {
+    const onReload = () => { api.reload && api.reload(); };
+    window.addEventListener('aegis:config-reload', onReload);
+    return () => window.removeEventListener('aegis:config-reload', onReload);
+  }, [api.reload]);
+
   if (!baseMask) {
     return (
       <div className="card" style={{ marginBottom: 12, padding: 12 }}>
@@ -3407,13 +3424,36 @@ function DetectorMaskCard() {
   // success the toast carries an Undo that re-PUTs the prior mask.
   async function commitToggle(cls, next, { undoable = true } = {}) {
     if (rowBusy || lockedClasses.includes(cls)) return;
-    const prevMask = baseMask;
-    const nextMask = { ...baseMask, [cls]: next };
     const label = CLASS_LABELS[cls] || cls;
     setOptimistic(o => ({ ...o, [cls]: next }));
     setRowBusy(cls);
     try {
-      const r = await window.detectorsPut({ mask: nextMask });
+      // F7 (2026-06-11) — commit against the freshest mask + version we
+      // hold, echoing it in `If-Match`. On a 412 (the mask moved under
+      // us — a concurrent toggle or a propagating change) re-fetch the
+      // authoritative state and replay JUST this one flip onto it, so
+      // the operator's intent survives without clobbering the other
+      // change. Bounded retries; falls back to the legacy unconditional
+      // PUT when the server doesn't supply a version (configVersion
+      // undefined → no If-Match → 409 handled by csrfMutate's retry).
+      let mask = baseMask;
+      let version = configVersion;
+      let r;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        r = await window.detectorsPut({ mask: { ...mask, [cls]: next } }, { ifMatch: version });
+        if (isHttpOk(r)) break;
+        if (r && r.status === 412 && attempt < 2) {
+          const fresh = await fetch('/api/detectors', { credentials: 'same-origin' })
+            .then(res => (res.ok ? res.json() : null))
+            .catch(() => null);
+          if (fresh && fresh.mask) {
+            mask = fresh.mask;
+            version = fresh.config_version;
+            continue;
+          }
+        }
+        break;
+      }
       if (isHttpOk(r)) {
         window.aegisToast(
           `${label} ${next ? 'enabled' : 'disabled'}`,
@@ -3427,7 +3467,12 @@ function DetectorMaskCard() {
         api.reload && api.reload();
       } else {
         setOptimistic(o => { const n = { ...o }; delete n[cls]; return n; });
-        window.aegisToast(`Toggle failed: ${errMsg(r)}`, 'err');
+        const why = r && r.status === 412
+          ? 'mask changed under you — reloaded latest; try again'
+          : errMsg(r);
+        window.aegisToast(`Toggle failed: ${why}`, 'err');
+        // Re-sync so the switches reflect the true engine state.
+        api.reload && api.reload();
       }
     } catch (e) {
       setOptimistic(o => { const n = { ...o }; delete n[cls]; return n; });
@@ -4358,11 +4403,21 @@ function PageTierConfig() {
         const detPayload = detectorOverride.mask
           ? { overrides: { [name]: detectorOverride.mask } }
           : { overrides: { [name]: null } };
-        const dr = await window.detectorsPut(detPayload);
+        // F7 (2026-06-11) — version-guard the per-tier override PUT too
+        // (same clobber risk as a base-mask flip). Echo the version we
+        // last read; a 412 means a concurrent change landed — tell the
+        // operator to reopen the editor against fresh state rather than
+        // overwrite it.
+        const dr = await window.detectorsPut(detPayload, {
+          ifMatch: detectorsApi.data?.config_version,
+        });
         const detOk = dr && typeof dr.status === 'number' && dr.status >= 200 && dr.status < 300;
         if (!detOk) {
-          const msg = (dr && (dr.message || dr.error || dr.reason)) || `status ${dr?.status ?? '?'}`;
+          const msg = dr && dr.status === 412
+            ? 'detector mask changed since you opened this editor — reopen and reapply'
+            : ((dr && (dr.message || dr.error || dr.reason)) || `status ${dr?.status ?? '?'}`);
           window.aegisToast(`Detector override save failed: ${msg}`, 'err');
+          detectorsApi.reload && detectorsApi.reload();
           return;
         }
       }
@@ -12452,7 +12507,7 @@ function DdosEditModal({ current, onClose, onSaved }) {
               <input className="input" type="number" min="1.01" step="0.1" value={spikeMultiplier}
                 onChange={e => setSpikeMultiplier(e.target.value)} disabled={busy}
                 style={{ marginTop: 4, width: '100%' }} />
-              <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>spike trigger (× baseline RPS), > 1.0</div>
+              <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>spike trigger (× baseline RPS), {'>'} 1.0</div>
             </label>
             <label style={{ fontSize: 12, gridColumn: 'span 2' }}>
               tightened_per_ip_rps

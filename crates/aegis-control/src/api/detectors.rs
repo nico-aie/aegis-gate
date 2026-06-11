@@ -51,6 +51,16 @@ pub struct DetectorsResponse {
     /// consts (`aegis_security::detectors::scores::*`) for every
     /// `Signal { score: ... }` literal it emits.
     pub score_table: Vec<ScoreRow>,
+    /// F7 (2026-06-11 cluster QC) — the config-doc version this node
+    /// has applied (the version that produced the mask above). The
+    /// dashboard echoes it back in the `If-Match` header on
+    /// `PUT /api/detectors` so the detector CAS rejects (412) a write
+    /// built on a stale view instead of silently clobbering a
+    /// concurrent toggle. `None` (omitted on the wire) when the node
+    /// has no config-plane version yet (single-node / fresh boot) —
+    /// the client then falls back to the legacy unconditional PUT.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_version: Option<u64>,
 }
 
 /// Row consumed by the dashboard's per-detector "Risk score" column.
@@ -140,8 +150,20 @@ pub fn enforce_compliance_clamp(
     }
 }
 
-/// Render the GET payload from a live mask snapshot.
+/// Render the GET payload from a live mask snapshot. No config
+/// version (legacy callers / tests) — see [`render_get_versioned`].
 pub fn render_get(mask: &SharedDetectorMask, modes: &[ComplianceMode]) -> String {
+    render_get_versioned(mask, modes, None)
+}
+
+/// Render the GET payload, stamping `config_version` (F7) so the
+/// dashboard can echo it in `If-Match` on the next PUT. Pass `None`
+/// to omit the field (single-node / no config plane).
+pub fn render_get_versioned(
+    mask: &SharedDetectorMask,
+    modes: &[ComplianceMode],
+    config_version: Option<u64>,
+) -> String {
     let state = mask.load_state();
     let mut overrides: BTreeMap<&'static str, DetectorMaskBody> = BTreeMap::new();
     for tier in ALL_TIERS {
@@ -159,6 +181,7 @@ pub fn render_get(mask: &SharedDetectorMask, modes: &[ComplianceMode]) -> String
             .collect(),
         compliance_modes: modes.iter().map(compliance_mode_str).collect(),
         score_table: CATALOG.iter().map(ScoreRow::from).collect(),
+        config_version,
     };
     serde_json::to_string(&body).unwrap_or_else(|_| String::from("{}"))
 }
