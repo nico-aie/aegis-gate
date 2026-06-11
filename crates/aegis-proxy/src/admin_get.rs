@@ -325,6 +325,15 @@ pub(crate) fn admin_router(
                     .as_ref()
                     .map(|lv| lv.our_node.clone())
                     .unwrap_or_default(),
+                // F2 (2026-06-11) — self-describing so an external sweep
+                // doesn't read a removed `version` field as `undefined`.
+                // This is THIS node's local audit-chain length, NOT the
+                // shared cluster config-doc version (a different counter).
+                "note": "audit_chain_len = this node's local audit-chain length \
+                         (increments per audit-mutation); it is NOT the cluster \
+                         config-doc version. For the shared config version + the \
+                         per-node applied roster, GET /api/config.",
+                "cluster_config_version_endpoint": "/api/config",
             });
             json_body_response(200, body.to_string(), "private, no-store")
         }
