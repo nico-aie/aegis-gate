@@ -1,6 +1,13 @@
 # WS-MSG — WebSocket message-level inspection (text frames)
 
-> **Status (2026-06-11): Design only — not started.** Target branch: `develop`.
+> **Status (2026-06-11): ✅ Shipped (WS-MSG1–6).** Branch: `feat/websocket-message-inspection`.
+> Tracker: [`../issues/FEAT-websocket-message-inspection.md`](../issues/FEAT-websocket-message-inspection.md).
+> Two decisions changed from this design during implementation:
+> (1) forwarding **preserves the original client masking** (not unmasked, §4.1) —
+> required because `tokio-tungstenite`-class servers reject unmasked client frames;
+> (2) an **oversize reassembled message is skipped + forwarded (metered), not closed
+> `1009`** (operator steer) — favours availability for large legit messages. See
+> `docs/security/websocket.md` for the shipped behaviour.
 > Track ID prefix `WS-MSG<n>`. Implementation tracker:
 > [`../issues/FEAT-websocket-message-inspection.md`](../issues/FEAT-websocket-message-inspection.md)
 > (phase checklist + acceptance gates). This doc holds the design rationale.
