@@ -1,0 +1,126 @@
+---
+# Deploy + run a WAF node from the prebuilt binary. Idempotent: re-running only
+# changes what drifted; config/binary changes trigger a restart (handlers).
+
+- name: Ensure node directories
+  ansible.builtin.file:
+    path: "{{ deploy_dir }}/{{ item }}"
+    state: directory
+    mode: "0755"
+  loop: [logs, logs/audit, certs, run, runtime/onnxruntime, data/ai_model, data/geoip]
+
+# ── Binary (built once on the builder) ────────────────────────────────────────
+- name: Distribute the prebuilt WAF binary
+  ansible.builtin.copy:
+    src: "{{ builder_bin }}"          # path on the control node (the builder)
+    dest: "{{ deploy_dir }}/waf"
+    mode: "0755"
+  notify: restart waf
+
+# ── AI runtime: onnxruntime .so (must match ort rc.12 → 1.24.2) ───────────────
+- name: Check for onnxruntime lib
+  ansible.builtin.stat:
+    path: "{{ deploy_dir }}/runtime/onnxruntime/libonnxruntime.so"
+  register: ort_so
+
+- name: Fetch + unpack onnxruntime {{ ort_version }}
+  when: not ort_so.stat.exists
+  block:
+    - name: Download onnxruntime tarball
+      ansible.builtin.get_url:
+        url: "https://github.com/microsoft/onnxruntime/releases/download/v{{ ort_version }}/onnxruntime-linux-x64-{{ ort_version }}.tgz"
+        dest: "/tmp/onnxruntime-{{ ort_version }}.tgz"
+        mode: "0644"
+    - name: Unpack onnxruntime
+      ansible.builtin.unarchive:
+        src: "/tmp/onnxruntime-{{ ort_version }}.tgz"
+        dest: "/tmp/"
+        remote_src: true
+    - name: Install onnxruntime libs
+      ansible.builtin.shell: >
+        cp /tmp/onnxruntime-linux-x64-{{ ort_version }}/lib/libonnxruntime.so*
+        {{ deploy_dir }}/runtime/onnxruntime/
+      notify: restart waf
+
+# ── AI model + geoip (copied from the builder; optional if absent) ────────────
+- name: Distribute the AI model
+  ansible.builtin.copy:
+    src: "{{ ai_model_src }}"
+    dest: "{{ deploy_dir }}/data/ai_model/waf_model.onnx"
+    mode: "0644"
+  when: ai_enabled | bool
+  notify: restart waf
+
+- name: Distribute geoip databases (if present on the builder)
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ deploy_dir }}/data/geoip/"
+    mode: "0644"
+  with_fileglob: "{{ geoip_src_dir }}/*.mmdb"
+
+# ── TLS self-signed cert with THIS node's IP in the SAN ───────────────────────
+- name: Generate self-signed TLS cert (this node's IP in the SAN)
+  ansible.builtin.command:
+    cmd: >
+      openssl req -x509 -newkey rsa:2048 -nodes -days 365
+      -keyout {{ deploy_dir }}/certs/selfsigned.key
+      -out    {{ deploy_dir }}/certs/selfsigned.crt
+      -subj "/CN=aegis-gate.local"
+      -addext "subjectAltName=DNS:localhost,DNS:aegis-gate.local,IP:127.0.0.1,IP:{{ ansible_host }}"
+    creates: "{{ deploy_dir }}/certs/selfsigned.crt"
+
+# ── Config + env (templated per node) ─────────────────────────────────────────
+- name: Template waf.yaml
+  ansible.builtin.template:
+    src: waf.yaml.j2
+    dest: "{{ deploy_dir }}/waf.yaml"
+    mode: "0644"
+  notify: restart waf
+
+- name: Template .env
+  ansible.builtin.template:
+    src: waf.env.j2
+    dest: "{{ deploy_dir }}/.env"
+    mode: "0600"
+  notify: restart waf
+
+# ── Run (detached; survives the SSH session) ──────────────────────────────────
+- name: Is the WAF already running?
+  ansible.builtin.shell: >
+    if [ -f {{ deploy_dir }}/run/waf.pid ] && kill -0 "$(cat {{ deploy_dir }}/run/waf.pid)" 2>/dev/null;
+    then echo running; else echo stopped; fi
+  register: waf_state
+  changed_when: false
+
+- name: Start the WAF (detached, pid → run/waf.pid)
+  ansible.builtin.shell: |
+    cd {{ deploy_dir }}
+    set -a; . ./.env; set +a
+    setsid bash -c 'echo $$ > run/waf.pid; exec env AEGIS_INSECURE_COOKIES=1 \
+      RUST_LOG="{{ rust_log }}" ./waf run --config ./waf.yaml >> logs/waf.json 2>&1' </dev/null &
+    disown
+  args:
+    executable: /bin/bash
+  when: waf_state.stdout == "stopped"
+
+# ── Verify ────────────────────────────────────────────────────────────────────
+- name: Wait for readiness (/healthz/ready)
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:9443/healthz/ready"
+    status_code: 200
+  register: ready
+  retries: 20
+  delay: 1
+  until: ready.status == 200
+  tags: verify
+
+- name: Smoke test — legit 200, SQLi blocked
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:8443{{ item.path }}"
+    validate_certs: false
+    status_code: "{{ item.code }}"
+  loop:
+    - { path: "/products", code: 200 }
+    - { path: "/?q=1' OR '1'='1", code: 403 }
+  loop_control: { label: "{{ item.path }} → {{ item.code }}" }
+  tags: verify

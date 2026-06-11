@@ -1,0 +1,15 @@
+---
+- name: restart waf
+  ansible.builtin.shell: |
+    cd {{ deploy_dir }}
+    if [ -f run/waf.pid ]; then
+      kill "$(cat run/waf.pid)" 2>/dev/null || true
+      sleep 2
+      kill -9 "$(cat run/waf.pid)" 2>/dev/null || true
+    fi
+    set -a; . ./.env; set +a
+    setsid bash -c 'echo $$ > run/waf.pid; exec env AEGIS_INSECURE_COOKIES=1 \
+      RUST_LOG="{{ rust_log }}" ./waf run --config ./waf.yaml >> logs/waf.json 2>&1' </dev/null &
+    disown
+  args:
+    executable: /bin/bash

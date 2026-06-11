@@ -1,0 +1,23 @@
+---
+# Build the WAF binary ONCE on the builder host. Distributed to every node by
+# the waf_node role (build-once-and-distribute). Runs on the `builder` group only.
+
+- name: Compile the WAF release binary (one time, on the builder)
+  ansible.builtin.command:
+    cmd: cargo build -p aegis-bin --release --features "{{ waf_features }}"
+    chdir: "{{ builder_repo }}"
+  environment:
+    PATH: "{{ ansible_env.HOME }}/.cargo/bin:{{ ansible_env.PATH }}"
+  register: cargo_build
+  changed_when: "'Compiling aegis-bin' in cargo_build.stderr or 'Finished' in cargo_build.stderr"
+
+- name: Confirm the binary exists
+  ansible.builtin.stat:
+    path: "{{ builder_bin }}"
+  register: bin_stat
+
+- name: Fail if the build produced no binary
+  ansible.builtin.assert:
+    that: bin_stat.stat.exists
+    fail_msg: "Build did not produce {{ builder_bin }} — check the cargo output."
+    success_msg: "WAF binary ready: {{ builder_bin }} ({{ (bin_stat.stat.size / 1048576) | round(1) }} MB)"

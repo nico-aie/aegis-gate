@@ -1,0 +1,57 @@
+---
+# ── Shared deployment config (one place to change the whole fleet) ────────────
+# Override any of these per-host in the inventory or host_vars/<host>.yml.
+
+# Where the repo lives on the CONTROL node (the builder) — source of the binary,
+# the AI model, geoip dbs, etc. site.yml is in deploy/ansible/, so the repo root
+# is two levels up.
+builder_repo: "{{ playbook_dir }}/../.."
+builder_bin: "{{ builder_repo }}/target/release/waf"
+
+# Where each node RUNS from (binary + ./waf.yaml + ./waf_audit.log per contract §8).
+deploy_dir: "{{ ansible_env.HOME }}/aegis-gate"
+
+# Cargo feature set (the `make run-copilot` set). ort is load-dynamic.
+waf_features: "redis geoip alerts ai affinity otel llm"
+
+# ── Infra endpoints (the infra host hosts all shared services) ────────────────
+infra_host: "10.20.0.72"
+redis_url: "redis://{{ infra_host }}:6379"
+otel_endpoint: "http://{{ infra_host }}:4317"
+mock_host: "{{ infra_host }}"          # multi-protocol mock :9991-9994
+
+# ── PROXY protocol / XFF trust (C-5 + FEAT-proxy-protocol) ────────────────────
+# The nginx LB reaches every node from the infra host. accept_proxy: optional so
+# direct hits (contract benchmarker) still work; boot REQUIRES trusted_proxies.
+accept_proxy_mode: "optional"
+trusted_proxies:
+  - "127.0.0.1/32"
+  - "{{ infra_host }}/32"
+
+# ── AI / geoip runtime assets ─────────────────────────────────────────────────
+ort_version: "1.24.2"                  # MUST match ort 2.0.0-rc.12 (ort-sys dist.txt)
+ai_enabled: true
+ai_confidence_threshold: 0.95
+ai_model_src: "{{ builder_repo }}/data/ai_model/waf_model.onnx"   # copied to each node
+geoip_src_dir: "{{ builder_repo }}/data/geoip"                    # GeoLite2-*.mmdb (optional)
+
+# ── Risk / runtime ────────────────────────────────────────────────────────────
+risk_challenge_at: 40
+risk_block_at: 80
+rust_log: "info,hyper=warn,hyper_util=warn,h2=warn,tower=warn,rustls=warn,tonic=warn,maxminddb=warn"
+
+# ── Copilot (LLM) — base URL public, key is a secret (see below) ──────────────
+copilot_enabled: true
+copilot_base_url: "https://console.bizbrain.app/v1"
+copilot_model: "Qwen3.6-35B-A3B"
+
+# ── Secrets ───────────────────────────────────────────────────────────────────
+# DEV defaults shown; for anything real put these in an ansible-vault file
+# (group_vars/vault.yml) and `ansible-playbook --ask-vault-pass`. The csrf_secret
+# MUST be identical across nodes (leaderless console SSO); control_secret = §2.2.
+control_secret: "waf-hackathon-2026-ctrl"
+csrf_secret: "contract-csrf-secret-do-not-use-in-prod-32b"
+# argon2id hash of the dashboard password (dev: aegis-test-1234)
+dashboard_password_hash: "$argon2id$v=19$m=19456,t=2,p=1$DfRgVNq6Cb+eN3BEMmExAQ$69SVZBNpMFjN4evfN8g+U5jnmP56Gwx3AGaZFr32ZzY"
+# llm_api_key: provide via vault or `-e llm_api_key=...`; falls back to the node's env.
+llm_api_key: "{{ lookup('env', 'LLM_API_KEY') | default('', true) }}"

@@ -1,0 +1,108 @@
+# MANAGED BY ANSIBLE — do not edit on the node; change deploy/ansible/templates/waf.yaml.j2
+# Aegis-Gate node config (./waf.yaml). Contract v2.3/2.5 §8. node.id MUST be unique.
+node:
+  id: "{{ node_id }}"
+
+listeners:
+  data:
+    - bind: "0.0.0.0:8080"          # plaintext
+    - bind: "0.0.0.0:8443"          # TLS — WAF terminates → JA3/JA4 → device_fp
+      tls: true
+      accept_proxy: {{ accept_proxy_mode }}   # PROXY protocol: real client IP behind the L4 LB
+  admin:
+    bind: "0.0.0.0:9443"            # 0.0.0.0 so the infra nginx admin VIP can reach it
+
+# PROXY/XFF trust boundary — a header is honoured ONLY from these peers (anti-spoof).
+proxy:
+  trusted_proxies:
+{% for net in trusted_proxies %}
+    - "{{ net }}"
+{% endfor %}
+
+tls:
+  min_version: "1.2"
+  certificates:
+    - cert_path: "certs/selfsigned.crt"
+      key_ref:   "certs/selfsigned.key"
+      hosts: ["localhost", "aegis-gate.local", "*.aegis-gate.local"]
+
+routes:
+  - { id: ws,        path: "/ws",   match_type: prefix, upstream: ws-pool,   tier_override: high }
+  - { id: grpc,      path: "/grpc", match_type: prefix, upstream: grpc-pool, tier_override: high }
+  - { id: catch-all, path: "/",     match_type: prefix, upstream: http-pool, tier_override: high }
+
+upstreams:
+  http-pool: { members: [{ addr: "{{ mock_host }}:9991" }], lb: round_robin, connection: { scheme: auto, keep_alive: true } }
+  ws-pool:   { members: [{ addr: "{{ mock_host }}:9992" }], lb: round_robin, connection: { scheme: auto, keep_alive: true } }
+  grpc-pool: { members: [{ addr: "{{ mock_host }}:9993" }], lb: round_robin, connection: { scheme: grpc, keep_alive: true } }
+  tcp-pool:  { members: [{ addr: "{{ mock_host }}:9994" }], lb: round_robin, connection: { scheme: tcp } }
+
+state:
+  backend: redis
+  redis: { urls: ["{{ redis_url }}"], pool_size: 16, timeout: "100ms" }
+
+# Leaderless cluster — every node equal; shared Redis + identical csrf_secret.
+cluster:
+  fleet_events: { enabled: true }
+  fleet_view:   { enabled: true }
+  pubsub_nudge: true
+
+detectors:
+  sqli: { enabled: true }
+  xss: { enabled: true }
+  path_traversal: { enabled: true }
+  command_injection: { enabled: true }
+
+ai:
+  enabled: {{ ai_enabled | lower }}
+  model_path: "data/ai_model/waf_model.onnx"
+  confidence_threshold: {{ ai_confidence_threshold }}
+
+geoip:
+  country_db: "data/geoip/GeoLite2-Country.mmdb"
+  asn_db: "data/geoip/GeoLite2-ASN.mmdb"
+
+risk:
+  thresholds: { enabled: true, challenge_at: {{ risk_challenge_at }}, block_at: {{ risk_block_at }}, max: 100 }
+
+ddos:
+  enabled: true
+  observe_only: false
+
+logging:
+  verbosity: info
+
+# Hash-chained audit → logs/audit/ (mounted into the otel agent → SigNoz).
+audit:
+  sinks:
+    - jsonl: { path: "logs/audit" }
+  chain: { enabled: true }
+
+interop:
+  enabled: true
+  audit_path: "./waf_audit.log"
+  control_secret: "{{ control_secret }}"
+
+observability:
+  otel:
+    endpoint: "{{ otel_endpoint }}"
+    sample_ratio: 1.0
+  copilot:
+    enabled: {{ copilot_enabled | lower }}
+    provider: openai_compatible
+    base_url: "{{ copilot_base_url }}"
+    model: "{{ copilot_model }}"
+    timeout_ms: 20000
+    briefing_interval_secs: 0
+    api_key_ref: "${secret:env:LLM_API_KEY}"
+
+admin:
+  bind: "0.0.0.0:9443"
+  dashboard_auth:
+    password_hash_ref: '{{ dashboard_password_hash }}'
+    csrf_secret_ref:   "{{ csrf_secret }}"
+    session_ttl_idle: "30m"
+    session_ttl_absolute: "8h"
+    ip_allowlist: ["127.0.0.1/32", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+    totp_enabled: false
+    login_rate_limit: { per_ip: { limit: 100, window: "1m" } }

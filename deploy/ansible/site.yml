@@ -1,0 +1,20 @@
+---
+# Deploy the Aegis-Gate WAF fleet: build once, distribute to every node.
+#
+#   ansible-playbook site.yml                 # whole fleet
+#   ansible-playbook site.yml --limit waf-2   # one node
+#   ansible-playbook site.yml --check         # dry run
+#   ansible-playbook site.yml --tags verify   # re-run smoke tests only
+
+- name: Build the WAF binary once
+  hosts: builder
+  gather_facts: false
+  roles:
+    - waf_build
+
+- name: Deploy + run WAF on every node
+  hosts: waf
+  gather_facts: true        # needs ansible_env.HOME / ansible_host
+  serial: 1                 # one node at a time → a bad config can't take the whole fleet down
+  roles:
+    - waf_node
