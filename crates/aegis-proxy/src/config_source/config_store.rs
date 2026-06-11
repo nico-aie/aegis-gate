@@ -207,6 +207,24 @@ impl ConfigStore {
             .await
     }
 
+    /// The version `node_id` last ACKed as applied, or 0 if the node
+    /// has no ACK yet (fresh boot / no shared config activated). F7
+    /// (2026-06-11): `GET /api/detectors` returns this as the
+    /// `config_version` the client echoes in `If-Match` on its next
+    /// `PUT /api/detectors`, so the detector CAS guards against the
+    /// version the client actually *viewed* (the applied version that
+    /// produced the in-process mask) rather than a fresh server read.
+    pub async fn applied_version(&self, node_id: &str) -> Result<u64> {
+        match self.backend.get(&applied_key(node_id)).await? {
+            Some(v) => Ok(std::str::from_utf8(&v)
+                .unwrap_or("")
+                .trim()
+                .parse::<u64>()
+                .unwrap_or(0)),
+            None => Ok(0),
+        }
+    }
+
     /// The applied-version of every live node, for the console drift
     /// view. `(node_id, version)` pairs.
     pub async fn applied_map(&self) -> Result<Vec<(String, u64)>> {
@@ -306,5 +324,19 @@ mod tests {
             got,
             vec![("node-a".to_string(), 5), ("node-b".to_string(), 4)]
         );
+    }
+
+    // F7 (2026-06-11) — single-node applied-version read used by
+    // `GET /api/detectors` to stamp the `config_version` the client
+    // echoes in `If-Match`.
+    #[tokio::test]
+    async fn applied_version_reads_per_node_ack() {
+        let s = store();
+        // No ACK yet → 0 (fresh boot / no shared config).
+        assert_eq!(s.applied_version("node-a").await.unwrap(), 0);
+        s.record_applied("node-a", 7).await.unwrap();
+        assert_eq!(s.applied_version("node-a").await.unwrap(), 7);
+        // Isolated per node.
+        assert_eq!(s.applied_version("node-b").await.unwrap(), 0);
     }
 }

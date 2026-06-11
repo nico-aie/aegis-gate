@@ -435,6 +435,13 @@ impl Default for AuditRing {
 pub struct AuditHandler {
     ring: Arc<AuditRing>,
     cache: Mutex<Option<(Instant, u64, u32, AuditSinceResponse)>>,
+    /// F14 (2026-06-11) — separate cache slot for the unfiltered TAIL
+    /// render (`?tail=1`), keyed on `limit`. The Audit Trail polls the
+    /// tail every 3 s; pre-fix every poll re-locked the ring, cloned up
+    /// to `limit` events, and re-serialised — uncached. A short TTL (the
+    /// same `cache_ttl` as `since`) collapses a fan-out of pollers onto
+    /// one render without staling the view beyond a second.
+    tail_cache: Mutex<Option<(Instant, u32, AuditSinceResponse)>>,
     cache_ttl: Duration,
 }
 
@@ -447,6 +454,7 @@ impl AuditHandler {
         Self {
             ring,
             cache: Mutex::new(None),
+            tail_cache: Mutex::new(None),
             cache_ttl,
         }
     }
@@ -494,12 +502,32 @@ impl AuditHandler {
     }
 
     /// 2026-05-23 — render the TAIL (newest `limit` matching events).
-    /// Not cached: it's the initial backfill / a low-frequency poll,
-    /// and the `(cursor, limit)` cache key would collide with `since`.
+    ///
+    /// F14 (2026-06-11) — the unfiltered tail is now cached on a
+    /// dedicated `(limit)` slot (separate from the `since` cache, so the
+    /// two never collide) for `cache_ttl`. Filtered tails (Investigation
+    /// pivots) bypass the cache — the pivot key isn't part of the cache
+    /// key, so a cached slice would be for the wrong filter.
     pub fn render_latest_filtered(&self, limit: u32, filter: &AuditFilter) -> String {
+        let now = Instant::now();
         let limit = clamp_limit(limit);
+        if filter.is_empty() {
+            let cache = self.tail_cache.lock().expect("audit tail cache poisoned");
+            if let Some((stamped_at, l, resp)) = cache.as_ref() {
+                if *l == limit && now.duration_since(*stamped_at) < self.cache_ttl {
+                    return serde_json::to_string(resp)
+                        .unwrap_or_else(|_| String::from("{}"));
+                }
+            }
+            drop(cache);
+        }
         let resp = self.ring.latest_filtered(limit, filter);
-        serde_json::to_string(&resp).unwrap_or_else(|_| String::from("{}"))
+        let body = serde_json::to_string(&resp).unwrap_or_else(|_| String::from("{}"));
+        if filter.is_empty() {
+            let mut cache = self.tail_cache.lock().expect("audit tail cache poisoned");
+            *cache = Some((now, limit, resp));
+        }
+        body
     }
 }
 
@@ -949,6 +977,60 @@ mod tests {
         ring.record(ev("b"));
         let second = h.render_since(0, 100);
         assert_eq!(first, second, "cache hit should return identical bytes");
+    }
+
+    // F14 (2026-06-11) — the tail render is now cached on its own slot.
+    #[test]
+    fn handler_caches_tail_within_ttl() {
+        let ring = Arc::new(AuditRing::new());
+        ring.record(ev("a"));
+        let h = AuditHandler::with_ttl(Arc::clone(&ring), Duration::from_secs(1));
+        let first = h.render_latest_filtered(100, &AuditFilter::default());
+        ring.record(ev("b")); // changes the ring; cache should mask it within TTL
+        let second = h.render_latest_filtered(100, &AuditFilter::default());
+        assert_eq!(first, second, "tail cache hit returns identical bytes");
+    }
+
+    #[test]
+    fn handler_tail_cache_is_separate_from_since_cache() {
+        let ring = Arc::new(AuditRing::new());
+        for i in 0..5 {
+            ring.record(ev(&format!("ev-{i}")));
+        }
+        let h = AuditHandler::with_ttl(Arc::clone(&ring), Duration::from_secs(1));
+        // since(0) returns the OLDEST; tail returns the NEWEST — the two
+        // caches must not collide on the shared `limit`.
+        let since = h.render_since(0, 2);
+        let tail = h.render_latest_filtered(2, &AuditFilter::default());
+        let sv: serde_json::Value = serde_json::from_str(&since).unwrap();
+        let tv: serde_json::Value = serde_json::from_str(&tail).unwrap();
+        let since_first = sv["events"][0]["request_id"].as_str().unwrap();
+        let tail_last = tv["events"][1]["request_id"].as_str().unwrap();
+        assert_eq!(since_first, "ev-0", "since(0) starts at oldest");
+        assert_eq!(tail_last, "ev-4", "tail ends at newest");
+    }
+
+    // F14 — the in-process render is sub-millisecond even on a full
+    // ring: proves the QC's ~260 ms floor is NOT in this code path, so
+    // the fix is instrumentation (attribute it live) + tail caching, not
+    // the "add a ring buffer" the report suggested (already present).
+    #[test]
+    fn full_ring_render_is_sub_millisecond() {
+        let ring = Arc::new(AuditRing::new());
+        for i in 0..DEFAULT_CAPACITY {
+            ring.record(ev(&format!("ev-{i}")));
+        }
+        let h = AuditHandler::with_ttl(Arc::clone(&ring), Duration::from_millis(0));
+        // ttl=0 → never a cache hit, so every call does the full
+        // lock+walk+clone+serialize against a 10k-entry ring.
+        let t = std::time::Instant::now();
+        let _ = h.render_latest_filtered(200, &AuditFilter::default());
+        let elapsed = t.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(50),
+            "tail render of a full ring took {elapsed:?} — expected sub-ms; \
+             the 260ms QC floor is environmental, not this code",
+        );
     }
 
     #[test]

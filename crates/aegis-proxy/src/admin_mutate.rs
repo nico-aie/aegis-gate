@@ -3617,6 +3617,21 @@ pub(crate) async fn handle_detectors_put(
 
     let pre = mutation_preamble(&req, "detectors-put");
 
+    // F7 (2026-06-11 cluster QC) — optimistic-concurrency on the
+    // detector mask. The dashboard echoes the `config_version` it last
+    // read (GET /api/detectors) in `If-Match`; we use THAT as the CAS
+    // `expected` so a write built on a stale view is rejected (412)
+    // instead of silently clobbering a concurrent toggle. Absent
+    // `If-Match` → legacy unconditional path (fresh server read) +
+    // deprecation warn, so scripted callers that predate this don't
+    // break. Parse before consuming the body.
+    let if_match: Option<u64> = req
+        .headers()
+        .get(hyper::header::IF_MATCH)
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.trim().trim_matches('"')) // tolerate a quoted ETag form
+        .and_then(|s| s.parse::<u64>().ok());
+
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
@@ -3661,7 +3676,7 @@ pub(crate) async fn handle_detectors_put(
     };
     let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
 
-    let (base_blob, expected) = match store.load().await {
+    let (base_blob, current_version) = match store.load().await {
         Ok(Some(doc)) => (doc.blob, doc.version),
         Ok(None) => match services.config_yaml_path.as_ref() {
             Some(path) => match std::fs::read_to_string(path) {
@@ -3686,6 +3701,39 @@ pub(crate) async fn handle_detectors_put(
             return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
                 format!("config store read failed: {e}"),
             ))
+        }
+    };
+
+    // F7: enforce the client's `If-Match` precondition up front so a
+    // write built on a stale mask is rejected (412) BEFORE we patch /
+    // validate / append an audit entry — never clobbering the
+    // concurrent change the client hasn't seen. Absent `If-Match`
+    // keeps the legacy unconditional behaviour (warn once) so older
+    // scripted callers don't break.
+    let expected = match if_match {
+        Some(client_version) => {
+            if client_version != current_version {
+                return json_response(
+                    412,
+                    &serde_json::json!({
+                        "ok": false,
+                        "error": "version_conflict",
+                        "current": current_version,
+                        "request_id": pre.request_id,
+                        "note": "detector mask changed since you loaded it; \
+                                 re-fetch /api/detectors and retry",
+                    }),
+                );
+            }
+            client_version
+        }
+        None => {
+            tracing::warn!(
+                actor = %pre.actor,
+                "PUT /api/detectors without If-Match: legacy unconditional write \
+                 (no optimistic-concurrency guard) — update the client to echo config_version",
+            );
+            current_version
         }
     };
 
@@ -3742,15 +3790,22 @@ pub(crate) async fn handle_detectors_put(
                     "request_id": pre.request_id,
                 }),
             ),
-            crate::config_source::config_store::Activate::Conflict { current } => json_response(
-                409,
-                &serde_json::json!({
-                    "ok": false,
-                    "error": "version_conflict",
-                    "current": current,
-                    "request_id": pre.request_id,
-                }),
-            ),
+            crate::config_source::config_store::Activate::Conflict { current } => {
+                // A racing write landed between our load and the CAS.
+                // With `If-Match` this is the same precondition failure
+                // (412 — client re-fetches + retries); without it, keep
+                // the legacy 409 for back-compat.
+                let status = if if_match.is_some() { 412 } else { 409 };
+                json_response(
+                    status,
+                    &serde_json::json!({
+                        "ok": false,
+                        "error": "version_conflict",
+                        "current": current,
+                        "request_id": pre.request_id,
+                    }),
+                )
+            }
         },
         Err(e) => mutation_error_response(e),
     }

@@ -3,6 +3,7 @@ pub mod decisions;
 pub mod detector_hits;
 pub mod detector_latency;
 pub mod exporter;
+pub mod fleet_audit;
 pub mod fleet_snapshot;
 pub mod request_duration;
 pub mod route_activity;

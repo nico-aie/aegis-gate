@@ -122,15 +122,24 @@ fn spawn_fleet_snapshot_task(
     stats_agg: Arc<aegis_control::api::stats::StatsAggregator>,
     attacks_agg: Arc<aegis_control::api::attacks::AttacksAggregator>,
     hist: Arc<aegis_control::metrics::request_duration::RequestStageHistogram>,
+    // F6 (2026-06-11) — the local audit ring, so the same publish tick
+    // also ships this node's bounded audit tail for the fleet backfill.
+    audit_ring: Arc<aegis_control::api::audit::AuditRing>,
     our_node: &str,
-) -> Option<aegis_control::metrics::fleet_snapshot::FleetCache> {
+) -> (
+    Option<aegis_control::metrics::fleet_snapshot::FleetCache>,
+    Option<aegis_control::metrics::fleet_audit::FleetAuditCache>,
+) {
+    use aegis_control::metrics::fleet_audit as fa;
     use aegis_control::metrics::fleet_snapshot as fs;
     let fv = &cfg.cluster.fleet_view;
     if !fv.enabled || matches!(cfg.state.backend, aegis_core::config::StateBackendKind::InMemory) {
-        return None;
+        return (None, None);
     }
     let cache = fs::FleetCache::new();
     let cache_writer = cache.clone();
+    let audit_cache = fa::FleetAuditCache::new();
+    let audit_cache_writer = audit_cache.clone();
     let node = our_node.to_string();
     let publish_interval =
         std::time::Duration::from_millis(fv.publish_interval_ms.max(250));
@@ -138,6 +147,7 @@ fn spawn_fleet_snapshot_task(
     let top_k = fv.top_attackers_k;
     tokio::spawn(async move {
         let key = fs::snapshot_key(&node);
+        let audit_tail_key = fa::audit_key(&node);
         let mut tick = tokio::time::interval(publish_interval);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -157,6 +167,13 @@ fn spawn_fleet_snapshot_task(
                 Ok(bytes) => state_backend.set(&key, &bytes, ttl).await.is_ok(),
                 Err(_) => false,
             };
+            // 1b. Publish our bounded audit tail (newest N events, each
+            //     already carrying `fields.node_id`) for the fleet
+            //     backfill — same self-evicting TTL pattern.
+            let tail = audit_ring.recent(fa::AUDIT_TAIL_LIMIT);
+            if let Ok(bytes) = serde_json::to_vec(&tail) {
+                let _ = state_backend.set(&audit_tail_key, &bytes, ttl).await;
+            }
             // 2. Scan + merge every live peer snapshot (dead nodes have
             //    already TTL'd out of the keyspace) into the cache.
             let merged = fs::scan_and_merge(state_backend.as_ref(), top_k).await;
@@ -166,10 +183,20 @@ fn spawn_fleet_snapshot_task(
             } else {
                 cache_writer.store(merged);
             }
+            // 2b. Same for the audit tail: merge every live peer's tail
+            //     newest-first into the fleet audit cache.
+            let merged_audit =
+                fa::scan_and_merge_audit(state_backend.as_ref(), fa::AUDIT_TAIL_LIMIT).await;
+            if merged_audit.is_empty() {
+                // Backend without key enumeration → at least show our own.
+                audit_cache_writer.store(tail);
+            } else {
+                audit_cache_writer.store(merged_audit);
+            }
         }
     });
-    tracing::info!("cluster fleet view: snapshot publish/merge active");
-    Some(cache)
+    tracing::info!("cluster fleet view: snapshot publish/merge active (metrics + audit tail)");
+    (Some(cache), Some(audit_cache))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -535,14 +562,17 @@ pub(crate) async fn admin_accept_loop(
     // Cluster Phase 3 — fleet metrics snapshot publish/merge. Reads the
     // same local aggregators the dashboard does; the traffic GET
     // handlers serve the merged view when this cache is populated.
-    services.fleet_cache = spawn_fleet_snapshot_task(
+    let (fleet_cache, fleet_audit_cache) = spawn_fleet_snapshot_task(
         &cfg,
         state_backend.clone(),
         services.stats_agg.clone(),
         services.attacks_agg.clone(),
         request_stage_hist.clone(),
+        services.audit_ring.clone(),
         lease_store.self_id().as_str(),
     );
+    services.fleet_cache = fleet_cache;
+    services.fleet_audit_cache = fleet_audit_cache;
     // SC-1 — expose the data-plane response cache stats to GET /api/cache/stats
     // via a JSON-returning closure (keeps aegis-control free of aegis-proxy
     // types). Empty pools map until an upstream opts into `cache:`.
