@@ -26,11 +26,20 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use aegis_core::error::{Result, WafError};
+use aegis_core::fleet::FleetBus;
 use aegis_core::state::StateBackend;
 
 /// The single key holding the active config document (JSON-encoded
 /// [`ConfigDoc`]). Activation is a compare-and-set on this key.
 pub const DOC_KEY: &str = "config:waf:doc";
+
+/// N2 (2026-06-11) — pub/sub bump channel for the config plane. A 1-byte
+/// message is published here on a successful [`ConfigStore::activate`] so
+/// every node's config watcher (including the writer's own) re-polls
+/// [`DOC_KEY`] immediately instead of waiting for its next poll tick.
+/// Loss-tolerant: the watcher's poll interval is the backstop. Mirrors the
+/// control plane's `CONTROL_BUMP_CHANNEL`.
+pub const CONFIG_BUMP_CHANNEL: &str = "config:waf:bump";
 
 /// Per-node applied-version keys live under this prefix; the value is
 /// the decimal version string. TTL'd so a dead node ages out of the
@@ -86,11 +95,39 @@ pub enum Activate {
 #[derive(Clone)]
 pub struct ConfigStore {
     backend: Arc<dyn StateBackend>,
+    /// Optional config-plane nudge bus. When set, a successful
+    /// [`Self::activate`] publishes a 1-byte bump on [`CONFIG_BUMP_CHANNEL`]
+    /// so every node's config watcher (incl. the writer's own) re-polls
+    /// immediately rather than waiting for its next poll tick. Best-effort +
+    /// non-load-bearing: a dropped bump just falls back to the poll. `None`
+    /// on the watcher's read-only store and on single-node / in-memory
+    /// deployments.
+    nudge: Option<Arc<dyn FleetBus>>,
 }
 
 impl ConfigStore {
     pub fn new(backend: Arc<dyn StateBackend>) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            nudge: None,
+        }
+    }
+
+    /// Attach a config-plane nudge bus (see the `nudge` field). Builder so
+    /// the per-request write-path stores opt in while the watcher's
+    /// read-only store stays nudge-free. A `None` argument is a no-op.
+    pub fn with_nudge(mut self, nudge: Option<Arc<dyn FleetBus>>) -> Self {
+        self.nudge = nudge;
+        self
+    }
+
+    /// Best-effort config-plane bump on [`CONFIG_BUMP_CHANNEL`]. No-op when
+    /// no nudge bus is wired. The bump carries no payload meaning — it is a
+    /// pure "re-poll now" signal; correctness lives in the polled [`DOC_KEY`].
+    async fn fire_nudge(&self) {
+        if let Some(bus) = &self.nudge {
+            bus.publish(CONFIG_BUMP_CHANNEL, vec![1]).await;
+        }
     }
 
     /// Load the active document, or `None` when no config has been
@@ -169,6 +206,9 @@ impl ConfigStore {
             .await?;
 
         if swapped {
+            // N2 — wake every node's watcher (incl. ours) so the new
+            // version applies in ~ms instead of on the next poll tick.
+            self.fire_nudge().await;
             Ok(Activate::Applied { version: next })
         } else {
             // Lost the race between load and CAS — report the version
@@ -338,5 +378,63 @@ mod tests {
         assert_eq!(s.applied_version("node-a").await.unwrap(), 7);
         // Isolated per node.
         assert_eq!(s.applied_version("node-b").await.unwrap(), 0);
+    }
+
+    // N2 (2026-06-11) — config-plane nudge.
+
+    /// Recording [`FleetBus`] — captures every publish so a test can
+    /// assert a bump fired on the config bump channel.
+    #[derive(Default)]
+    struct RecordingBus {
+        published: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl FleetBus for RecordingBus {
+        async fn publish(&self, channel: &str, payload: Vec<u8>) {
+            self.published
+                .lock()
+                .unwrap()
+                .push((channel.to_string(), payload));
+        }
+        fn subscribe(
+            &self,
+            _: &str,
+            bound: usize,
+        ) -> tokio::sync::mpsc::Receiver<Vec<u8>> {
+            let (_tx, rx) = tokio::sync::mpsc::channel(bound.max(1));
+            rx
+        }
+    }
+
+    #[tokio::test]
+    async fn activate_fires_a_nudge_when_bus_wired() {
+        let bus = Arc::new(RecordingBus::default());
+        let s = store().with_nudge(Some(bus.clone()));
+        s.activate(0, "a".into(), "u", "").await.unwrap();
+        let pubs = bus.published.lock().unwrap();
+        assert_eq!(pubs.len(), 1, "exactly one bump per successful activate");
+        assert_eq!(pubs[0].0, CONFIG_BUMP_CHANNEL);
+    }
+
+    #[tokio::test]
+    async fn conflict_does_not_nudge() {
+        let bus = Arc::new(RecordingBus::default());
+        let s = store().with_nudge(Some(bus.clone()));
+        s.activate(0, "a".into(), "u", "").await.unwrap(); // v1, fires once
+        // Stale expected version → Conflict, must NOT fire a second bump.
+        let r = s.activate(0, "stale".into(), "u", "").await.unwrap();
+        assert_eq!(r, Activate::Conflict { current: 1 });
+        assert_eq!(bus.published.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn activate_without_nudge_is_fine() {
+        // Default store has no bus — activate must still succeed.
+        let s = store();
+        assert_eq!(
+            s.activate(0, "a".into(), "u", "").await.unwrap(),
+            Activate::Applied { version: 1 }
+        );
     }
 }

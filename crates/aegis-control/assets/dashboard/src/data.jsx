@@ -1473,6 +1473,10 @@ async function waitForVersion(expectedVersion, timeoutMs = 10000) {
       if (r.ok) {
         const j = await r.json();
         if (j.audit_chain_len >= expectedVersion) {
+          // N2 — this (connected) node has applied; kick off the
+          // non-blocking fleet-convergence pill so the operator sees
+          // cross-node apply without it blocking the table reload.
+          notifyConfigConvergence();
           return { applied: true, latencyMs: Date.now() - start, version: j.audit_chain_len, node: j.applied_on_node };
         }
       }
@@ -1480,6 +1484,62 @@ async function waitForVersion(expectedVersion, timeoutMs = 10000) {
     await new Promise(res => setTimeout(res, 250));
   }
   return { applied: false, latencyMs: timeoutMs };
+}
+
+// N2 (2026-06-11) — read the cluster config-doc version + per-node applied
+// roster from `/api/config` (ConfigStore). DISTINCT from
+// `/api/config/version` (the LOCAL audit-chain length, `audit_chain_len`):
+// this `version` is the fleet-shared doc version every node converges to,
+// and `applied` is `[{ node, version }]` per live node.
+async function fetchConfigState() {
+  try {
+    const r = await fetch('/api/config', { credentials: 'same-origin', cache: 'no-store' });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return {
+      version: Number(j.version) || 0,
+      applied: Array.isArray(j.applied) ? j.applied : [],
+      backend: !!j.backend,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+// N2 (2026-06-11) — non-blocking fleet-convergence pill. After a config
+// mutation, watch the per-node applied roster until every live node has
+// applied the current cluster doc version, then surface "Applied on N/N
+// nodes". Silent on single-node fleets (the per-action "saved" toast
+// already covers it) and when there's no shared backend. Fire-and-forget:
+// never blocks the caller's reload. With the config nudge (N2) this
+// resolves in ~ms; the warn path only trips if a peer is genuinely lagging.
+function notifyConfigConvergence(timeoutMs = 8000) {
+  (async () => {
+    const initial = await fetchConfigState();
+    // No shared backend / single node → nothing fleet-wide to report.
+    if (!initial || !initial.backend || initial.applied.length <= 1) return;
+    const target = initial.version;
+    const total = initial.applied.length;
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const s = await fetchConfigState();
+      if (s) {
+        const tot = s.applied.length;
+        const ready = s.applied.filter(a => Number(a.version) >= target).length;
+        if (tot > 0 && ready >= tot) {
+          window.aegisToast(`Applied on ${ready}/${tot} nodes`, 'ok',
+            `v${target} · ${Date.now() - start}ms`);
+          return;
+        }
+      }
+      await new Promise(res => setTimeout(res, 250));
+    }
+    // Timed out before full convergence — surface the partial state so a
+    // lagging peer is visible rather than silently assumed-applied.
+    const s = await fetchConfigState();
+    const ready = s ? s.applied.filter(a => Number(a.version) >= target).length : 0;
+    window.aegisToast(`Applied on ${ready}/${total} nodes — still converging`, 'warn', `v${target}`);
+  })();
 }
 
 Object.assign(window, {
@@ -1528,6 +1588,7 @@ Object.assign(window, {
   tierPut,
   useRoutesApi, useTiersApi,
   rulesPost, rulesPut, rulesDelete, rulesToggle, waitForVersion, currentConfigVersion,
+  fetchConfigState, notifyConfigConvergence,
   // CI-T6 — settings mutations
   useModeApi, settingsModePut,
   // CI-T12 — risk thresholds (read + audit-mutated PUT)

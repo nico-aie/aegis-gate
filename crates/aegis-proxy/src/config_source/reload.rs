@@ -716,6 +716,131 @@ pub fn apply_cfg_change_to_client_auth(
     }
 }
 
+// ---------------------------------------------------------------------------
+// N1 (2026-06-11) — alert-receiver fold
+// ---------------------------------------------------------------------------
+
+/// Outcome of re-deriving the live alert-receiver list from config.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReceiversReloadOutcome {
+    /// No shared receiver store wired (single-node / test bundle).
+    NoStore,
+    /// `cfg.alerting` is `None` — receivers are not config-managed on this
+    /// node, so the boot/env-seeded list is left untouched (legacy path).
+    NotManaged,
+    /// Re-derived `count` receivers from `cfg.alerting.receivers`.
+    Applied { count: usize },
+}
+
+/// N1 — re-derive the live `slo::AlertReceiver` list from
+/// `cfg.alerting.receivers` and swap it into the shared store, so a
+/// receiver configured on any node propagates to the whole fleet via the
+/// shared config doc (like detectors/rules/tiers). A `None` `cfg.alerting`
+/// means "not config-managed" → leave the current list alone (preserves an
+/// env/boot-seeded list); `Some` (even empty) is authoritative, so a
+/// delete-all propagates.
+pub fn apply_cfg_change_to_receivers(
+    new_cfg: &WafConfig,
+    receiver_writer: Option<
+        &Arc<arc_swap::ArcSwap<Vec<aegis_control::slo::AlertReceiver>>>,
+    >,
+) -> ReceiversReloadOutcome {
+    let Some(store) = receiver_writer else {
+        return ReceiversReloadOutcome::NoStore;
+    };
+    let Some(alerting) = new_cfg.alerting.as_ref() else {
+        return ReceiversReloadOutcome::NotManaged;
+    };
+    let receivers: Vec<aegis_control::slo::AlertReceiver> =
+        alerting.receivers.iter().map(receiver_from_config).collect();
+    let count = receivers.len();
+    store.store(Arc::new(receivers));
+    ReceiversReloadOutcome::Applied { count }
+}
+
+/// Map a config-side [`aegis_core::config::ReceiverConfig`] to the live
+/// [`aegis_control::slo::AlertReceiver`]. Explicit field map (not serde) so
+/// the two crates' enums stay independent.
+pub(crate) fn receiver_from_config(
+    rc: &aegis_core::config::ReceiverConfig,
+) -> aegis_control::slo::AlertReceiver {
+    use aegis_core::config::{AlertSeverityConfig as SC, ReceiverKindConfig as KC};
+    use aegis_control::slo::{AlertReceiver, AlertSeverity, ReceiverKind};
+    let kind = match &rc.kind {
+        KC::AlertmanagerWebhook { url } => ReceiverKind::AlertmanagerWebhook { url: url.clone() },
+        KC::Slack { webhook_url } => ReceiverKind::Slack { webhook_url: webhook_url.clone() },
+        KC::PagerDuty { routing_key } => ReceiverKind::PagerDuty { routing_key: routing_key.clone() },
+        KC::ServiceNow { instance, table } => ReceiverKind::ServiceNow {
+            instance: instance.clone(),
+            table: table.clone(),
+        },
+        KC::Jira { base_url, project } => ReceiverKind::Jira {
+            base_url: base_url.clone(),
+            project: project.clone(),
+        },
+        KC::VipTalk { bot_token, room_ids } => ReceiverKind::VipTalk {
+            bot_token: bot_token.clone(),
+            room_ids: room_ids.clone(),
+        },
+    };
+    let severities = rc
+        .severities
+        .iter()
+        .map(|s| match s {
+            SC::Page => AlertSeverity::Page,
+            SC::Ticket => AlertSeverity::Ticket,
+            SC::Info => AlertSeverity::Info,
+        })
+        .collect();
+    AlertReceiver {
+        name: rc.name.clone(),
+        kind,
+        severities,
+    }
+}
+
+/// Inverse of [`receiver_from_config`] — used by the fold write handlers
+/// to serialize the operator's receiver list into the config blob.
+pub(crate) fn receiver_to_config(
+    r: &aegis_control::slo::AlertReceiver,
+) -> aegis_core::config::ReceiverConfig {
+    use aegis_core::config::{
+        AlertSeverityConfig as SC, ReceiverConfig, ReceiverKindConfig as KC,
+    };
+    use aegis_control::slo::{AlertSeverity, ReceiverKind};
+    let kind = match &r.kind {
+        ReceiverKind::AlertmanagerWebhook { url } => KC::AlertmanagerWebhook { url: url.clone() },
+        ReceiverKind::Slack { webhook_url } => KC::Slack { webhook_url: webhook_url.clone() },
+        ReceiverKind::PagerDuty { routing_key } => KC::PagerDuty { routing_key: routing_key.clone() },
+        ReceiverKind::ServiceNow { instance, table } => KC::ServiceNow {
+            instance: instance.clone(),
+            table: table.clone(),
+        },
+        ReceiverKind::Jira { base_url, project } => KC::Jira {
+            base_url: base_url.clone(),
+            project: project.clone(),
+        },
+        ReceiverKind::VipTalk { bot_token, room_ids } => KC::VipTalk {
+            bot_token: bot_token.clone(),
+            room_ids: room_ids.clone(),
+        },
+    };
+    let severities = r
+        .severities
+        .iter()
+        .map(|s| match s {
+            AlertSeverity::Page => SC::Page,
+            AlertSeverity::Ticket => SC::Ticket,
+            AlertSeverity::Info => SC::Info,
+        })
+        .collect();
+    ReceiverConfig {
+        name: r.name.clone(),
+        kind,
+        severities,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1837,5 +1962,106 @@ state:
         let cfg = parse(&cfg);
         assert!(apply_cfg_change_to_copilot(&cfg).await);
         std::env::remove_var("AEGIS_TEST_COPILOT_KEY");
+    }
+
+    // N1 (2026-06-11) — alert-receiver fold.
+
+    fn yaml_with_alerting() -> String {
+        r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+alerting:
+  receivers:
+    - name: oncall
+      kind:
+        VipTalk:
+          bot_token: "tok-1234"
+          room_ids: ["!room:srv"]
+      severities: [Page]
+"#
+        .to_string()
+    }
+
+    #[test]
+    fn receivers_reload_no_store_when_writer_absent() {
+        let cfg = parse(&yaml_with_alerting());
+        assert_eq!(
+            apply_cfg_change_to_receivers(&cfg, None),
+            ReceiversReloadOutcome::NoStore
+        );
+    }
+
+    #[test]
+    fn receivers_reload_not_managed_leaves_store_untouched() {
+        // The per-tier fixture has no `alerting:` block → None → the
+        // env/boot-seeded store must be left alone (no wipe on an
+        // unrelated config change).
+        let cfg = parse(&yaml_with_per_tier());
+        let store = std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(Vec::new()));
+        assert_eq!(
+            apply_cfg_change_to_receivers(&cfg, Some(&store)),
+            ReceiversReloadOutcome::NotManaged
+        );
+    }
+
+    #[test]
+    fn receivers_reload_applies_config_managed_list() {
+        let cfg = parse(&yaml_with_alerting());
+        let store = std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(Vec::new()));
+        let out = apply_cfg_change_to_receivers(&cfg, Some(&store));
+        assert_eq!(out, ReceiversReloadOutcome::Applied { count: 1 });
+        let live = store.load();
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].name, "oncall");
+        match &live[0].kind {
+            aegis_control::slo::ReceiverKind::VipTalk {
+                bot_token,
+                room_ids,
+            } => {
+                assert_eq!(bot_token, "tok-1234");
+                assert_eq!(room_ids, &vec!["!room:srv".to_string()]);
+            }
+            other => panic!("wrong kind: {other:?}"),
+        }
+        assert_eq!(
+            live[0].severities,
+            vec![aegis_control::slo::AlertSeverity::Page]
+        );
+    }
+
+    #[test]
+    fn receiver_config_round_trips_through_slo() {
+        let cfg = parse(&yaml_with_alerting());
+        let alerting = cfg.alerting.as_ref().expect("alerting present");
+        let slo = receiver_from_config(&alerting.receivers[0]);
+        let back = receiver_to_config(&slo);
+        assert_eq!(back.name, "oncall");
+        match back.kind {
+            aegis_core::config::ReceiverKindConfig::VipTalk {
+                bot_token,
+                room_ids,
+            } => {
+                assert_eq!(bot_token, "tok-1234");
+                assert_eq!(room_ids, vec!["!room:srv".to_string()]);
+            }
+            other => panic!("wrong kind: {other:?}"),
+        }
+        assert_eq!(
+            back.severities,
+            vec![aegis_core::config::AlertSeverityConfig::Page]
+        );
     }
 }

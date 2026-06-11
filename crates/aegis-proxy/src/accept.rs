@@ -126,6 +126,12 @@ fn spawn_fleet_snapshot_task(
     // also ships this node's bounded audit tail for the fleet backfill.
     audit_ring: Arc<aegis_control::api::audit::AuditRing>,
     our_node: &str,
+    // PB / F6 (2026-06-11) — live cluster roster (in-memory, lease-poll
+    // backed). When it knows peers, the merge fans out by `GET
+    // fleet:*:<node>` per id instead of a whole-keyspace `SCAN MATCH`,
+    // which times out on a busy/remote/sharded Redis. `None` (or a
+    // roster that only knows self) falls back to the legacy scan.
+    roster: Option<Arc<aegis_control::api::tracking::RosterView>>,
 ) -> (
     Option<aegis_control::metrics::fleet_snapshot::FleetCache>,
     Option<aegis_control::metrics::fleet_audit::FleetAuditCache>,
@@ -174,21 +180,51 @@ fn spawn_fleet_snapshot_task(
             if let Ok(bytes) = serde_json::to_vec(&tail) {
                 let _ = state_backend.set(&audit_tail_key, &bytes, ttl).await;
             }
-            // 2. Scan + merge every live peer snapshot (dead nodes have
-            //    already TTL'd out of the keyspace) into the cache.
-            let merged = fs::scan_and_merge(state_backend.as_ref(), top_k).await;
+            // PB / F6 — node roster for the merge. When the lease-backed
+            // roster knows peers, fan out by `GET fleet:*:<node>` per id
+            // (bounded, timeout-safe, cluster-Redis-safe) instead of a
+            // whole-keyspace `SCAN MATCH`. `our_node` is always included
+            // (the roster may or may not list self). A roster that only
+            // knows self (cold start / single node / not wired) falls
+            // back to the legacy scan.
+            let node_ids: Vec<String> = match &roster {
+                Some(rv) => {
+                    let mut ids: Vec<String> =
+                        rv.members().into_iter().map(|p| p.id).collect();
+                    if !ids.iter().any(|i| i == &node) {
+                        ids.push(node.clone());
+                    }
+                    ids
+                }
+                None => Vec::new(),
+            };
+            let use_roster = node_ids.len() > 1;
+
+            // 2. Merge every live peer snapshot into the cache.
+            let merged = if use_roster {
+                fs::merge_from_roster(state_backend.as_ref(), &node_ids, top_k).await
+            } else {
+                fs::scan_and_merge(state_backend.as_ref(), top_k).await
+            };
             if merged.nodes == 0 && published {
-                // Backend without key enumeration → at least show our own.
+                // Nothing merged → at least show our own.
                 cache_writer.store(fs::merge(std::slice::from_ref(&snap), top_k));
             } else {
                 cache_writer.store(merged);
             }
-            // 2b. Same for the audit tail: merge every live peer's tail
-            //     newest-first into the fleet audit cache.
-            let merged_audit =
-                fa::scan_and_merge_audit(state_backend.as_ref(), fa::AUDIT_TAIL_LIMIT).await;
+            // 2b. Same for the audit tail.
+            let merged_audit = if use_roster {
+                fa::merge_audit_from_roster(
+                    state_backend.as_ref(),
+                    &node_ids,
+                    fa::AUDIT_TAIL_LIMIT,
+                )
+                .await
+            } else {
+                fa::scan_and_merge_audit(state_backend.as_ref(), fa::AUDIT_TAIL_LIMIT).await
+            };
             if merged_audit.is_empty() {
-                // Backend without key enumeration → at least show our own.
+                // Nothing merged → at least show our own.
                 audit_cache_writer.store(tail);
             } else {
                 audit_cache_writer.store(merged_audit);
@@ -330,6 +366,16 @@ pub(crate) async fn admin_accept_loop(
     // so `services.rules` IS this instance — the same store the folded
     // rule-CRUD handlers and `GET /api/rules` read.
     rules: Arc<aegis_control::api::rules::RuleStore>,
+    // N2 (2026-06-11) — config-plane nudge bus. Stashed on
+    // `services.config_nudge` so the audit-mutated config write handlers
+    // publish `config:waf:bump` on a successful activate. `None` for
+    // single-node / cluster-off / nudge-disabled (interval polling only).
+    config_nudge: Option<Arc<dyn aegis_core::fleet::FleetBus>>,
+    // N1 (2026-06-11) — shared alert-receiver list, created in `run()` so
+    // the config-plane watcher (`ApplyTargets.receiver_writer`) and this
+    // admin loop (GET/PUT/DELETE/test + SLO dispatch) share one ArcSwap.
+    // A receiver edit folds into `cfg.alerting` and propagates fleet-wide.
+    shared_receivers: Arc<arc_swap::ArcSwap<Vec<aegis_control::slo::AlertReceiver>>>,
 ) {
     let startup = aegis_control::health::StartupProbe::default();
     startup.mark_started();
@@ -570,9 +616,13 @@ pub(crate) async fn admin_accept_loop(
         request_stage_hist.clone(),
         services.audit_ring.clone(),
         lease_store.self_id().as_str(),
+        Some(Arc::clone(&roster_view)),
     );
     services.fleet_cache = fleet_cache;
     services.fleet_audit_cache = fleet_audit_cache;
+    // N2 — config-plane nudge: write handlers publish `config:waf:bump`
+    // on activate so peers (and this node) converge in ~ms, not a poll tick.
+    services.config_nudge = config_nudge;
     // SC-1 — expose the data-plane response cache stats to GET /api/cache/stats
     // via a JSON-returning closure (keeps aegis-control free of aegis-proxy
     // types). Empty pools map until an upstream opts into `cache:`.
@@ -743,11 +793,10 @@ pub(crate) async fn admin_accept_loop(
     // ArcSwap'd receiver list backs both the SLO dispatch task
     // (further below) and the GET `/api/alert-receivers` handler.
     // CC-T2.1.b adds the audit-mutated PUT/DELETE/POST-test
-    // handlers that mutate the same ArcSwap + ring.
-    let shared_receivers: Arc<arc_swap::ArcSwap<Vec<aegis_control::slo::AlertReceiver>>> =
-        Arc::new(arc_swap::ArcSwap::from_pointee(
-            aegis_control::slo::default_receivers(),
-        ));
+    // handlers; N1 (2026-06-11) routes those through the config
+    // doc so a receiver edit propagates fleet-wide. The ArcSwap is
+    // created in `run()` (seeded from `cfg.alerting` or env) and shared
+    // with the config-plane watcher, which re-derives it on each swap.
     let dispatch_ring =
         aegis_control::api::alert_receivers::DispatchOutcomeRing::new();
     {

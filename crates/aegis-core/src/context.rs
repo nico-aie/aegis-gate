@@ -77,6 +77,11 @@ pub struct RouteCtx {
     /// gating, so the data-plane handler doesn't have to re-derive
     /// the rule on every request.
     pub path_strip_prefix: Option<String>,
+    /// WS-MSG — per-route WebSocket message-inspection settings, carried
+    /// from `RouteConfig.ws_inspect`. `None` (default) ⇒ the zero-copy
+    /// WS bridge; `Some(.. enabled: true)` ⇒ the inspecting bridge for
+    /// client→upstream text frames.
+    pub ws_inspect: Option<crate::config::WsInspectConfig>,
 }
 
 #[cfg(test)]
@@ -128,6 +133,7 @@ mod tests {
             tcp_destination_allowlist: Vec::new(),
             max_concurrent_tunnels_per_ip: 0,
             path_strip_prefix: None,
+            ws_inspect: None,
         };
         assert_eq!(rctx.tier, Tier::Critical);
         assert_eq!(rctx.failure_mode, FailureMode::FailClose);
