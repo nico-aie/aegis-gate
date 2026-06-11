@@ -1,8 +1,8 @@
 # PROXY protocol — real client IP behind an L4 load balancer (TLS still terminated at the WAF)
 
-> **Status (2026-06-10): Design only — not started.** Target branch: `develop`.
-> Implementation will be tracked in `plans/issues/FEAT-proxy-protocol-l4-client-ip.md`
-> once this plan is reviewed.
+> **Status (2026-06-11): Design only — not started.** Target branch: `develop`.
+> Implementation tracker: [`../issues/FEAT-proxy-protocol-l4-client-ip.md`](../issues/FEAT-proxy-protocol-l4-client-ip.md)
+> (phase checklist + acceptance gates). This doc holds the design rationale.
 >
 > **Goal (one line):** let an L4 / TCP-passthrough load balancer (nginx `stream`
 > `proxy_protocol on;`, or HAProxy `send-proxy-v2`) prepend a PROXY-protocol header

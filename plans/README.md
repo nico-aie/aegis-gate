@@ -43,6 +43,14 @@ plans/
 - **[`smart-caching.md`](./future/smart-caching.md)** — the one feature track
   with work still open: Phases 1–3 shipped (per-upstream L1 + L2/Redis-Cluster
   cache); **Phase 4 remaining** (`stale-if-error`, ETag revalidation).
+- **[`proxy-protocol.md`](./future/proxy-protocol.md)** — design-only: parse the
+  PROXY-protocol header on the raw socket to recover the real client IP behind an
+  L4 load balancer while still terminating TLS at the WAF.
+- **[`websocket-message-inspection.md`](./future/websocket-message-inspection.md)** —
+  design-only (`WS-MSG`): opt-in frame-parsing bridge that runs reassembled
+  **text frames (opcode `0x1`)** client→upstream through the body detectors, so an
+  established WebSocket is no longer an uninspected L4 tunnel. Extends the shipped
+  WS-T bridge ([`archive/websocket-bridge.md`](./archive/websocket-bridge.md)).
 
 > **Archived 2026-06-10.** Three docs left `future/`/`plans/` once their work
 > shipped or was dropped:
