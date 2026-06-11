@@ -124,6 +124,13 @@ pub struct DashboardServices {
     /// it (when populated) to serve fleet totals instead of this node's
     /// `1/N` slice.
     pub fleet_cache: Option<crate::metrics::fleet_snapshot::FleetCache>,
+    /// F6 (2026-06-11) — leaderless fleet **audit tail** cache. `None`
+    /// for single-node / cluster-off; `Some` when `aegis-proxy` wires
+    /// the publish/merge task. `GET /api/audit/since?scope=fleet` reads
+    /// it so the Live Feed / Audit Trail backfill shows cross-node rows
+    /// (the SSE live feed is already fleet-wide; only the reload
+    /// backfill was node-local). See [`crate::metrics::fleet_audit`].
+    pub fleet_audit_cache: Option<crate::metrics::fleet_audit::FleetAuditCache>,
     /// Live leaderless cluster-roster view. `None` for single-node /
     /// test builds; `Some` when `aegis-proxy::run` wires the
     /// `members:*` roster-poll background task. See
@@ -617,6 +624,9 @@ impl DashboardServices {
                 fleet_event_bus: None,
                 // Cluster Phase 3 fleet-metrics cache — same opt-in.
                 fleet_cache: None,
+                // F6 fleet audit-tail cache — opted in by `aegis-proxy`
+                // alongside `fleet_cache` (Redis + cluster fleet_view).
+                fleet_audit_cache: None,
                 roster_view,
                 // Interop contract is opted in by the bin
                 // crate after construction (see

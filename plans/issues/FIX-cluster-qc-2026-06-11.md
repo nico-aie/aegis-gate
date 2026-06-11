@@ -12,7 +12,12 @@ the audit read-path, health-probe auth gating, or session UX — not the leaderl
   used a *fresh* `expected`; now uses the client's `If-Match` (the applied version from
   `GET /api/detectors`, read from the per-node ACK key). Stale → **412**. Client echoes the
   version, replays the single flip on 412, and re-syncs on the `config_reload` SSE.
-- ⏳ P3 (F6+F10-merge), P4 (F14), P5 (F12/F8/F9), P6 (F13/F2/F3) — pending.
+- ✅ **P3 (F6)** — fleet audit tail. New `metrics::fleet_audit` mirrors the `fleet_snapshot`
+  publish/scan/merge: each node ships a bounded N=200 tail to `fleet:audit:<node>`; the publish
+  task merges peers newest-first into a sync `FleetAuditCache`. `GET /api/audit/since?scope=fleet`
+  serves it; the dashboard backfills (Live Feed, Audit Trail, risk heatmap) request `scope=fleet`.
+  `node_id` (F10) carries attribution; each event lives on one node so the merge needs no dedup.
+- ⏳ P4 (F14), P5 (F12/F8/F9), P6 (F13/F2/F3) — pending.
 
 > ⚠️ **Three of the report's suggested fixes are re-scoped below after reading the code:**
 > - **F14** — the audit ring + JSON cache the report asks for **already exist**

@@ -411,7 +411,24 @@ pub(crate) fn admin_router(
             let tail = parse_query_str(query, "tail")
                 .map(|v| v == "1" || v == "true")
                 .unwrap_or(false);
-            let body = if tail {
+            // F6 (2026-06-11) — `?scope=fleet` serves the merged fleet
+            // audit tail (this node's ring + every live peer's) so a
+            // reload backfill keeps the cross-node rows the SSE live
+            // feed already shows. Reads the pre-merged cache
+            // synchronously; falls back to the local ring when the
+            // cache isn't populated (single-node / before the first
+            // merge), so the contract degrades cleanly.
+            let want_fleet = parse_query_str(query, "scope")
+                .map(|v| v == "fleet")
+                .unwrap_or(false);
+            let fleet_tail = if want_fleet {
+                services.fleet_audit_cache.as_ref().and_then(|c| c.load())
+            } else {
+                None
+            };
+            let body = if let Some(events) = fleet_tail {
+                aegis_control::metrics::fleet_audit::render_fleet_since(&events, limit, &filter)
+            } else if tail {
                 services.audit.render_latest_filtered(limit, &filter)
             } else {
                 services.audit.render_since_filtered(cursor, limit, &filter)

@@ -416,7 +416,11 @@ function useRealLiveFeed(maxLen = 60, paused = false) {
   // events don't pad the visible buffer.
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/audit/since?tail=1&limit=${maxLen}`, { credentials: 'same-origin' })
+    // F6 (2026-06-11) — scope=fleet so the backfill includes cross-node
+    // rows (the SSE live feed is already fleet-wide; this stops the
+    // reload from dropping peers' events). The server falls back to the
+    // local ring when no fleet cache is wired (single-node).
+    fetch(`/api/audit/since?tail=1&scope=fleet&limit=${maxLen}`, { credentials: 'same-origin' })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (cancelled || !data || !Array.isArray(data.events)) return;
@@ -899,6 +903,11 @@ function useAuditLogApi({ ip, ruleId, requestId, from, to, limit = 200 } = {}) {
   // Recent Requests / Audit Trail / the Investigation pivot froze on
   // stale traffic after a flood. (Respects the ip/rule_id filters.)
   params.set('tail', '1');
+  // F6 (2026-06-11) — fleet-merged backfill so the Audit Trail /
+  // Investigation pivots show cross-node rows on reload, matching the
+  // fleet-wide SSE live feed. Server falls back to local when no fleet
+  // cache is wired. Filters (ip / rule_id / request_id) apply post-merge.
+  params.set('scope', 'fleet');
   if (limit) params.set('limit', String(limit));
   if (ip) params.set('ip', ip);
   if (ruleId) params.set('rule_id', ruleId);
@@ -927,7 +936,7 @@ function useTiersApi() {
 // long-term fix; this is enough to retire the hardcoded rows
 // flagged in CQA-T1 / T14 today.
 function useTopRiskPathsApi(limit = 200, top = 8) {
-  const api = useApi(`/api/audit/since?tail=1&limit=${limit}`, {
+  const api = useApi(`/api/audit/since?tail=1&scope=fleet&limit=${limit}`, {
     intervalMs: 5000,
     fallback: { events: [] },
   });
