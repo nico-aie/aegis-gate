@@ -211,6 +211,16 @@ state:
             // in this plain-http test, but accept_loop requires
             // the parameter.
             std::sync::Arc::new(crate::state::InMemoryBackend::new()),
+            // PROXY-T1 — default off for this test.
+            aegis_core::config::ProxyProtocolMode::Off,
+            // PROXY-T3 — event counter (unused on the default-off path).
+            std::sync::Arc::new(
+                aegis_control::metrics::proxy_protocol::ProxyProtocolMetrics::register(
+                    &metrics_reg,
+                    &crate::listener::proxy_protocol::METRIC_LABELS,
+                )
+                .unwrap(),
+            ),
         ));
 
         // Give the accept loop a moment to start.
@@ -331,6 +341,16 @@ state:
             None, // MTLS-T3 — no identity tracker for this test
             // 2026-05-08 NEW-2 — in-memory state for accept_loop
             std::sync::Arc::new(crate::state::InMemoryBackend::new()),
+            // PROXY-T1 — default off for this test.
+            aegis_core::config::ProxyProtocolMode::Off,
+            // PROXY-T3 — event counter (unused on the default-off path).
+            std::sync::Arc::new(
+                aegis_control::metrics::proxy_protocol::ProxyProtocolMetrics::register(
+                    &metrics_reg,
+                    &crate::listener::proxy_protocol::METRIC_LABELS,
+                )
+                .unwrap(),
+            ),
         ));
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

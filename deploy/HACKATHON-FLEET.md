@@ -57,11 +57,57 @@
 >   client source IP**: **HAProxy `mode tcp` + TPROXY** (this guide), a
 >   **cloud L4 NLB** with client-IP preservation, or **IPVS-DR / Cilium**.
 >   The LB forwards raw TLS bytes → the WAF terminates TLS → JA3/JA4 works.
+> - **With an LB, no root (PROXY protocol)** — when TPROXY is unavailable
+>   (rootless Docker, no `NET_ADMIN`), front the fleet with an L4 LB that
+>   **prepends a PROXY-protocol header** (nginx `stream { proxy_protocol on; }`,
+>   HAProxy `send-proxy-v2`) and set `accept_proxy: strict` on the WAF
+>   listener + `proxy.trusted_proxies` to the LB CIDR. The WAF reads the real
+>   client IP from the header before terminating TLS — real client IP **and**
+>   JA3/JA4 **and** a single VIP, with **no TPROXY return-routing cost**. See
+>   the topology matrix below and
+>   [`config/REFERENCE.md#listeners`](../config/REFERENCE.md#listeners).
 > - **Never an L7 LB** here, and **don't** let the LB "handle ACME" by
 >   terminating TLS (that's the L7 path). The cost of staying at the edge is
 >   the cert story: the WAF terminates TLS on every node, so **provision certs
 >   out-of-band + set `tls.acme.auto_renew: false`** (§3.1) — or single-node
 >   ACME when there's no LB.
+
+### Topology matrix (real client IP × JA3/JA4 × single VIP × root)
+
+| Topology | Real client IP | JA3/JA4 | Single VIP / LB | Root? |
+|---|---|---|---|---|
+| **DNS round-robin (no LB)** | ✅ | ✅ | ❌ no VIP/HA/drain | no |
+| **L4 passthrough + TPROXY** (this guide) | ✅ | ✅ | ✅ | **yes** (`NET_ADMIN` + return-routing) |
+| **L7 LB + XFF** | ✅ (via `trusted_proxies`) | ❌ LB terminates TLS | ✅ | no |
+| **➡ L4 + PROXY protocol** (`accept_proxy`) | ✅ header carries it | ✅ WAF still terminates TLS | ✅ | **no** |
+
+PROXY protocol is the only row that gets all four columns **without root** —
+the real IP rides in a small header at the start of the TCP connection, not
+in the TCP source address, so there's no SNAT collapse and no TPROXY
+return-routing. LB config to prepend the header:
+
+```nginx
+# nginx — L4 stream passthrough that prepends the PROXY header
+stream {
+  upstream waf { server 10.0.0.11:8443; server 10.0.0.12:8443; }
+  server {
+    listen 443;
+    proxy_pass waf;
+    proxy_protocol on;     # nginx sends PROXY v1
+  }
+}
+```
+
+```haproxy
+# HAProxy — mode tcp, send PROXY v2 to each WAF node
+backend waf
+  mode tcp
+  server waf-a 10.0.0.11:8443 send-proxy-v2
+  server waf-b 10.0.0.12:8443 send-proxy-v2
+```
+
+WAF side: `accept_proxy: strict` + `proxy.trusted_proxies: ["10.0.0.0/8"]`
+(the LB CIDR). A header from outside that set is closed (anti-spoofing).
 
 ### Why this topology (and what changes vs an L7 LB)
 

@@ -72,6 +72,7 @@ below will work.
 | ✅ Upstream circuit breaker | Stop one of the upstream members, drive traffic | Breaker opens after `error_rate_threshold` is exceeded; `open_duration` later it half-opens and re-probes. |
 | ✅ Upstream health probe | Pool with a `health.path` configured | Member is marked unhealthy if the probe fails > N times consecutively. |
 | ✅ Per-route quotas | Route with a `quota.body_size` set, send a body that exceeds it | Returns 413 (Payload Too Large). |
+| ✅ PROXY protocol (real client IP behind an L4 LB) | Listener `accept_proxy: strict` + `proxy.trusted_proxies` set; front with nginx `stream proxy_protocol on;`. Drive attacks as client A, benign as B (`tests/cluster/10-proxy-protocol-client-ip.sh`) | Per-IP risk climbs for A while B stays clean (buckets no longer collapse onto the LB IP); audit `ip` = real client, `proxy_via` = LB hop; `waf_proxy_protocol_events_total{result="parsed"}` increments. A header from an untrusted source closes the connection. See `config/REFERENCE.md#listeners`. |
 | 🟦 HTTP/3 | Build with `--features http3`, configure QUIC bind | Browser fetch over h3 succeeds. |
 
 ---

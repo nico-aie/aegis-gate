@@ -84,6 +84,11 @@ ipnet = { version = "2", features = ["serde"] }
 aho-corasick = "1"
 globset = "0.4"
 
+# PROXY protocol (L4 real-client-IP) — pure-Rust v1+v2 header parser.
+# We own the bounded async read; `ppp` only parses the exact header
+# bytes we hand it. Pinned; surfaced to `cargo deny`/`cargo audit`.
+ppp = "=2.3.0"
+
 # Observability
 prometheus = "0.13"
 tracing = "0.1"

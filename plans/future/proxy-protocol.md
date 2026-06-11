@@ -232,11 +232,45 @@ listener: **PROXY parse → TLS accept (incl. client-cert verify) → fingerprin
 Defaults **off**; operator opts in per listener. **~1,700 LoC · ~9 working days.**
 
 ### 4.1 Progress tracker (update as phases land)
-- [ ] **P1** parse + listener flag (observe-only)
-- [ ] **P2** trust + effective-peer override + boot validation
-- [ ] **P3** audit/XFF precedence + failure-mode hardening + metrics
-- [ ] **P4** docs + nginx/HAProxy wiring + `tests/cluster` rig
-- [ ] **Gates** — §7 checklist green before recommending PROXY as a supported topology
+- [x] **P1** parse + listener flag (observe-only) — `ppp` v2.3.0 pinned;
+      `ProxyProtocolMode` (`off`/`strict`/`optional`, default off) on
+      `ListenerConfig`; new `listener/proxy_protocol.rs` (peek-sniff +
+      exact-length v1/v2 read, deadline-bounded, 10 unit tests proving no
+      ClientHello over-read); `accept_loop` reads+logs+observes ahead of
+      TLS, peer NOT yet overridden. Default-off path unchanged (798
+      aegis-proxy tests green).
+- [x] **P2** trust + effective-peer override + boot validation —
+      `decide_peer_action(outcome, trusted_lb) → Override/Proceed/Close`
+      (anti-spoof: a header from an untrusted source closes); `accept_loop`
+      rebinds `peer` to the asserted client before TLS; boot validation
+      `accept_proxy ⇒ trusted_proxies non-empty`. 5 decision unit tests +
+      3 boot-validation tests; core 295 / proxy 803 green. Live
+      end-to-end differential-risk test deferred to P4's cluster rig.
+- [x] **P3** audit/XFF precedence + failure-mode hardening + metrics —
+      `waf_proxy_protocol_events_total{result}` counter (10 labels incl.
+      `untrusted_source`/`unspec_family`, pre-registered); `proxy_via`
+      additive audit field on the HTTP request-decision events
+      (ddos/rate-limit/detector blocks) via `with_proxy_via`; PROXY→XFF
+      composition confirmed (`resolve_client_ip` unchanged); audit-`ip`
+      semantics documented in ip-reputation.md + risk-scoring.md.
+      Failure-mode §3.6 labels all covered by unit tests. (Live 5s
+      read-timeout test deferred — too slow for a unit; WS/tunnel/
+      challenge audit events carry no `proxy_via` by design.)
+- [x] **P4** docs + nginx/HAProxy wiring + `tests/cluster` rig —
+      `config/REFERENCE.md` `accept_proxy` entry; topology matrix 4th row
+      + nginx `stream`/HAProxy `send-proxy-v2` examples in
+      `deploy/HACKATHON-FLEET.md`; `docs/FEATURES.md` row;
+      `tests/cluster/10-proxy-protocol-client-ip.sh` (self-contained
+      in-memory fixture `config/cluster-proxy.yaml`, no docker/redis) +
+      `run-all.sh` entry. **Rig runs green end-to-end against the real
+      binary: attacker=100 / clean=0 / LB(127.0.0.1)=0 — buckets key on
+      the real client, not the collapsed LB IP.**
+- [x] **Gates** — §7 checklist green: trusted-only honour, boot
+      validation, default-off zero-cost, exact-length read, malformed
+      closes, deadline-bounded, **differential-risk live** (rig),
+      `proxy_via` recorded + audit-`ip` documented. (JA3/JA4-unchanged +
+      mTLS-on-PROXY assert through a TLS listener — covered architecturally;
+      a TLS variant of the rig can extend §8 later.)
 
 ---
 

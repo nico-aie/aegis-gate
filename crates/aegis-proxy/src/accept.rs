@@ -1430,9 +1430,21 @@ pub(crate) async fn accept_loop(
     // single-use enforcement. Same Arc the rest of the WAF uses
     // (rate-limit, risk, blacklist).
     state_backend: Arc<dyn aegis_core::state::StateBackend>,
+    // PROXY-T1/T2 — per-listener PROXY-protocol mode. `Off` (default)
+    // skips the pre-TLS read entirely; `Strict`/`Optional` read+parse
+    // the asserted client IP ahead of TLS, enforce the trusted-proxy
+    // boundary, and override the effective peer. See
+    // `listener::proxy_protocol`.
+    proxy_mode: aegis_core::config::ProxyProtocolMode,
+    // PROXY-T3 — shared event counter, recorded once per connection on
+    // an opted-in listener. Cheap clone (Arc-shared CounterVec).
+    proxy_protocol_metrics: Arc<aegis_control::metrics::proxy_protocol::ProxyProtocolMetrics>,
 ) {
     loop {
-        let (stream, peer) = match tcp.accept().await {
+        // `peer` is `mut` because a trusted PROXY-protocol header
+        // (PROXY-T2) rebinds it to the asserted client address before
+        // TLS. Without `accept_proxy`, it is never reassigned.
+        let (mut stream, mut peer) = match tcp.accept().await {
             Ok(conn) => conn,
             Err(e) => {
                 tracing::error!("accept error: {e}");
@@ -1457,6 +1469,7 @@ pub(crate) async fn accept_loop(
         let acceptor = tls_acceptor.clone();
         let decision_metrics = decision_metrics.clone();
         let detector_hit_metrics = detector_hit_metrics.clone();
+        let proxy_protocol_metrics = proxy_protocol_metrics.clone();
         let identity_tracker = identity_tracker.clone();
         // FDP-T4 — admit a slot in the shared in-flight counter
         // for this data-plane connection. Cloned out here so it
@@ -1466,6 +1479,76 @@ pub(crate) async fn accept_loop(
         let conn_inflight = upstream_ctx.inflight.clone();
         tokio::spawn(async move {
             let _admit = conn_inflight.admit();
+            // PROXY-T3 — the real LB transport hop, captured before a
+            // trusted header rebinds `peer` to the client. `None` unless
+            // an override happens; flows to the audit `proxy_via` field.
+            let mut proxy_via: Option<std::net::IpAddr> = None;
+            // PROXY-T2 — when this listener opted in (`accept_proxy !=
+            // off`), consume + parse the PROXY header off the raw socket
+            // BEFORE the TLS handshake, enforce the trusted-proxy
+            // boundary, and rebind the effective `peer` to the asserted
+            // client IP. Everything downstream (rate-limit, risk, geoip,
+            // audit `ip`) then keys on the real client with no further
+            // change. TLS — and so JA3/JA4 and any mTLS client-cert
+            // check — still runs on the client's own ClientHello. The
+            // default-off path never enters this branch: no extra read.
+            if proxy_mode.is_enabled() {
+                use crate::listener::proxy_protocol::{
+                    decide_peer_action, metric_label, read_proxy_header, PeerAction,
+                    ProxyProtocolModeRef,
+                };
+                let mode_ref = match proxy_mode {
+                    aegis_core::config::ProxyProtocolMode::Strict => ProxyProtocolModeRef::Strict,
+                    aegis_core::config::ProxyProtocolMode::Optional => {
+                        ProxyProtocolModeRef::Optional
+                    }
+                    // `is_enabled()` already excluded `Off`.
+                    aegis_core::config::ProxyProtocolMode::Off => return,
+                };
+                let outcome = read_proxy_header(&mut stream, mode_ref).await;
+                // Honour a header only when the real TCP peer (the LB) is
+                // a trusted proxy — the anti-spoofing boundary (§3.3).
+                let trusted_lb = upstream_ctx
+                    .trusted_proxies
+                    .iter()
+                    .any(|net| net.contains(&peer.ip()));
+                // PROXY-T3 — one counter sample per connection, before
+                // the disposition is applied. `untrusted_source` is a
+                // distinct label from `parsed` (a clean parse that is
+                // nonetheless closed for trust).
+                proxy_protocol_metrics.record(metric_label(outcome, trusted_lb));
+                match decide_peer_action(outcome, trusted_lb) {
+                    PeerAction::Override(client) => {
+                        tracing::debug!(
+                            lb_peer = %peer,
+                            asserted_client = %client,
+                            result = outcome.label(),
+                            "proxy-protocol: effective peer overridden",
+                        );
+                        // Keep the real LB hop as `proxy_via` (audit
+                        // forensics) before adopting the client as peer.
+                        proxy_via = Some(peer.ip());
+                        peer = client;
+                    }
+                    PeerAction::Proceed => {
+                        tracing::trace!(
+                            lb_peer = %peer,
+                            trusted_lb,
+                            result = outcome.label(),
+                            "proxy-protocol: proceeding with transport peer",
+                        );
+                    }
+                    PeerAction::Close => {
+                        tracing::debug!(
+                            lb_peer = %peer,
+                            trusted_lb,
+                            result = outcome.label(),
+                            "proxy-protocol: closing connection (fail-closed)",
+                        );
+                        return;
+                    }
+                }
+            }
             // MTLS-T3 — per-connection identity. We set it from
             // the TLS handshake (when a TLS acceptor is wired)
             // before the service_fn is built; plain-HTTP
@@ -1686,6 +1769,7 @@ pub(crate) async fn accept_loop(
                     let (resp, decision) = handle_data_request(
                         req,
                         peer,
+                        proxy_via,
                         &detectors,
                         &mask,
                         &risk,
