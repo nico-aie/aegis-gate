@@ -6,7 +6,15 @@ root cause, impact, workaround, and a suggested fix; feature tracks carry a phas
 checklist and acceptance gates, with the full design living in
 [`../future/`](../future/).
 
-| File | Type | Status | Notes |
+## Open
+
+| File | Type | Severity | Summary |
+|---|---|---|---|
+| [`UX-zero-trust-page-simplify-per-pool-cert-upload.md`](./UX-zero-trust-page-simplify-per-pool-cert-upload.md) | UX / refactor | Medium | 🟡 Zero Trust page upstream section: clean up layout + promote the WAF-cert download, **remove** the standalone Step 2 Backend-CA Trust Bundles card, and rework Step 3 into a per-pool table with inline cert upload (persisted to the Redis config plane) + an enable/disable mTLS toggle per pool. Frontend-first; reuses existing `aegis:zt:upstream:*` storage. Reported by liud 2026-06-11. |
+
+## Resolved (archived)
+
+| File | Type | Severity | Resolution |
 |---|---|---|---|
 | [`QC-CLUSTER-RESULTS-2026-06-11.md`](./QC-CLUSTER-RESULTS-2026-06-11.md) | QC report | 🔴 Open — 3 HIGH · 6 MED · 2 LOW | Cluster-mode QC run. Consensus healthy; defects in dashboard client, audit read-path, health-probe auth, session UX. |
 | [`FIX-cluster-qc-2026-06-11.md`](./FIX-cluster-qc-2026-06-11.md) | fix plan | 🟠 In progress | Phased fix plan (P1–P6) for the QC findings. Re-scopes F14/F13/F2 after code review. **All phases implemented on `fix/cluster-qc-2026-06-11`** (commits 2c6d621 → P6); pending live re-check + merge. |
