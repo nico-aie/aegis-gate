@@ -76,6 +76,11 @@ pub async fn forward_websocket_upgrade(
     body: &[u8],
     upstream_addr: SocketAddr,
     connect_timeout: Duration,
+    // WS-MSG5 — when the route inspects frames, drop
+    // `Sec-WebSocket-Extensions` from the forwarded handshake so the
+    // upstream cannot negotiate `permessage-deflate`; the resulting
+    // connection is uncompressed and therefore inspectable.
+    strip_extensions: bool,
 ) -> std::io::Result<UpstreamHandshake> {
     let mut socket = tokio::time::timeout(
         connect_timeout,
@@ -105,6 +110,13 @@ pub async fn forward_websocket_upgrade(
     head.extend_from_slice(path_and_query.as_bytes());
     head.extend_from_slice(b" HTTP/1.1\r\n");
     for (name, value) in headers.iter() {
+        if strip_extensions
+            && name.as_str().eq_ignore_ascii_case("sec-websocket-extensions")
+        {
+            // Drop the whole extensions offer so no compression is
+            // negotiated (fail-safe for inspectability).
+            continue;
+        }
         head.extend_from_slice(name.as_str().as_bytes());
         head.extend_from_slice(b": ");
         head.extend_from_slice(value.as_bytes());
@@ -285,6 +297,7 @@ mod tests {
             b"",
             addr,
             Duration::from_secs(2),
+            false,
         )
         .await
         .unwrap();
@@ -309,6 +322,76 @@ mod tests {
         }
         assert_eq!(&frame[..b"frame-bytes".len()], b"frame-bytes");
         server.await.unwrap();
+    }
+
+    // WS-MSG5 — with `strip_extensions`, the forwarded handshake must NOT
+    // carry `Sec-WebSocket-Extensions`, so the upstream can't negotiate
+    // permessage-deflate and the connection stays inspectable.
+    #[tokio::test]
+    async fn strips_sec_websocket_extensions_when_requested() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let n = sock.read(&mut chunk).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            sock.write_all(
+                b"HTTP/1.1 101 Switching Protocols\r\n\
+                  Upgrade: websocket\r\nConnection: Upgrade\r\n\
+                  Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n",
+            )
+            .await
+            .unwrap();
+            String::from_utf8_lossy(&buf).to_string()
+        });
+
+        let mut headers = HeaderMap::new();
+        headers.insert("host", http::HeaderValue::from_static("example.test"));
+        headers.insert("upgrade", http::HeaderValue::from_static("websocket"));
+        headers.insert("connection", http::HeaderValue::from_static("Upgrade"));
+        headers.insert(
+            "sec-websocket-key",
+            http::HeaderValue::from_static("dGhlIHNhbXBsZSBub25jZQ=="),
+        );
+        headers.insert(
+            "sec-websocket-version",
+            http::HeaderValue::from_static("13"),
+        );
+        headers.insert(
+            "sec-websocket-extensions",
+            http::HeaderValue::from_static("permessage-deflate; client_max_window_bits"),
+        );
+
+        let _ = forward_websocket_upgrade(
+            &http::Method::GET,
+            &"/chat".parse().unwrap(),
+            &headers,
+            b"",
+            addr,
+            Duration::from_secs(2),
+            true, // strip extensions
+        )
+        .await
+        .unwrap();
+
+        let received = server.await.unwrap().to_ascii_lowercase();
+        assert!(
+            !received.contains("sec-websocket-extensions"),
+            "extensions header must be stripped; got:\n{received}"
+        );
+        assert!(received.contains("sec-websocket-key"));
     }
 
     #[tokio::test]
@@ -352,6 +435,7 @@ mod tests {
             b"",
             addr,
             Duration::from_secs(2),
+            false,
         )
         .await
         .unwrap();
@@ -379,6 +463,7 @@ mod tests {
             b"",
             upstream,
             Duration::from_millis(50),
+            false,
         )
         .await;
         assert!(res.is_err(), "expected timeout / unreachable");

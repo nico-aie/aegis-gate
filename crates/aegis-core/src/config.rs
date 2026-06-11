@@ -1481,10 +1481,57 @@ pub struct RouteConfig {
     /// integrity is preserved across the toggle.
     #[serde(default = "default_route_enabled")]
     pub enabled: bool,
+    /// WS-MSG — opt-in WebSocket text-frame message inspection. `None`
+    /// (default) keeps today's zero-copy `copy_bidirectional` tunnel.
+    /// When set + `enabled`, client→upstream **text** frames are
+    /// reassembled and run through the body detectors before forwarding;
+    /// binary / control frames stay verbatim passthrough. See
+    /// `plans/future/websocket-message-inspection.md`.
+    #[serde(default)]
+    pub ws_inspect: Option<WsInspectConfig>,
 }
 
 fn default_route_enabled() -> bool {
     true
+}
+
+/// Enforcement mode for WebSocket frame inspection — mirrors the global
+/// enforce-vs-log_only model.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WsInspectMode {
+    /// Emit the `websocket_frame_block` audit event but forward the
+    /// frame anyway (`action: would_block`). Default on first enable so
+    /// operators can tune the mask/threshold before enforcing.
+    #[default]
+    LogOnly,
+    /// Drop the offending message and close the socket with WS Close
+    /// `1008` (policy violation).
+    Enforce,
+}
+
+/// Per-route WebSocket message-inspection settings (WS-MSG).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WsInspectConfig {
+    /// Master switch. `false` (or the whole block absent) ⇒ today's
+    /// zero-copy bridge, byte-for-byte unchanged.
+    #[serde(default)]
+    pub enabled: bool,
+    /// `log_only` (default) or `enforce`.
+    #[serde(default)]
+    pub mode: WsInspectMode,
+    /// Reassembled-message cap across fragments; a message over this
+    /// closes the connection with WS Close `1009`. 0 ⇒ the codec
+    /// default (`MAX_MESSAGE_BYTES`, 4 MiB).
+    #[serde(default)]
+    pub max_message_bytes: usize,
+}
+
+impl WsInspectConfig {
+    /// True when this route should run the inspecting bridge.
+    pub fn is_active(&self) -> bool {
+        self.enabled
+    }
 }
 
 /// Per-route request/response quotas.

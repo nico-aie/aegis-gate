@@ -57,6 +57,9 @@ struct CompiledRoute {
     /// registration order + the `--print-route-priority` audit.
     /// Sorted descending: higher matches first.
     priority: RoutePriority,
+    /// WS-MSG — per-route WebSocket message-inspection settings,
+    /// carried verbatim from `RouteConfig.ws_inspect`.
+    ws_inspect: Option<aegis_core::config::WsInspectConfig>,
 }
 
 /// Hot-swappable routing table.
@@ -494,6 +497,7 @@ impl CompiledRouteTable {
                     tcp_destination_allowlist,
                     max_concurrent_tunnels_per_ip: rc.max_concurrent_tunnels_per_ip,
                     priority: *prio,
+                    ws_inspect: rc.ws_inspect.clone(),
                 });
 
                 // PR1: same-path merge uses `find_exact`, NOT `find`.
@@ -598,6 +602,7 @@ impl CompiledRoute {
             tcp_destination_allowlist: self.tcp_destination_allowlist.clone(),
             max_concurrent_tunnels_per_ip: self.max_concurrent_tunnels_per_ip,
             path_strip_prefix: self.path_strip_prefix.clone(),
+            ws_inspect: self.ws_inspect.clone(),
         }
     }
 }
@@ -651,6 +656,7 @@ mod strip_prefix_tests {
             max_concurrent_tunnels_per_ip: 0,
             default: false,
             enabled: true,
+            ws_inspect: None,
         }
     }
 

@@ -1845,6 +1845,15 @@ pub(crate) async fn forward_allow_to_upstream(
             );
         };
 
+        // WS-MSG5 — strip `permessage-deflate` from the forwarded
+        // handshake when this route inspects frames, so the negotiated
+        // connection is uncompressed (compressed frames can't be
+        // decoded for inspection in v1).
+        let strip_ws_extensions = route_ctx
+            .ws_inspect
+            .as_ref()
+            .map(|c| c.is_active())
+            .unwrap_or(false);
         let upstream_handshake = match crate::proto::ws_forward::forward_websocket_upgrade(
             &parts.method,
             &parts.uri,
@@ -1852,6 +1861,7 @@ pub(crate) async fn forward_allow_to_upstream(
             &body_bytes,
             member.addr,
             std::time::Duration::from_secs(5),
+            strip_ws_extensions,
         )
         .await
         {
@@ -1895,6 +1905,42 @@ pub(crate) async fn forward_allow_to_upstream(
             let bus_for_task = bus.clone();
             let route_id_for_task = route_ctx.route_id.clone();
             let upstream_addr = member.addr;
+            // WS-MSG2 — per-route frame-inspection config moved into the
+            // bridge task. `None` / disabled ⇒ the zero-copy path below.
+            let ws_inspect_for_task = route_ctx.ws_inspect.clone();
+            // WS-MSG3 — detector handles + the synthetic-view context for
+            // the inspecting bridge, all moved into the spawned task.
+            // `ws_detectors`/`ws_mask` are `None` on builds that don't
+            // wire detectors (tests) → the bridge forwards un-inspected.
+            let ws_detectors = ctx.ws_detectors.clone();
+            let ws_mask = ctx
+                .ws_detector_mask
+                .as_ref()
+                .map(|m| m.resolve(Some(route_ctx.tier)));
+            let ws_block_at = ctx
+                .tiers
+                .get()
+                .and_then(|store| store.get(route_ctx.tier.as_str()))
+                .map(|t| t.risk_threshold)
+                .unwrap_or(50);
+            let ws_method = parts.method.clone();
+            let ws_uri = parts.uri.clone();
+            // A WS text frame is UTF-8 text by RFC 6455; stamp a
+            // `text/plain` Content-Type onto the synthetic view so the
+            // body-class detectors (which gate on a scannable
+            // Content-Type) actually scan the reassembled message.
+            let mut ws_headers = parts.headers.clone();
+            ws_headers.insert(
+                http::header::CONTENT_TYPE,
+                http::HeaderValue::from_static("text/plain"),
+            );
+            let ws_peer_ip = peer_ip;
+            // WS-MSG4 — audit + metric emission context for blocked
+            // (and would-block) frames.
+            let ws_bus = bus.clone();
+            let ws_route_id = route_ctx.route_id.clone();
+            let ws_tier = route_ctx.tier;
+            let ws_metrics_for_inspect = ctx.websocket_metrics.clone();
             // WS-T6 — record bridge open before spawning the task.
             // The matching close is recorded inside the task after
             // `copy_bidirectional` returns.  None when the binary
@@ -1929,13 +1975,146 @@ pub(crate) async fn forward_allow_to_upstream(
                                 return;
                             }
                         }
-                        let copy = tokio::io::copy_bidirectional(
-                            &mut client_io,
-                            &mut upstream,
-                        )
-                        .await;
+                        // WS-MSG2 — when the route opts into frame
+                        // inspection, run the parsing bridge; otherwise
+                        // the original zero-copy tunnel, byte-for-byte.
+                        let (c2u, u2c) = if let Some(ws_cfg) = ws_inspect_for_task
+                            .as_ref()
+                            .filter(|c| c.is_active())
+                        {
+                            let bridge_cfg = crate::proto::ws_inspect::WsBridgeConfig {
+                                max_message_bytes: ws_cfg.max_message_bytes,
+                            };
+                            // WS-MSG3 — per-message inspector: build a
+                            // synthetic RequestView from the handshake
+                            // context, run the body detectors over the
+                            // reassembled text, and block on `enforce`
+                            // when the summed score crosses the route
+                            // tier's per-request threshold. `log_only`
+                            // forwards (WS-MSG4 emits the would-block
+                            // audit). No detectors wired ⇒ allow.
+                            let enforce = matches!(
+                                ws_cfg.mode,
+                                aegis_core::config::WsInspectMode::Enforce
+                            );
+                            let inspector = move |payload: &[u8]| {
+                                use crate::proto::ws_inspect::WsVerdict;
+                                let (Some(detectors), Some(mask)) =
+                                    (ws_detectors.as_ref(), ws_mask)
+                                else {
+                                    return WsVerdict::Allow;
+                                };
+                                let body = aegis_core::pipeline::BodyPeek::new(
+                                    payload.to_vec(),
+                                    Some(payload.len() as u64),
+                                    false,
+                                );
+                                let view = aegis_core::pipeline::RequestView {
+                                    method: &ws_method,
+                                    uri: &ws_uri,
+                                    version: http::Version::HTTP_11,
+                                    headers: &ws_headers,
+                                    peer: std::net::SocketAddr::new(ws_peer_ip, 0),
+                                    tls: None,
+                                    body: &body,
+                                };
+                                let signals = aegis_security::detectors::run_all_filtered(
+                                    &detectors[..],
+                                    mask,
+                                    &view,
+                                );
+                                let sum: u32 = signals
+                                    .iter()
+                                    .map(|s| s.score)
+                                    .sum::<u32>()
+                                    .min(100);
+                                if sum < ws_block_at {
+                                    return WsVerdict::Allow;
+                                }
+                                // Over threshold — emit the
+                                // websocket_frame_block audit + metric for
+                                // both enforce and log_only; `mode`
+                                // distinguishes them (see memory:
+                                // X-WAF-Action vs Mode).
+                                let top = signals.iter().max_by_key(|s| s.score);
+                                let tag = top
+                                    .map(|s| s.tag.clone())
+                                    .unwrap_or_else(|| "detectors".to_string());
+                                let matched_field =
+                                    top.map(|s| s.field.clone()).unwrap_or_default();
+                                let mode_str = if enforce { "enforce" } else { "log_only" };
+                                if let Some(m) = ws_metrics_for_inspect.as_ref() {
+                                    m.record_frame_block(&ws_route_id, &tag);
+                                }
+                                ws_bus.emit(aegis_core::audit::AuditEvent {
+                                    schema_version: 1,
+                                    ts: chrono::Utc::now(),
+                                    request_id: blake3::hash(
+                                        format!(
+                                            "wsframe:{}:{}",
+                                            ws_route_id,
+                                            chrono::Utc::now()
+                                                .timestamp_nanos_opt()
+                                                .unwrap_or(0),
+                                        )
+                                        .as_bytes(),
+                                    )
+                                    .to_hex()
+                                    .to_string(),
+                                    class: aegis_core::audit::AuditClass::Access,
+                                    tenant_id: None,
+                                    tier: Some(ws_tier),
+                                    action: "websocket_frame_block".into(),
+                                    reason: format!(
+                                        "websocket text frame blocked by detectors: {tag} \
+                                         (score: {sum})"
+                                    ),
+                                    client_ip: ws_peer_ip.to_string(),
+                                    route_id: Some(ws_route_id.clone()),
+                                    rule_id: Some(tag),
+                                    risk_score: Some(sum),
+                                    method: None,
+                                    path: None,
+                                    mode: Some(mode_str.to_string()),
+                                    fields: serde_json::json!({
+                                        "matched_field": matched_field,
+                                        "message_bytes": payload.len(),
+                                    }),
+                                });
+                                if enforce {
+                                    WsVerdict::Block
+                                } else {
+                                    WsVerdict::Allow
+                                }
+                            };
+                            match crate::proto::ws_inspect::run_bridge(
+                                client_io,
+                                upstream,
+                                bridge_cfg,
+                                inspector,
+                            )
+                            .await
+                            {
+                                Ok(stats) => {
+                                    (stats.client_to_upstream, stats.upstream_to_client)
+                                }
+                                Err(e) => {
+                                    tracing::debug!(
+                                        error = %e,
+                                        "websocket inspecting bridge ended with io error",
+                                    );
+                                    (0, 0)
+                                }
+                            }
+                        } else {
+                            let copy = tokio::io::copy_bidirectional(
+                                &mut client_io,
+                                &mut upstream,
+                            )
+                            .await;
+                            copy.unwrap_or((0, 0))
+                        };
                         let elapsed = started.elapsed();
-                        let (c2u, u2c) = copy.unwrap_or((0, 0));
                         bus_for_task.emit(aegis_core::audit::AuditEvent {
                             schema_version: 1,
                             ts: chrono::Utc::now(),
@@ -4144,6 +4323,396 @@ state: {{ backend: in_memory }}
         // copy_bidirectional then bail out.  Aborts are safe
         // because both listeners only accept once.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        backend_task.abort();
+        waf_task.abort();
+    }
+
+    /// WS-MSG2 — with `ws_inspect.enabled`, text **and** binary frames
+    /// still round-trip through the *inspecting* bridge (binary verbatim,
+    /// text reassembled-then-forwarded). Proves the parsing bridge is
+    /// transparent before any detector is wired (WS-MSG3).
+    #[tokio::test]
+    async fn websocket_round_trips_with_inspection_enabled() {
+        use futures::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let backend = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let backend_addr = backend.local_addr().unwrap();
+        let backend_task = tokio::spawn(async move {
+            let (stream, _) = backend.accept().await.unwrap();
+            let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let (mut tx, mut rx) = futures::StreamExt::split(ws);
+            while let Some(Ok(msg)) = futures::StreamExt::next(&mut rx).await {
+                if msg.is_text() || msg.is_binary() {
+                    if tx.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Same fixture, but the route opts into frame inspection.
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: chat, path: "/", upstream: pool, ws_inspect: {{ enabled: true }} }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend_addr}" }}] }}
+state: {{ backend: in_memory }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
+
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let bus = AuditBus::new(16);
+        let ctx_for_listener = ctx.clone();
+        let bus_for_listener = bus.clone();
+        let rh = Arc::new(route_latency());
+        let waf_task = tokio::spawn(async move {
+            let (stream, peer) = waf.accept().await.unwrap();
+            let ctx_for_svc = ctx_for_listener.clone();
+            let bus_for_svc = bus_for_listener.clone();
+            let rh_for_svc = rh.clone();
+            let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                let ctx = ctx_for_svc.clone();
+                let bus = bus_for_svc.clone();
+                let rh = rh_for_svc.clone();
+                async move {
+                    let (parts, body) = req.into_parts();
+                    let body_bytes = body
+                        .collect()
+                        .await
+                        .map(|c| c.to_bytes())
+                        .unwrap_or_default();
+                    let (resp, _tag) = super::forward_allow_to_upstream(
+                        parts,
+                        body_bytes,
+                        &ctx,
+                        &ClientIdentity::Anonymous,
+                        &rh,
+                        &route_activity_w(),
+                        Instant::now(),
+                        peer.ip(),
+                        &bus,
+                    )
+                    .await;
+                    Ok::<_, Infallible>(resp)
+                }
+            });
+            let io = TokioIo::new(stream);
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(io, svc)
+                .with_upgrades()
+                .await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let url = format!("ws://127.0.0.1:{}/", waf_addr.port());
+        let (ws, _resp) = tokio_tungstenite::connect_async(&url)
+            .await
+            .expect("client connects + upgrades through the inspecting bridge");
+        let (mut tx, mut rx) = futures::StreamExt::split(ws);
+
+        // Text message round-trips (reassembled + forwarded).
+        tx.send(Message::Text("benign chat text".into()))
+            .await
+            .unwrap();
+        let echo = futures::StreamExt::next(&mut rx)
+            .await
+            .expect("text echo")
+            .expect("text echo ok");
+        assert_eq!(echo.into_text().unwrap(), "benign chat text");
+
+        // Binary message round-trips byte-identical (never inspected).
+        let payload = vec![0x00, 0x01, 0x02, 0xFF, 0xFE];
+        tx.send(Message::Binary(payload.clone().into()))
+            .await
+            .unwrap();
+        let echo2 = futures::StreamExt::next(&mut rx)
+            .await
+            .expect("binary echo")
+            .expect("binary echo ok");
+        assert_eq!(echo2.into_data().to_vec(), payload);
+
+        drop(tx);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        backend_task.abort();
+        waf_task.abort();
+    }
+
+    /// WS-MSG3 — with real detectors wired and `mode: enforce`, a text
+    /// frame carrying SQLi is blocked: it never reaches the upstream and
+    /// the client's socket is closed. The detector chain runs over the
+    /// reassembled message via the synthetic `RequestView`.
+    #[tokio::test]
+    async fn sqli_text_frame_is_blocked_and_never_reaches_upstream() {
+        use futures::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
+
+        // Echo backend that records whether it ever received a message.
+        let backend = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let backend_addr = backend.local_addr().unwrap();
+        let got_message = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let got_message_be = got_message.clone();
+        let backend_task = tokio::spawn(async move {
+            let (stream, _) = backend.accept().await.unwrap();
+            let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let (mut tx, mut rx) = futures::StreamExt::split(ws);
+            while let Some(Ok(msg)) = futures::StreamExt::next(&mut rx).await {
+                if msg.is_text() || msg.is_binary() {
+                    got_message_be.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = tx.send(msg).await;
+                }
+            }
+        });
+
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: chat, path: "/", upstream: pool, ws_inspect: {{ enabled: true, mode: enforce }} }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend_addr}" }}] }}
+state: {{ backend: in_memory }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let mut ctx_inner = ProxyContext::build(&cfg, pipeline).unwrap();
+        // Wire the real detector chain into the WS bridge.
+        ctx_inner.ws_detectors =
+            Some(Arc::new(aegis_security::detectors::default_detectors()));
+        ctx_inner.ws_detector_mask =
+            Some(aegis_security::detectors::SharedDetectorMask::default());
+        let ctx = Arc::new(ctx_inner);
+
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let bus = AuditBus::new(16);
+        let ctx_for_listener = ctx.clone();
+        let bus_for_listener = bus.clone();
+        let rh = Arc::new(route_latency());
+        let waf_task = tokio::spawn(async move {
+            let (stream, peer) = waf.accept().await.unwrap();
+            let ctx_for_svc = ctx_for_listener.clone();
+            let bus_for_svc = bus_for_listener.clone();
+            let rh_for_svc = rh.clone();
+            let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                let ctx = ctx_for_svc.clone();
+                let bus = bus_for_svc.clone();
+                let rh = rh_for_svc.clone();
+                async move {
+                    let (parts, body) = req.into_parts();
+                    let body_bytes = body
+                        .collect()
+                        .await
+                        .map(|c| c.to_bytes())
+                        .unwrap_or_default();
+                    let (resp, _tag) = super::forward_allow_to_upstream(
+                        parts,
+                        body_bytes,
+                        &ctx,
+                        &ClientIdentity::Anonymous,
+                        &rh,
+                        &route_activity_w(),
+                        Instant::now(),
+                        peer.ip(),
+                        &bus,
+                    )
+                    .await;
+                    Ok::<_, Infallible>(resp)
+                }
+            });
+            let io = TokioIo::new(stream);
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(io, svc)
+                .with_upgrades()
+                .await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let url = format!("ws://127.0.0.1:{}/", waf_addr.port());
+        let (ws, _resp) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let (mut tx, mut rx) = futures::StreamExt::split(ws);
+
+        // Malicious text frame → blocked by the SQLi detector.
+        tx.send(Message::Text("' OR 1=1--".into())).await.unwrap();
+
+        // The bridge closes the socket; the client sees a Close (or the
+        // stream ends) and never an echo of the payload.
+        let mut echoed_back = false;
+        while let Some(item) = futures::StreamExt::next(&mut rx).await {
+            match item {
+                Ok(Message::Text(_)) | Ok(Message::Binary(_)) => {
+                    echoed_back = true;
+                    break;
+                }
+                Ok(Message::Close(_)) | Err(_) => break,
+                _ => {}
+            }
+        }
+        assert!(!echoed_back, "blocked SQLi message must not be echoed back");
+
+        // Let the backend task observe (it should never have).
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !got_message.load(std::sync::atomic::Ordering::SeqCst),
+            "blocked SQLi message must never reach the upstream",
+        );
+
+        drop(tx);
+        backend_task.abort();
+        waf_task.abort();
+    }
+
+    /// WS-MSG4 — `mode: log_only` forwards the malicious frame to the
+    /// upstream **and** emits a `websocket_frame_block` audit event with
+    /// `mode: log_only`. The socket is NOT closed.
+    #[tokio::test]
+    async fn sqli_log_only_forwards_and_audits() {
+        use futures::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let backend = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let backend_addr = backend.local_addr().unwrap();
+        let got_message = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let got_message_be = got_message.clone();
+        let backend_task = tokio::spawn(async move {
+            let (stream, _) = backend.accept().await.unwrap();
+            let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let (mut tx, mut rx) = futures::StreamExt::split(ws);
+            while let Some(Ok(msg)) = futures::StreamExt::next(&mut rx).await {
+                if msg.is_text() || msg.is_binary() {
+                    got_message_be.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = tx.send(msg).await;
+                }
+            }
+        });
+
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: chat, path: "/", upstream: pool, ws_inspect: {{ enabled: true, mode: log_only }} }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend_addr}" }}] }}
+state: {{ backend: in_memory }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let mut ctx_inner = ProxyContext::build(&cfg, pipeline).unwrap();
+        ctx_inner.ws_detectors =
+            Some(Arc::new(aegis_security::detectors::default_detectors()));
+        ctx_inner.ws_detector_mask =
+            Some(aegis_security::detectors::SharedDetectorMask::default());
+        let ctx = Arc::new(ctx_inner);
+
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let bus = AuditBus::new(16);
+        let mut audit_rx = bus.subscribe();
+        let ctx_for_listener = ctx.clone();
+        let bus_for_listener = bus.clone();
+        let rh = Arc::new(route_latency());
+        let waf_task = tokio::spawn(async move {
+            let (stream, peer) = waf.accept().await.unwrap();
+            let ctx_for_svc = ctx_for_listener.clone();
+            let bus_for_svc = bus_for_listener.clone();
+            let rh_for_svc = rh.clone();
+            let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                let ctx = ctx_for_svc.clone();
+                let bus = bus_for_svc.clone();
+                let rh = rh_for_svc.clone();
+                async move {
+                    let (parts, body) = req.into_parts();
+                    let body_bytes = body
+                        .collect()
+                        .await
+                        .map(|c| c.to_bytes())
+                        .unwrap_or_default();
+                    let (resp, _tag) = super::forward_allow_to_upstream(
+                        parts,
+                        body_bytes,
+                        &ctx,
+                        &ClientIdentity::Anonymous,
+                        &rh,
+                        &route_activity_w(),
+                        Instant::now(),
+                        peer.ip(),
+                        &bus,
+                    )
+                    .await;
+                    Ok::<_, Infallible>(resp)
+                }
+            });
+            let io = TokioIo::new(stream);
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(io, svc)
+                .with_upgrades()
+                .await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let url = format!("ws://127.0.0.1:{}/", waf_addr.port());
+        let (ws, _resp) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let (mut tx, mut rx) = futures::StreamExt::split(ws);
+
+        tx.send(Message::Text("' OR 1=1--".into())).await.unwrap();
+
+        // log_only forwards → the backend echoes it back.
+        let echo = futures::StreamExt::next(&mut rx)
+            .await
+            .expect("log_only forwards the frame → echo")
+            .expect("echo ok");
+        assert_eq!(echo.into_text().unwrap(), "' OR 1=1--");
+        assert!(
+            got_message.load(std::sync::atomic::Ordering::SeqCst),
+            "log_only must forward the frame to the upstream",
+        );
+
+        // …and a websocket_frame_block audit with mode log_only fired.
+        let mut found = false;
+        while let Ok(ev) = audit_rx.try_recv() {
+            if ev.action.as_str() == "websocket_frame_block" {
+                found = true;
+                assert_eq!(ev.mode.as_deref(), Some("log_only"));
+                assert_eq!(ev.rule_id.as_deref(), Some("sqli"));
+                assert_eq!(ev.route_id.as_deref(), Some("chat"));
+                break;
+            }
+        }
+        assert!(found, "log_only must emit a websocket_frame_block audit");
+
+        drop(tx);
         backend_task.abort();
         waf_task.abort();
     }

@@ -29,7 +29,7 @@
 //! observably-slower implementation wouldn't matter; the
 //! counters are simple.
 
-use prometheus::{IntCounter, IntGauge};
+use prometheus::{IntCounter, IntCounterVec, IntGauge};
 
 use super::MetricsRegistry;
 
@@ -40,6 +40,11 @@ pub struct WebSocketMetrics {
     open_total: IntCounter,
     close_total: IntCounter,
     active: IntGauge,
+    /// WS-MSG4 — `aegis_websocket_frame_block_total{route,tag}`. One
+    /// increment per inspected text message that crossed the block
+    /// threshold (both `enforce` and `log_only` — the data plane's
+    /// `mode` distinguishes them on the audit event).
+    frame_block_total: IntCounterVec,
 }
 
 impl WebSocketMetrics {
@@ -66,11 +71,29 @@ impl WebSocketMetrics {
         )?;
         reg.inner().register(Box::new(active.clone()))?;
 
+        let frame_block_total = IntCounterVec::new(
+            prometheus::Opts::new(
+                "aegis_websocket_frame_block_total",
+                "WebSocket text messages that crossed the inspection block threshold, labelled by route and top detector tag (enforce + log_only; see the websocket_frame_block audit event's mode).",
+            ),
+            &["route", "tag"],
+        )?;
+        reg.inner().register(Box::new(frame_block_total.clone()))?;
+
         Ok(Self {
             open_total,
             close_total,
             active,
+            frame_block_total,
         })
+    }
+
+    /// WS-MSG4 — record one inspected text message that crossed the
+    /// block threshold, labelled by route id + the top detector tag.
+    pub fn record_frame_block(&self, route: &str, tag: &str) {
+        self.frame_block_total
+            .with_label_values(&[route, tag])
+            .inc();
     }
 
     /// Record a successful upgrade.  Called from the data plane
@@ -99,7 +122,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn register_creates_three_series() {
+    fn register_creates_the_metric_families() {
         let reg = MetricsRegistry::init();
         let _m = WebSocketMetrics::register(&reg).unwrap();
         let names: Vec<String> = reg
@@ -111,6 +134,27 @@ mod tests {
         assert!(names.contains(&"aegis_websocket_open_total".to_string()));
         assert!(names.contains(&"aegis_websocket_close_total".to_string()));
         assert!(names.contains(&"aegis_websocket_active".to_string()));
+        // frame_block_total only materialises a series once a label set
+        // is touched (CounterVec); record one and confirm it appears.
+        _m.record_frame_block("chat", "sqli");
+        let names: Vec<String> = reg
+            .inner()
+            .gather()
+            .iter()
+            .map(|f| f.get_name().to_string())
+            .collect();
+        assert!(names.contains(&"aegis_websocket_frame_block_total".to_string()));
+    }
+
+    #[test]
+    fn record_frame_block_increments_route_tag_series() {
+        let reg = MetricsRegistry::init();
+        let m = WebSocketMetrics::register(&reg).unwrap();
+        m.record_frame_block("chat", "sqli");
+        m.record_frame_block("chat", "sqli");
+        m.record_frame_block("chat", "xss");
+        assert_eq!(m.frame_block_total.with_label_values(&["chat", "sqli"]).get(), 2);
+        assert_eq!(m.frame_block_total.with_label_values(&["chat", "xss"]).get(), 1);
     }
 
     #[test]
