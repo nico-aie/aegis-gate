@@ -1,0 +1,33 @@
+# systemd --user unit for the native (host) nginx LB — boot persistence without root.
+#
+# The containerized LB had `restart: unless-stopped`; this is its native equivalent.
+# nginx daemonizes, so this is a forking service tracked by its PID file.
+#
+# INSTALL (no sudo):
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/nginx/aegis-nginx-lb.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now aegis-nginx-lb
+#   # survive logout / start at boot (may require an admin to run once for your user):
+#   loginctl enable-linger "$USER"
+#
+# Without linger the LB starts on first login instead of at boot. Manual control
+# without systemd: deploy/nginx/native-lb.sh start|stop|reload|status.
+
+[Unit]
+Description=Aegis-Gate native nginx LB (PROXY-protocol, real client IP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+PIDFile=%h/aegis-gate/deploy/nginx/native/run/nginx.pid
+ExecStartPre=/home/nico/miniconda3/envs/nginx-lb/bin/nginx -p %h/aegis-gate/deploy/nginx/native -c %h/aegis-gate/deploy/nginx/nginx-stream-native.conf -t
+ExecStart=/home/nico/miniconda3/envs/nginx-lb/bin/nginx -p %h/aegis-gate/deploy/nginx/native -c %h/aegis-gate/deploy/nginx/nginx-stream-native.conf
+ExecReload=/home/nico/miniconda3/envs/nginx-lb/bin/nginx -p %h/aegis-gate/deploy/nginx/native -c %h/aegis-gate/deploy/nginx/nginx-stream-native.conf -s reload
+ExecStop=/home/nico/miniconda3/envs/nginx-lb/bin/nginx -p %h/aegis-gate/deploy/nginx/native -c %h/aegis-gate/deploy/nginx/nginx-stream-native.conf -s quit
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

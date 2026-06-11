@@ -116,3 +116,6 @@ __pycache__
 
 # self-signed / provisioned TLS certs (per-deploy, never commit)
 /certs/
+
+# native host nginx LB runtime (logs, pid, temp dirs) — config+script are tracked
+deploy/nginx/native/
