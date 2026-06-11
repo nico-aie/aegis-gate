@@ -1,5 +1,8 @@
 # Cluster mode — multi-node console sync (leaderless, Redis-optional)
 
+> **✅ ARCHIVED (2026-06-10)** — moved from `plans/future/` → `plans/archive/`
+> now that all phases have shipped. Kept for history.
+
 > **Status (2026-06-10): ✅ SHIPPED.** All phases landed on `develop`:
 > Phase 0 (C-1 control-plane sync), Phase 1 (leaderless — no leader), Phase 2
 > (fleet event fanout, ≤5s SLA), Phase 3 (fleet metrics snapshot+merge), Phase 4
@@ -27,9 +30,9 @@
 > live-traffic on the console), folds in the in-flight C-1 control-plane work,
 > and defines the leaderless migration + the Redis-optional resilience contract.
 > It supersedes the C-1/C-3/C-4 sections of
-> [`plans/issues/multi-node-consistency.md`](../issues/multi-node-consistency.md)
+> [`plans/issues/multi-node-consistency.md`](../issues/archived/multi-node-consistency.md)
 > and reuses the flush pattern from
-> [`plans/archive/multi-node-metrics-aggregation.md`](../archive/multi-node-metrics-aggregation.md).
+> [`plans/archive/multi-node-metrics-aggregation.md`](./multi-node-metrics-aggregation.md).
 
 ---
 

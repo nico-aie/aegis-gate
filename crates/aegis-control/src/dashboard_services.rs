@@ -124,6 +124,13 @@ pub struct DashboardServices {
     /// it (when populated) to serve fleet totals instead of this node's
     /// `1/N` slice.
     pub fleet_cache: Option<crate::metrics::fleet_snapshot::FleetCache>,
+    /// F6 (2026-06-11) — leaderless fleet **audit tail** cache. `None`
+    /// for single-node / cluster-off; `Some` when `aegis-proxy` wires
+    /// the publish/merge task. `GET /api/audit/since?scope=fleet` reads
+    /// it so the Live Feed / Audit Trail backfill shows cross-node rows
+    /// (the SSE live feed is already fleet-wide; only the reload
+    /// backfill was node-local). See [`crate::metrics::fleet_audit`].
+    pub fleet_audit_cache: Option<crate::metrics::fleet_audit::FleetAuditCache>,
     /// Live leaderless cluster-roster view. `None` for single-node /
     /// test builds; `Some` when `aegis-proxy::run` wires the
     /// `members:*` roster-poll background task. See
@@ -523,6 +530,18 @@ impl DashboardServices {
         let audit_clone = Arc::clone(&audit_ring);
         let filter_clone = Arc::clone(&filter_catalogue);
         let rule_stats_clone = Arc::clone(&rule_stats);
+        // F10 (2026-06-11 cluster QC): this node's identity, stamped
+        // into every audit row that lands in the ring so the fleet
+        // audit merge (F6) can attribute + dedup cross-node rows.
+        // Data-plane block/allow events pre-fix carried an empty
+        // `fields.node_id`; stamping here (the single per-node ring
+        // ingest) covers every event class uniformly without touching
+        // each emit site. `None` (single-node / tests, no roster) →
+        // no stamp, preserving the existing wire shape.
+        let drain_node_id: Option<String> = roster_view
+            .as_ref()
+            .map(|rv| rv.our_node.clone())
+            .filter(|id| !id.is_empty());
         let drain = tokio::spawn(async move {
             // F-CRITICAL-011 (2026-05-17 control audit): pre-fix
             // this loop used `while let Ok(ev) = rx.recv().await`
@@ -546,6 +565,7 @@ impl DashboardServices {
                         &audit_clone,
                         &filter_clone,
                         &rule_stats_clone,
+                        drain_node_id.as_deref(),
                         &ev,
                     ),
                     Err(RecvError::Lagged(n)) => {
@@ -604,6 +624,9 @@ impl DashboardServices {
                 fleet_event_bus: None,
                 // Cluster Phase 3 fleet-metrics cache — same opt-in.
                 fleet_cache: None,
+                // F6 fleet audit-tail cache — opted in by `aegis-proxy`
+                // alongside `fleet_cache` (Redis + cluster fleet_view).
+                fleet_audit_cache: None,
                 roster_view,
                 // Interop contract is opted in by the bin
                 // crate after construction (see
@@ -718,14 +741,52 @@ impl DashboardServices {
         audit: &AuditRing,
         filters: &FilterCatalogue,
         rule_stats: &RuleStats,
+        node_id: Option<&str>,
         ev: &AuditEvent,
     ) {
         stats.record(ev);
         attacks.record(ev);
-        audit.record(ev.clone());
+        // F10: the ring is the read-path the fleet audit merge (F6)
+        // consumes, so stamp `node_id` onto the stored copy. The
+        // aggregators don't need it (they roll up counts, not rows),
+        // so they keep the borrowed event and avoid a clone.
+        audit.record(stamp_node_id(ev, node_id));
         filters.record(ev);
         rule_stats.record(ev);
     }
+}
+
+/// F10 (2026-06-11 cluster QC) — return an `AuditEvent` with
+/// `fields.node_id` set to `node_id`, unless the event already
+/// carries a non-empty one (admin/config-plane events may stamp it
+/// at emit time — never clobber those) or `node_id` is `None`
+/// (single-node / tests). Pure: returns a new event, never mutates
+/// the input.
+fn stamp_node_id(ev: &AuditEvent, node_id: Option<&str>) -> AuditEvent {
+    let Some(node_id) = node_id else {
+        return ev.clone();
+    };
+    let already_set = ev
+        .fields
+        .get("node_id")
+        .and_then(|v| v.as_str())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    if already_set {
+        return ev.clone();
+    }
+    let mut next = ev.clone();
+    if let serde_json::Value::Object(map) = &mut next.fields {
+        map.insert(
+            "node_id".to_string(),
+            serde_json::Value::String(node_id.to_string()),
+        );
+    } else {
+        // Non-object `fields` (shouldn't happen for real events) —
+        // wrap so the merge still gets an attributed row.
+        next.fields = serde_json::json!({ "node_id": node_id });
+    }
+    next
 }
 
 /// **Test / fallback** snapshot provider. Builds a static
@@ -827,6 +888,47 @@ mod tests {
         assert_eq!(stats.blocks_total, 2);
     }
 
+    #[test]
+    fn stamp_node_id_sets_field_when_absent() {
+        let ev = det_event("sqli", "8.8.8.8"); // fields = {"detector": ...}
+        let out = stamp_node_id(&ev, Some("waf-2"));
+        assert_eq!(
+            out.fields.get("node_id").and_then(|v| v.as_str()),
+            Some("waf-2"),
+        );
+        // Existing fields preserved.
+        assert_eq!(out.fields.get("detector").and_then(|v| v.as_str()), Some("sqli"));
+    }
+
+    #[test]
+    fn stamp_node_id_does_not_clobber_existing() {
+        let mut ev = det_event("sqli", "8.8.8.8");
+        ev.fields = serde_json::json!({ "node_id": "already-set" });
+        let out = stamp_node_id(&ev, Some("waf-2"));
+        assert_eq!(
+            out.fields.get("node_id").and_then(|v| v.as_str()),
+            Some("already-set"),
+        );
+    }
+
+    #[test]
+    fn stamp_node_id_noop_when_node_id_none() {
+        let ev = det_event("sqli", "8.8.8.8");
+        let out = stamp_node_id(&ev, None);
+        assert!(out.fields.get("node_id").is_none());
+    }
+
+    #[test]
+    fn stamp_node_id_fills_empty_string() {
+        let mut ev = det_event("sqli", "8.8.8.8");
+        ev.fields = serde_json::json!({ "node_id": "" });
+        let out = stamp_node_id(&ev, Some("waf-3"));
+        assert_eq!(
+            out.fields.get("node_id").and_then(|v| v.as_str()),
+            Some("waf-3"),
+        );
+    }
+
     #[tokio::test]
     async fn dispatch_event_runs_synchronously() {
         // The exposed dispatch_event helper sidesteps the tokio
@@ -839,6 +941,7 @@ mod tests {
             &services.audit_ring,
             &services.filter_catalogue,
             &services.rule_stats,
+            Some("waf-node-7"),
             &det_event("sqli", "8.8.8.8"),
         );
         let dist = services.attacks_agg.distribution(900);
@@ -846,6 +949,12 @@ mod tests {
         assert_eq!(dist.categories[0].name, "sqli");
         // Audit ring also captured the event.
         assert_eq!(services.audit_ring.high_water(), 1);
+        // F10: the ring copy carries the node_id we passed in.
+        let row = services.audit_ring.recent(1).pop().expect("one row");
+        assert_eq!(
+            row.fields.get("node_id").and_then(|v| v.as_str()),
+            Some("waf-node-7"),
+        );
         // Filter catalogue saw the actor + class.
         let cat = services.filter_catalogue.snapshot();
         assert!(cat.classes.contains(&"detection".to_string()));

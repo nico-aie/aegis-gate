@@ -307,11 +307,20 @@ fn is_open_endpoint(method: &Method, path: &str, peer: &SocketAddr) -> bool {
     }
     if method == Method::GET {
         // Health probes + login page + static SPA assets.
+        //
+        // F11 (2026-06-11 cluster QC): exempt the WHOLE `/healthz/*`
+        // namespace, not just `ready`. `/healthz/live` and
+        // `/healthz/startup` were falling through to the session gate
+        // → 401 for orchestrator probes that can't present a cookie,
+        // which crash-loops liveness and pins startup un-ready. Health
+        // probes expose no sensitive data (see `health.rs`), so the
+        // whole namespace is open + future-proofed for new probes.
         return matches!(
             path,
-            "/healthz" | "/healthz/ready" | "/readyz" | "/metrics"
-                | "/admin/login" | "/admin/login.js"
-        ) || path.starts_with("/dashboard")
+            "/readyz" | "/metrics" | "/admin/login" | "/admin/login.js"
+        ) || path == "/healthz"
+            || path.starts_with("/healthz/")
+            || path.starts_with("/dashboard")
             || path.starts_with("/static/")
             || path.starts_with("/assets/");
     }
@@ -434,6 +443,15 @@ mod tests {
         let p = loopback_peer();
         assert!(is_open_endpoint(&Method::GET, "/healthz", &p));
         assert!(is_open_endpoint(&Method::GET, "/healthz/ready", &p));
+        // F11 (2026-06-11): liveness + startup probes must be open
+        // too — orchestrators can't present a session cookie, so
+        // gating these crash-loops the container / pins it un-ready.
+        assert!(is_open_endpoint(&Method::GET, "/healthz/live", &p));
+        assert!(is_open_endpoint(&Method::GET, "/healthz/startup", &p));
+        // Probes also arrive from non-loopback LBs / VIP checkers.
+        let rem = remote_peer();
+        assert!(is_open_endpoint(&Method::GET, "/healthz/live", &rem));
+        assert!(is_open_endpoint(&Method::GET, "/healthz/startup", &rem));
         assert!(is_open_endpoint(&Method::GET, "/readyz", &p));
         assert!(is_open_endpoint(&Method::GET, "/metrics", &p));
     }

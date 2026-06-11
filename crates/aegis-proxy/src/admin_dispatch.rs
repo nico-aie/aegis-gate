@@ -520,6 +520,17 @@ pub(crate) async fn handle_admin_request(
         return handle_config_get(services).await;
     }
 
+    // F7 (2026-06-11 cluster QC) — detector mask read, intercepted on
+    // the async path so it can stamp the config version THIS node has
+    // applied (the version that produced the in-process mask). The
+    // dashboard echoes it back in `If-Match` on `PUT /api/detectors`
+    // so the CAS rejects a stale write (412) instead of silently
+    // clobbering a concurrent toggle. Falls through to the sync
+    // `admin_router` arm (no version) when there's no config plane.
+    if method == hyper::Method::GET && path == "/api/detectors" {
+        return handle_detectors_get(cfg, services).await;
+    }
+
     // 2026-06-02 (copilot P1) — GET /api/copilot/summary. Async because
     // it calls the LLM provider, so it can't run on the sync
     // `admin_router`. Admin-auth gated by the upstream middleware.
@@ -570,6 +581,42 @@ async fn handle_config_get(
         "backend": true,
     })
     .to_string();
+    json_body_response(200, body, "private, max-age=2")
+}
+
+/// F7 (2026-06-11) — `GET /api/detectors` with the applied config
+/// version stamped on. The version is read from this node's ACK key
+/// (`config:waf:applied:<node>`), which the config-plane watcher
+/// keeps fresh on every poll — so it reflects the version that
+/// produced the mask we render, not a racing latest-doc read. `None`
+/// (field omitted) when there's no state backend or no roster
+/// (single-node / test bundles); the client then PUTs without an
+/// `If-Match` and the handler takes the legacy unconditional path.
+async fn handle_detectors_get(
+    cfg: &WafConfig,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let modes: Vec<aegis_core::config::ComplianceMode> = cfg
+        .compliance
+        .as_ref()
+        .map(|c| c.modes.clone())
+        .unwrap_or_default();
+    let config_version = match (
+        services.state_backend.as_ref(),
+        services.roster_view.as_ref(),
+    ) {
+        (Some(backend), Some(rv)) if !rv.our_node.is_empty() => {
+            let store =
+                crate::config_source::config_store::ConfigStore::new(backend.clone());
+            store.applied_version(&rv.our_node).await.ok()
+        }
+        _ => None,
+    };
+    let body = aegis_control::api::detectors::render_get_versioned(
+        &services.detector_mask,
+        &modes,
+        config_version,
+    );
     json_body_response(200, body, "private, max-age=2")
 }
 

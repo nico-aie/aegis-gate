@@ -6,7 +6,7 @@
 > `tls: { client_cert, client_key, ca_bundle }` (upstream) shape — **there is no
 > back-compat alias; migrate existing YAML.**
 >
-> Design + phasing history: [`../../plans/future/mTLS.md`](../../plans/future/mTLS.md).
+> Design + phasing history: [`../../plans/archive/zero-trust-unified-mtls.md`](../../plans/archive/zero-trust-unified-mtls.md).
 
 ## The two directions
 
@@ -206,7 +206,7 @@ the console. Expiry is surfaced as a badge on the identity + each trust bundle.
 - **SPIFFE-SAN matcher** — match a backend's server-cert SAN against a SPIFFE ID /
   trust-domain pattern (interop with SPIFFE/SPIRE), layered on `allowed_sans`. A
   real SPIFFE/SPIRE SDS data source (auto-rotating short-lived X.509-SVIDs) is a
-  separate, larger effort. Tracked in `plans/future/mTLS.md` §4.1 / §8.
+  separate, larger effort. Tracked in `plans/archive/zero-trust-unified-mtls.md` §4.1 / §8.
 
 ## Operator quick-start
 

@@ -194,7 +194,8 @@ admin plane (where the dashboard + control-plane API live).
 
 | Field | Default | Notes |
 |---|---|---|
-| `data[]` | required | List of `{ bind, tls }` — usually `:8080` plain + `:8443` TLS |
+| `data[]` | required | List of `{ bind, tls, accept_proxy }` — usually `:8080` plain + `:8443` TLS |
+| `data[].accept_proxy` | `off` | PROXY-protocol mode: `off` / `strict` / `optional`. See below |
 | `admin.bind` | `127.0.0.1:9443` | **Never expose to the public internet** |
 | `force_https.bind` | unset | Optional plain-HTTP listener that 301-redirects to TLS |
 
@@ -210,6 +211,40 @@ listeners:
 ```
 
 **Restart-only:** listener bind addresses don't hot-reload.
+
+**`accept_proxy` — real client IP behind an L4 load balancer.** When an
+L4 / TCP-passthrough LB (nginx `stream proxy_protocol on;`, HAProxy
+`send-proxy-v2`) fronts the fleet, SNAT collapses every client onto the
+LB's IP, so per-IP rate-limit / risk buckets break. Set `accept_proxy` on
+the listener and the WAF reads the PROXY-protocol header on the raw socket
+**before** the TLS handshake, adopting the carried client address as the
+effective peer — so per-IP keying works **and** JA3/JA4 still come from the
+client's own ClientHello (the WAF still terminates TLS).
+
+| Mode | Behaviour |
+|---|---|
+| `off` (default) | No parse; today's behaviour exactly. Zero extra reads. |
+| `strict` | A PROXY header is **required** on every connection; missing / untrusted → connection closed (fail-closed). Correct behind a dedicated PROXY-enabled LB. |
+| `optional` | Sniff the v1/v2 signature; honour it when present, else treat as a direct client. Migration aid — prefer `strict`. |
+
+A header is honoured **only** when the real TCP peer (the LB) is inside
+[`proxy.trusted_proxies`](#proxy); a header from any other source closes
+the connection (anti-spoofing). A listener with `accept_proxy != off` and
+an empty `proxy.trusted_proxies` is **rejected at boot**.
+
+```yaml
+proxy:
+  trusted_proxies: ["10.0.0.0/8"]   # REQUIRED when accept_proxy is on
+listeners:
+  data:
+    - bind: 0.0.0.0:8443
+      tls: true
+      accept_proxy: strict
+```
+
+Metric: `waf_proxy_protocol_events_total{result}`. Audit: the asserted
+client is the audit `ip`; the real LB hop is the `proxy_via` field.
+Deep-dive: [`docs/security/ip-reputation.md`](../docs/security/ip-reputation.md#proxy-protocol-l4-real-client-ip).
 
 Deep-dive: [`docs/architecture/protocols.md`](../docs/architecture/protocols.md).
 

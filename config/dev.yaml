@@ -70,6 +70,22 @@ tls:
       hosts:     ["localhost", "127.0.0.1", "aegis-gate.local"]
 
 # ---------------------------------------------------------------------------
+# Zero Trust — WAF-as-client (upstream) shared identity.
+# DEV smoke-test only: reuse the self-signed dev cert as the WAF client
+# identity so the Zero Trust page's Step 1 reads "configured" on boot
+# (no upload / no chicken-and-egg). `source: file` just needs cert_path +
+# key_ref present — it's parsed for metadata, and only actually dialed when
+# a pool turns on `upstream_mtls`. For real use, mint a cert with EKU
+# clientAuth; the dev cert is a server cert and is fine only for seeing the
+# UI flow turn green. Remove this block to go back to "not set".
+# ---------------------------------------------------------------------------
+zero_trust:
+  upstream_identity:
+    source: file
+    cert_path: "config/certs/dev.crt"
+    key_ref:   "config/certs/dev.key"
+
+# ---------------------------------------------------------------------------
 # Routes — single catch-all so every test request reaches the data plane
 # ---------------------------------------------------------------------------
 routes:
@@ -448,6 +464,11 @@ admin:
   dashboard_auth:
     password_hash_ref: '$argon2id$v=19$m=19456,t=2,p=1$DfRgVNq6Cb+eN3BEMmExAQ$69SVZBNpMFjN4evfN8g+U5jnmP56Gwx3AGaZFr32ZzY'
     csrf_secret_ref:   "test-csrf-secret-do-not-use-in-production-32b"
+    # Dev-only — enable the in-console WAF-identity / backend-CA / trust-bundle
+    # upload controls on the Zero Trust page. Default false (GitOps-managed
+    # trust anchors). With this on, the "upload is disabled by server policy"
+    # notes disappear and the upload areas become live.
+    allow_ca_upload: true
     session_ttl_idle: "30m"
     session_ttl_absolute: "8h"
     ip_allowlist:

@@ -3,6 +3,7 @@ pub mod decisions;
 pub mod detector_hits;
 pub mod detector_latency;
 pub mod exporter;
+pub mod fleet_audit;
 pub mod fleet_snapshot;
 pub mod request_duration;
 pub mod route_activity;
@@ -11,6 +12,7 @@ pub mod runtime;
 pub mod window_flush;
 #[cfg(feature = "ai")]
 pub mod ai;
+pub mod proxy_protocol;
 pub mod state_ops;
 pub mod upstream_pools;
 pub mod websocket;

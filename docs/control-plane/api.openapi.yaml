@@ -33,9 +33,11 @@ info:
     ## Hot-reload contract
 
     Every successful mutation increments the audit-chain length, which
-    is exposed via `GET /api/config/version`. The dashboard polls this
-    after every CRUD call to surface "Applied in X.X s" toasts. The
-    Hackathon WAF-FE §2 contract caps this round-trip at 10 s.
+    is exposed via `GET /api/config/version` as `audit_chain_len`
+    (renamed from `version` in F2 — it is NOT the cluster config-doc
+    version from `GET /api/config`). The dashboard polls this after
+    every CRUD call to surface "Applied in X.X s" toasts. The Hackathon
+    WAF-FE §2 contract caps this round-trip at 10 s.
 
     ## Error envelope
 
@@ -44,7 +46,15 @@ info:
     a human-readable `message` is included. See
     [`#/components/schemas/Error`](#/components/schemas/Error).
 
-  version: "1.4.2"
+    ## Renamed endpoints (do not relist the old paths)
+
+    The 2026-06 cluster QC swept some retired paths. For the record:
+      - `/api/mtls/{connections,failures,ca-summary}` →
+        `/api/zero-trust/downstream/{connections,failures,ca-summary}`
+        (hard rename in the Zero Trust unification — no alias).
+      - `GET /api/config/version` field `version` → `audit_chain_len`.
+
+  version: "1.5.0"
   contact:
     name: Aegis-Gate
   license:
@@ -78,7 +88,15 @@ tags:
   - name: System
     description: Health, runtime, about, hot-reload version.
   - name: Interop
-    description: External interop control plane (`/__waf_control/*`).
+    description: >
+      External interop control plane (`/__waf_control/*`). Served on the
+      interop/committee listener and admitted only from loopback peers
+      (own `X-Benchmark-Secret` auth). F3 (2026-06-11): these paths are
+      NOT admin-port routes — calling them on the admin port (`:5624x`)
+      returns 404 (no such route) when authenticated, or the admin-auth
+      401 / login redirect when not. The earlier "expect 401 via the
+      admin port" guidance was wrong: there is no `/__waf_control/*`
+      handler on the admin port to authenticate against.
 
 # -----------------------------------------------------------------------
 # Security schemes
@@ -780,11 +798,17 @@ components:
 
     ConfigVersionResponse:
       type: object
-      required: [version, applied_at_ms, applied_on_node]
+      required: [audit_chain_len, applied_at_ms, applied_on_node]
       properties:
-        version:
+        audit_chain_len:
           type: integer
-          description: Audit-chain length. Monotonic; increments on every successful mutation.
+          description: >
+            This node's audit-chain length. Monotonic; increments on every
+            successful mutation. F2 (2026-06-11): renamed from `version` —
+            it is the local audit-chain length, NOT the cluster config-doc
+            version reported by `GET /api/config` (a different counter that
+            can legitimately diverge, e.g. doc v43 vs. chain_len 0 on a node
+            that applied via propagation).
         applied_at_ms: { type: integer, format: int64 }
         applied_on_node: { type: string }
 

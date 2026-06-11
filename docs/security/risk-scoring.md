@@ -45,7 +45,12 @@ pub struct RiskKey {
 }
 ```
 
-- `ip` — TCP peer IP (post-XFF). Always present.
+- `ip` — TCP peer IP (post-XFF). Always present. On a listener with
+  `accept_proxy` on, "TCP peer" means the address asserted by a trusted
+  PROXY-protocol header (the real client behind an L4 LB), not the LB's
+  transport address — the real LB hop is recorded separately as the
+  `proxy_via` audit field. See
+  [`ip-reputation.md`](./ip-reputation.md#proxy-protocol-l4-real-client-ip).
 - `device_fp` — `Some(blake3-16hex(JA4 ‖ UA))` on the TLS path;
   `None` on plain HTTP. See [`device-fingerprinting.md`](./device-fingerprinting.md).
 - `session` — session-cookie value from the request; `None` when

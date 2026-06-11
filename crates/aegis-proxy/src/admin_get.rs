@@ -41,6 +41,13 @@ use crate::responses::{
     dashboard_response, dashboard_shell_response, json_body_response, json_response,
 };
 
+/// F14 (2026-06-11) — log `/api/audit/since` renders slower than this.
+/// The in-process render (in-memory ring + 1 s cache) is normally
+/// sub-millisecond, so anything past this points outside the handler
+/// (TLS/connection churn, lock contention) — the source the cluster
+/// QC's remote-Chrome timing (~260 ms floor) couldn't pin down.
+const AUDIT_RENDER_SLOW_MS: u128 = 25;
+
 /// 2026-05-27 (Phase C) — wall-clock seconds for windowing the cached
 /// cluster-wide metric aggregates.
 fn now_unix_secs() -> u64 {
@@ -294,18 +301,24 @@ pub(crate) fn admin_router(
             }
         }
 
-        // DD-T7 — config-version visibility for hot-reload UI.
-        // Returns the current rules-store revision so the dashboard
-        // can poll after a mutation and surface "Applied in X.Xs".
-        // The version increments on every successful audit-mutation
-        // (rule CRUD, detector toggle, loadmode pin, etc.) — every
-        // surface that flows through `services.mutate.apply()` is
-        // counted automatically, so adding a new mutating endpoint
-        // doesn't need a parallel version bump.
+        // DD-T7 — mutation-progress signal for the hot-reload UI.
+        // Returns this node's audit-chain length, which increments on
+        // every successful audit-mutation (rule CRUD, detector toggle,
+        // loadmode pin, etc.) routed through `services.mutate.apply()`,
+        // so the dashboard can poll after a mutation and surface
+        // "Applied in X.Xs".
+        //
+        // F2 (2026-06-11 cluster QC): the field is now `audit_chain_len`,
+        // NOT `version` — it was confusingly named the same as
+        // `/api/config`'s cluster config-doc version (a DIFFERENT
+        // counter: the shared-doc version vs. this node's local
+        // audit-chain length). They diverge by design (e.g. doc v43 vs.
+        // chain_len 0 on a node that applied via propagation), which the
+        // QC flagged. Renamed to say what it is.
         "/api/config/version" => {
             let v = services.mutate.chain_len();
             let body = serde_json::json!({
-                "version": v,
+                "audit_chain_len": v,
                 "applied_at_ms": chrono::Utc::now().timestamp_millis(),
                 "applied_on_node": services
                     .roster_view
@@ -411,11 +424,48 @@ pub(crate) fn admin_router(
             let tail = parse_query_str(query, "tail")
                 .map(|v| v == "1" || v == "true")
                 .unwrap_or(false);
-            let body = if tail {
+            // F6 (2026-06-11) — `?scope=fleet` serves the merged fleet
+            // audit tail (this node's ring + every live peer's) so a
+            // reload backfill keeps the cross-node rows the SSE live
+            // feed already shows. Reads the pre-merged cache
+            // synchronously; falls back to the local ring when the
+            // cache isn't populated (single-node / before the first
+            // merge), so the contract degrades cleanly.
+            let want_fleet = parse_query_str(query, "scope")
+                .map(|v| v == "fleet")
+                .unwrap_or(false);
+            let fleet_tail = if want_fleet {
+                services.fleet_audit_cache.as_ref().and_then(|c| c.load())
+            } else {
+                None
+            };
+            // F14 (2026-06-11) — time the render so the ~260 ms latency
+            // floor the cluster QC saw is attributed in production logs.
+            // The in-process render is sub-millisecond (in-memory ring +
+            // cache), so a slow sample points OUTSIDE this code (TLS
+            // handshake / connection churn / lock contention) — exactly
+            // what the QC's remote-Chrome measurement couldn't isolate.
+            let render_started = std::time::Instant::now();
+            let body = if let Some(events) = fleet_tail {
+                aegis_control::metrics::fleet_audit::render_fleet_since(&events, limit, &filter)
+            } else if tail {
                 services.audit.render_latest_filtered(limit, &filter)
             } else {
                 services.audit.render_since_filtered(cursor, limit, &filter)
             };
+            let render_ms = render_started.elapsed().as_millis();
+            if render_ms > AUDIT_RENDER_SLOW_MS {
+                tracing::warn!(
+                    render_ms,
+                    limit,
+                    scope = if want_fleet { "fleet" } else { "local" },
+                    tail,
+                    filtered = !filter.is_empty(),
+                    "/api/audit/since render exceeded the slow threshold — \
+                     in-process render is normally sub-ms; investigate lock \
+                     contention or move profiling to the transport layer",
+                );
+            }
             json_body_response(200, body, "private, no-store")
         }
         // Phase-3 reports: CSV export of the in-process audit ring.
@@ -923,6 +973,12 @@ pub(crate) fn admin_router(
         // plus compliance lock-list. PUT is handled in
         // `handle_admin_request` (async — needs to read body).
         "/api/detectors" => {
+            // F7 (2026-06-11): the cluster path intercepts this GET on
+            // the ASYNC dispatch (`admin_dispatch::handle_detectors_get`)
+            // to stamp `config_version` from the store. This sync arm is
+            // the fallback for non-cluster / test builds (no async store
+            // read available here) and renders without a version — the
+            // client then uses the legacy unconditional PUT.
             let modes: Vec<aegis_core::config::ComplianceMode> = cfg
                 .compliance
                 .as_ref()

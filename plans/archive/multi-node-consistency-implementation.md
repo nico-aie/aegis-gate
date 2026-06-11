@@ -1,8 +1,13 @@
 # Multi-node consistency — implementation plan
 
+> **✅ ARCHIVED (2026-06-10).** Every concern here is shipped (P1/C-5, P2/C-1,
+> P3/C-3·C-4) or dropped (P4/C-2, by operator decision). Moved from `plans/` →
+> `plans/archive/` for history. Forward fleet-console work continues in
+> [`cluster-mode-multinode-sync.md`](./cluster-mode-multinode-sync.md).
+
 > **Status (2026-06-10): P1, P2, P3 implemented — P4 deferred.** Scheduling
 > plan derived from the analysis in
-> [`issues/multi-node-consistency.md`](./issues/multi-node-consistency.md)
+> [`issues/multi-node-consistency.md`](../issues/archived/multi-node-consistency.md)
 > (C-1…C-5).
 >
 > - **P1 / C-5 — ✅ shipped:** `proxy.trusted_proxies` plumbed end-to-end
@@ -12,7 +17,7 @@
 >   `control:waf:reset_epoch`) + a per-node poller; Redis-gated.
 > - **P3 / C-3 — ✅ shipped:** `FleetNodeBanner` "showing THIS node" on the
 >   Overview page. Fleet metric *aggregation* itself stays in SigNoz (and is
->   expanded in [`future/cluster-mode-multinode-sync.md`](./future/cluster-mode-multinode-sync.md)).
+>   expanded in [`future/cluster-mode-multinode-sync.md`](./cluster-mode-multinode-sync.md)).
 > - **P4 / C-2 — DROPPED (2026-06-10, operator decision):** upstream-aware
 >   readiness removed from the roadmap. Upstream-blind readiness is the correct
 >   default for the shared-upstream topology (all nodes reach the same backends,
@@ -21,7 +26,7 @@
 >
 > The deeper fleet-console work (leaderless roster, ≤5s event fanout,
 > fleet-snapshot merge) is carried forward in
-> [`future/cluster-mode-multinode-sync.md`](./future/cluster-mode-multinode-sync.md).
+> [`future/cluster-mode-multinode-sync.md`](./cluster-mode-multinode-sync.md).
 > With C-2 dropped, every concern in this doc is now shipped or dropped — this
 > doc can move to `archive/`.
 

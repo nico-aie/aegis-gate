@@ -416,7 +416,11 @@ function useRealLiveFeed(maxLen = 60, paused = false) {
   // events don't pad the visible buffer.
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/audit/since?tail=1&limit=${maxLen}`, { credentials: 'same-origin' })
+    // F6 (2026-06-11) — scope=fleet so the backfill includes cross-node
+    // rows (the SSE live feed is already fleet-wide; this stops the
+    // reload from dropping peers' events). The server falls back to the
+    // local ring when no fleet cache is wired (single-node).
+    fetch(`/api/audit/since?tail=1&scope=fleet&limit=${maxLen}`, { credentials: 'same-origin' })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (cancelled || !data || !Array.isArray(data.events)) return;
@@ -463,6 +467,18 @@ function useRealLiveFeed(maxLen = 60, paused = false) {
             : (typeof tsRaw === 'string' ? Date.parse(tsRaw) : Date.now());
           const risk = ev.risk_score || 0;
           const action = ev.action || 'allow';
+          // F7/F8 (2026-06-11) — when the config plane applies a new
+          // version fleet-wide, re-broadcast it so version-sensitive
+          // cards (e.g. the detector mask) re-sync to authoritative
+          // state without a hard page reload. Carries the applied
+          // version so listeners can refresh their `If-Match` basis.
+          if (action === 'config_reload') {
+            try {
+              window.dispatchEvent(new CustomEvent('aegis:config-reload', {
+                detail: { version: f.version ?? ev.version ?? null },
+              }));
+            } catch (_) { /* CustomEvent unsupported — non-fatal */ }
+          }
           const ip = ev.client_ip || ev.ip || '0.0.0.0';
           const ruleId = ev.rule_id || ev.reason || null;
           // WS-T6 — surface the application protocol so the
@@ -583,6 +599,39 @@ function useConfigVersionsApi(limit = 50) {
   const _origFetch = window.fetch.bind(window);
   window.fetch = async (...args) => {
     const r = await _origFetch(...args);
+    // F12 (2026-06-11 cluster QC) — session dropped mid-session. The
+    // admin gate returns 401 {reason:"admin_unauthenticated"} on every
+    // /api/* fetch once the session lapses; pre-fix the SPA kept
+    // rendering stale chrome and silently stopped updating, so a SOC
+    // analyst stared at frozen data unaware they were logged out. Catch
+    // it globally (mirrors the 403/CSRF handling below) and bounce to
+    // login, preserving where they were via `next=`.
+    if (r.status === 401 && !window.__aegisCsrfRedirecting) {
+      const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url ?? '');
+      // Only react to API calls (the data layer). Don't loop on the
+      // login page's own probes or non-API navigations.
+      if (url.includes('/api/')) {
+        window.__aegisCsrfRedirecting = true;
+        try {
+          const method = (args[1]?.method ?? args[0]?.method ?? 'GET').toUpperCase();
+          window.localStorage.setItem('__aegisLastRedirect', JSON.stringify({
+            ts: new Date().toISOString(),
+            url,
+            method,
+            status: 401,
+            reason: 'admin_unauthenticated',
+            note: 'global fetch interceptor (401) → /admin/login',
+          }));
+        } catch (_storage) { /* storage disabled — non-fatal */ }
+        const toast = window.aegisToast || ((m) => console.warn('[auth]', m));
+        toast('Session expired — redirecting to login…', 'warn');
+        const next = encodeURIComponent(window.location.pathname + window.location.hash);
+        setTimeout(() => {
+          window.location.href = `/admin/login?next=${next}`;
+        }, 1200);
+      }
+      return r;
+    }
     if (r.status === 403 && !window.__aegisCsrfRedirecting) {
       try {
         const cloned = r.clone();
@@ -641,10 +690,17 @@ function useConfigVersionsApi(limit = 50) {
 //
 // `body` is JSON-stringified when present; pass null for
 // methods like DELETE / no-body POST.
-async function csrfMutate(url, { method = 'POST', body = null } = {}) {
+async function csrfMutate(url, { method = 'POST', body = null, ifMatch = undefined } = {}) {
   const csrf = document.cookie.split('; ')
     .find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
   const headers = { 'x-csrf-token': csrf };
+  // F7 (2026-06-11) — optimistic-concurrency precondition. Callers
+  // that read a versioned resource (e.g. the detector mask) echo the
+  // version here so the server rejects (412) a write built on a stale
+  // view instead of clobbering a concurrent change.
+  if (ifMatch !== undefined && ifMatch !== null) {
+    headers['if-match'] = String(ifMatch);
+  }
   let init = { method, credentials: 'same-origin', headers };
   if (body !== null && body !== undefined) {
     headers['content-type'] = 'application/json';
@@ -880,6 +936,11 @@ function useAuditLogApi({ ip, ruleId, requestId, from, to, limit = 200 } = {}) {
   // Recent Requests / Audit Trail / the Investigation pivot froze on
   // stale traffic after a flood. (Respects the ip/rule_id filters.)
   params.set('tail', '1');
+  // F6 (2026-06-11) — fleet-merged backfill so the Audit Trail /
+  // Investigation pivots show cross-node rows on reload, matching the
+  // fleet-wide SSE live feed. Server falls back to local when no fleet
+  // cache is wired. Filters (ip / rule_id / request_id) apply post-merge.
+  params.set('scope', 'fleet');
   if (limit) params.set('limit', String(limit));
   if (ip) params.set('ip', ip);
   if (ruleId) params.set('rule_id', ruleId);
@@ -908,7 +969,7 @@ function useTiersApi() {
 // long-term fix; this is enough to retire the hardcoded rows
 // flagged in CQA-T1 / T14 today.
 function useTopRiskPathsApi(limit = 200, top = 8) {
-  const api = useApi(`/api/audit/since?tail=1&limit=${limit}`, {
+  const api = useApi(`/api/audit/since?tail=1&scope=fleet&limit=${limit}`, {
     intervalMs: 5000,
     fallback: { events: [] },
   });
@@ -942,8 +1003,15 @@ function useTopRiskPathsApi(limit = 200, top = 8) {
 function useDetectorsApi() {
   return useApi('/api/detectors', { intervalMs: 30000, fallback: null });
 }
-async function detectorsPut(body) {
-  return csrfMutate('/api/detectors', { method: 'PUT', body: JSON.stringify(body) });
+// F7 (2026-06-11) — `ifMatch` is the `config_version` the caller last
+// read from GET /api/detectors. The server uses it as the CAS
+// `expected`, returning 412 if the mask moved under the caller.
+async function detectorsPut(body, { ifMatch } = {}) {
+  return csrfMutate('/api/detectors', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+    ifMatch,
+  });
 }
 
 // Hook: cluster, slo, certs, alerts, gitops, upstreams (Tracking page)
@@ -1111,15 +1179,38 @@ function useAiReloadApi() {
     fallback: { feature_present: false },
   });
 }
+// F9 (2026-06-11 cluster QC) — bound the model reload with a client
+// timeout. The QC saw "↻ Reload model" leave the tab stuck >45 s: the
+// request hung server-side (e.g. no .onnx configured) and the await
+// never resolved, so the loading state never cleared and the operator
+// had to hard-reload. AbortController caps the wait so the UI always
+// recovers to an actionable error instead of an indefinite spinner.
+const AI_RELOAD_TIMEOUT_MS = 20000;
 async function aiReloadPost() {
   const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-  const r = await fetch('/api/ai/reload', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
-    credentials: 'same-origin',
-  });
-  const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
-  return { status: r.status, ...json };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), AI_RELOAD_TIMEOUT_MS);
+  try {
+    const r = await fetch('/api/ai/reload', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+      credentials: 'same-origin',
+      signal: controller.signal,
+    });
+    const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+    return { status: r.status, ...json };
+  } catch (e) {
+    if (e && e.name === 'AbortError') {
+      return {
+        status: 504,
+        ok: false,
+        error: `reload timed out after ${AI_RELOAD_TIMEOUT_MS / 1000}s — the running model is kept; check the model path / node logs`,
+      };
+    }
+    return { status: 0, ok: false, error: e?.message || String(e) };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // 2026-05-11 PR #7 — runtime toggle for the three-rung
@@ -1367,7 +1458,8 @@ async function currentConfigVersion() {
     const r = await fetch('/api/config/version', { credentials: 'same-origin', cache: 'no-store' });
     if (!r.ok) return 0;
     const j = await r.json();
-    return Number(j.version) || 0;
+    // F2 (2026-06-11) — field renamed `version` → `audit_chain_len`.
+    return Number(j.audit_chain_len) || 0;
   } catch (_) {
     return 0;
   }
@@ -1380,8 +1472,8 @@ async function waitForVersion(expectedVersion, timeoutMs = 10000) {
       const r = await fetch('/api/config/version', { credentials: 'same-origin', cache: 'no-store' });
       if (r.ok) {
         const j = await r.json();
-        if (j.version >= expectedVersion) {
-          return { applied: true, latencyMs: Date.now() - start, version: j.version, node: j.applied_on_node };
+        if (j.audit_chain_len >= expectedVersion) {
+          return { applied: true, latencyMs: Date.now() - start, version: j.audit_chain_len, node: j.applied_on_node };
         }
       }
     } catch (_) { /* retry */ }
