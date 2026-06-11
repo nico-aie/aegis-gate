@@ -1925,6 +1925,12 @@ pub(crate) async fn forward_allow_to_upstream(
                 http::HeaderValue::from_static("text/plain"),
             );
             let ws_peer_ip = peer_ip;
+            // WS-MSG4 — audit + metric emission context for blocked
+            // (and would-block) frames.
+            let ws_bus = bus.clone();
+            let ws_route_id = route_ctx.route_id.clone();
+            let ws_tier = route_ctx.tier;
+            let ws_metrics_for_inspect = ctx.websocket_metrics.clone();
             // WS-T6 — record bridge open before spawning the task.
             // The matching close is recorded inside the task after
             // `copy_bidirectional` returns.  None when the binary
@@ -2012,7 +2018,60 @@ pub(crate) async fn forward_allow_to_upstream(
                                     .map(|s| s.score)
                                     .sum::<u32>()
                                     .min(100);
-                                if sum >= ws_block_at && enforce {
+                                if sum < ws_block_at {
+                                    return WsVerdict::Allow;
+                                }
+                                // Over threshold — emit the
+                                // websocket_frame_block audit + metric for
+                                // both enforce and log_only; `mode`
+                                // distinguishes them (see memory:
+                                // X-WAF-Action vs Mode).
+                                let top = signals.iter().max_by_key(|s| s.score);
+                                let tag = top
+                                    .map(|s| s.tag.clone())
+                                    .unwrap_or_else(|| "detectors".to_string());
+                                let matched_field =
+                                    top.map(|s| s.field.clone()).unwrap_or_default();
+                                let mode_str = if enforce { "enforce" } else { "log_only" };
+                                if let Some(m) = ws_metrics_for_inspect.as_ref() {
+                                    m.record_frame_block(&ws_route_id, &tag);
+                                }
+                                ws_bus.emit(aegis_core::audit::AuditEvent {
+                                    schema_version: 1,
+                                    ts: chrono::Utc::now(),
+                                    request_id: blake3::hash(
+                                        format!(
+                                            "wsframe:{}:{}",
+                                            ws_route_id,
+                                            chrono::Utc::now()
+                                                .timestamp_nanos_opt()
+                                                .unwrap_or(0),
+                                        )
+                                        .as_bytes(),
+                                    )
+                                    .to_hex()
+                                    .to_string(),
+                                    class: aegis_core::audit::AuditClass::Access,
+                                    tenant_id: None,
+                                    tier: Some(ws_tier),
+                                    action: "websocket_frame_block".into(),
+                                    reason: format!(
+                                        "websocket text frame blocked by detectors: {tag} \
+                                         (score: {sum})"
+                                    ),
+                                    client_ip: ws_peer_ip.to_string(),
+                                    route_id: Some(ws_route_id.clone()),
+                                    rule_id: Some(tag),
+                                    risk_score: Some(sum),
+                                    method: None,
+                                    path: None,
+                                    mode: Some(mode_str.to_string()),
+                                    fields: serde_json::json!({
+                                        "matched_field": matched_field,
+                                        "message_bytes": payload.len(),
+                                    }),
+                                });
+                                if enforce {
                                     WsVerdict::Block
                                 } else {
                                     WsVerdict::Allow
@@ -4510,6 +4569,138 @@ state: {{ backend: in_memory }}
             !got_message.load(std::sync::atomic::Ordering::SeqCst),
             "blocked SQLi message must never reach the upstream",
         );
+
+        drop(tx);
+        backend_task.abort();
+        waf_task.abort();
+    }
+
+    /// WS-MSG4 — `mode: log_only` forwards the malicious frame to the
+    /// upstream **and** emits a `websocket_frame_block` audit event with
+    /// `mode: log_only`. The socket is NOT closed.
+    #[tokio::test]
+    async fn sqli_log_only_forwards_and_audits() {
+        use futures::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let backend = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let backend_addr = backend.local_addr().unwrap();
+        let got_message = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let got_message_be = got_message.clone();
+        let backend_task = tokio::spawn(async move {
+            let (stream, _) = backend.accept().await.unwrap();
+            let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let (mut tx, mut rx) = futures::StreamExt::split(ws);
+            while let Some(Ok(msg)) = futures::StreamExt::next(&mut rx).await {
+                if msg.is_text() || msg.is_binary() {
+                    got_message_be.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = tx.send(msg).await;
+                }
+            }
+        });
+
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: chat, path: "/", upstream: pool, ws_inspect: {{ enabled: true, mode: log_only }} }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend_addr}" }}] }}
+state: {{ backend: in_memory }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let mut ctx_inner = ProxyContext::build(&cfg, pipeline).unwrap();
+        ctx_inner.ws_detectors =
+            Some(Arc::new(aegis_security::detectors::default_detectors()));
+        ctx_inner.ws_detector_mask =
+            Some(aegis_security::detectors::SharedDetectorMask::default());
+        let ctx = Arc::new(ctx_inner);
+
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let bus = AuditBus::new(16);
+        let mut audit_rx = bus.subscribe();
+        let ctx_for_listener = ctx.clone();
+        let bus_for_listener = bus.clone();
+        let rh = Arc::new(route_latency());
+        let waf_task = tokio::spawn(async move {
+            let (stream, peer) = waf.accept().await.unwrap();
+            let ctx_for_svc = ctx_for_listener.clone();
+            let bus_for_svc = bus_for_listener.clone();
+            let rh_for_svc = rh.clone();
+            let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                let ctx = ctx_for_svc.clone();
+                let bus = bus_for_svc.clone();
+                let rh = rh_for_svc.clone();
+                async move {
+                    let (parts, body) = req.into_parts();
+                    let body_bytes = body
+                        .collect()
+                        .await
+                        .map(|c| c.to_bytes())
+                        .unwrap_or_default();
+                    let (resp, _tag) = super::forward_allow_to_upstream(
+                        parts,
+                        body_bytes,
+                        &ctx,
+                        &ClientIdentity::Anonymous,
+                        &rh,
+                        &route_activity_w(),
+                        Instant::now(),
+                        peer.ip(),
+                        &bus,
+                    )
+                    .await;
+                    Ok::<_, Infallible>(resp)
+                }
+            });
+            let io = TokioIo::new(stream);
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(io, svc)
+                .with_upgrades()
+                .await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let url = format!("ws://127.0.0.1:{}/", waf_addr.port());
+        let (ws, _resp) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let (mut tx, mut rx) = futures::StreamExt::split(ws);
+
+        tx.send(Message::Text("' OR 1=1--".into())).await.unwrap();
+
+        // log_only forwards → the backend echoes it back.
+        let echo = futures::StreamExt::next(&mut rx)
+            .await
+            .expect("log_only forwards the frame → echo")
+            .expect("echo ok");
+        assert_eq!(echo.into_text().unwrap(), "' OR 1=1--");
+        assert!(
+            got_message.load(std::sync::atomic::Ordering::SeqCst),
+            "log_only must forward the frame to the upstream",
+        );
+
+        // …and a websocket_frame_block audit with mode log_only fired.
+        let mut found = false;
+        while let Ok(ev) = audit_rx.try_recv() {
+            if ev.action.as_str() == "websocket_frame_block" {
+                found = true;
+                assert_eq!(ev.mode.as_deref(), Some("log_only"));
+                assert_eq!(ev.rule_id.as_deref(), Some("sqli"));
+                assert_eq!(ev.route_id.as_deref(), Some("chat"));
+                break;
+            }
+        }
+        assert!(found, "log_only must emit a websocket_frame_block audit");
 
         drop(tx);
         backend_task.abort();
