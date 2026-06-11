@@ -347,6 +347,7 @@ mod tests {
             tcp_destination_allowlist: Vec::new(),
             max_concurrent_tunnels_per_ip: 0,
             path_strip_prefix: None,
+            ws_inspect: None,
         };
         let (m, u, h, b) = view_for_path("/static/logo.png");
         let req = make_view(&m, &u, &h, &b);

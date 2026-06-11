@@ -1895,6 +1895,9 @@ pub(crate) async fn forward_allow_to_upstream(
             let bus_for_task = bus.clone();
             let route_id_for_task = route_ctx.route_id.clone();
             let upstream_addr = member.addr;
+            // WS-MSG2 — per-route frame-inspection config moved into the
+            // bridge task. `None` / disabled ⇒ the zero-copy path below.
+            let ws_inspect_for_task = route_ctx.ws_inspect.clone();
             // WS-T6 — record bridge open before spawning the task.
             // The matching close is recorded inside the task after
             // `copy_bidirectional` returns.  None when the binary
@@ -1929,13 +1932,43 @@ pub(crate) async fn forward_allow_to_upstream(
                                 return;
                             }
                         }
-                        let copy = tokio::io::copy_bidirectional(
-                            &mut client_io,
-                            &mut upstream,
-                        )
-                        .await;
+                        // WS-MSG2 — when the route opts into frame
+                        // inspection, run the parsing bridge; otherwise
+                        // the original zero-copy tunnel, byte-for-byte.
+                        let (c2u, u2c) = if let Some(ws_cfg) = ws_inspect_for_task
+                            .as_ref()
+                            .filter(|c| c.is_active())
+                        {
+                            let bridge_cfg = crate::proto::ws_inspect::WsBridgeConfig {
+                                max_message_bytes: ws_cfg.max_message_bytes,
+                            };
+                            match crate::proto::ws_inspect::run_bridge(
+                                client_io,
+                                upstream,
+                                bridge_cfg,
+                            )
+                            .await
+                            {
+                                Ok(stats) => {
+                                    (stats.client_to_upstream, stats.upstream_to_client)
+                                }
+                                Err(e) => {
+                                    tracing::debug!(
+                                        error = %e,
+                                        "websocket inspecting bridge ended with io error",
+                                    );
+                                    (0, 0)
+                                }
+                            }
+                        } else {
+                            let copy = tokio::io::copy_bidirectional(
+                                &mut client_io,
+                                &mut upstream,
+                            )
+                            .await;
+                            copy.unwrap_or((0, 0))
+                        };
                         let elapsed = started.elapsed();
-                        let (c2u, u2c) = copy.unwrap_or((0, 0));
                         bus_for_task.emit(aegis_core::audit::AuditEvent {
                             schema_version: 1,
                             ts: chrono::Utc::now(),
@@ -4143,6 +4176,131 @@ state: {{ backend: in_memory }}
         // Give the WAF + backend tasks a beat to drain their
         // copy_bidirectional then bail out.  Aborts are safe
         // because both listeners only accept once.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        backend_task.abort();
+        waf_task.abort();
+    }
+
+    /// WS-MSG2 — with `ws_inspect.enabled`, text **and** binary frames
+    /// still round-trip through the *inspecting* bridge (binary verbatim,
+    /// text reassembled-then-forwarded). Proves the parsing bridge is
+    /// transparent before any detector is wired (WS-MSG3).
+    #[tokio::test]
+    async fn websocket_round_trips_with_inspection_enabled() {
+        use futures::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let backend = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let backend_addr = backend.local_addr().unwrap();
+        let backend_task = tokio::spawn(async move {
+            let (stream, _) = backend.accept().await.unwrap();
+            let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let (mut tx, mut rx) = futures::StreamExt::split(ws);
+            while let Some(Ok(msg)) = futures::StreamExt::next(&mut rx).await {
+                if msg.is_text() || msg.is_binary() {
+                    if tx.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Same fixture, but the route opts into frame inspection.
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: chat, path: "/", upstream: pool, ws_inspect: {{ enabled: true }} }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend_addr}" }}] }}
+state: {{ backend: in_memory }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
+
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let bus = AuditBus::new(16);
+        let ctx_for_listener = ctx.clone();
+        let bus_for_listener = bus.clone();
+        let rh = Arc::new(route_latency());
+        let waf_task = tokio::spawn(async move {
+            let (stream, peer) = waf.accept().await.unwrap();
+            let ctx_for_svc = ctx_for_listener.clone();
+            let bus_for_svc = bus_for_listener.clone();
+            let rh_for_svc = rh.clone();
+            let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                let ctx = ctx_for_svc.clone();
+                let bus = bus_for_svc.clone();
+                let rh = rh_for_svc.clone();
+                async move {
+                    let (parts, body) = req.into_parts();
+                    let body_bytes = body
+                        .collect()
+                        .await
+                        .map(|c| c.to_bytes())
+                        .unwrap_or_default();
+                    let (resp, _tag) = super::forward_allow_to_upstream(
+                        parts,
+                        body_bytes,
+                        &ctx,
+                        &ClientIdentity::Anonymous,
+                        &rh,
+                        &route_activity_w(),
+                        Instant::now(),
+                        peer.ip(),
+                        &bus,
+                    )
+                    .await;
+                    Ok::<_, Infallible>(resp)
+                }
+            });
+            let io = TokioIo::new(stream);
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(io, svc)
+                .with_upgrades()
+                .await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let url = format!("ws://127.0.0.1:{}/", waf_addr.port());
+        let (ws, _resp) = tokio_tungstenite::connect_async(&url)
+            .await
+            .expect("client connects + upgrades through the inspecting bridge");
+        let (mut tx, mut rx) = futures::StreamExt::split(ws);
+
+        // Text message round-trips (reassembled + forwarded).
+        tx.send(Message::Text("benign chat text".into()))
+            .await
+            .unwrap();
+        let echo = futures::StreamExt::next(&mut rx)
+            .await
+            .expect("text echo")
+            .expect("text echo ok");
+        assert_eq!(echo.into_text().unwrap(), "benign chat text");
+
+        // Binary message round-trips byte-identical (never inspected).
+        let payload = vec![0x00, 0x01, 0x02, 0xFF, 0xFE];
+        tx.send(Message::Binary(payload.clone().into()))
+            .await
+            .unwrap();
+        let echo2 = futures::StreamExt::next(&mut rx)
+            .await
+            .expect("binary echo")
+            .expect("binary echo ok");
+        assert_eq!(echo2.into_data().to_vec(), payload);
+
+        drop(tx);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         backend_task.abort();
         waf_task.abort();

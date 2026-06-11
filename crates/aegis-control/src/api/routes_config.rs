@@ -137,6 +137,10 @@ impl RouteConfigPatch {
             max_concurrent_tunnels_per_ip: 0,
             default: self.default,
             enabled: self.enabled,
+            // WS-MSG5 wires the dashboard/API surface; the boot-YAML
+            // path carries `ws_inspect` today, API-created routes default
+            // off.
+            ws_inspect: None,
         })
     }
 }

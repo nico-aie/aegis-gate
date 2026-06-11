@@ -251,6 +251,14 @@ pub fn encode_unmasked(opcode: Opcode, payload: &[u8], fin: bool) -> Vec<u8> {
     out
 }
 
+/// Encode a server→client Close frame (unmasked) carrying a 2-byte
+/// status code. Sent to the client when the bridge tears down on a
+/// policy block (`1008`), protocol error (`1002`/`1007`), or an
+/// oversize message (`1009`).
+pub fn encode_close(code: u16) -> Vec<u8> {
+    encode_unmasked(Opcode::Close, &code.to_be_bytes(), true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
