@@ -123,9 +123,13 @@ logging:
   verbosity: info
 
 # WAF's own audit chain (separate from the contract log below).
+# `path` is a DIRECTORY (a value WITH an extension is treated as a file → its parent
+# is used; so we give a bare dir). Files are daily-rotated as audit-YYYY-MM-DD.ndjson
+# inside it. logs/ is bind-mounted into the otel collector (→ /var/log/aegis), so the
+# chain lands at /var/log/aegis/audit/ and is shipped to SigNoz (log_type=waf_audit_chain).
 audit:
   sinks:
-    - jsonl: { path: "/tmp/aegis-audit.jsonl" }
+    - jsonl: { path: "logs/audit" }
   chain: { enabled: true }
 
 # Interop contract surface (§2 control plane + §6 audit log).

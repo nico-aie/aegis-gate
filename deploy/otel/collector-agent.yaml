@@ -47,6 +47,18 @@ receivers:
       - type: add
         field: attributes.log_type
         value: waf_audit
+  filelog/chain:                # THIS node's hash-chained audit (audit: sink, tamper-evident)
+    # Each line is { "hash": …, "event": { ts_ms, action, ip, path, risk_score, … } }
+    # — decision fields NESTED under `event`. Daily-rotated audit-YYYY-MM-DD.ndjson in
+    # the dir set by waf.yaml audit.sinks[].jsonl.path (= logs/audit → /var/log/aegis/audit).
+    include: ["/var/log/aegis/audit/audit-*.ndjson"]
+    start_at: end
+    operators:
+      - type: json_parser
+        timestamp: { parse_from: attributes.event.ts_ms, layout_type: epoch, layout: ms }
+      - type: add
+        field: attributes.log_type
+        value: waf_audit_chain
 
 processors:
   resourcedetection/system:     # stamps host.name (override via OTEL_RESOURCE_ATTRIBUTES=host.name=<node-id>)
@@ -75,6 +87,6 @@ service:
       processors: [resourcedetection/system, batch]
       exporters: [otlp/signoz]
     logs:
-      receivers: [otlp, filelog, filelog/audit]
+      receivers: [otlp, filelog, filelog/audit, filelog/chain]
       processors: [resourcedetection/system, attributes/scrub, batch]
       exporters: [otlp/signoz]

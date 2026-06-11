@@ -89,6 +89,24 @@ receivers:
         field: attributes.log_type
         value: waf_audit
 
+  # HASH-CHAINED AUDIT — the WAF's `audit:` sink (tamper-evident chain). Each line
+  # is { "hash": <chain hash>, "event": { ts_ms, action, ip, path, risk_score, … } }
+  # — the decision fields are NESTED under `event`, and the ts is event.ts_ms (epoch
+  # ms). Daily-rotated as audit-YYYY-MM-DD.ndjson in the dir set by waf.yaml
+  # audit.sinks[].jsonl.path (= logs/audit → mounted here as /var/log/aegis/audit).
+  filelog/chain:
+    include: ["/var/log/aegis/audit/audit-*.ndjson"]
+    start_at: end
+    operators:
+      - type: json_parser
+        timestamp:
+          parse_from: attributes.event.ts_ms
+          layout_type: epoch
+          layout: ms
+      - type: add
+        field: attributes.log_type
+        value: waf_audit_chain
+
 processors:
   # P4 (2026-06-05) — stamp host identity on hostmetrics so per-node CPU/mem
   # carries `host.name` and matches the WAF's OTLP `host.name`. Run per node
@@ -151,6 +169,6 @@ service:
       # supported" for logs). `attributes/scrub` (header deletes) DOES support
       # logs; body-level PII should be scrubbed at source via the WAF's `dlp`.
       # (Bump the collector image past ~0.110 to re-add redaction here.)
-      receivers: [otlp, filelog, filelog/audit]
+      receivers: [otlp, filelog, filelog/audit, filelog/chain]
       processors: [attributes/scrub, batch]
       exporters: [otlp/signoz]
