@@ -21,3 +21,17 @@
     that: bin_stat.stat.exists
     fail_msg: "Build did not produce {{ builder_bin }} — check the cargo output."
     success_msg: "WAF binary ready: {{ builder_bin }} ({{ (bin_stat.stat.size / 1048576) | round(1) }} MB)"
+
+# Zero Trust — generate the ONE shared WAF client identity (clientAuth) for the whole
+# fleet, here on the builder. Idempotent (creates:), so it's made once and reused; the
+# waf_node role copies the same cert+key to every node. Skipped if disabled.
+- name: Generate the shared WAF client identity (Zero Trust upstream mTLS)
+  ansible.builtin.command:
+    cmd: >
+      openssl req -x509 -newkey rsa:2048 -nodes -days 825
+      -keyout {{ waf_client_identity_src_key }}
+      -out    {{ waf_client_identity_src_crt }}
+      -subj "/CN=aegis-waf-client"
+      -addext "extendedKeyUsage=clientAuth"
+    creates: "{{ waf_client_identity_src_crt }}"
+  when: zero_trust_upstream_identity_cert | default('', true) | length > 0

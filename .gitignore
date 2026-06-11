@@ -119,3 +119,6 @@ __pycache__
 
 # native host nginx LB runtime (logs, pid, temp dirs) — config+script are tracked
 deploy/nginx/native/
+
+# ansible WAF pidfile dir (infra node deploy_dir == repo root)
+run/

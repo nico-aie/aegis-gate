@@ -69,6 +69,19 @@
       -addext "subjectAltName=DNS:localhost,DNS:aegis-gate.local,IP:127.0.0.1,IP:{{ ansible_host }}"
     creates: "{{ deploy_dir }}/certs/selfsigned.crt"
 
+# ── Zero Trust: the shared WAF client identity (same cert on every node) ──────
+- name: Distribute the shared WAF client identity (Zero Trust upstream mTLS)
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ deploy_dir }}/{{ item.dest }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { src: "{{ waf_client_identity_src_crt }}", dest: "certs/waf-client-identity.crt", mode: "0644" }
+    - { src: "{{ waf_client_identity_src_key }}", dest: "certs/waf-client-identity.key", mode: "0600" }
+  loop_control: { label: "{{ item.dest }}" }
+  when: zero_trust_upstream_identity_cert | default('', true) | length > 0
+  notify: restart waf
+
 # ── Config + env (templated per node) ─────────────────────────────────────────
 - name: Template waf.yaml
   ansible.builtin.template:

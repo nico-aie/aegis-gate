@@ -17,6 +17,7 @@ waf_features: "redis geoip alerts ai affinity otel llm"
 # ── Infra endpoints (the infra host hosts all shared services) ────────────────
 infra_host: "10.20.0.72"
 redis_url: "redis://{{ infra_host }}:6379"
+redis_timeout: "1s"          # was 100ms — bumped to absorb cross-node latency / GC pauses
 otel_endpoint: "http://{{ infra_host }}:4317"
 mock_host: "{{ infra_host }}"          # multi-protocol mock :9991-9994
 
@@ -34,6 +35,15 @@ ai_enabled: true
 ai_confidence_threshold: 0.95
 ai_model_src: "{{ builder_repo }}/data/ai_model/waf_model.onnx"   # copied to each node
 geoip_src_dir: "{{ builder_repo }}/data/geoip"                    # GeoLite2-*.mmdb (optional)
+
+# ── Zero Trust: shared WAF→backend client identity (upstream mTLS) ────────────
+# ONE clientAuth cert for the whole fleet, generated once on the builder + copied to
+# every node. Set to "" to disable the zero_trust block. The matching key is key_ref.
+zero_trust_upstream_identity_cert: "certs/waf-client-identity.crt"
+zero_trust_upstream_identity_key: "certs/waf-client-identity.key"
+# source paths on the builder (the shared identity is generated here once):
+waf_client_identity_src_crt: "{{ builder_repo }}/certs/waf-client-identity.crt"
+waf_client_identity_src_key: "{{ builder_repo }}/certs/waf-client-identity.key"
 
 # ── Risk / runtime ────────────────────────────────────────────────────────────
 risk_challenge_at: 40

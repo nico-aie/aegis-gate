@@ -80,7 +80,7 @@ state:
   redis:
     urls: ["redis://10.20.0.72:6379"]
     pool_size: 16
-    timeout: "100ms"
+    timeout: "1s"
 
 # Leaderless cluster — every node equal; every node's dashboard shows the whole
 # fleet (shared Redis). Needs the `redis` feature (built) + same redis.urls on all
@@ -180,3 +180,13 @@ admin:
     totp_enabled: false
     login_rate_limit:
       per_ip: { limit: 100, window: "1m" }
+
+# Zero Trust — the client identity the WAF presents to backends requiring upstream
+# mTLS. Use the SAME cert on every node (one WAF identity to the fleet). Generate a
+# clientAuth cert into certs/ (openssl ... -addext "extendedKeyUsage=clientAuth").
+# Unused by pools that don't enable mTLS; sets the console's "WAF Client Identity".
+zero_trust:
+  upstream_identity:
+    source: file
+    cert_path: "certs/waf-client-identity.crt"
+    key_ref:   "certs/waf-client-identity.key"

@@ -39,7 +39,7 @@ upstreams:
 
 state:
   backend: redis
-  redis: { urls: ["{{ redis_url }}"], pool_size: 16, timeout: "100ms" }
+  redis: { urls: ["{{ redis_url }}"], pool_size: 16, timeout: "{{ redis_timeout }}" }
 
 # Leaderless cluster — every node equal; shared Redis + identical csrf_secret.
 cluster:
@@ -106,3 +106,15 @@ admin:
     ip_allowlist: ["127.0.0.1/32", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
     totp_enabled: false
     login_rate_limit: { per_ip: { limit: 100, window: "1m" } }
+{% if zero_trust_upstream_identity_cert is defined and zero_trust_upstream_identity_cert %}
+
+# Zero Trust — the shared client identity the WAF presents to backends that require
+# upstream mTLS. One identity for the whole fleet (same cert on every node). Unused by
+# pools that don't enable mTLS; just makes the WAF's client cert available + sets the
+# "WAF Client Identity" in the console.
+zero_trust:
+  upstream_identity:
+    source: file
+    cert_path: "{{ zero_trust_upstream_identity_cert }}"
+    key_ref:   "{{ zero_trust_upstream_identity_key }}"
+{% endif %}
