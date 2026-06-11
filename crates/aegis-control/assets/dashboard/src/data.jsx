@@ -599,6 +599,39 @@ function useConfigVersionsApi(limit = 50) {
   const _origFetch = window.fetch.bind(window);
   window.fetch = async (...args) => {
     const r = await _origFetch(...args);
+    // F12 (2026-06-11 cluster QC) — session dropped mid-session. The
+    // admin gate returns 401 {reason:"admin_unauthenticated"} on every
+    // /api/* fetch once the session lapses; pre-fix the SPA kept
+    // rendering stale chrome and silently stopped updating, so a SOC
+    // analyst stared at frozen data unaware they were logged out. Catch
+    // it globally (mirrors the 403/CSRF handling below) and bounce to
+    // login, preserving where they were via `next=`.
+    if (r.status === 401 && !window.__aegisCsrfRedirecting) {
+      const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url ?? '');
+      // Only react to API calls (the data layer). Don't loop on the
+      // login page's own probes or non-API navigations.
+      if (url.includes('/api/')) {
+        window.__aegisCsrfRedirecting = true;
+        try {
+          const method = (args[1]?.method ?? args[0]?.method ?? 'GET').toUpperCase();
+          window.localStorage.setItem('__aegisLastRedirect', JSON.stringify({
+            ts: new Date().toISOString(),
+            url,
+            method,
+            status: 401,
+            reason: 'admin_unauthenticated',
+            note: 'global fetch interceptor (401) → /admin/login',
+          }));
+        } catch (_storage) { /* storage disabled — non-fatal */ }
+        const toast = window.aegisToast || ((m) => console.warn('[auth]', m));
+        toast('Session expired — redirecting to login…', 'warn');
+        const next = encodeURIComponent(window.location.pathname + window.location.hash);
+        setTimeout(() => {
+          window.location.href = `/admin/login?next=${next}`;
+        }, 1200);
+      }
+      return r;
+    }
     if (r.status === 403 && !window.__aegisCsrfRedirecting) {
       try {
         const cloned = r.clone();
@@ -1146,15 +1179,38 @@ function useAiReloadApi() {
     fallback: { feature_present: false },
   });
 }
+// F9 (2026-06-11 cluster QC) — bound the model reload with a client
+// timeout. The QC saw "↻ Reload model" leave the tab stuck >45 s: the
+// request hung server-side (e.g. no .onnx configured) and the await
+// never resolved, so the loading state never cleared and the operator
+// had to hard-reload. AbortController caps the wait so the UI always
+// recovers to an actionable error instead of an indefinite spinner.
+const AI_RELOAD_TIMEOUT_MS = 20000;
 async function aiReloadPost() {
   const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-  const r = await fetch('/api/ai/reload', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
-    credentials: 'same-origin',
-  });
-  const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
-  return { status: r.status, ...json };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), AI_RELOAD_TIMEOUT_MS);
+  try {
+    const r = await fetch('/api/ai/reload', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+      credentials: 'same-origin',
+      signal: controller.signal,
+    });
+    const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+    return { status: r.status, ...json };
+  } catch (e) {
+    if (e && e.name === 'AbortError') {
+      return {
+        status: 504,
+        ok: false,
+        error: `reload timed out after ${AI_RELOAD_TIMEOUT_MS / 1000}s — the running model is kept; check the model path / node logs`,
+      };
+    }
+    return { status: 0, ok: false, error: e?.message || String(e) };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // 2026-05-11 PR #7 — runtime toggle for the three-rung

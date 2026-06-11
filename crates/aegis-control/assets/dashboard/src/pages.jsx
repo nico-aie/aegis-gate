@@ -3611,9 +3611,34 @@ function DetectorMaskCard() {
             )}
           </div>
         </div>
-        <div style={{ fontSize: 11, color: 'var(--ink-dim)', whiteSpace: 'nowrap', alignSelf: collapsed ? 'center' : 'flex-start' }}>
-          <span className="num" style={{ color: 'var(--ink)', fontWeight: 600 }}>{enabledCount}</span>
-          {' / '}{MASK_CLASSES.length} enabled
+        <div style={{ fontSize: 11, color: 'var(--ink-dim)', whiteSpace: 'nowrap', alignSelf: collapsed ? 'center' : 'flex-start', display: 'flex', alignItems: 'center', gap: 8 }}>
+          {/* F8 (2026-06-11 cluster QC) — a real Refresh that re-pulls
+              the authoritative mask + version, so when the UI desyncs
+              (or after a soft nav) the operator can reconcile without a
+              hard browser reload. role=button (not a nested <button>,
+              which would be invalid inside the collapse button) +
+              stopPropagation so it doesn't also toggle the card. The
+              config_reload SSE listener already auto-syncs; this is the
+              manual escape hatch the QC asked for. */}
+          <span
+            role="button"
+            tabIndex={0}
+            aria-label="Refresh detector mask from server"
+            title="Re-fetch the live mask + version from /api/detectors"
+            onClick={(e) => { e.stopPropagation(); api.reload && api.reload(); }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault(); e.stopPropagation(); api.reload && api.reload();
+              }
+            }}
+            style={{ cursor: 'pointer', color: 'var(--ink-dim)', userSelect: 'none' }}
+          >
+            ↻ Refresh
+          </span>
+          <span>
+            <span className="num" style={{ color: 'var(--ink)', fontWeight: 600 }}>{enabledCount}</span>
+            {' / '}{MASK_CLASSES.length} enabled
+          </span>
         </div>
       </button>
 

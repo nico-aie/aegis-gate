@@ -24,7 +24,13 @@ the audit read-path, health-probe auth gating, or session UX — not the leaderl
   when a render exceeds 25 ms, so the next live run attributes the cost; (b) the previously-uncached
   `tail` path (polled every 3 s) is now cached on its own `(limit)` slot. The real 260 ms source needs
   the live-fleet log to confirm.
-- ⏳ P5 (F12/F8/F9), P6 (F13/F2/F3) — pending.
+- ✅ **P5 (F12/F8/F9)** — client UX. **F12**: the global fetch interceptor now also catches
+  `401 admin_unauthenticated` on `/api/*` and redirects to `/admin/login?next=…` (no more stale
+  chrome over a dropped session). **F9**: model reload is bounded by a 20 s `AbortController`
+  timeout → recovers to an actionable error instead of an indefinite spinner. **F8**: a real
+  `↻ Refresh` control on the detector card re-pulls the authoritative mask + version (the
+  `config_reload` SSE listener from P2 already auto-syncs; this is the manual escape hatch).
+- ⏳ P6 (F13/F2/F3) — pending.
 
 > ⚠️ **Three of the report's suggested fixes are re-scoped below after reading the code:**
 > - **F14** — the audit ring + JSON cache the report asks for **already exist**
