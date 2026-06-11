@@ -342,6 +342,29 @@ pub async fn scan_and_merge(
     merge(&snaps, top_k)
 }
 
+/// PB / F6 (2026-06-11) — merge peers' snapshots by a KNOWN node roster
+/// (one `GET fleet:snap:<node>` per id) instead of a whole-keyspace
+/// `SCAN MATCH`. Same rationale as
+/// [`crate::metrics::fleet_audit::merge_audit_from_roster`]: bounded
+/// O(nodes), timeout-safe, cluster-Redis-safe. A node whose snapshot has
+/// TTL'd out returns `None` and is skipped.
+pub async fn merge_from_roster(
+    backend: &dyn aegis_core::state::StateBackend,
+    node_ids: &[String],
+    top_k: usize,
+) -> MergedFleet {
+    let mut snaps: Vec<FleetSnapshot> = Vec::new();
+    for id in node_ids {
+        let key = snapshot_key(id);
+        if let Ok(Some(bytes)) = backend.get(&key).await {
+            if let Ok(s) = serde_json::from_slice::<FleetSnapshot>(&bytes) {
+                snaps.push(s);
+            }
+        }
+    }
+    merge(&snaps, top_k)
+}
+
 /// `ArcSwap`-backed cache of the latest merged fleet view. The publish
 /// task refreshes it each tick; synchronous admin GET handlers read it
 /// without `.await`. `None` until the first successful merge (read path
@@ -596,6 +619,36 @@ mod tests {
         let merged = scan_and_merge(&backend, 50).await;
         assert_eq!(merged.nodes, 2, "TTL'd node dropped");
         assert_eq!(merged.request_rate, 30.0);
+    }
+
+    // PB / F6 — roster-driven merge: GET each known node's key, no SCAN.
+    #[tokio::test]
+    async fn merge_from_roster_uses_known_nodes_only() {
+        use aegis_core::state::StateBackend as _;
+        let backend = MockBackend {
+            kv: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        for (node, rps) in [("a", 10.0), ("b", 20.0), ("c", 30.0)] {
+            let mut s = snap(node);
+            s.request_rate = rps;
+            let bytes = serde_json::to_vec(&s).unwrap();
+            backend
+                .set(&snapshot_key(node), &bytes, std::time::Duration::from_secs(10))
+                .await
+                .unwrap();
+        }
+        // Roster lists a/b/c → all three merged via GET (no scan_prefix).
+        let ids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let merged = merge_from_roster(&backend, &ids, 50).await;
+        assert_eq!(merged.nodes, 3);
+        assert_eq!(merged.request_rate, 60.0);
+
+        // A roster id whose key is absent (dead / TTL'd) is skipped; an
+        // id NOT in the roster is never read even though its key exists.
+        let ids = vec!["a".to_string(), "ghost".to_string()];
+        let merged = merge_from_roster(&backend, &ids, 50).await;
+        assert_eq!(merged.nodes, 1, "only the live, rostered node merged");
+        assert_eq!(merged.request_rate, 10.0);
     }
 
     #[test]

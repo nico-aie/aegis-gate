@@ -26,14 +26,19 @@ use arc_swap::ArcSwap;
 
 use aegis_core::audit::{AuditBus, AuditClass, AuditEvent};
 use aegis_core::config::WafConfig;
+use aegis_core::fleet::FleetBus;
 
-use super::config_store::ConfigStore;
+use super::config_store::{ConfigStore, CONFIG_BUMP_CHANNEL};
 use super::reload;
 
-/// Default poll cadence. Full-fleet convergence is ≤ one interval; the
-/// store-backed path can later be upgraded to Redis keyspace
-/// notifications with this poll kept as the safety net.
+/// Default poll cadence. Full-fleet convergence is ≤ one interval when the
+/// pub/sub nudge is off; with the nudge wired (N2) the writer and peers
+/// apply in ~ms and this is just the loss-tolerant backstop.
 pub const DEFAULT_POLL: Duration = Duration::from_secs(3);
+
+/// Bound on the config-bump subscription channel. A burst of writes
+/// coalesces into a single re-poll, so a small buffer is plenty.
+const NUDGE_CHANNEL_BOUND: usize = 16;
 
 /// Handles the data-plane state that a config swap must rebuild, mirrored
 /// from the etcd watcher's parameter list so both sources apply identical
@@ -72,10 +77,22 @@ pub struct ApplyTargets {
     /// rebuilds pools on every node.
     pub upstream_writer:
         Option<Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>>,
+    /// N1 (2026-06-11) — shared alert-receiver list, re-derived from
+    /// `cfg.alerting.receivers` on each swap so a receiver configured on
+    /// any node propagates to every node. `None` ⇒ not wired (the legacy
+    /// node-local receiver store stays as-is).
+    pub receiver_writer:
+        Option<Arc<arc_swap::ArcSwap<Vec<aegis_control::slo::AlertReceiver>>>>,
 }
 
 /// Spawn the shared-store config watcher. Exits when the last strong
 /// reference to `cfg` is dropped.
+///
+/// `nudge` (N2) is the optional config-plane pub/sub bus. When wired, the
+/// loop subscribes to [`CONFIG_BUMP_CHANNEL`] and re-polls the instant a
+/// peer (or this node) activates a new version, so convergence drops from
+/// ≤`poll_interval` to ~ms. `None` ⇒ pure interval polling (single-node /
+/// in-memory / nudge disabled).
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_watcher(
     store: ConfigStore,
@@ -84,12 +101,14 @@ pub fn spawn_watcher(
     bus: AuditBus,
     targets: ApplyTargets,
     poll_interval: Duration,
+    nudge: Option<Arc<dyn FleetBus>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        watch_loop(store, node_id, cfg, bus, targets, poll_interval).await;
+        watch_loop(store, node_id, cfg, bus, targets, poll_interval, nudge).await;
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn watch_loop(
     store: ConfigStore,
     node_id: String,
@@ -97,14 +116,23 @@ async fn watch_loop(
     bus: AuditBus,
     targets: ApplyTargets,
     poll_interval: Duration,
+    nudge: Option<Arc<dyn FleetBus>>,
 ) {
     // The version this node currently has applied. 0 = boot config (from
     // file/etcd) still in force; the store's first version is 1.
     let mut applied_version: u64 = 0;
 
+    // N2 — subscribe to the config bump channel so an activate anywhere in
+    // the fleet (incl. our own writes) wakes this loop immediately. The
+    // poll below is the loss-tolerant backstop.
+    let mut bump_rx = nudge
+        .as_ref()
+        .map(|b| b.subscribe(CONFIG_BUMP_CHANNEL, NUDGE_CHANNEL_BOUND));
+
     tracing::info!(
         node_id = %node_id,
         poll_interval_ms = poll_interval.as_millis() as u64,
+        nudge = bump_rx.is_some(),
         "shared-store config watcher started",
     );
 
@@ -112,54 +140,49 @@ async fn watch_loop(
         match store.load().await {
             Ok(Some(doc)) => {
                 if doc.version == applied_version {
-                    // No change — re-stamp our ACK so the roster stays
-                    // fresh, then wait.
+                    // No change — re-stamp our ACK so the roster stays fresh.
                     let _ = store.record_applied(&node_id, applied_version).await;
-                    tokio::time::sleep(poll_interval).await;
-                    continue;
-                }
-
-                match aegis_core::load_config_str(&doc.blob) {
-                    Ok(new_cfg) => {
-                        apply_and_swap(&new_cfg, &cfg, &bus, &targets, doc.version).await;
-                        applied_version = doc.version;
-                        // ACK the version we just applied.
-                        let _ = store.record_applied(&node_id, applied_version).await;
-                        bus.emit(reload_event(
-                            "config_reload",
-                            format!("applied shared config version {}", doc.version),
-                            &node_id,
-                            doc.version,
-                        ));
-                        tracing::info!(
-                            node_id = %node_id,
-                            version = doc.version,
-                            "applied shared config version",
-                        );
-                    }
-                    Err(e) => {
-                        // NACK — keep last-good, do NOT advance
-                        // applied_version (so the console drift view shows
-                        // this node stuck behind). Page-worthy.
-                        tracing::error!(
-                            node_id = %node_id,
-                            version = doc.version,
-                            error = %e,
-                            "shared config version failed to validate; keeping last-good (NACK)",
-                        );
-                        bus.emit(reload_event(
-                            "config_reload_failed",
-                            format!("shared config v{} rejected: {e}", doc.version),
-                            &node_id,
-                            doc.version,
-                        ));
+                } else {
+                    match aegis_core::load_config_str(&doc.blob) {
+                        Ok(new_cfg) => {
+                            apply_and_swap(&new_cfg, &cfg, &bus, &targets, doc.version).await;
+                            applied_version = doc.version;
+                            // ACK the version we just applied.
+                            let _ = store.record_applied(&node_id, applied_version).await;
+                            bus.emit(reload_event(
+                                "config_reload",
+                                format!("applied shared config version {}", doc.version),
+                                &node_id,
+                                doc.version,
+                            ));
+                            tracing::info!(
+                                node_id = %node_id,
+                                version = doc.version,
+                                "applied shared config version",
+                            );
+                        }
+                        Err(e) => {
+                            // NACK — keep last-good, do NOT advance
+                            // applied_version (so the console drift view shows
+                            // this node stuck behind). Page-worthy.
+                            tracing::error!(
+                                node_id = %node_id,
+                                version = doc.version,
+                                error = %e,
+                                "shared config version failed to validate; keeping last-good (NACK)",
+                            );
+                            bus.emit(reload_event(
+                                "config_reload_failed",
+                                format!("shared config v{} rejected: {e}", doc.version),
+                                &node_id,
+                                doc.version,
+                            ));
+                        }
                     }
                 }
-                tokio::time::sleep(poll_interval).await;
             }
             Ok(None) => {
                 // No config activated yet — boot config stays in force.
-                tokio::time::sleep(poll_interval).await;
             }
             Err(e) => {
                 // Fail-static: the store is unreachable. Keep serving the
@@ -169,9 +192,37 @@ async fn watch_loop(
                     error = %e,
                     "shared config store unreachable; keeping current config",
                 );
-                tokio::time::sleep(poll_interval).await;
             }
         }
+
+        wait_for_tick_or_nudge(bump_rx.as_mut(), poll_interval).await;
+    }
+}
+
+/// Wait until the next poll tick **or** a config bump arrives, whichever is
+/// first. The bump (N2) collapses convergence from ≤`poll_interval` to ~ms;
+/// the timer is the loss-tolerant backstop. A burst of bumps coalesces into
+/// a single re-poll. A closed channel falls back to plain interval waits so
+/// a dropped subscriber can never hot-loop.
+async fn wait_for_tick_or_nudge(
+    bump_rx: Option<&mut tokio::sync::mpsc::Receiver<Vec<u8>>>,
+    poll_interval: Duration,
+) {
+    match bump_rx {
+        Some(rx) => {
+            tokio::select! {
+                _ = tokio::time::sleep(poll_interval) => {}
+                msg = rx.recv() => {
+                    match msg {
+                        // Coalesce a burst into one re-poll.
+                        Some(_) => while rx.try_recv().is_ok() {},
+                        // Bus closed — don't spin; wait out the interval.
+                        None => tokio::time::sleep(poll_interval).await,
+                    }
+                }
+            }
+        }
+        None => tokio::time::sleep(poll_interval).await,
     }
 }
 
@@ -218,6 +269,9 @@ async fn apply_and_swap(
         targets.response_filter_writer.as_ref(),
     );
     let _ = reload::apply_cfg_change_to_tiers(new_cfg, targets.tiers.as_ref());
+    // N1 — re-derive the alert-receiver list so a fleet-managed channel
+    // propagates to every node (no-op when `cfg.alerting` is unset).
+    let _ = reload::apply_cfg_change_to_receivers(new_cfg, targets.receiver_writer.as_ref());
     let _ = reload::apply_cfg_change_to_rules(
         new_cfg,
         targets.rules.as_ref(),
@@ -259,5 +313,59 @@ fn reload_event(action: &str, reason: String, node_id: &str, version: u64) -> Au
             "node_id": node_id,
             "version": version,
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+    use tokio::sync::mpsc;
+
+    // N2 — the watcher's wait point: bump wakes immediately, the timer is
+    // the backstop, and a closed channel must never hot-loop.
+
+    #[tokio::test]
+    async fn nudge_wakes_before_poll_interval() {
+        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(8);
+        tx.try_send(vec![1]).unwrap();
+        let start = Instant::now();
+        wait_for_tick_or_nudge(Some(&mut rx), Duration::from_secs(30)).await;
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "a queued bump must wake the loop well before the poll interval",
+        );
+    }
+
+    #[tokio::test]
+    async fn nudge_coalesces_burst_into_one_wakeup() {
+        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(8);
+        for _ in 0..5 {
+            tx.try_send(vec![1]).unwrap();
+        }
+        wait_for_tick_or_nudge(Some(&mut rx), Duration::from_secs(30)).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "a burst of bumps must drain to a single re-poll",
+        );
+    }
+
+    #[tokio::test]
+    async fn no_bus_waits_the_interval() {
+        let start = Instant::now();
+        wait_for_tick_or_nudge(None, Duration::from_millis(50)).await;
+        assert!(start.elapsed() >= Duration::from_millis(40));
+    }
+
+    #[tokio::test]
+    async fn closed_channel_falls_back_to_interval() {
+        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(8);
+        drop(tx); // close → recv yields None
+        let start = Instant::now();
+        wait_for_tick_or_nudge(Some(&mut rx), Duration::from_millis(50)).await;
+        assert!(
+            start.elapsed() >= Duration::from_millis(40),
+            "a closed channel must wait out the interval, not hot-loop",
+        );
     }
 }

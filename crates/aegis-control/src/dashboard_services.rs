@@ -131,6 +131,14 @@ pub struct DashboardServices {
     /// (the SSE live feed is already fleet-wide; only the reload
     /// backfill was node-local). See [`crate::metrics::fleet_audit`].
     pub fleet_audit_cache: Option<crate::metrics::fleet_audit::FleetAuditCache>,
+    /// N2 (2026-06-11) — config-plane nudge bus. `None` for single-node /
+    /// cluster-off / nudge-disabled; `Some` when `aegis-proxy::run` wires
+    /// the Redis pub/sub bus. The audit-mutated config write handlers
+    /// (`/api/config`, detectors, rules, tiers, upstreams) attach it to
+    /// their per-request [`crate::...`]`ConfigStore` so a successful
+    /// activate publishes a `config:waf:bump`, waking every node's watcher
+    /// (incl. this one) for ~ms convergence instead of a poll-tick wait.
+    pub config_nudge: Option<Arc<dyn aegis_core::fleet::FleetBus>>,
     /// Live leaderless cluster-roster view. `None` for single-node /
     /// test builds; `Some` when `aegis-proxy::run` wires the
     /// `members:*` roster-poll background task. See
@@ -627,6 +635,9 @@ impl DashboardServices {
                 // F6 fleet audit-tail cache — opted in by `aegis-proxy`
                 // alongside `fleet_cache` (Redis + cluster fleet_view).
                 fleet_audit_cache: None,
+                // N2 config-plane nudge — opted in by `aegis-proxy::run`
+                // alongside the fleet caches (Redis + cluster.pubsub_nudge).
+                config_nudge: None,
                 roster_view,
                 // Interop contract is opted in by the bin
                 // crate after construction (see

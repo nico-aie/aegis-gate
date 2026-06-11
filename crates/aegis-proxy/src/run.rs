@@ -1270,6 +1270,51 @@ pub async fn run(
         }
     }
 
+    // N2 (2026-06-11) — config-plane pub/sub nudge. A dedicated Redis
+    // FleetBus (separate from the control-plane nudge below) shared by the
+    // watcher (subscribe side) and the audit-mutated config write handlers
+    // via `services.config_nudge` (publish side). A successful activate
+    // publishes `config:waf:bump`, waking every node's watcher — incl. the
+    // writer's own — so the new version applies in ~ms instead of on the
+    // next poll tick. Gated on `cluster.pubsub_nudge` + Redis; `None`
+    // degrades to pure interval polling (the prior behaviour).
+    let config_nudge_bus: Option<std::sync::Arc<dyn aegis_core::fleet::FleetBus>> = {
+        #[cfg(feature = "redis")]
+        {
+            if cfg.cluster.pubsub_nudge
+                && matches!(cfg.state.backend, aegis_core::config::StateBackendKind::Redis)
+            {
+                cfg.state
+                    .redis
+                    .as_ref()
+                    .and_then(|r| r.urls.first())
+                    .and_then(|url| match crate::state::RedisFleetBus::connect(url) {
+                        Ok(bus) => {
+                            tracing::info!(
+                                "config plane: pub/sub nudge enabled \
+                                 (config:waf:bump → immediate re-poll)"
+                            );
+                            Some(std::sync::Arc::new(bus)
+                                as std::sync::Arc<dyn aegis_core::fleet::FleetBus>)
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "config nudge: redis connect failed; interval polling only"
+                            );
+                            None
+                        }
+                    })
+            } else {
+                None
+            }
+        }
+        #[cfg(not(feature = "redis"))]
+        {
+            None
+        }
+    };
+
     // 2026-05-27 — shared-store config watcher (multi-node config
     // plane). INDEPENDENT of the boot config source above: it watches
     // the versioned `config:waf:doc` in the runtime `StateBackend` so a
@@ -1279,6 +1324,26 @@ pub async fn run(
     // the watcher is a harmless no-op — we always spawn it. ACKs the
     // applied version per node (`config:waf:applied:<node>`) for the
     // dashboard drift view; NACKs (keeps last-good) on a bad version.
+    //
+    // N1 (2026-06-11) — shared alert-receiver list. Seed from
+    // `cfg.alerting.receivers` when the operator has put receivers under
+    // config management; otherwise fall back to the env/boot defaults
+    // (`slo::default_receivers`). The config-plane watcher re-derives this
+    // on every swap (via `ApplyTargets.receiver_writer`) so a dashboard
+    // receiver edit — folded into `cfg.alerting` and activated — propagates
+    // to every node instead of staying node-local. Shared with
+    // `admin_accept_loop` (GET/PUT/DELETE/test + the SLO dispatch task).
+    let shared_receivers: Arc<arc_swap::ArcSwap<Vec<aegis_control::slo::AlertReceiver>>> = {
+        let initial: Vec<aegis_control::slo::AlertReceiver> = match cfg.alerting.as_ref() {
+            Some(a) => a
+                .receivers
+                .iter()
+                .map(crate::config_source::reload::receiver_from_config)
+                .collect(),
+            None => aegis_control::slo::default_receivers(),
+        };
+        Arc::new(arc_swap::ArcSwap::from_pointee(initial))
+    };
     {
         let node_id = lease_store.self_id().to_string();
         let store = crate::config_source::config_store::ConfigStore::new(state.clone());
@@ -1297,6 +1362,8 @@ pub async fn run(
             active_ruleset: Some(pipeline.rules_arc()),
             upstream_writer: Some(Arc::new(upstream_ctx.pools.clone())
                 as Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>),
+            // N1 — re-derive the alert-receiver list on each swap.
+            receiver_writer: Some(Arc::clone(&shared_receivers)),
         };
         tracing::info!(
             node_id = %node_id,
@@ -1309,6 +1376,7 @@ pub async fn run(
             bus.clone(),
             targets,
             crate::config_source::redis_source::DEFAULT_POLL,
+            config_nudge_bus.clone(),
         ));
     }
 
@@ -1938,6 +2006,8 @@ pub async fn run(
         config_yaml_path.clone(),
         tier_store,
         rule_store,
+        config_nudge_bus,
+        shared_receivers,
     )));
 
     readiness.config_loaded.store(true, Ordering::Relaxed);

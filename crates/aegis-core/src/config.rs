@@ -163,6 +163,17 @@ pub struct WafConfig {
     /// overrides; a restart re-applies this block.
     #[serde(default)]
     pub tiers: TiersConfig,
+    /// N1 (2026-06-11) — fleet-propagated alert-channel config. `None`
+    /// ⇒ not config-managed: each node keeps its boot/env-seeded
+    /// receiver list (`slo::default_receivers()`), the legacy behaviour.
+    /// `Some` ⇒ the receiver list is authoritative and propagates through
+    /// the shared config doc like detectors/rules/tiers, so a channel
+    /// configured on one node reaches the whole fleet. The dashboard
+    /// PUT/DELETE handlers always write `Some` (even an empty list, so a
+    /// delete-all propagates). Secrets ride in the config blob, same as
+    /// upstream credentials — the blob is never returned by a GET.
+    #[serde(default)]
+    pub alerting: Option<AlertingConfig>,
     /// CI-T8 — MaxMind GeoIP databases. When set, the
     /// `aegis-security/geoip` reader loads them at boot and the
     /// AttacksHandler enriches `/api/attacks/top` rows with
@@ -771,6 +782,53 @@ fn default_blocking_threads() -> usize {
 ///   medium:   { risk_threshold: 70, challenges_enabled: true }
 ///   low:      { risk_threshold: 80, challenges_enabled: true }
 /// ```
+/// N1 (2026-06-11) — fleet-propagated alert-channel config block.
+///
+/// A serde mirror of `aegis_control::slo`'s receiver types, living in
+/// `aegis-core` so it can ride the shared `WafConfig` doc (aegis-core has
+/// no dependency on aegis-control — the same boundary `tiers`/`rules`
+/// cross). The proxy converts these to the live `slo::AlertReceiver`
+/// list on each config apply. `Serialize` is needed so the fold handlers
+/// can write the block back into the YAML blob.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct AlertingConfig {
+    #[serde(default)]
+    pub receivers: Vec<ReceiverConfig>,
+}
+
+/// One alert receiver (config representation). Mirrors
+/// `aegis_control::slo::AlertReceiver`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReceiverConfig {
+    pub name: String,
+    pub kind: ReceiverKindConfig,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub severities: Vec<AlertSeverityConfig>,
+}
+
+/// Receiver destination (config representation). Mirrors
+/// `aegis_control::slo::ReceiverKind` field-for-field; the proxy maps
+/// between the two by an explicit match, so the two enums' serde reprs
+/// are independent.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ReceiverKindConfig {
+    AlertmanagerWebhook { url: String },
+    Slack { webhook_url: String },
+    PagerDuty { routing_key: String },
+    ServiceNow { instance: String, table: String },
+    Jira { base_url: String, project: String },
+    VipTalk { bot_token: String, room_ids: Vec<String> },
+}
+
+/// Alert severity filter (config representation). Mirrors
+/// `aegis_control::slo::AlertSeverity`.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AlertSeverityConfig {
+    Page,
+    Ticket,
+    Info,
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct TiersConfig {
     #[serde(default)]

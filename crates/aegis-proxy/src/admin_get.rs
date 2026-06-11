@@ -325,6 +325,15 @@ pub(crate) fn admin_router(
                     .as_ref()
                     .map(|lv| lv.our_node.clone())
                     .unwrap_or_default(),
+                // F2 (2026-06-11) — self-describing so an external sweep
+                // doesn't read a removed `version` field as `undefined`.
+                // This is THIS node's local audit-chain length, NOT the
+                // shared cluster config-doc version (a different counter).
+                "note": "audit_chain_len = this node's local audit-chain length \
+                         (increments per audit-mutation); it is NOT the cluster \
+                         config-doc version. For the shared config version + the \
+                         per-node applied roster, GET /api/config.",
+                "cluster_config_version_endpoint": "/api/config",
             });
             json_body_response(200, body.to_string(), "private, no-store")
         }
@@ -439,6 +448,18 @@ pub(crate) fn admin_router(
             } else {
                 None
             };
+            // PB / F6 — make the silent degrade visible: a `scope=fleet`
+            // request that finds no merged cache falls back to LOCAL rows
+            // (exactly the disjoint-set symptom the cluster QC saw). Log it
+            // so a future sweep can't mistake the fallback for a working
+            // merge. Populated cache → no log (the common path).
+            if want_fleet && fleet_tail.is_none() {
+                tracing::warn!(
+                    "/api/audit/since?scope=fleet has no merged cache — serving \
+                     LOCAL rows only (fleet_view disabled, pre-first-merge, or \
+                     the merge is failing); cross-node backfill will look disjoint"
+                );
+            }
             // F14 (2026-06-11) — time the render so the ~260 ms latency
             // floor the cluster QC saw is attributed in production logs.
             // The in-process render is sub-millisecond (in-memory ring +
