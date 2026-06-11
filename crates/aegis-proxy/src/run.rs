@@ -1270,6 +1270,51 @@ pub async fn run(
         }
     }
 
+    // N2 (2026-06-11) — config-plane pub/sub nudge. A dedicated Redis
+    // FleetBus (separate from the control-plane nudge below) shared by the
+    // watcher (subscribe side) and the audit-mutated config write handlers
+    // via `services.config_nudge` (publish side). A successful activate
+    // publishes `config:waf:bump`, waking every node's watcher — incl. the
+    // writer's own — so the new version applies in ~ms instead of on the
+    // next poll tick. Gated on `cluster.pubsub_nudge` + Redis; `None`
+    // degrades to pure interval polling (the prior behaviour).
+    let config_nudge_bus: Option<std::sync::Arc<dyn aegis_core::fleet::FleetBus>> = {
+        #[cfg(feature = "redis")]
+        {
+            if cfg.cluster.pubsub_nudge
+                && matches!(cfg.state.backend, aegis_core::config::StateBackendKind::Redis)
+            {
+                cfg.state
+                    .redis
+                    .as_ref()
+                    .and_then(|r| r.urls.first())
+                    .and_then(|url| match crate::state::RedisFleetBus::connect(url) {
+                        Ok(bus) => {
+                            tracing::info!(
+                                "config plane: pub/sub nudge enabled \
+                                 (config:waf:bump → immediate re-poll)"
+                            );
+                            Some(std::sync::Arc::new(bus)
+                                as std::sync::Arc<dyn aegis_core::fleet::FleetBus>)
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "config nudge: redis connect failed; interval polling only"
+                            );
+                            None
+                        }
+                    })
+            } else {
+                None
+            }
+        }
+        #[cfg(not(feature = "redis"))]
+        {
+            None
+        }
+    };
+
     // 2026-05-27 — shared-store config watcher (multi-node config
     // plane). INDEPENDENT of the boot config source above: it watches
     // the versioned `config:waf:doc` in the runtime `StateBackend` so a
@@ -1309,6 +1354,7 @@ pub async fn run(
             bus.clone(),
             targets,
             crate::config_source::redis_source::DEFAULT_POLL,
+            config_nudge_bus.clone(),
         ));
     }
 
@@ -1938,6 +1984,7 @@ pub async fn run(
         config_yaml_path.clone(),
         tier_store,
         rule_store,
+        config_nudge_bus,
     )));
 
     readiness.config_loaded.store(true, Ordering::Relaxed);

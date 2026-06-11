@@ -2184,7 +2184,8 @@ pub(crate) async fn handle_config_put(
             "config plane unavailable: no state backend wired".into(),
         ));
     };
-    let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
+    let store = crate::config_source::config_store::ConfigStore::new(backend.clone())
+        .with_nudge(services.config_nudge.clone());
 
     let current = store.current_version().await.unwrap_or(0);
     let before = serde_json::json!({ "version": current });
@@ -2274,7 +2275,8 @@ pub(crate) async fn handle_config_rollback(
             "config plane unavailable: no state backend wired".into(),
         ));
     };
-    let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
+    let store = crate::config_source::config_store::ConfigStore::new(backend.clone())
+        .with_nudge(services.config_nudge.clone());
 
     let current = store.current_version().await.unwrap_or(0);
     let before = serde_json::json!({ "version": current });
@@ -2471,7 +2473,8 @@ async fn load_active_config_doc(
             ),
         ));
     };
-    let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
+    let store = crate::config_source::config_store::ConfigStore::new(backend.clone())
+        .with_nudge(services.config_nudge.clone());
     match store.load().await {
         Ok(Some(doc)) => Ok((store, doc.blob, doc.version)),
         Ok(None) => match services.config_yaml_path.as_ref() {
@@ -3674,7 +3677,8 @@ pub(crate) async fn handle_detectors_put(
             "config plane unavailable: no state backend wired".into(),
         ));
     };
-    let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
+    let store = crate::config_source::config_store::ConfigStore::new(backend.clone())
+        .with_nudge(services.config_nudge.clone());
 
     let (base_blob, current_version) = match store.load().await {
         Ok(Some(doc)) => (doc.blob, doc.version),
@@ -4328,7 +4332,8 @@ pub(crate) async fn handle_tier_put(
             "config plane unavailable: no state backend wired".into(),
         ));
     };
-    let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
+    let store = crate::config_source::config_store::ConfigStore::new(backend.clone())
+        .with_nudge(services.config_nudge.clone());
 
     let (base_blob, expected) = match store.load().await {
         Ok(Some(doc)) => (doc.blob, doc.version),
@@ -4552,7 +4557,8 @@ pub(crate) async fn handle_ai_enabled_put(
             "config plane unavailable: no state backend wired".into(),
         ));
     };
-    let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
+    let store = crate::config_source::config_store::ConfigStore::new(backend.clone())
+        .with_nudge(services.config_nudge.clone());
 
     // Base blob to patch: the active shared doc, or — on a fresh cluster
     // with nothing activated yet — the boot config file (seeds v1).
@@ -4848,7 +4854,8 @@ pub(crate) async fn handle_ai_confidence_put(
             "config plane unavailable: no state backend wired".into(),
         ));
     };
-    let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
+    let store = crate::config_source::config_store::ConfigStore::new(backend.clone())
+        .with_nudge(services.config_nudge.clone());
 
     let (base_blob, expected) = match store.load().await {
         Ok(Some(doc)) => (doc.blob, doc.version),
@@ -5062,7 +5069,8 @@ pub(crate) async fn handle_response_filter_put(
             "config plane unavailable: no state backend wired".into(),
         ));
     };
-    let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
+    let store = crate::config_source::config_store::ConfigStore::new(backend.clone())
+        .with_nudge(services.config_nudge.clone());
 
     let (base_blob, expected) = match store.load().await {
         Ok(Some(doc)) => (doc.blob, doc.version),

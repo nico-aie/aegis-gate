@@ -330,6 +330,11 @@ pub(crate) async fn admin_accept_loop(
     // so `services.rules` IS this instance — the same store the folded
     // rule-CRUD handlers and `GET /api/rules` read.
     rules: Arc<aegis_control::api::rules::RuleStore>,
+    // N2 (2026-06-11) — config-plane nudge bus. Stashed on
+    // `services.config_nudge` so the audit-mutated config write handlers
+    // publish `config:waf:bump` on a successful activate. `None` for
+    // single-node / cluster-off / nudge-disabled (interval polling only).
+    config_nudge: Option<Arc<dyn aegis_core::fleet::FleetBus>>,
 ) {
     let startup = aegis_control::health::StartupProbe::default();
     startup.mark_started();
@@ -573,6 +578,9 @@ pub(crate) async fn admin_accept_loop(
     );
     services.fleet_cache = fleet_cache;
     services.fleet_audit_cache = fleet_audit_cache;
+    // N2 — config-plane nudge: write handlers publish `config:waf:bump`
+    // on activate so peers (and this node) converge in ~ms, not a poll tick.
+    services.config_nudge = config_nudge;
     // SC-1 — expose the data-plane response cache stats to GET /api/cache/stats
     // via a JSON-returning closure (keeps aegis-control free of aegis-proxy
     // types). Empty pools map until an upstream opts into `cache:`.
