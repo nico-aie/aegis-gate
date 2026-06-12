@@ -6789,7 +6789,6 @@ function ZtUpstreamPoolsCard() {
 
   async function uploadCert(poolName) {
     if (!pem.trim()) { window.aegisToast('Paste the backend cert first', 'warn'); return; }
-    if (!identityReady) { window.aegisToast('Set the WAF client identity first', 'warn'); return; }
     const bundle = poolBundleName(poolName);
     setBusy(poolName);
     try {
@@ -6803,8 +6802,7 @@ function ZtUpstreamPoolsCard() {
         window.aegisToast(`Cert upload: ${body.message || body.error || ('HTTP ' + r.status)}`, 'err');
         return;
       }
-      await applyPoolMtls(poolName, { enabled: true, trust: bundle });
-      window.aegisToast(`Backend cert pinned to '${poolName}' · mTLS enabled`, 'ok');
+      window.aegisToast(`Backend cert saved for '${poolName}'`, 'ok');
       setPem(''); setOpenPool(null);
       api.reload && api.reload();
       trustApi.reload && trustApi.reload();
@@ -6906,8 +6904,8 @@ function ZtUpstreamPoolsCard() {
                     <p style={{ fontSize: 13, color: 'var(--ink-mute)', marginTop: 0, marginBottom: 10, lineHeight: 1.5 }}>
                       Paste the public certificate that{' '}
                       <strong style={{ color: 'var(--ink)' }}>{openPool}</strong>'s backend
-                      presents. It's stored securely and pinned to this pool — saving also
-                      turns mTLS on.
+                      presents. The cert is saved to the config plane — use the toggle
+                      in the table to enable mTLS once ready.
                     </p>
                     <textarea
                       value={pem}
@@ -6927,7 +6925,7 @@ function ZtUpstreamPoolsCard() {
                 {canUpload && (
                   <button
                     className="btn primary"
-                    disabled={isBusy || !pem.trim() || !identityReady}
+                    disabled={isBusy || !pem.trim()}
                     onClick={() => uploadCert(openPool)}
                   >
                     {isBusy ? 'Saving…' : 'Save'}
