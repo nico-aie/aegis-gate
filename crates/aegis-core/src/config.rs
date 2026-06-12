@@ -1544,21 +1544,12 @@ pub struct RouteConfig {
     pub failure_mode: Option<FailureModeConfig>,
     #[serde(default)]
     pub quota: Option<QuotaConfig>,
-    /// MTLS-T4 — required client-identity kinds. Empty (default)
-    /// means "any identity admitted" — including `Anonymous`,
-    /// preserving the current open-route behaviour.
-    /// Non-empty acts as an allow-list against
-    /// [`crate::ClientIdentity::kind()`]:
-    /// - `["mtls"]` — only mTLS-authenticated clients.
-    /// - `["spiffe"]` — only SPIFFE-id clients.
-    /// - `["mtls", "spiffe"]` — either authenticated kind.
-    /// - Including `"anonymous"` is equivalent to leaving the
-    ///   list empty; validation flags it as a likely typo.
-    ///
-    ///   Mismatches return 403 with an audit reason; the contract
-    ///   `action` is `block`, `rule_id = mtls_required`.
-    #[serde(default)]
-    pub auth_required: Vec<String>,
+    // 2026-06-12 — `auth_required` (MTLS-T4 per-route client-identity
+    // gate) removed: client mTLS is now owned by the unified Zero Trust
+    // downstream config (`zero_trust.downstream`: plane-level cert
+    // verification + SAN allowlist via `apply_to`), not per route. Old
+    // config docs that still carry `auth_required` parse fine — RouteConfig
+    // is not `deny_unknown_fields`, so the stale key is ignored.
     /// TCP-T1 — destination allowlist for CONNECT-method tunnels.
     /// Only consulted when this route's pool has
     /// `scheme: tcp`. Empty (default) = closed: every CONNECT

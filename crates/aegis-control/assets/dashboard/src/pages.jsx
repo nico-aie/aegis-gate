@@ -4747,15 +4747,14 @@ function PageTierConfig() {
                   Routes assigned to <span className="mono">{selected.name}</span> ({routesForSelected.length})
                 </div>
                 <table className="tbl tbl-compact">
-                  <thead><tr><th>Route ID</th><th>Host</th><th>Path</th><th>Match</th><th>Methods</th><th>Upstream</th><th title="MTLS-T11 — required client-identity kinds">Auth</th></tr></thead>
+                  <thead><tr><th>Route ID</th><th>Host</th><th>Path</th><th>Match</th><th>Methods</th><th>Upstream</th></tr></thead>
                   <tbody>
                     {routesForSelected.length === 0 && (
-                      <tr><td colSpan={7} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
+                      <tr><td colSpan={6} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
                         No routes assigned to this tier.
                       </td></tr>
                     )}
                     {routesForSelected.map(r => {
-                      const auth = r.auth_required || [];
                       return (
                         <tr key={r.id}>
                           <td className="mono">{r.id}</td>
@@ -4764,22 +4763,6 @@ function PageTierConfig() {
                           <td><span className="pill neutral">{r.match_type}</span></td>
                           <td className="mono dim">{r.methods.length === 0 ? 'ANY' : r.methods.join(', ')}</td>
                           <td className="mono">{r.upstream}</td>
-                          <td>
-                            {auth.length === 0 ? (
-                              <span className="pill" style={{ opacity: 0.65 }} title="Any identity admitted (default open)">open</span>
-                            ) : (
-                              auth.map(k => (
-                                <span
-                                  key={k}
-                                  className={`pill ${k === 'mtls' ? 'ok' : 'warn'}`}
-                                  style={{ marginRight: 4, fontSize: 10 }}
-                                  title={`auth_required includes "${k}" — only ${k} clients are admitted`}
-                                >
-                                  {k}
-                                </span>
-                              ))
-                            )}
-                          </td>
                         </tr>
                       );
                     })}
@@ -13673,13 +13656,6 @@ function RoutesTable({ poolNames, routesApi, pools, health, onEditPool, onDelete
                           ? <span className="pill" style={{ fontSize: 10 }}>{t}</span>
                           : <span style={{ color: 'var(--ink-dim)' }}>low</span>;
                       })()}</div>
-                      <div style={{ marginTop: 2 }}>
-                        {(r.auth_required || []).length === 0
-                          ? <span style={{ color: 'var(--ink-dim)' }}>open</span>
-                          : (r.auth_required || []).map(a => (
-                            <span key={a} className="pill" style={{ fontSize: 9, padding: '0 6px', marginRight: 3 }}>{a}</span>
-                          ))}
-                      </div>
                     </td>
                     <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }} onClick={e => e.stopPropagation()}>
                       <button className="btn btn-sm" onClick={() => openEdit(r)}>Edit</button>{' '}
@@ -13848,11 +13824,10 @@ function tlsFromScheme(scheme, fallbackTls) {
 // builder instead of two that drift) and the audit chain
 // honest (each pool create is its own `POOL_UPSERT` event).
 
-// Form-shape helpers — `methods` and `auth_required` are
-// **arrays** in the form draft so the checkbox UI can read /
-// write them naturally. `routeBodyFromDraft` accepts either
-// shape (legacy comma-string OR fresh array) so older callers
-// keep working.
+// Form-shape helpers — `methods` is an **array** in the form draft so
+// the checkbox UI can read / write it naturally. `routeBodyFromDraft`
+// accepts either shape (legacy comma-string OR fresh array) so older
+// callers keep working.
 // Translate the legacy "catch_all" tier name (still accepted by the
 // backend as a serde alias) into the canonical "low" so the modal
 // dropdown's selected-value logic picks the right option.
@@ -13869,7 +13844,6 @@ function emptyRouteDraft() {
     methods: [],
     upstream: '',
     tier_override: 'low',
-    auth_required: [],
     default: false,
     enabled: true,
     // 2026-05-12 — strip the route prefix on forward by default.
@@ -13887,7 +13861,6 @@ function routeToDraft(r) {
     methods: r.methods || [],
     upstream: r.upstream || '',
     tier_override: normalizeTier(r.tier_override),
-    auth_required: r.auth_required || [],
     default: !!r.default,
     enabled: r.enabled !== false, // default to true if missing
     // 2026-05-12 — `strip_prefix` defaults to `true` server-side
@@ -13905,7 +13878,6 @@ function routeBodyFromDraft(d) {
     return a.map(s => s.trim()).filter(Boolean).map(s => lc ? s.toLowerCase() : s.toUpperCase());
   };
   const methods = toArray(d.methods, false);
-  const auth_required = toArray(d.auth_required, true);
   const body = {
     id: d.id.trim(),
     path: d.path.trim() || '/',
@@ -13923,7 +13895,6 @@ function routeBodyFromDraft(d) {
   // (defaulting to 'low'), so always send it. Backend accepts
   // critical | high | medium | low (with catch_all kept as alias).
   if (d.tier_override) body.tier_override = d.tier_override;
-  if (auth_required.length > 0) body.auth_required = auth_required;
   return body;
 }
 
@@ -13932,10 +13903,6 @@ function routeBodyFromDraft(d) {
 // Operators rarely need anything else; if they do, fall back to
 // editing YAML.
 const ROUTE_METHOD_CHOICES = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'];
-const ROUTE_AUTH_CHOICES = [
-  ['mtls',      'mTLS — require an mTLS-authenticated client'],
-  ['anonymous', 'Anonymous — admit unauthenticated clients (note: making the route public)'],
-];
 
 function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, onCancel, busy, saveError, clearSaveError, cfgReload }) {
   const [d, setD] = useStateP(() => ({
@@ -13943,9 +13910,6 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
     methods: typeof initial.methods === 'string'
       ? initial.methods.split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
       : (initial.methods || []),
-    auth_required: typeof initial.auth_required === 'string'
-      ? initial.auth_required.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
-      : (initial.auth_required || []),
   }));
   const isAdd = mode === 'add';
   const idClash = isAdd && existingIds.includes(d.id.trim());
@@ -13974,8 +13938,7 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
   const [showAdvanced, setShowAdvanced] = useStateP(
     !isAdd && (
       (d.match_type && d.match_type !== 'prefix') ||
-      d.tier_override ||
-      (d.auth_required && d.auth_required.length > 0)
+      d.tier_override
     )
   );
 
@@ -14224,30 +14187,9 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
                   </select>
                 </div>
               </div>
-              <div className="form-row">
-                <label style={{ fontSize: 11 }}>
-                  Required client identity{' '}
-                  <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>
-                    (none = open route)
-                  </span>
-                </label>
-                <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
-                  {ROUTE_AUTH_CHOICES.map(([k]) => {
-                    const on = (d.auth_required || []).includes(k);
-                    return (
-                      <button
-                        key={k}
-                        type="button"
-                        onClick={() => toggleSet('auth_required', k)}
-                        className={`pill ${on ? 'ok' : 'neutral'}`}
-                        style={{ fontSize: 11, padding: '3px 10px', cursor: 'pointer' }}
-                      >
-                        {on && '✓ '}{k}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
+              {/* 2026-06-12 — per-route "Required client identity"
+                  (auth_required) removed; client mTLS is now owned by the
+                  unified Zero Trust page (plane-level cert verification). */}
 
               {/* PR2 — default + enabled toggles. */}
               <div className="form-row" style={{ display: 'flex', gap: 16, alignItems: 'flex-start', marginTop: 8 }}>
