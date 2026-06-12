@@ -541,6 +541,7 @@ pub fn default_detectors_with(
         // strict (any external key-set URL flags).
         Box::new(jwt_inspection::JwtInspectionDetector::new(
             cfg.jwt_inspection.jku_allowed_domains.clone(),
+            cfg.jwt_inspection.flag_privileged_roles,
         )),
     ]
 }

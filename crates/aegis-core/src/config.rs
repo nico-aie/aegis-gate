@@ -3854,6 +3854,17 @@ pub struct JwtInspectionConfig {
     pub enabled: bool,
     #[serde(default)]
     pub jku_allowed_domains: Vec<String>,
+    /// 2026-06-12 (Phase A3) — opt-in privileged-role claim heuristic.
+    /// When `true`, a decoded payload whose `role`/`scope` claims a
+    /// privileged value (`admin`, `root`, …) emits a low-score
+    /// (`jwt_role_priv`, 20) **observe** signal. **Default `false`** —
+    /// a legitimate admin carries `role: admin` on every request, so
+    /// this is noisy by nature; operators turn it on to observe before
+    /// deciding to promote. It never single-blocks (20 is below every
+    /// per-request tier gate; the cumulative model is max-per-request +
+    /// decay, so a steady-state admin sits at ~20 and never escalates).
+    #[serde(default)]
+    pub flag_privileged_roles: bool,
 }
 
 impl Default for JwtInspectionConfig {
@@ -3861,6 +3872,7 @@ impl Default for JwtInspectionConfig {
         Self {
             enabled: true,
             jku_allowed_domains: Vec::new(),
+            flag_privileged_roles: false,
         }
     }
 }

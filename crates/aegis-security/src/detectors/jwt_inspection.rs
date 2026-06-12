@@ -49,18 +49,25 @@ const MAX_ENCODED_HEADER_BYTES: usize = 16 * 1024;
 /// skew artifact; it's a hand-edited token.
 const TEN_YEARS_SECS: u64 = 315_360_000;
 
-/// JWT attack-shape detector. Holds the `jku`/`x5u` host allowlist;
-/// otherwise stateless.
+/// JWT attack-shape detector. Holds the `jku`/`x5u` host allowlist +
+/// the opt-in role-heuristic flag; otherwise stateless.
 pub struct JwtInspectionDetector {
     /// Hosts a `jku` / `x5u` URL may reference. Empty = strict mode
     /// (any external key-set URL flags). Entries are literal hostnames
     /// or `*.example.com` globs.
     jku_allowed_domains: Vec<String>,
+    /// 2026-06-12 (A3) — opt-in privileged-role heuristic. Default off
+    /// (a legit admin carries `role:admin` every request); operators
+    /// turn it on to observe before promoting.
+    flag_privileged_roles: bool,
 }
 
 impl JwtInspectionDetector {
-    pub fn new(jku_allowed_domains: Vec<String>) -> Self {
-        Self { jku_allowed_domains }
+    pub fn new(jku_allowed_domains: Vec<String>, flag_privileged_roles: bool) -> Self {
+        Self {
+            jku_allowed_domains,
+            flag_privileged_roles,
+        }
     }
 }
 
@@ -220,13 +227,26 @@ impl JwtInspectionDetector {
             }
         }
 
-        // RULE jwt_time_forged — hand-edited time claims in the payload.
+        // Payload-side rules — decode once, then run time + role checks.
         if let Some(payload) = decode_json_object(payload_part) {
+            // RULE jwt_time_forged — hand-edited time claims.
             if time_claims_forged(&payload, now) {
                 signals.push(Signal {
                     score: scores::jwt_inspection::TIME_FORGED,
                     tag: "jwt_time_forged".into(),
                     field: "jwt:exp".into(),
+                });
+            }
+
+            // RULE jwt_role_priv — opt-in privileged-role heuristic.
+            // Observe-only (low score, never single-blocks). Off by
+            // default because a legit admin claims `role:admin` every
+            // request.
+            if self.flag_privileged_roles && claims_privileged_role(&payload) {
+                signals.push(Signal {
+                    score: scores::jwt_inspection::ROLE_PRIV,
+                    tag: "jwt_role_priv".into(),
+                    field: "jwt:role".into(),
                 });
             }
         }
@@ -358,6 +378,41 @@ fn time_claims_forged(payload: &serde_json::Map<String, Value>, now: u64) -> boo
     matches!((iat, nbf), (Some(0), Some(0)))
 }
 
+/// Privileged-role names with no benign reason to appear for a normal
+/// account. Matched case-insensitively against the `role` claim and
+/// against each space-delimited token of the `scope` claim.
+const PRIVILEGED_ROLES: &[&str] = &[
+    "admin",
+    "administrator",
+    "superadmin",
+    "superuser",
+    "root",
+    "system",
+];
+
+/// True when the payload's `role` or `scope` claim names a privileged
+/// value. `role` is matched as a whole (case-insensitive); `scope` is
+/// split on whitespace and each token matched, since OAuth scopes are
+/// space-delimited lists.
+fn claims_privileged_role(payload: &serde_json::Map<String, Value>) -> bool {
+    if let Some(role) = payload.get("role").and_then(Value::as_str) {
+        let r = role.trim().to_ascii_lowercase();
+        if PRIVILEGED_ROLES.contains(&r.as_str()) {
+            return true;
+        }
+    }
+    if let Some(scope) = payload.get("scope").and_then(Value::as_str) {
+        let lc = scope.to_ascii_lowercase();
+        if lc
+            .split_whitespace()
+            .any(|tok| PRIVILEGED_ROLES.contains(&tok))
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Current Unix time in seconds. Falls back to 0 if the clock is set
 /// before the epoch (the `exp`/`iat` windows degrade gracefully).
 fn unix_now() -> u64 {
@@ -407,15 +462,25 @@ mod tests {
         signals_for_cookie_with(token, vec![])
     }
 
-    /// Run the detector with an explicit `jku` allowlist.
+    /// Run the detector with an explicit `jku` allowlist (role
+    /// heuristic off).
     fn signals_for_cookie_with(token: &str, allowlist: Vec<String>) -> Vec<Signal> {
+        run_cookie(token, allowlist, false)
+    }
+
+    /// Run the detector with the privileged-role heuristic toggled.
+    fn signals_for_cookie_role(token: &str, flag_privileged_roles: bool) -> Vec<Signal> {
+        run_cookie(token, vec![], flag_privileged_roles)
+    }
+
+    fn run_cookie(token: &str, allowlist: Vec<String>, flag_roles: bool) -> Vec<Signal> {
         let mut h = http::HeaderMap::new();
         h.insert("cookie", format!("sid={token}").parse().unwrap());
         let m = http::Method::GET;
         let u: http::Uri = "/".parse().unwrap();
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
-        JwtInspectionDetector::new(allowlist).inspect(&req)
+        JwtInspectionDetector::new(allowlist, flag_roles).inspect(&req)
     }
 
     fn has_tag(signals: &[Signal], tag: &str) -> bool {
@@ -530,7 +595,7 @@ mod tests {
         let u: http::Uri = "/".parse().unwrap();
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
-        assert!(JwtInspectionDetector::new(vec![]).inspect(&req).is_empty());
+        assert!(JwtInspectionDetector::new(vec![], false).inspect(&req).is_empty());
     }
 
     #[test]
@@ -540,7 +605,7 @@ mod tests {
         let u: http::Uri = "/".parse().unwrap();
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
-        assert!(JwtInspectionDetector::new(vec![]).inspect(&req).is_empty());
+        assert!(JwtInspectionDetector::new(vec![], false).inspect(&req).is_empty());
     }
 
     #[test]
@@ -574,7 +639,7 @@ mod tests {
         let u: http::Uri = "/".parse().unwrap();
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
-        assert!(has_tag(&JwtInspectionDetector::new(vec![]).inspect(&req), "jwt_alg_none"));
+        assert!(has_tag(&JwtInspectionDetector::new(vec![], false).inspect(&req), "jwt_alg_none"));
     }
 
     #[test]
@@ -586,7 +651,7 @@ mod tests {
         let u: http::Uri = "/".parse().unwrap();
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
-        assert!(has_tag(&JwtInspectionDetector::new(vec![]).inspect(&req), "jwt_alg_none"));
+        assert!(has_tag(&JwtInspectionDetector::new(vec![], false).inspect(&req), "jwt_alg_none"));
     }
 
     #[test]
@@ -597,7 +662,7 @@ mod tests {
         let u: http::Uri = "/".parse().unwrap();
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
-        assert!(JwtInspectionDetector::new(vec![]).inspect(&req).is_empty());
+        assert!(JwtInspectionDetector::new(vec![], false).inspect(&req).is_empty());
     }
 
     // ---- scoring -----------------------------------------------------
@@ -612,7 +677,7 @@ mod tests {
 
     #[test]
     fn id_is_stable() {
-        assert_eq!(JwtInspectionDetector::new(vec![]).id(), "jwt_inspection");
+        assert_eq!(JwtInspectionDetector::new(vec![], false).id(), "jwt_inspection");
     }
 
     // ---- unit: kid_is_malicious -------------------------------------
@@ -765,5 +830,85 @@ mod tests {
         assert!(domain_matches("*.example.com", "a.b.example.com"));
         assert!(!domain_matches("*.example.com", "example.com"));
         assert!(!domain_matches("a.com", "b.com"));
+    }
+
+    // ---- Phase A3: jwt_role_priv (opt-in heuristic) -----------------
+
+    #[test]
+    fn role_priv_flags_only_when_enabled() {
+        let t = tok2(r#"{"alg":"HS256"}"#, r#"{"user":"alice","role":"admin"}"#);
+        // Off by default → no signal.
+        assert!(!has_tag(&signals_for_cookie_role(&t, false), "jwt_role_priv"));
+        // Opt-in → flags.
+        assert!(has_tag(&signals_for_cookie_role(&t, true), "jwt_role_priv"));
+    }
+
+    macro_rules! role_priv_positive {
+        ($name:ident, $role:expr) => {
+            #[test]
+            fn $name() {
+                let t = tok2(r#"{"alg":"HS256"}"#, &format!(r#"{{"role":"{}"}}"#, $role));
+                assert!(
+                    has_tag(&signals_for_cookie_role(&t, true), "jwt_role_priv"),
+                    "expected jwt_role_priv for role={:?}",
+                    $role,
+                );
+            }
+        };
+    }
+    role_priv_positive!(role_admin, "admin");
+    role_priv_positive!(role_administrator, "administrator");
+    role_priv_positive!(role_superadmin, "superadmin");
+    role_priv_positive!(role_root, "root");
+    role_priv_positive!(role_system, "system");
+    role_priv_positive!(role_admin_upper, "ADMIN");
+
+    #[test]
+    fn role_priv_scope_token_flags() {
+        // OAuth space-delimited scope list containing a privileged token.
+        let t = tok2(r#"{"alg":"HS256"}"#, r#"{"scope":"read write admin"}"#);
+        assert!(has_tag(&signals_for_cookie_role(&t, true), "jwt_role_priv"));
+    }
+
+    #[test]
+    fn role_priv_normal_role_is_clean() {
+        for role in ["user", "member", "viewer", "guest", "customer"] {
+            let t = tok2(r#"{"alg":"HS256"}"#, &format!(r#"{{"role":"{role}"}}"#));
+            assert!(
+                !has_tag(&signals_for_cookie_role(&t, true), "jwt_role_priv"),
+                "false positive for role={role:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn role_priv_substring_does_not_flag() {
+        // `role` is matched whole — `administrator-readonly` is a
+        // distinct role and must not match `administrator`.
+        let t = tok2(r#"{"alg":"HS256"}"#, r#"{"role":"admin-readonly"}"#);
+        assert!(!has_tag(&signals_for_cookie_role(&t, true), "jwt_role_priv"));
+    }
+
+    #[test]
+    fn role_priv_emits_observe_score() {
+        let t = tok2(r#"{"alg":"HS256"}"#, r#"{"role":"admin"}"#);
+        let s = signals_for_cookie_role(&t, true);
+        let sig = s.iter().find(|s| s.tag == "jwt_role_priv").expect("signal");
+        assert_eq!(sig.score, 20, "role heuristic is observe-tier (never single-blocks)");
+    }
+
+    #[test]
+    fn claims_privileged_role_unit() {
+        let admin =
+            serde_json::from_str::<serde_json::Map<String, Value>>(r#"{"role":"admin"}"#).unwrap();
+        assert!(claims_privileged_role(&admin));
+        let scope = serde_json::from_str::<serde_json::Map<String, Value>>(
+            r#"{"scope":"openid profile root"}"#,
+        )
+        .unwrap();
+        assert!(claims_privileged_role(&scope));
+        let user =
+            serde_json::from_str::<serde_json::Map<String, Value>>(r#"{"role":"user"}"#).unwrap();
+        assert!(!claims_privileged_role(&user));
     }
 }

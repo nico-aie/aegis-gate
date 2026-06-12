@@ -171,6 +171,14 @@ pub mod jwt_inspection {
     /// one rung below the unambiguous-key shapes since a clock-skewed
     /// or oddly-issued legit token is conceivable.
     pub const TIME_FORGED: u32 = 70;
+    /// 2026-06-12 (Phase A3) — privileged-role claim heuristic
+    /// (`role`/`scope` = admin/root/…). **Opt-in** (config
+    /// `flag_privileged_roles`, default off) and observe-first: 20 is
+    /// below every per-request tier gate, so it never single-blocks; a
+    /// legit admin's steady `role:admin` stays at ~20 under the
+    /// max-per-request + decay cumulative model. Promotion = raise this
+    /// after traffic review (ideally gated on a second signal).
+    pub const ROLE_PRIV: u32 = 20;
 }
 
 pub mod ai {
@@ -412,6 +420,12 @@ pub const CATALOG: &[ScoreEntry] = &[
         tag: "jwt_time_forged",
         score: jwt_inspection::TIME_FORGED,
         note: "JWT payload time claims are forged — `exp` >10y out, `iat` >10y old, or `iat==0 && nbf==0` (epoch-forged).",
+    },
+    ScoreEntry {
+        class: "jwt_inspection",
+        tag: "jwt_role_priv",
+        score: jwt_inspection::ROLE_PRIV,
+        note: "JWT payload claims a privileged `role`/`scope` (admin/root/…). Opt-in heuristic (`jwt_inspection.flag_privileged_roles`); observe-only — never single-blocks.",
     },
 ];
 
