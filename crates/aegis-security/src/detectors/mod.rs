@@ -806,6 +806,33 @@ mod tests {
         assert_eq!(d.len(), 13);
     }
 
+    /// Drift guard (VELOCITY_SEQUENCE_BUG_REPORT, 2026-06-12). Every
+    /// detector the proxy registers must have an `id()` that maps back
+    /// to a `DetectorClass`; otherwise `mask.is_enabled_id(d.id())`
+    /// falls through to the unknown-id → `true` path and the detector
+    /// runs UNCONDITIONALLY, silently bypassing the operator's mask.
+    /// (That was the velocity bug: `id()` was "velocity_sequence" but
+    /// the class is "velocity".) This fails the build the next time an
+    /// `id()` drifts from its class.
+    #[test]
+    fn all_registered_detectors_map_to_a_class() {
+        // Force-enable the opt-in stateful detectors so the canary
+        // constructor registers all of them (velocity, behavior_signals).
+        let cfg = aegis_core::config::DetectorsConfig {
+            behavior_signals: aegis_core::config::DetectorToggle { enabled: true },
+            velocity: aegis_core::config::DetectorToggle { enabled: true },
+            ..aegis_core::config::DetectorsConfig::default()
+        };
+        let canary_paths = canary::CanaryPaths::new(&[]);
+        for d in default_detectors_with_canary(&cfg, &canary_paths) {
+            assert!(
+                DetectorClass::from_id(d.id()).is_some(),
+                "detector '{}' has no matching DetectorClass — mask gating silently no-ops",
+                d.id(),
+            );
+        }
+    }
+
     #[test]
     fn clean_request_no_signals() {
         let detectors = default_detectors();

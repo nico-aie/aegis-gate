@@ -224,7 +224,17 @@ impl Default for VelocitySequenceDetector {
 
 impl Detector for VelocitySequenceDetector {
     fn id(&self) -> &'static str {
-        "velocity_sequence"
+        // MUST equal `DetectorClass::Velocity::as_str()` ("velocity").
+        // The dispatcher gates each detector with
+        // `mask.is_enabled_id(d.id())`, which maps the id back to a
+        // class; a mismatch makes `from_id` return `None` and the
+        // detector runs UNCONDITIONALLY (unknown-id fallback), bypassing
+        // the mask entirely. Was "velocity_sequence" → the Velocity mask
+        // bit never gated it, so it kept emitting `velocity_*` blocks
+        // even with all detectors disabled (VELOCITY_SEQUENCE_BUG_REPORT,
+        // 2026-06-12). The `all_registered_detectors_map_to_a_class`
+        // drift-guard test in `detectors/mod.rs` now enforces this.
+        "velocity"
     }
 
     fn inspect(&self, req: &RequestView<'_>) -> Vec<Signal> {
@@ -421,8 +431,10 @@ mod tests {
     }
 
     #[test]
-    fn id_is_velocity_sequence() {
-        assert_eq!(VelocitySequenceDetector::new().id(), "velocity_sequence");
+    fn id_matches_velocity_class() {
+        // Must equal DetectorClass::Velocity::as_str() so the mask gates
+        // it — see the comment on `id()` and the drift-guard test.
+        assert_eq!(VelocitySequenceDetector::new().id(), "velocity");
     }
 
     #[test]
