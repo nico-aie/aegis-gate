@@ -1141,25 +1141,34 @@ pub(crate) fn admin_router(
         // Zero Trust (P3) — upstream (WAF-as-client) read views.
         // Identity returns PUBLIC cert metadata only — never the key.
         "/api/zero-trust/upstream/identity" => {
-            // Overlay the LIVE rotated cert (P5 hot rotation) so the
-            // page reflects a rotation without a restart — the boot
-            // `cfg` snapshot would otherwise show the stale identity.
-            let mut effective_cfg = cfg.clone();
+            // If the rotation task or the console PUT has recorded a live cert
+            // PEM, build the view directly from it. This is the correct path
+            // for state-sourced identities uploaded via the console:
+            //
+            //   * The old overlay approach set `id.cert_pem` on the boot cfg
+            //     but `from_config` only reads `cert_pem` when `source == State`.
+            //     When the boot cfg has `source: file` (or no zero_trust block
+            //     at all — first-ever upload), the overlay was silently ignored
+            //     and the download still returned the old cert/file.
+            //
+            //   * `from_pem` constructs the view directly, always reflecting
+            //     whatever the console last wrote — regardless of boot config.
             let rot = crate::upstream::rotation::status();
             if let Some(pem) = rot.identity_cert_pem {
-                if let Some(id) = effective_cfg
-                    .zero_trust
-                    .as_mut()
-                    .and_then(|z| z.upstream_identity.as_mut())
-                {
-                    id.cert_pem = Some(pem);
-                }
+                return json_body_response(
+                    200,
+                    aegis_control::api::zero_trust::UpstreamIdentityView::from_pem(pem).render(),
+                    "no-cache",
+                );
             }
+            // No live rotation yet (server just started, or identity was never
+            // uploaded via the console). Fall back to the boot config — this
+            // handles file-source identities and state-sourced ones that were
+            // materialized at boot (rotation task picked them up within 5 s).
             json_body_response(
                 200,
-                aegis_control::api::zero_trust::UpstreamIdentityView::from_config(&effective_cfg)
-                    .render(),
-                "private, max-age=5",
+                aegis_control::api::zero_trust::UpstreamIdentityView::from_config(cfg).render(),
+                "no-cache",
             )
         }
         // P5 — hot-rotation status (generation + applied timestamp) so

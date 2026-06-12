@@ -168,7 +168,12 @@ pub async fn admit(
 
     if let Some(id) = try_session_auth(req, cfg, auth_sessions).await {
         // Step 7 — CSRF on state-changing methods.
-        if requires_write_scope(method) {
+        // Browser-initiated reporting endpoints (CSP `report-uri`) are
+        // exempt: the browser sends these automatically and never adds the
+        // `x-csrf-token` header, so CSRF-token validation would always fail.
+        // An attacker can't cause meaningful harm by forging a CSP report
+        // (the session is still validated above).
+        if requires_write_scope(method) && !is_csrf_exempt(path) {
             match csrf::validate(
                 extract_cookie(req, "aegis_csrf"),
                 req.headers()
@@ -331,6 +336,15 @@ fn is_open_endpoint(method: &Method, path: &str, peer: &SocketAddr) -> bool {
         return matches!(path, "/admin/login" | "/admin/logout");
     }
     false
+}
+
+/// Endpoints that are CSRF-exempt even for state-changing methods.
+/// These are browser-initiated reports (e.g. CSP `report-uri`) where the
+/// browser never adds the `x-csrf-token` header but the session cookie IS
+/// present. An attacker can't cause harm by forging these — the payload
+/// is observability data, not a privileged mutation.
+fn is_csrf_exempt(path: &str) -> bool {
+    matches!(path, "/api/csp/report")
 }
 
 fn requires_write_scope(method: &Method) -> bool {
@@ -496,6 +510,14 @@ mod tests {
         assert!(!is_open_endpoint(&Method::PUT, "/api/detectors", &p));
         assert!(!is_open_endpoint(&Method::POST, "/api/rules", &p));
         assert!(!is_open_endpoint(&Method::DELETE, "/api/rules/abc", &p));
+    }
+
+    #[test]
+    fn csp_report_is_csrf_exempt() {
+        assert!(is_csrf_exempt("/api/csp/report"));
+        // Other POST endpoints are NOT exempt.
+        assert!(!is_csrf_exempt("/api/routes"));
+        assert!(!is_csrf_exempt("/api/zero-trust/upstream/identity"));
     }
 
     #[test]

@@ -1390,15 +1390,15 @@ pub(crate) async fn handle_mtls_mode_put(
 // CSRF-gated, and gated behind the same `allow_ca_upload` capability
 // as the downstream CA-bundle upload.
 //
-// Reference-only (no envelope encryption): the body carries the
-// PUBLIC cert chain + a *reference* to the private key (`key_ref`),
-// never the key bytes. We reject a PRIVATE KEY block in the cert field
-// defensively. Persisted via `StateBackend::cas_set` under
+// Accepts inline key PEM (`key_pem`) for console uploads, or a
+// file/secret reference (`key_ref`) for file-backed identities.
+// Persisted via `StateBackend::cas_set` under
 // `aegis:zt:upstream:identity` so the fleet converges; nodes
-// materialize the PUBLIC cert at boot (`run::run`). The audit chain
-// records PUBLIC cert metadata only — never the key reference value.
+// materialize at boot (`run::run`). The audit chain records PUBLIC
+// cert metadata only.
 //
-// Body: `{"cert_pem": "<PUBLIC chain>", "key_ref": "<path|secret-ref>"}`.
+// Body: `{"cert_pem": "<PUBLIC chain>", "key_pem": "<PEM>"}` or
+//       `{"cert_pem": "<PUBLIC chain>", "key_ref": "<path|secret-ref>"}`.
 pub(crate) async fn handle_zt_upstream_identity_put(
     req: hyper::Request<hyper::body::Incoming>,
     services: &aegis_control::dashboard_services::DashboardServices,
@@ -1437,12 +1437,12 @@ pub(crate) async fn handle_zt_upstream_identity_put(
                     400,
                     &serde_json::json!({
                         "error": "invalid_body",
-                        "message": format!("expected JSON {{cert_pem, key_ref}}: {e}"),
+                        "message": format!("expected JSON {{cert_pem, key_pem|key_ref}}: {e}"),
                     }),
                 )
             }
         };
-    // Validate PUBLIC cert parses + key_ref present + no key leak.
+    // Validate: PUBLIC cert parses, at least one of key_pem/key_ref set, no key leak.
     let certs = match aegis_control::api::zero_trust::validate_identity_upload(&upload) {
         Ok(c) => c,
         Err(e) => {
@@ -1455,7 +1455,8 @@ pub(crate) async fn handle_zt_upstream_identity_put(
 
     let record = aegis_core::config::UpstreamIdentityRecord {
         cert_pem: upload.cert_pem.clone(),
-        key_ref: upload.key_ref.clone(),
+        key_pem: upload.key_pem.clone(),
+        key_ref: upload.key_ref.clone().unwrap_or_default(),
     };
     let new_bytes = match serde_json::to_vec(&record) {
         Ok(b) => b,
@@ -1468,8 +1469,7 @@ pub(crate) async fn handle_zt_upstream_identity_put(
         }
     };
 
-    // Audit before/after — PUBLIC cert metadata only; the key
-    // reference value is NEVER projected into the chain.
+    // Audit before/after — PUBLIC cert metadata only.
     let before_existed = state
         .get(aegis_core::config::UPSTREAM_IDENTITY_STATE_KEY)
         .await
@@ -1479,7 +1479,7 @@ pub(crate) async fn handle_zt_upstream_identity_put(
     let before = serde_json::json!({ "configured": before_existed });
     let after = serde_json::json!({
         "configured": true,
-        "key_ref_set": true,
+        "key_source": if upload.key_pem.is_some() { "inline_pem" } else { "key_ref" },
         "certificates": certs.clone(),
     });
 
@@ -1522,16 +1522,22 @@ pub(crate) async fn handle_zt_upstream_identity_put(
         .await;
 
     match outcome {
-        Ok(_) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "request_id": pre.request_id,
-                "configured": true,
-                "certificates": certs,
-                "note": "Stored in the config plane (public cert + key reference). Nodes materialize the PUBLIC cert at boot; restart to present the new identity (hot rotation lands in P5).",
-            }),
-        ),
+        Ok(_) => {
+            // Immediately update the in-memory rotation status so the GET
+            // endpoint reflects the new cert without waiting for the next
+            // poll cycle (≤5 s). The rotation task will also pick it up on
+            // its next tick and apply it to the pool registry.
+            crate::upstream::rotation::notify_identity_updated(Some(upload.cert_pem.clone()));
+            json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "request_id": pre.request_id,
+                    "configured": true,
+                    "certificates": certs,
+                }),
+            )
+        }
         Err(e) => mutation_error_response(e),
     }
 }

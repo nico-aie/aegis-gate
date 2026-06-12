@@ -20,6 +20,8 @@ pub mod mode;
 
 use std::path::Path;
 
+use std::io::BufReader;
+
 use serde::Serialize;
 
 use aegis_core::config::{UpstreamIdentitySource, WafConfig};
@@ -114,6 +116,28 @@ impl UpstreamIdentityView {
         }
     }
 
+    /// Build a view directly from a PUBLIC cert PEM that was uploaded via
+    /// the console or materialized by the hot-rotation task. Used by the GET
+    /// handler when `rotation::status().identity_cert_pem` is set — avoids
+    /// the boot-config overlay path which breaks when the boot config has no
+    /// `zero_trust.upstream_identity` block (first-ever upload) or has
+    /// `source: file` (which makes `from_config` read from disk, ignoring the
+    /// newly uploaded PEM).
+    pub fn from_pem(pem: String) -> Self {
+        let (certificates, error) = match parse_ca_bundle_bytes(pem.as_bytes()) {
+            Ok(certs) => (certs, None),
+            Err(e) => (Vec::new(), Some(e.to_string())),
+        };
+        Self {
+            configured: true,
+            source: "state",
+            cert_path: None,
+            cert_pem: Some(pem),
+            certificates,
+            error,
+        }
+    }
+
     pub fn render(&self) -> String {
         serde_json::to_string(self).unwrap_or_else(|_| String::from("{}"))
     }
@@ -123,37 +147,70 @@ impl UpstreamIdentityView {
 // PUT /api/zero-trust/upstream/identity — store the shared fleet identity
 // ---------------------------------------------------------------------------
 
-/// Parsed + validated PUT body for storing the shared upstream
-/// identity. PUBLIC cert + a *reference* to the private key — the key
-/// bytes are never accepted here (reference-only, P4).
+/// Parsed + validated PUT body for storing the shared upstream identity.
+/// The private key can be provided as inline PEM (`key_pem`) or as a
+/// server-side file/secret reference (`key_ref`). At least one must be set.
 #[derive(Debug, serde::Deserialize)]
 pub struct IdentityUploadRequest {
     /// PUBLIC client-cert chain PEM (the shared fleet identity).
     pub cert_pem: String,
-    /// Reference to the private key (path / `${secret:...}`). Never
-    /// the key bytes.
-    pub key_ref: String,
+    /// Inline private-key PEM, when the operator uploads the key file
+    /// via the console. Takes precedence over `key_ref` when both are set.
+    #[serde(default)]
+    pub key_pem: Option<String>,
+    /// Reference to the private key (path / `${secret:...}`), for
+    /// file-based or secret-ref key sources. Used when `key_pem` is absent.
+    #[serde(default)]
+    pub key_ref: Option<String>,
 }
 
-/// Validate an identity upload before it is persisted: the cert must
-/// be parseable PEM with ≥1 certificate, and the key reference must
-/// be non-empty. Returns the parsed PUBLIC cert summaries (for the
-/// audit `after` projection + the response preview) or a stable error
-/// string. Pure — no IO, no key material.
+/// Validate an identity upload before it is persisted. Returns the parsed
+/// PUBLIC cert summaries (for the audit `after` projection + preview) or a
+/// stable error string. Pure — no IO.
 pub fn validate_identity_upload(
     req: &IdentityUploadRequest,
 ) -> Result<Vec<CaCertSummary>, String> {
-    if req.key_ref.trim().is_empty() {
-        return Err("key_ref must be a non-empty reference to the private key".into());
+    // At least one of key_pem / key_ref must be present and non-empty.
+    let has_key_pem = req.key_pem.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+    let has_key_ref = req.key_ref.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+    if !has_key_pem && !has_key_ref {
+        return Err("either key_pem (inline PEM) or key_ref (file/secret path) must be provided".into());
     }
-    // Defense in depth: a private key block must never ride in on the
-    // PUBLIC cert field. Reject loudly rather than persisting it.
+    // Defense in depth: private key material must never ride in on the
+    // PUBLIC cert field.
     if req.cert_pem.contains("PRIVATE KEY") {
         return Err(
             "cert_pem must contain only the PUBLIC certificate chain — \
-             a PRIVATE KEY block was found (the key stays a key_ref, never stored)"
+             a PRIVATE KEY block was found"
                 .into(),
         );
+    }
+    // If inline key PEM was provided, try to parse it so we surface a
+    // clear error message rather than a silent failure later at
+    // client-build time.
+    if let Some(key_pem) = req.key_pem.as_deref() {
+        // Guard: a cert block in the key field means the operator swapped
+        // the two files in the modal.
+        if key_pem.contains("BEGIN CERTIFICATE") {
+            return Err(
+                "key_pem contains a CERTIFICATE block — it looks like the \
+                 Public Certificate and Private Key files were swapped"
+                    .into(),
+            );
+        }
+        let mut reader = BufReader::new(key_pem.as_bytes());
+        match rustls_pemfile::private_key(&mut reader) {
+            Ok(Some(_)) => {} // valid private key
+            Ok(None) => {
+                return Err(
+                    "key_pem does not contain a recognized private key — \
+                     expected a PEM block starting with \
+                     BEGIN PRIVATE KEY, BEGIN RSA PRIVATE KEY, or BEGIN EC PRIVATE KEY"
+                        .into(),
+                )
+            }
+            Err(e) => return Err(format!("key_pem parse error: {e}")),
+        }
     }
     parse_ca_bundle_bytes(req.cert_pem.as_bytes()).map_err(|e| e.to_string())
 }
@@ -332,19 +389,46 @@ MIIBhTCCASugAwIBAgIUO0nGZ7Wm0Q6kJ8Yk0Y5Q0Z0Q0wwCgYIKoZIzj0EAwIw
     }
 
     #[test]
+    fn validate_identity_upload_rejects_missing_key() {
+        // Neither key_pem nor key_ref set.
+        let req = IdentityUploadRequest {
+            cert_pem: TEST_CERT_PEM.into(),
+            key_pem: None,
+            key_ref: None,
+        };
+        let err = validate_identity_upload(&req).unwrap_err();
+        assert!(err.contains("key_pem") || err.contains("key_ref"), "got: {err}");
+    }
+
+    #[test]
     fn validate_identity_upload_rejects_empty_key_ref() {
         let req = IdentityUploadRequest {
             cert_pem: TEST_CERT_PEM.into(),
-            key_ref: "   ".into(),
+            key_pem: None,
+            key_ref: Some("   ".into()),
         };
-        assert!(validate_identity_upload(&req).unwrap_err().contains("key_ref"));
+        let err = validate_identity_upload(&req).unwrap_err();
+        assert!(err.contains("key_pem") || err.contains("key_ref"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_identity_upload_accepts_key_pem() {
+        let req = IdentityUploadRequest {
+            cert_pem: TEST_CERT_PEM.into(),
+            key_pem: Some("-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n".into()),
+            key_ref: None,
+        };
+        // cert_pem is valid; key_pem just needs to be non-empty — we don't
+        // parse the key here (that happens at client-build time in tls.rs).
+        assert!(validate_identity_upload(&req).is_ok());
     }
 
     #[test]
     fn validate_identity_upload_rejects_private_key_in_cert_field() {
         let req = IdentityUploadRequest {
             cert_pem: "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n".into(),
-            key_ref: "/run/secrets/waf-client.key".into(),
+            key_pem: None,
+            key_ref: Some("/run/secrets/waf-client.key".into()),
         };
         assert!(validate_identity_upload(&req)
             .unwrap_err()
@@ -355,7 +439,8 @@ MIIBhTCCASugAwIBAgIUO0nGZ7Wm0Q6kJ8Yk0Y5Q0Z0Q0wwCgYIKoZIzj0EAwIw
     fn validate_identity_upload_rejects_garbage_pem() {
         let req = IdentityUploadRequest {
             cert_pem: "not a pem at all".into(),
-            key_ref: "/run/secrets/waf-client.key".into(),
+            key_pem: None,
+            key_ref: Some("/run/secrets/waf-client.key".into()),
         };
         assert!(validate_identity_upload(&req).is_err());
     }

@@ -66,6 +66,15 @@ pub fn status() -> RotationStatus {
     (**status_cell().load()).clone()
 }
 
+/// Immediately update the rotation status after a console PUT to
+/// `/api/zero-trust/upstream/identity`, so the GET endpoint reflects
+/// the new cert without waiting for the next poll cycle (≤5 s).
+/// Called from `admin_mutate::handle_zt_upstream_identity_put` on
+/// a successful `cas_set`.
+pub fn notify_identity_updated(cert_pem: Option<String>) {
+    record_applied(cert_pem);
+}
+
 fn record_applied(identity_cert_pem: Option<String>) {
     let prev = status_cell().load();
     status_cell().store(Arc::new(RotationStatus {
@@ -126,8 +135,9 @@ pub async fn read_material(
                 .map(|rec| UpstreamIdentityConfig {
                     source: UpstreamIdentitySource::State,
                     cert_path: None,
-                    key_ref: Some(rec.key_ref),
+                    key_ref: if rec.key_ref.is_empty() { None } else { Some(rec.key_ref) },
                     cert_pem: Some(rec.cert_pem),
+                    key_pem: rec.key_pem,
                 }),
             _ => None,
         }
@@ -332,6 +342,7 @@ state: {{ backend: in_memory }}
     async fn store_identity(state: &Arc<dyn StateBackend>, cert: &str) {
         let rec = UpstreamIdentityRecord {
             cert_pem: cert.into(),
+            key_pem: None,
             key_ref: "/run/secrets/waf.key".into(),
         };
         let bytes = serde_json::to_vec(&rec).unwrap();

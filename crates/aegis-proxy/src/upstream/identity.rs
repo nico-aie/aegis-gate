@@ -93,9 +93,13 @@ pub async fn materialize_zero_trust_state(
             .as_mut()
             .and_then(|z| z.upstream_identity.as_mut())
         {
-            // PUBLIC cert materialized in-memory; the key stays a ref.
+            // PUBLIC cert materialized in-memory. Key is inline PEM
+            // when uploaded via the console, otherwise a file ref.
             id.cert_pem = Some(rec.cert_pem);
-            id.key_ref = Some(rec.key_ref);
+            id.key_pem = rec.key_pem;
+            if !rec.key_ref.is_empty() {
+                id.key_ref = Some(rec.key_ref);
+            }
         }
         changed = true;
     }
@@ -232,6 +236,7 @@ state: {{ backend: in_memory }}
         let state: Arc<dyn StateBackend> = Arc::new(InMemoryBackend::new());
         let rec = UpstreamIdentityRecord {
             cert_pem: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n".into(),
+            key_pem: None,
             key_ref: "/run/secrets/waf-client.key".into(),
         };
         state
