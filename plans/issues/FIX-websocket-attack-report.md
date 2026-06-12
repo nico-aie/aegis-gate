@@ -69,42 +69,51 @@ UI toggle — exactly like HTTP requests are inspected without per-route opt-in.
 tests; no UI work now). Unblocks QC's 13 frame attacks — detection is already
 wired.
 
-### P1 — WS/SSE Origin allowlist (CSWSH) — real gap, code + config
+### ~~P1 — WS/SSE Origin allowlist (CSWSH)~~ — SKIPPED (Nico, 2026-06-12)
 
-Cross-Site WebSocket Hijacking + cross-site SSE: a malicious page opens a
-`WebSocket`/`EventSource` to us; the browser attaches the victim's cookie; if
-we accept any `Origin`, the attacker streams the victim's data. Origin
-enforcement at the edge is a legitimate WAF function.
+Descoped. The 5 CSWSH / cross-site-SSE techniques will **not** be covered.
+Rationale (Nico's call): Origin/cookie-trust enforcement sits closer to the
+app/gateway session layer than the WAF, and the cost/benefit isn't worth it
+now. Reflected in the expected-detection table (§4) — CSWSH stays uncovered.
+(If revisited later: per-route `ws_origin_allowlist` + `require_origin`,
+shared host-match helper, applied at the WS-upgrade gate and the SSE path.)
 
-- **Config:** per-route `ws_origin_allowlist: Vec<String>` + `require_origin:
-  bool` (literal host or `*.example.com` glob, reusing the open-redirect /
-  jwt-jku matcher). Applies to **both** WS upgrades and SSE responses
-  (`Accept: text/event-stream`).
-- **Code:** in the WS-upgrade gate (`data_plane.rs:~1787`) and the SSE path,
-  before forwarding: if `require_origin` and no `Origin` → block; if `Origin`
-  host ∉ allowlist → block (403 + `cswsh_origin_blocked` audit). Empty
-  allowlist + `require_origin:false` = today's behaviour (no-op), so it's
-  opt-in and non-breaking.
-- **dev.yaml:** seed the allowlist for the exam host so QC's 5 CSWSH techniques
-  are caught.
+### P1 — Oversize-frame: small inspection cap, fail-closed over it
 
-**Effort:** ~1 day (shared origin-match helper + two call sites + config + UI
-field later).
+**Problem:** `ws_inspect.rs:194-213` forwards over-cap text frames
+**uninspected** (fail-OPEN) — an attacker pads a malicious frame over
+`max_message_bytes` to skip inspection.
 
-### P1 — Oversize-frame fail-closed — real bypass-by-size
+**Performance consideration (Nico):** the size *check* itself is free —
+`payload.len() > max` is already computed. The real lever is the **cap**, which
+bounds how much the WAF buffers per message to inspect. The 13 real frame
+attacks are tiny JSON (`{"op":"pong","topic":"admin'--"}`), far under any sane
+cap, and WS for this app class (live feed / chat / notifications / betting
+ops) carries **small control/JSON messages**, not multi-MB blobs.
 
-`ws_inspect.rs:194-213` forwards over-cap text frames **uninspected**. An
-attacker pads a malicious frame over `max_message_bytes` to skip inspection.
+**Plan — small cap + fail-closed (the performance-conscious choice):**
+- Set a **small default `max_message_bytes`** (proposed **256 KiB**, down from
+  the 4 MiB codec default). The WAF then only ever buffers ≤256 KiB per message
+  to inspect → bounded memory + latency, and every realistic attack payload AND
+  legit control message fits under it and IS inspected.
+- Over the cap in **Enforce**: **close with WS Close `1009`** (Message Too Big)
+  instead of forwarding uninspected — closes the bypass-by-size, matching the
+  module's own (currently false) "fail-closed 1009" doc comment. In `LogOnly`:
+  forward but emit an audit so operators see size-bypass attempts.
+- Net cost: a route that legitimately streams >256 KiB single WS messages would
+  be closed. For this app class that's not expected; if a specific route needs
+  it, the internal per-route `ws_inspect` override can raise its cap (escape
+  hatch, not UI-surfaced).
 
-- Change the over-cap behaviour when `mode == Enforce`: **close the connection
-  with WS Close `1009`** (Message Too Big) instead of forwarding uninspected —
-  fail-closed, matching the module's own (currently false) doc comment. In
-  `LogOnly`, keep forwarding but emit an audit so operators see the size-bypass
-  attempts before enforcing.
-- Keep a sane default `max_message_bytes` (codec 4 MiB) so legit large messages
-  aren't the common case; document that enforce = fail-closed over the cap.
+**Alternative considered (not chosen now):** *prefix inspection* — inspect the
+first `max` bytes of an over-cap message and forward the rest. Bounds memory
+the same way and avoids hard-blocking legit large messages, but is bypassable
+by padding the payload *after* the prefix, and adds streaming complexity. The
+small-cap + fail-closed approach is simpler and safe for small-message WS;
+revisit prefix-inspection only if a route genuinely needs large legit frames.
 
-**Effort:** ~half day (one `FrameAction` branch + a stat/audit + tests).
+**Effort:** ~half day (lower the default cap + one `FrameAction`/close branch +
+a stat/audit + tests).
 
 ### P2 — Cookie injection scanning (RC-3) — real, FP-prone
 
@@ -142,26 +151,28 @@ app-side concern (parameterised queries); this is defense-in-depth.
 | Order | Item | Why |
 |---|---|---|
 | 1 | **P0** (WS inspect ON BY DEFAULT — invert default + enforce default + CertSource warning; no YAML/UI) | Unblocks QC's 13 frame attacks immediately; detection already wired. Operator-directed. |
-| 2 | **P1 oversize fail-closed** | Small, closes the bypass-by-size that would otherwise undercut P0. |
-| 3 | **P1 WS/SSE Origin allowlist** | Real CSWSH gap; +5 techniques. Bigger (shared helper + 2 call sites + config/UI). |
-| 4 | **P2 cookie scanning** | FP-prone; ship log_only, review. |
-| 5 | **P3** | Optional / document. |
+| 2 | **P1 oversize: small cap + fail-closed** | Small; closes the bypass-by-size that would otherwise undercut P0. |
+| 3 | **P2 cookie scanning** | FP-prone; ship log_only, review. |
+| 4 | **P3** | Optional / document. |
+| — | ~~WS/SSE Origin allowlist (CSWSH)~~ | **SKIPPED** (Nico). |
 
-Suggested PRs: **PR1 = P0** (config + UI + warning), **PR2 = oversize +
-Origin allowlist**, **PR3 = cookie scanning** (separate for FP review).
+Suggested PRs: **PR1 = P0** (default inversion + enforce + warning), **PR2 =
+oversize small-cap fail-closed**, **PR3 = cookie scanning** (separate for FP
+review).
 
 ## 4. Expected detection after fixes
 
 | Fix | Techniques | Note |
 |---|---|---|
-| P0 enable ws_inspect + enforce | 13 ws_message (sqli/xss/nosql/cmdi) | Needs a real WS upstream to observe (RC-7). |
-| Oversize fail-closed | `oversized_ws_frame` | Was a size-bypass. |
-| Origin allowlist | 5 CSWSH (WS + SSE) | +`cross_site_sse_hijacking`. |
+| P0 default-on ws_inspect + enforce | 13 ws_message (sqli/xss/nosql/cmdi) | Needs a real WS upstream to observe (RC-7). |
+| Oversize small-cap fail-closed | `oversized_ws_frame` | Was a size-bypass. |
 | Cookie scanning | 2 cookie sqli/nosql | log_only first. |
+| **Skipped** | 5 CSWSH (WS + SSE Origin) | Descoped (Nico). |
 | Out of scope | binary tunnel, ip_spoof, connection_variant | Non-issues / architectural. |
 
-Net realistic: **13.8% → ~80%+**, with the honest caveats that (a) the 13
-frame detections need a live WS upstream to *demonstrate*, and (b) binary
+Net realistic: **13.8% → ~70%** (4 already + 13 frame + 1 oversize + 2 cookie ≈
+20/29), with the honest caveats that (a) the 13 frame detections need a live WS
+upstream to *demonstrate*, (b) CSWSH is intentionally uncovered, and (c) binary
 tunneling stays uninspectable by design.
 
 ## 5. Related
