@@ -3632,6 +3632,12 @@ pub struct DetectorsConfig {
     /// flags). **Default ON.**
     #[serde(default)]
     pub jwt_inspection: JwtInspectionConfig,
+    /// 2026-06-12 (WS report P2) — SQLi/NoSQLi scanning of SESSION cookie
+    /// values (`sid`, `session`, `auth`, `token`, …). **Default OFF**:
+    /// cookie scanning was historically FP-prone (adtech cookies), so it's
+    /// opt-in — operators enable + observe before relying on it.
+    #[serde(default = "default_detector_toggle_off")]
+    pub cookie_injection: DetectorToggle,
     /// 2026-05-19 — Phase F behaviour-signals detector. Stateful
     /// per-IP signals: burst (<50 ms), missing UA, missing Referer
     /// on mutations, zero-depth first-touch. **Default OFF** because
@@ -3728,6 +3734,10 @@ pub struct TierDetectorMask {
     /// attack-shape detector. `None` = inherit global (default ON).
     #[serde(default)]
     pub jwt_inspection: Option<bool>,
+    /// 2026-06-12 (WS report P2) — per-tier override for the cookie-
+    /// injection detector. `None` = inherit global (default OFF).
+    #[serde(default)]
+    pub cookie_injection: Option<bool>,
     /// 2026-05-19 — per-tier override for the Phase F
     /// behaviour-signals detector. `None` = inherit global; the
     /// global default is OFF (cf. `DetectorsConfig::default`).
@@ -3789,6 +3799,7 @@ impl Default for DetectorsConfig {
             nosql_injection: default_detector_toggle(),
             open_redirect: OpenRedirectConfig::default(),
             jwt_inspection: JwtInspectionConfig::default(),
+            cookie_injection: default_detector_toggle_off(),
             behavior_signals: default_detector_toggle_off(),
             velocity: default_detector_toggle(),
             canary: default_detector_toggle_off(),

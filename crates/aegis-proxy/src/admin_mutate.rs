@@ -3625,6 +3625,7 @@ fn tier_override_yaml(mb: &aegis_security::detectors::DetectorMaskBody) -> serde
         // 2026-06-12 (FIX-jwt-inspection-mask-toggle) — keep per-tier
         // JWT overrides in sync with the base-mask fix above.
         ("jwt_inspection", mb.jwt_inspection),
+        ("cookie_injection", mb.cookie_injection),
         ("behavior_signals", mb.behavior_signals),
         ("velocity", mb.velocity),
         ("canary", mb.canary),
@@ -3685,6 +3686,7 @@ fn patch_detectors(
             // 2026-06-12 (FIX-jwt-inspection-mask-toggle) — was missing,
             // so the JWT toggle never persisted to cfg → couldn't disable.
             (DetectorClass::JwtInspection, mask.jwt_inspection),
+            (DetectorClass::CookieInjection, mask.cookie_injection),
             (DetectorClass::BehaviorSignals, mask.behavior_signals),
             (DetectorClass::Velocity, mask.velocity),
             (DetectorClass::Canary, mask.canary),

@@ -145,6 +145,17 @@ pub mod nosql_injection {
     pub const NOSQL_INJECTION: u32 = 70;
 }
 
+pub mod cookie_injection {
+    /// 2026-06-12 (WS report P2) — SQLi/NoSQLi shape in a SESSION cookie
+    /// value (`sid`, `session`, `auth`, `token`, …). Legit session cookies
+    /// are opaque tokens, so a quote / SQL keyword / `$`-operator is
+    /// high-confidence — but the class **defaults OFF** (cookie scanning
+    /// was historically FP-prone on adtech cookies) and scores 50 (high
+    /// tier: single-blocks only on `critical`, accumulates elsewhere) so
+    /// operators opt in and observe before relying on it.
+    pub const COOKIE_INJECTION: u32 = 50;
+}
+
 pub mod open_redirect {
     pub const OPEN_REDIRECT: u32 = 50;
 }
@@ -357,6 +368,12 @@ pub const CATALOG: &[ScoreEntry] = &[
         tag: "template_injection",
         score: template_injection::TEMPLATE_INJECTION,
         note: "Server-side template injection — Jinja2, Twig, Mako, Freemarker, Velocity, SpEL, Handlebars.",
+    },
+    ScoreEntry {
+        class: "cookie_injection",
+        tag: "cookie_injection",
+        score: cookie_injection::COOKIE_INJECTION,
+        note: "SQLi/NoSQLi shape in a SESSION cookie value (sid/session/auth/token/…). Default-OFF class; opt-in + observe before relying on it.",
     },
     ScoreEntry {
         class: "nosql_injection",

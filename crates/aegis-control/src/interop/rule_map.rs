@@ -58,6 +58,7 @@ pub fn rule_to_feature(rule_id: &str) -> Option<(&'static str, &'static str)> {
         "template_injection" | "ssti" => ("rules_engine", "template_injection"),
         "nosql_injection" | "nosqli" => ("rules_engine", "nosql_injection"),
         "open_redirect" | "openredir" => ("rules_engine", "open_redirect"),
+        "cookie_injection" | "cookie_inj" => ("rules_engine", "cookie_injection"),
         // 2026-06-12 (JWT report) — the JWT attack-shape detector emits
         // `jwt_alg_none` / `jwt_x5c_inline` / `jwt_kid_injection` /
         // `jwt_jku_external` / `jwt_time_forged`; map every `jwt_` tag
