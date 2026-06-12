@@ -43,14 +43,15 @@ plans/
 - **[`smart-caching.md`](./future/smart-caching.md)** — the one feature track
   with work still open: Phases 1–3 shipped (per-upstream L1 + L2/Redis-Cluster
   cache); **Phase 4 remaining** (`stale-if-error`, ETag revalidation).
-- **[`proxy-protocol.md`](./future/proxy-protocol.md)** — design-only: parse the
-  PROXY-protocol header on the raw socket to recover the real client IP behind an
-  L4 load balancer while still terminating TLS at the WAF.
-- **[`websocket-message-inspection.md`](./future/websocket-message-inspection.md)** —
-  design-only (`WS-MSG`): opt-in frame-parsing bridge that runs reassembled
-  **text frames (opcode `0x1`)** client→upstream through the body detectors, so an
-  established WebSocket is no longer an uninspected L4 tunnel. Extends the shipped
-  WS-T bridge ([`archive/websocket-bridge.md`](./archive/websocket-bridge.md)).
+
+> **Archived 2026-06-11.** The two design-only forward tracks shipped and moved
+> to `archive/`: [`archive/proxy-protocol.md`](./archive/proxy-protocol.md)
+> (PROXY-protocol real client IP behind an L4 LB — PR #26) and
+> [`archive/websocket-message-inspection.md`](./archive/websocket-message-inspection.md)
+> (WebSocket text-frame inspection, `WS-MSG` — PR #27). The cluster-QC v1/v2 fix
+> plans + QC reports also resolved → [`issues/archived/`](./issues/archived/); the
+> only carry-over is **F14** (audit/since latency, pending live telemetry — see the
+> issues README). `future/` is now the world-class roadmap + `smart-caching.md`.
 
 > **Archived 2026-06-10.** Three docs left `future/`/`plans/` once their work
 > shipped or was dropped:
