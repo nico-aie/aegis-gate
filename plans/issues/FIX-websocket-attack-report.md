@@ -21,7 +21,7 @@
 | **RC-2 / RC-4** WS + SSE Origin (CSWSH) | **Real gap.** No `Origin` allowlist anywhere in the WS/SSE path. | no `origin` match in `data_plane.rs` / `proto/*`. |
 | **RC-5** `Sec-WebSocket-Protocol` XSS not scanned | **Real but low-severity.** `header_injection` scans header values for CRLF, not XSS; WS-specific headers aren't special-cased. Only exploitable if the backend echoes the chosen subprotocol into a rendered context. | `header_injection.rs` patterns are CRLF-only. |
 | `connection_header_variant` bypass | **NOT a bug.** `is_websocket_upgrade` tokenizes `Connection` (`split(',').any(== "upgrade")`), so `keep-alive, Upgrade` is correctly detected as a WS upgrade. | `proto/ws.rs::is_websocket_upgrade`. |
-| `ip_spoof_via_forwarded_header` | **NOT a bug in dev.** Dev doesn't trust `X-Forwarded-For` (all traffic → 127.0.0.1). Spoofing XFF changes nothing. Revisit only if a prod profile enables XFF trust without a trusted-proxy allowlist. | dev XFF gate (memory). |
+| `ip_spoof_via_forwarded_header` | **Safe by default, but see P1-XFF.** `resolve_client_ip` only trusts `X-Forwarded-For` when the peer is in `cfg.proxy.trusted_proxies` (empty by default → XFF ignored, TCP peer wins; `dev.yaml` sets none). No live spoofing hole today. **But** the XFF→client-IP path exists for GeoIP / "live attack origins" and becomes a spoof vector if `trusted_proxies` is set loosely for testing. Nico: treat it as a test-only feature → remove/guard. | `data_plane.rs:299-325`; `cfg.proxy.trusted_proxies`. |
 | **RC-6** binary-frame TCP tunnel | **Architectural, real.** Binary frames are never inspected (pass-through verbatim). Hard to fix generically. | `ws_inspect.rs` doc + `accept` logic. |
 | **RC-7** ws_message tests = 1006 | **Test-env limitation.** No real WS upstream at :9999 → 101 then immediate 1006 close → frames never flow → can't observe frame blocking. | report §7; `stub-pool` 127.0.0.1:9999. |
 
@@ -131,6 +131,41 @@ last attempt was removed for adtech-cookie false positives.
 **Effort:** ~1 day incl. FP review. Lower priority — the cookie→SQL sink is an
 app-side concern (parameterised queries); this is defense-in-depth.
 
+### P1-XFF — remove the test-only X-Forwarded-For trust (harden client IP) — Nico
+
+**Context (code-verified):** `resolve_client_ip` (`data_plane.rs:299-325`) walks
+`X-Forwarded-For` to pick the client IP **only** when the TCP peer is inside
+`cfg.proxy.trusted_proxies`. That list is **empty by default**, so today XFF is
+ignored and the real TCP peer wins (the F-HIGH-002-safe posture); `dev.yaml`
+sets no `trusted_proxies`. **There is no live spoofing hole right now.**
+
+**Why it's still on the list:** the XFF→client-IP resolution exists mainly so
+the dashboard's GeoIP "live attack origins" map shows the origin country when
+fronted by an LB — and to *test* GeoIP locally you'd set `trusted_proxies` to
+something loose. The moment that happens, `X-Forwarded-For` / `X-Real-IP` /
+`CF-Connecting-IP` become attacker-controlled inputs that pick the IP used for
+**rate limiting, IP blocklist, per-IP risk, and GeoIP** → spoof to `127.0.0.1`
+and bypass all of them (exactly the report's technique). Nico's call: this is a
+test convenience, not a needed prod feature here — **remove/guard it so the WAF
+is safe by construction**, not just by default config.
+
+**Plan (pick one):**
+- **Minimal (recommended):** keep the code but make misuse impossible/obvious —
+  (a) assert no shipped config (`dev.yaml`, prod profiles) sets
+  `trusted_proxies`; (b) reject/ignore wildcard-ish `trusted_proxies` (e.g.
+  `0.0.0.0/0`, loopback) with a loud boot warning, so XFF can't be trusted from
+  untrusted peers; (c) document that XFF trust requires a *narrow* LB CIDR.
+- **Hard removal:** delete the XFF-walk path entirely — always use the TCP peer
+  as the client IP. GeoIP/origin map then reflects the immediate peer. Simplest
+  and safest; only costs the LB-fronted "real client country" niceness (re-add
+  later behind a vetted, narrow trusted-proxy allowlist if a real deployment
+  needs it).
+- Either way: never use XFF for **security decisions** (rate-limit / blocklist /
+  risk) even if used for display — separate "display IP" from "enforcement IP".
+
+**Effort:** minimal variant ~half day (config guard + boot check + tests); hard
+removal ~half day (drop the walk + fix the GeoIP/audit IP source + tests).
+
 ### P3 / Won't-fix-now
 
 - **`Sec-WebSocket-Protocol` XSS (RC-5):** optional — extend `header_injection`
@@ -139,7 +174,8 @@ app-side concern (parameterised queries); this is defense-in-depth.
 - **Binary-frame tunnel (RC-6):** don't attempt generic binary inspection. If
   needed, add an opt-in per-route `deny_binary_frames` so a JSON-over-WS API
   can refuse binary opcodes outright. Document the limitation.
-- **`ip_spoof` / `connection_variant`:** non-issues (see §1). No change.
+- **`connection_variant`:** non-issue (see §1). No change. (`ip_spoof` is now its
+  own workstream P1-XFF above.)
 - **Test env (RC-7):** QC needs a real WS echo upstream at :9999 to observe
   frame blocking (`wscat --listen 9999` or a tiny `websockets` server). Document
   in the QC guide; not a code fix.
@@ -152,13 +188,14 @@ app-side concern (parameterised queries); this is defense-in-depth.
 |---|---|---|
 | 1 | **P0** (WS inspect ON BY DEFAULT — invert default + enforce default + CertSource warning; no YAML/UI) | Unblocks QC's 13 frame attacks immediately; detection already wired. Operator-directed. |
 | 2 | **P1 oversize: small cap + fail-closed** | Small; closes the bypass-by-size that would otherwise undercut P0. |
-| 3 | **P2 cookie scanning** | FP-prone; ship log_only, review. |
-| 4 | **P3** | Optional / document. |
+| 3 | **P1-XFF: remove/guard X-Forwarded-For trust** | Kill the test-only IP-spoof vector by construction (Nico). |
+| 4 | **P2 cookie scanning** | FP-prone; ship log_only, review. |
+| 5 | **P3** | Optional / document. |
 | — | ~~WS/SSE Origin allowlist (CSWSH)~~ | **SKIPPED** (Nico). |
 
 Suggested PRs: **PR1 = P0** (default inversion + enforce + warning), **PR2 =
-oversize small-cap fail-closed**, **PR3 = cookie scanning** (separate for FP
-review).
+oversize small-cap fail-closed + P1-XFF**, **PR3 = cookie scanning** (separate
+for FP review).
 
 ## 4. Expected detection after fixes
 
