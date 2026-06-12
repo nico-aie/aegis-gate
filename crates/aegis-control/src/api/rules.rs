@@ -68,6 +68,8 @@ const RESERVED_RULE_IDS: &[&str] = &[
     // 2026-06-12 (JWT report) — JWT attack-shape detector promoted to a
     // first-class togglable `DetectorClass`.
     "jwt_inspection",
+    // 2026-06-12 (WS report P2) — cookie-injection detector.
+    "cookie_injection",
     // 2026-05-19 — DetectorClass extension (Phase F + AI promotion
     // to first-class togglable classes). Keep this list in sync with
     // `DetectorClass::ALL`; `reserved_list_matches_detector_class_names`

@@ -3,6 +3,7 @@ pub mod body_abuse;
 pub mod brute_force;
 pub mod canary;
 pub mod command_injection;
+pub mod cookie_injection;
 pub mod header_injection;
 pub mod jwt_inspection;
 pub mod mask;
@@ -543,6 +544,10 @@ pub fn default_detectors_with(
             cfg.jwt_inspection.jku_allowed_domains.clone(),
             cfg.jwt_inspection.flag_privileged_roles,
         )),
+        // 2026-06-12 (WS report P2) — SQLi/NoSQLi in session cookies.
+        // Gated by the `CookieInjection` mask bit (default OFF), so it's
+        // inert until an operator opts in.
+        Box::new(cookie_injection::CookieInjectionDetector),
     ]
 }
 
@@ -802,8 +807,8 @@ mod tests {
         // sqli + xss + path_traversal + ssrf + header_injection
         // + body_abuse + recon + brute_force + command_injection
         // + template_injection + nosql_injection + open_redirect
-        // + jwt_inspection.
-        assert_eq!(d.len(), 13);
+        // + jwt_inspection + cookie_injection.
+        assert_eq!(d.len(), 14);
     }
 
     /// Drift guard (VELOCITY_SEQUENCE_BUG_REPORT, 2026-06-12). Every
