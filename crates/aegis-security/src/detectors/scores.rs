@@ -144,6 +144,26 @@ pub mod open_redirect {
     pub const OPEN_REDIRECT: u32 = 50;
 }
 
+pub mod jwt_inspection {
+    // 2026-06-12 (JWT report, Phase A1) — JWT attack-shape detector.
+    // Decodes the token header (+ later payload) and flags malicious
+    // STRUCTURE only; it never verifies signatures (that stays in the
+    // gateway). All three A1 rules are unambiguous-malicious shapes
+    // with no benign use case, so they score 80 — the structural-block
+    // tier that trips every risk threshold including `low`.
+
+    /// `alg: none` (any case) / `null` / empty — unsigned-token forgery.
+    pub const ALG_NONE: u32 = 80;
+    /// Inline key material in the header — `x5c` cert chain or `jwk`.
+    /// Production tokens reference a server-side JWKS, never embed the
+    /// verification key per request.
+    pub const KEY_INJECTION: u32 = 80;
+    /// `kid` carrying path traversal (`../`, `/etc/`, `/dev/`),
+    /// SQL metacharacters, or a URL/file scheme — RFI / SQLi / empty-
+    /// key forgery primitive.
+    pub const KID_INJECTION: u32 = 80;
+}
+
 pub mod ai {
     /// AI / ML classifier verdict (model confidence ≥ threshold).
     /// 2026-05-20 — restored to 60 (briefly 40). With the AI
@@ -349,6 +369,28 @@ pub const CATALOG: &[ScoreEntry] = &[
         tag: "canary",
         score: 100,
         note: "Hit on an operator-supplied honeypot path (`cfg.risk.canary_paths`). Maximum confidence — single-hit block at every tier.",
+    },
+    // 2026-06-12 (JWT report, Phase A1) — JWT attack-shape detector.
+    // Decodes the token header from `Authorization: Bearer` / `Cookie`
+    // and flags malicious structure. Detection-only — no signature
+    // verification (that stays in the gateway).
+    ScoreEntry {
+        class: "jwt_inspection",
+        tag: "jwt_alg_none",
+        score: jwt_inspection::ALG_NONE,
+        note: "JWT header `alg` is `none` / `null` / empty (any case) — unsigned-token forgery (alg:none bypass).",
+    },
+    ScoreEntry {
+        class: "jwt_inspection",
+        tag: "jwt_x5c_inline",
+        score: jwt_inspection::KEY_INJECTION,
+        note: "JWT header embeds inline key material (`x5c` cert chain or `jwk`) — attacker-supplied verification key.",
+    },
+    ScoreEntry {
+        class: "jwt_inspection",
+        tag: "jwt_kid_injection",
+        score: jwt_inspection::KID_INJECTION,
+        note: "JWT header `kid` carries path traversal (`../`, `/etc/`, `/dev/`), SQL metacharacters, or a URL/file scheme.",
     },
 ];
 
