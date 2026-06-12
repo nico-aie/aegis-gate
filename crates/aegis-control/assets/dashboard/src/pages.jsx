@@ -6414,9 +6414,8 @@ const ZT_IDENTITY_APPLIES =
 const ZT_ROTATION_PILL_TITLE = 'Rotated live — hot-applied fleet-wide, no restart';
 
 // Upstream WAF client identity — the shared fleet cert the WAF presents to
-// backends. Read-only metadata + a public-cert download, plus a reference-only
-// upload (PUBLIC cert + a key_ref) gated behind allow_ca_upload. The private
-// key never reaches the browser.
+// backends. Read-only metadata + a public-cert download, plus an upload modal
+// (PUBLIC cert + private key PEM) gated behind allow_ca_upload.
 function ZtIdentityCard() {
   const api = window.useApi('/api/zero-trust/upstream/identity', {
     intervalMs: 15000, fallback: { configured: false },
@@ -6430,25 +6429,73 @@ function ZtIdentityCard() {
   });
   const d = api.data || { configured: false };
   const [certPem, setCertPem] = useStateP('');
-  const [keyRef, setKeyRef] = useStateP('');
+  const [certFileName, setCertFileName] = useStateP('');
+  const [keyPem, setKeyPem] = useStateP('');
+  const [keyFileName, setKeyFileName] = useStateP('');
   const [busy, setBusy] = useStateP(false);
   const [showForm, setShowForm] = useStateP(false);
 
-  function onFile(e) {
+  // Real-time PEM validation helpers.
+  // Returns { ok, err } — err is null when valid or empty.
+  function validateCertPem(pem) {
+    const t = pem.trim();
+    if (!t) return { ok: false, err: null };
+    if (t.includes('PRIVATE KEY'))
+      return { ok: false, err: 'This looks like a private key — upload the PUBLIC certificate here' };
+    if (!t.includes('BEGIN CERTIFICATE'))
+      return { ok: false, err: 'Not a valid certificate PEM (missing BEGIN CERTIFICATE)' };
+    if (!t.includes('END CERTIFICATE'))
+      return { ok: false, err: 'Incomplete PEM — missing END CERTIFICATE' };
+    return { ok: true, err: null };
+  }
+
+  function validateKeyPem(pem) {
+    const t = pem.trim();
+    if (!t) return { ok: false, err: null };
+    if (t.includes('BEGIN CERTIFICATE'))
+      return { ok: false, err: 'This looks like a certificate — upload the PRIVATE KEY here' };
+    const hasBegin = t.includes('BEGIN PRIVATE KEY')
+      || t.includes('BEGIN RSA PRIVATE KEY')
+      || t.includes('BEGIN EC PRIVATE KEY');
+    if (!hasBegin)
+      return { ok: false, err: 'Not a valid private key PEM (expected BEGIN PRIVATE KEY / RSA / EC)' };
+    const hasEnd = t.includes('END PRIVATE KEY')
+      || t.includes('END RSA PRIVATE KEY')
+      || t.includes('END EC PRIVATE KEY');
+    if (!hasEnd)
+      return { ok: false, err: 'Incomplete PEM — missing END marker, file may be truncated' };
+    return { ok: true, err: null };
+  }
+
+  const certValid = validateCertPem(certPem);
+  const keyValid  = validateKeyPem(keyPem);
+  const canSave   = !busy && certValid.ok && keyValid.ok;
+
+  function onCertFile(e) {
     const f = e.target.files?.[0];
     if (!f) return;
+    setCertFileName(f.name);
     const reader = new FileReader();
     reader.onload = () => setCertPem(String(reader.result || ''));
     reader.readAsText(f);
   }
 
+  function onKeyFile(e) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setKeyFileName(f.name);
+    const reader = new FileReader();
+    reader.onload = () => setKeyPem(String(reader.result || ''));
+    reader.readAsText(f);
+  }
+
   async function save() {
-    if (!certPem.trim()) {
-      window.aegisToast('Paste or upload the public certificate first', 'warn');
+    if (!certValid.ok) {
+      window.aegisToast(certValid.err || 'Upload or paste the public certificate first', 'warn');
       return;
     }
-    if (!keyRef.trim()) {
-      window.aegisToast('Enter a key reference (e.g. /run/secrets/waf.key or ${secret:waf_key})', 'warn');
+    if (!keyValid.ok) {
+      window.aegisToast(keyValid.err || 'Upload or paste the private key first', 'warn');
       return;
     }
     setBusy(true);
@@ -6456,13 +6503,14 @@ function ZtIdentityCard() {
       const r = await fetch('/api/zero-trust/upstream/identity', {
         method: 'PUT',
         headers: { 'content-type': 'application/json', 'x-csrf-token': ztCsrf() },
-        body: JSON.stringify({ cert_pem: certPem, key_ref: keyRef }),
+        body: JSON.stringify({ cert_pem: certPem, key_pem: keyPem }),
         credentials: 'same-origin',
       });
       const body = await r.json().catch(() => ({}));
       if (r.ok && body.ok) {
         window.aegisToast(d.configured ? 'Identity rotated' : 'Identity stored', 'ok');
-        setCertPem(''); setKeyRef(''); setShowForm(false);
+        setCertPem(''); setKeyPem(''); setCertFileName(''); setKeyFileName('');
+        setShowForm(false);
         api.reload && api.reload();
       } else {
         window.aegisToast(`Identity: ${body.message || body.error || ('HTTP ' + r.status)}`, 'err');
@@ -6553,50 +6601,109 @@ function ZtIdentityCard() {
       </div>
 
       {showForm && (() => {
-        const close = () => { if (!busy) { setShowForm(false); setCertPem(''); setKeyRef(''); } };
+        const close = () => {
+          if (!busy) {
+            setShowForm(false); setCertPem(''); setCertFileName('');
+            setKeyPem(''); setKeyFileName('');
+          }
+        };
+        const inp = {
+          width: '100%', boxSizing: 'border-box', fontSize: 13,
+          color: 'var(--ink)', background: 'var(--surface-2)', borderRadius: 6,
+        };
+        const label = { fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', marginBottom: 6, display: 'block' };
+        const fileBtn = { fontSize: 12, display: 'inline-block', flexShrink: 0 };
         return (
           <div className="modal-backdrop" onClick={close}>
-            <div className="modal" style={{ maxWidth: 580 }} onClick={e => e.stopPropagation()}>
+            <div className="modal" style={{ maxWidth: 560 }} onClick={e => e.stopPropagation()}>
+
               <div className="modal-head">
                 <div className="modal-title">
                   {d.configured ? 'Rotate WAF Client Identity' : 'Set WAF Client Identity'}
                 </div>
                 <button className="btn ghost" onClick={close} disabled={busy}>✕</button>
               </div>
-              <div className="modal-body">
-                <p style={{ fontSize: 13, color: 'var(--ink-mute)', marginTop: 0, marginBottom: 10, lineHeight: 1.5 }}>
-                  Upload the public certificate chain the WAF presents to backends, plus a
-                  reference to the private key. The key never leaves the node — only the
-                  public cert is stored.
-                </p>
-                <textarea
-                  value={certPem}
-                  onChange={e => setCertPem(e.target.value)}
-                  placeholder="-----BEGIN CERTIFICATE-----   (public cert chain only)"
-                  rows={6}
-                  style={{ width: '100%', boxSizing: 'border-box', fontFamily: 'monospace', fontSize: 12, padding: 10, color: 'var(--ink)', background: 'var(--surface-2)', border: '1px solid var(--hairline-strong)', borderRadius: 6 }}
-                />
-                <input
-                  type="text"
-                  value={keyRef}
-                  onChange={e => setKeyRef(e.target.value)}
-                  placeholder="Private key path or secret ref — e.g. /run/secrets/waf.key or ${secret:waf_key}  (required)"
-                  style={{ width: '100%', boxSizing: 'border-box', marginTop: 8, fontSize: 13, padding: '8px 10px', color: 'var(--ink)', background: 'var(--surface-2)', border: '1px solid var(--hairline-strong)', borderRadius: 6 }}
-                />
-                <div style={{ marginTop: 10 }}>
-                  <input type="file" accept=".pem,.crt,.cer,application/x-pem-file" onChange={onFile} />
+
+              <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+                {/* ── Public Certificate ── */}
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink)' }}>Public Certificate <span style={{ color: 'var(--ink-mute)', fontWeight: 400 }}>(.pem / .crt)</span></span>
+                    {certValid.ok
+                      ? <span style={{ fontSize: 11, color: 'var(--ok)' }}>✓ valid {certFileName || 'PEM'}</span>
+                      : certValid.err
+                        ? <span style={{ fontSize: 11, color: 'var(--down)' }}>✗ {certValid.err}</span>
+                        : <span style={{ fontSize: 11, color: 'var(--warn)' }}>required</span>}
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+                    <label style={{ cursor: 'pointer' }}>
+                      <span className="btn" style={fileBtn}>📂 Choose cert file</span>
+                      <input type="file" accept=".pem,.crt,.cer,application/x-pem-file" onChange={onCertFile} style={{ display: 'none' }} />
+                    </label>
+                    <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>or paste below</span>
+                  </div>
+                  <textarea
+                    value={certPem}
+                    onChange={e => { setCertPem(e.target.value); setCertFileName(''); }}
+                    placeholder={'-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----'}
+                    rows={5}
+                    style={{
+                      ...inp, fontFamily: 'monospace', fontSize: 11, padding: 10, resize: 'vertical',
+                      border: certValid.ok ? '1px solid var(--ok)' : certValid.err ? '1px solid var(--down)' : '1px solid var(--hairline-strong)',
+                    }}
+                  />
                 </div>
+
+                {/* ── Private Key ── */}
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink)' }}>Private Key</span>
+                    {keyValid.ok
+                      ? <span style={{ fontSize: 11, color: 'var(--ok)' }}>✓ valid {keyFileName || 'PEM'}</span>
+                      : keyValid.err
+                        ? <span style={{ fontSize: 11, color: 'var(--down)' }}>✗ {keyValid.err}</span>
+                        : <span style={{ fontSize: 11, color: 'var(--warn)' }}>required</span>}
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+                    <label style={{ cursor: 'pointer' }}>
+                      <span className="btn" style={fileBtn}>📂 Choose key file</span>
+                      <input type="file" accept=".key,.pem,application/x-pem-file" onChange={onKeyFile} style={{ display: 'none' }} />
+                    </label>
+                    <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>or paste below</span>
+                  </div>
+                  <textarea
+                    value={keyPem}
+                    onChange={e => { setKeyPem(e.target.value); setKeyFileName(''); }}
+                    placeholder={'-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----'}
+                    rows={5}
+                    style={{
+                      ...inp, fontFamily: 'monospace', fontSize: 11, padding: 10, resize: 'vertical',
+                      border: keyValid.ok ? '1px solid var(--ok)' : keyValid.err ? '1px solid var(--down)' : '1px solid var(--hairline-strong)',
+                    }}
+                  />
+                </div>
+
               </div>
+
               <div className="modal-foot">
                 <button className="btn" onClick={close} disabled={busy}>Cancel</button>
                 <button
                   className="btn primary"
-                  disabled={busy || !certPem.trim()}
+                  disabled={!canSave}
                   onClick={save}
+                  title={
+                    certValid.err ? certValid.err
+                    : keyValid.err ? keyValid.err
+                    : !certValid.ok ? 'Upload or paste the public certificate'
+                    : !keyValid.ok ? 'Upload or paste the private key'
+                    : ''
+                  }
                 >
-                  {busy ? 'Saving…' : 'Save'}
+                  {busy ? 'Saving…' : (d.configured ? 'Save & rotate' : 'Save identity')}
                 </button>
               </div>
+
             </div>
           </div>
         );

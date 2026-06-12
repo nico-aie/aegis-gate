@@ -632,6 +632,8 @@ button { font-family: inherit; }
 .btn.danger { color: #FF8896; border-color: rgba(246,70,93,0.32); }
 .btn.danger:hover { background: rgba(246,70,93,0.08); }
 .btn.sm { height: 24px; padding: 0 8px; font-size: 11px; }
+.btn:disabled { opacity: 0.38; cursor: not-allowed; pointer-events: none; }
+.btn.primary:disabled { background: var(--brand-yellow); border-color: var(--brand-yellow); }
 .icon-btn {
   width: 26px; height: 26px;
   display: grid; place-items: center;

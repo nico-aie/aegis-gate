@@ -1085,7 +1085,7 @@ mod tests {
         };
         let resolved = |fp: &str, trust: Option<&str>| UpstreamMtlsResolved {
             client_cert: CertSource::File("/x/client.pem".into()),
-            client_key_ref: "/x/client.key".into(),
+            client_key: CertSource::File("/x/client.key".into()),
             trust: trust.map(|t| CertSource::File(t.into())),
             verify: true,
             allowed_sans: Vec::new(),
@@ -1128,7 +1128,7 @@ mod tests {
             response_body_read_timeout: Duration::from_secs(30),
             upstream_mtls: Some(UpstreamMtlsResolved {
                 client_cert: CertSource::File("/nonexistent/waf-client.pem".into()),
-                client_key_ref: "/nonexistent/waf-client.key".into(),
+                client_key: CertSource::File("/nonexistent/waf-client.key".into()),
                 trust: None,
                 verify: true,
                 allowed_sans: Vec::new(),

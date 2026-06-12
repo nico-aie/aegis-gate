@@ -1771,11 +1771,9 @@ pub fn resolve_upstream_mtls(
     if !m.enabled {
         return None;
     }
-    // Shared identity only (per-pool override is P4+). The private
-    // key reference is guaranteed present by validation (file) or by
-    // boot materialization from the config plane (state).
+    // Shared identity only (per-pool override is P4+). Both the cert
+    // and key must be resolvable.
     let id = identity?;
-    let client_key_ref = id.key_ref.clone()?;
     // The PUBLIC client cert is either a file on disk (file source)
     // or in-memory PEM materialized from the config plane (state
     // source — `cert_pem` injected at boot). State source without a
@@ -1786,6 +1784,12 @@ pub fn resolve_upstream_mtls(
         Some(pem) => CertSource::Pem(pem),
         None => CertSource::File(id.cert_path.clone()?),
     };
+    // The private key: inline PEM when the operator uploaded it via
+    // the console; otherwise a file path resolved at client-build time.
+    let client_key = match id.key_pem.clone() {
+        Some(pem) => CertSource::Pem(pem),
+        None => CertSource::File(id.key_ref.clone()?.into()),
+    };
     // Backend-CA trust anchor: a console-uploaded bundle materialized
     // from the config plane (state — `trust_pem` injected at boot) or
     // a file on disk; `None` ⇒ public webpki roots.
@@ -1793,14 +1797,12 @@ pub fn resolve_upstream_mtls(
         Some(pem) => Some(CertSource::Pem(pem)),
         None => m.trust.clone().map(CertSource::File),
     };
-    // Stable, transparent fingerprint over the public inputs (the
-    // key_ref is a path, not key bytes). Part of `PoolKey` so a
-    // config change rebuilds the cached client. Content-based
-    // hashing (same-path rotation) is P5.
+    // Stable fingerprint over the effective material. Part of `PoolKey`
+    // so a config change rebuilds the cached client.
     let fingerprint = format!(
         "v1|cert={}|key={}|trust={}|verify={}|sans={}",
         cert_source_fingerprint(&client_cert),
-        client_key_ref,
+        cert_source_fingerprint(&client_key),
         trust
             .as_ref()
             .map(cert_source_fingerprint)
@@ -1810,7 +1812,7 @@ pub fn resolve_upstream_mtls(
     );
     Some(UpstreamMtlsResolved {
         client_cert,
-        client_key_ref,
+        client_key,
         trust,
         verify: m.verify,
         allowed_sans: m.allowed_sans.clone(),
@@ -2018,11 +2020,10 @@ pub struct ConnectionPoolConfig {
     pub upstream_mtls: Option<UpstreamMtlsResolved>,
 }
 
-/// Source of a PUBLIC cert/CA used in upstream mTLS — either a file
-/// on disk (file-source identity / per-pool trust path) or in-memory
-/// PEM bytes materialized from the Redis config plane (state-source,
-/// P4). PUBLIC material only; private keys are never represented here
-/// (they stay a `client_key_ref` resolved at client-build time).
+/// Source of a cert/key material used in upstream mTLS — either a file
+/// on disk or in-memory PEM bytes materialized from the Redis config
+/// plane (state-source, P4). Used for PUBLIC certs, CA bundles, and
+/// (when the operator uploads the key via the console) inline private keys.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CertSource {
     /// PEM file read from disk at client-build time.
@@ -2034,19 +2035,18 @@ pub enum CertSource {
 
 /// Resolved, ready-to-use upstream-mTLS material for one pool.
 ///
-/// The PUBLIC cert + trust anchors are carried as a [`CertSource`]
-/// (file path or in-memory PEM). The private key is **never** loaded
-/// into this struct — only its `client_key_ref` (resolved lazily in
-/// `forward::build_client`), so the struct stays Debug-safe and the
-/// key never lands in config / the client cache key.
+/// Both the PUBLIC cert + trust anchors and the private key are carried
+/// as a [`CertSource`] (file path or in-memory PEM). When the operator
+/// uploads the key via the console, `client_key` is `CertSource::Pem`;
+/// for file-source identities it is `CertSource::File`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpstreamMtlsResolved {
     /// PUBLIC client cert chain the WAF presents to the backend
     /// (the shared fleet identity, `zero_trust.upstream_identity`).
     pub client_cert: CertSource,
-    /// Path / ref to the client private key. Loaded only inside
-    /// `build_client`; never read into this struct.
-    pub client_key_ref: String,
+    /// The client private key — either a file path (file-source
+    /// identity) or in-memory PEM (console-uploaded key).
+    pub client_key: CertSource,
     /// Custom CA bundle to verify the BACKEND's server cert against.
     /// `None` ⇒ fall back to webpki roots.
     pub trust: Option<CertSource>,
@@ -2729,6 +2729,13 @@ pub struct UpstreamIdentityConfig {
     /// private key.
     #[serde(skip)]
     pub cert_pem: Option<String>,
+    /// **Never deserialized** (`#[serde(skip)]`). Inline private-key
+    /// PEM materialized from the config plane when the operator
+    /// uploaded the key via the console (`UpstreamIdentityRecord.key_pem`).
+    /// When set, takes precedence over `key_ref` at client-build time.
+    /// Never returned by any API or included in audit projections.
+    #[serde(skip)]
+    pub key_pem: Option<String>,
 }
 
 /// Config-plane key under which the shared fleet upstream identity is
@@ -2737,19 +2744,24 @@ pub struct UpstreamIdentityConfig {
 pub const UPSTREAM_IDENTITY_STATE_KEY: &str = "aegis:zt:upstream:identity";
 
 /// State-plane record for the `source: state` shared upstream
-/// identity (P4, **reference-only** — no envelope encryption).
+/// identity. Stores the PUBLIC cert and either inline key PEM
+/// (console-uploaded) or a server-side key reference.
 ///
-/// PUBLIC cert material plus a *reference* to the private key. The
-/// key bytes are **never** stored here: `key_ref` is a path /
-/// `${secret:...}` reference resolved at client-build time. Persisted
-/// via [`crate::state::StateBackend::cas_set`] so a multi-node fleet
-/// activates atomically.
+/// Persisted via [`crate::state::StateBackend::cas_set`] so a
+/// multi-node fleet activates atomically.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UpstreamIdentityRecord {
     /// PUBLIC client-cert chain PEM (the shared fleet identity).
     pub cert_pem: String,
-    /// Reference to the private key (path / `${secret:...}`). Never
-    /// the key bytes.
+    /// Inline private-key PEM when the operator uploaded the key via
+    /// the console. Mutually exclusive with `key_ref`; takes precedence
+    /// when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_pem: Option<String>,
+    /// Reference to the private key (path / `${secret:...}`) for
+    /// file-based or secret-ref key sources. Used when `key_pem` is
+    /// absent. Kept for backwards compatibility with existing records.
+    #[serde(default)]
     pub key_ref: String,
 }
 
@@ -5918,7 +5930,7 @@ state: {{ backend: in_memory }}
             resolved.client_cert,
             CertSource::File("/etc/waf/client.pem".into())
         );
-        assert_eq!(resolved.client_key_ref, "/etc/waf/client.key");
+        assert_eq!(resolved.client_key, CertSource::File("/etc/waf/client.key".into()));
         assert!(resolved.verify);
         assert!(resolved.trust.is_none()); // webpki fallback
         assert!(!resolved.fingerprint.is_empty());
@@ -6098,7 +6110,7 @@ state: {{ backend: in_memory }}
             "state source must resolve to in-memory PEM, got {:?}",
             resolved.client_cert
         );
-        assert_eq!(resolved.client_key_ref, "/run/secrets/waf-client.key");
+        assert_eq!(resolved.client_key, CertSource::File("/run/secrets/waf-client.key".into()));
         assert!(resolved.fingerprint.contains("pem:"), "fingerprint must mark a PEM cert source");
     }
 
