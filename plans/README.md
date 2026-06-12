@@ -44,6 +44,17 @@ plans/
   with work still open: Phases 1–3 shipped (per-upstream L1 + L2/Redis-Cluster
   cache); **Phase 4 remaining** (`stale-if-error`, ETag revalidation).
 
+> **Archived 2026-06-12.** [`archive/jwt-and-smuggling-detection.md`](./archive/jwt-and-smuggling-detection.md)
+> shipped and left `future/`: the `jwt_inspection` detector (alg:none, jku/x5u
+> SSRF, x5c/jwk inline, kid traversal/SQLi, time-claim forge → block;
+> role-escalation log_only) plus the `header_injection` smuggling-hygiene rules
+> (`smuggling_cl_te`/`_multi_cl`/`_multi_te`/`_h2_forbidden`, attribution +
+> defense-in-depth). The two security-team source reports it answered also
+> resolved → [`issues/archived/`](./issues/archived/) (`JWT_ATTACK_REPORT.md`,
+> `HTTP_SMUGGLING_REPORT.md`), along with the velocity / detector-toggle /
+> config-lag fix and the Zero Trust page simplify. `future/` is now just the
+> world-class roadmap + `smart-caching.md`.
+
 > **Archived 2026-06-11.** The two design-only forward tracks shipped and moved
 > to `archive/`: [`archive/proxy-protocol.md`](./archive/proxy-protocol.md)
 > (PROXY-protocol real client IP behind an L4 LB — PR #26) and
