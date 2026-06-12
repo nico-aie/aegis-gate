@@ -207,7 +207,6 @@ pub fn simulate(
         tier: Tier::Low,
         failure_mode: aegis_core::tier::FailureMode::FailOpen,
         upstream: "simulator".into(),
-        auth_required: Vec::new(),
         pool_scheme: aegis_core::config::UpstreamScheme::Auto,
         tcp_destination_allowlist: Vec::new(),
         max_concurrent_tunnels_per_ip: 0,

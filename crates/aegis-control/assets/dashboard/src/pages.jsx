@@ -1309,6 +1309,8 @@ const DETECTOR_COLORS = {
   template_injection:  '#FB923C', // orange
   ssti:                '#FB923C',
   open_redirect:       '#38BDF8', // sky
+  jwt_inspection:      '#D946EF', // fuchsia
+  cookie_injection:    '#F59E0B', // amber
   header_injection:    '#B45309', // brown
   body_abuse:          '#84CC16', // lime
   brute_force:         '#E11D48', // rose
@@ -3216,6 +3218,10 @@ const MASK_CLASSES = [
   'sqli', 'xss', 'path_traversal', 'ssrf', 'header_injection',
   'body_abuse', 'recon', 'brute_force', 'command_injection',
   'template_injection', 'nosql_injection', 'open_redirect',
+  // 2026-06-12 (JWT report) — JWT attack-shape detector.
+  'jwt_inspection',
+  // 2026-06-12 (WS report P2) — cookie-injection detector (default OFF).
+  'cookie_injection',
   // 2026-05-19 — Phase F detectors promoted to first-class togglable
   // classes. Order matches DetectorClass::ALL on the backend.
   'behavior_signals', 'velocity', 'canary', 'ai',
@@ -3239,6 +3245,8 @@ const CLASS_DESCRIPTIONS = {
   template_injection: 'Server-side template injection (Jinja2, Twig, Mako, Freemarker, Velocity, SpEL, Handlebars).',
   nosql_injection: 'MongoDB-flavour operator injection (`?param[$ne]=foo`, `{$where:…}`).',
   open_redirect: 'Suspicious external URLs in `?next=` / `?redirect_uri=`. Allowlist via `cfg.detectors.open_redirect.allowed_domains`.',
+  jwt_inspection: 'JWT attack shapes in `Authorization: Bearer` / `Cookie` — alg:none, inline key material (x5c/jwk), kid traversal/SQLi, external jku/x5u, forged time claims. Detection-only (no signature check). Allowlist jku/x5u hosts via `cfg.detectors.jwt_inspection.jku_allowed_domains`.',
+  cookie_injection: 'SQLi / NoSQLi in SESSION cookie values (`sid`, `session`, `auth`, `token`, …). Tight patterns, scoped to session cookie names. DEFAULT OFF — cookie scanning is FP-prone (adtech cookies); opt in + observe before relying on it.',
   behavior_signals: 'Stateful per-IP signals — missing UA, missing Referer on mutations, zero-depth first-touch. DEFAULT OFF — designed to stack with OWASP detectors on bot-shaped traffic; turn on once you have real-IP traffic.',
   velocity: 'Cross-endpoint sequence engine — flags chains like login→deposit < 5 s, login→withdrawal < 5 s. DEFAULT ON; zero cost when the upstream has no matching routes.',
   canary: 'Operator-supplied recon tripwire (`/wp-admin`, `/.env`, …). DEFAULT OFF AND inert until you populate `cfg.risk.canary_paths` — enabling alone is a no-op.',
@@ -3262,6 +3270,8 @@ const CLASS_LABELS = {
   template_injection: 'Template injection',
   nosql_injection: 'NoSQL injection',
   open_redirect: 'Open redirect',
+  jwt_inspection: 'JWT inspection',
+  cookie_injection: 'Cookie injection',
   behavior_signals: 'Behavior signals',
   velocity: 'Velocity sequences',
   canary: 'Canary tripwire',
@@ -3368,10 +3378,22 @@ function DetectorMaskCard() {
     byClass[row.class].push(row);
   }
 
+  // 2026-06-12 (toggle clobber fix) — `pendingRef` is the SYNCHRONOUS
+  // cumulative set of in-flight flips, mirroring `optimistic`. The PUT
+  // sends the WHOLE mask, so it MUST be built from `baseMask` + ALL
+  // pending flips — not `baseMask` + the single new flip. Otherwise a
+  // second rapid toggle resends the stale `baseMask` (which still has the
+  // first detector ON, because the reload hasn't landed yet) and silently
+  // resurrects it: "I turned it off and it came back on." A ref (not the
+  // `optimistic` state) is needed because back-to-back toggles run before
+  // React re-renders, so the closed-over state would be stale.
+  const pendingRef = useRefP({});
+
   // Reconcile optimistic flips against fresh server state on every
   // reload: drop any optimistic entry that now matches the mask (the
   // PUT landed) and keep only those still mid-flight, so a slow PUT
-  // never snaps the switch back before the server confirms.
+  // never snaps the switch back before the server confirms. `pendingRef`
+  // is kept in lock-step so the next PUT's merge base is accurate.
   useEffectP(() => {
     const mask = api.data?.mask;
     if (!mask) return;
@@ -3380,6 +3402,7 @@ function DetectorMaskCard() {
       for (const cls of Object.keys(prev)) {
         if (!!mask[cls] !== prev[cls]) next[cls] = prev[cls];
       }
+      pendingRef.current = next;
       return Object.keys(next).length === Object.keys(prev).length ? prev : next;
     });
   }, [api.data]);
@@ -3395,6 +3418,38 @@ function DetectorMaskCard() {
     window.addEventListener('aegis:config-reload', onReload);
     return () => window.removeEventListener('aegis:config-reload', onReload);
   }, [api.reload]);
+
+  // 2026-06-12 (toggle UX) — `versionRef` is the SYNCHRONOUS source of
+  // truth for the `If-Match` config version, independent of the async GET
+  // reload. Each successful PUT returns the new `version`; we stamp it
+  // here immediately so a back-to-back toggle uses the fresh version
+  // instead of the stale `configVersion` prop (which only updates after a
+  // full reload lands). That stale prop was the cause of the spurious
+  // "mask changed under you" 412 churn. Kept monotonic so a slow reload
+  // carrying an older version never lowers it.
+  const versionRef = useRefP(configVersion);
+  useEffectP(() => {
+    if (configVersion == null) return;
+    if (versionRef.current == null || configVersion > versionRef.current) {
+      versionRef.current = configVersion;
+    }
+  }, [configVersion]);
+
+  // Debounced reload: collapse a burst of rapid toggles into ONE GET
+  // refresh at the end instead of a full (heavy) reload per flip — the
+  // optimistic switch state + versionRef already carry the truth, so the
+  // reload only reconciles derived data (signal counts, overrides).
+  const reloadTimerRef = useRefP(null);
+  const scheduleReload = () => {
+    if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
+    reloadTimerRef.current = setTimeout(() => {
+      reloadTimerRef.current = null;
+      api.reload && api.reload();
+    }, 700);
+  };
+  useEffectP(() => () => {
+    if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
+  }, []);
 
   if (!baseMask) {
     return (
@@ -3426,36 +3481,48 @@ function DetectorMaskCard() {
   async function commitToggle(cls, next, { undoable = true } = {}) {
     if (rowBusy || lockedClasses.includes(cls)) return;
     const label = CLASS_LABELS[cls] || cls;
-    setOptimistic(o => ({ ...o, [cls]: next }));
+    // Record this flip in the cumulative pending set (synchronous ref +
+    // render state) BEFORE building the PUT body.
+    pendingRef.current = { ...pendingRef.current, [cls]: next };
+    setOptimistic({ ...pendingRef.current });
     setRowBusy(cls);
     try {
       // F7 (2026-06-11) — commit against the freshest mask + version we
       // hold, echoing it in `If-Match`. On a 412 (the mask moved under
       // us — a concurrent toggle or a propagating change) re-fetch the
-      // authoritative state and replay JUST this one flip onto it, so
-      // the operator's intent survives without clobbering the other
-      // change. Bounded retries; falls back to the legacy unconditional
-      // PUT when the server doesn't supply a version (configVersion
-      // undefined → no If-Match → 409 handled by csrfMutate's retry).
-      let mask = baseMask;
-      let version = configVersion;
+      // authoritative state and replay our pending flips onto it.
+      // Bounded retries; falls back to the legacy unconditional PUT when
+      // the server supplies no version (→ 409 handled by csrfMutate).
+      //
+      // CLOBBER FIX (2026-06-12): the PUT body is the whole mask built
+      // from `baseMask` + ALL pending flips, NOT `baseMask` + this one
+      // flip. baseMask lags (the reload is async/debounced), so merging
+      // only the current flip would resend a stale value for any other
+      // detector the operator just changed — silently reverting it.
+      let base = baseMask;
+      let version = versionRef.current;
       let r;
       for (let attempt = 0; attempt < 3; attempt++) {
-        r = await window.detectorsPut({ mask: { ...mask, [cls]: next } }, { ifMatch: version });
+        const fullMask = { ...base, ...pendingRef.current };
+        r = await window.detectorsPut({ mask: fullMask }, { ifMatch: version });
         if (isHttpOk(r)) break;
         if (r && r.status === 412 && attempt < 2) {
           const fresh = await fetch('/api/detectors', { credentials: 'same-origin' })
             .then(res => (res.ok ? res.json() : null))
             .catch(() => null);
           if (fresh && fresh.mask) {
-            mask = fresh.mask;
+            base = fresh.mask;
             version = fresh.config_version;
+            if (typeof version === 'number') versionRef.current = version;
             continue;
           }
         }
         break;
       }
       if (isHttpOk(r)) {
+        // Stamp the new version SYNCHRONOUSLY so the next toggle doesn't
+        // race a stale If-Match. The PUT body carries `version`.
+        if (typeof r.version === 'number') versionRef.current = r.version;
         window.aegisToast(
           `${label} ${next ? 'enabled' : 'disabled'}`,
           'ok',
@@ -3465,9 +3532,14 @@ function DetectorMaskCard() {
             action: { label: 'Undo', onClick: () => commitToggle(cls, !next, { undoable: false }) },
           } : null,
         );
-        api.reload && api.reload();
+        // Optimistic state already shows the flip; reconcile derived data
+        // with a single debounced reload instead of a heavy GET per flip.
+        scheduleReload();
       } else {
-        setOptimistic(o => { const n = { ...o }; delete n[cls]; return n; });
+        // Roll back just this flip from both the ref and the render state.
+        const { [cls]: _drop, ...rest } = pendingRef.current;
+        pendingRef.current = rest;
+        setOptimistic({ ...rest });
         const why = r && r.status === 412
           ? 'mask changed under you — reloaded latest; try again'
           : errMsg(r);
@@ -3476,7 +3548,9 @@ function DetectorMaskCard() {
         api.reload && api.reload();
       }
     } catch (e) {
-      setOptimistic(o => { const n = { ...o }; delete n[cls]; return n; });
+      const { [cls]: _drop, ...rest } = pendingRef.current;
+      pendingRef.current = rest;
+      setOptimistic({ ...rest });
       window.aegisToast(`Toggle error: ${e.message || e}`, 'err');
     } finally {
       setRowBusy(null);
@@ -4673,15 +4747,14 @@ function PageTierConfig() {
                   Routes assigned to <span className="mono">{selected.name}</span> ({routesForSelected.length})
                 </div>
                 <table className="tbl tbl-compact">
-                  <thead><tr><th>Route ID</th><th>Host</th><th>Path</th><th>Match</th><th>Methods</th><th>Upstream</th><th title="MTLS-T11 — required client-identity kinds">Auth</th></tr></thead>
+                  <thead><tr><th>Route ID</th><th>Host</th><th>Path</th><th>Match</th><th>Methods</th><th>Upstream</th></tr></thead>
                   <tbody>
                     {routesForSelected.length === 0 && (
-                      <tr><td colSpan={7} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
+                      <tr><td colSpan={6} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
                         No routes assigned to this tier.
                       </td></tr>
                     )}
                     {routesForSelected.map(r => {
-                      const auth = r.auth_required || [];
                       return (
                         <tr key={r.id}>
                           <td className="mono">{r.id}</td>
@@ -4690,22 +4763,6 @@ function PageTierConfig() {
                           <td><span className="pill neutral">{r.match_type}</span></td>
                           <td className="mono dim">{r.methods.length === 0 ? 'ANY' : r.methods.join(', ')}</td>
                           <td className="mono">{r.upstream}</td>
-                          <td>
-                            {auth.length === 0 ? (
-                              <span className="pill" style={{ opacity: 0.65 }} title="Any identity admitted (default open)">open</span>
-                            ) : (
-                              auth.map(k => (
-                                <span
-                                  key={k}
-                                  className={`pill ${k === 'mtls' ? 'ok' : 'warn'}`}
-                                  style={{ marginRight: 4, fontSize: 10 }}
-                                  title={`auth_required includes "${k}" — only ${k} clients are admitted`}
-                                >
-                                  {k}
-                                </span>
-                              ))
-                            )}
-                          </td>
                         </tr>
                       );
                     })}
@@ -5739,6 +5796,15 @@ function MtlsModeCard() {
     ? window.useApi('/api/zero-trust/downstream/mode', { intervalMs: 10000, fallback: null })
     : { data: null };
   const [busy, setBusy] = useStateP(false);
+  // 2026-06-12 — optimistic local override so the buttons flip INSTANTLY on
+  // click. Previously the active state came only from `api.data` (a 10s
+  // poll), so a toggle didn't visually update until the next poll/reload —
+  // "very slow to update". The PUT already echoes the authoritative new
+  // mode (used below); this effect drops the optimistic value once the
+  // poll brings fresh server state, so a change from another operator still
+  // reconciles.
+  const [local, setLocal] = useStateP(null);
+  useEffectP(() => { setLocal(null); }, [api.data]);
 
   if (!api.data) {
     return (
@@ -5747,7 +5813,8 @@ function MtlsModeCard() {
       </div>
     );
   }
-  const { configured, override: ovr, effective, requires_restart } = api.data;
+  const view = local || api.data;
+  const { configured, override: ovr, effective, requires_restart } = view;
 
   async function setMode(target) {
     if (target === 'required') {
@@ -5756,6 +5823,8 @@ function MtlsModeCard() {
       );
       if (!ok) return;
     }
+    // Flip the button immediately (an override sets effective = target).
+    setLocal({ ...(local || api.data), override: target, effective: target });
     setBusy(true);
     try {
       const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
@@ -5766,14 +5835,20 @@ function MtlsModeCard() {
         credentials: 'same-origin',
       });
       if (!r.ok) throw new Error(`status ${r.status}`);
-      if (api.reload) api.reload();
+      // The PUT echoes the authoritative new mode — use it directly instead
+      // of a separate GET round-trip.
+      const j = await r.json().catch(() => null);
+      if (j && j.mode) setLocal(j.mode);
     } catch (e) {
-      window.toast && window.toast(`mTLS mode set failed: ${e.message}`, 'err');
+      setLocal(null); // revert the optimistic flip
+      (window.aegisToast || window.toast)?.(`mTLS mode set failed: ${e.message}`, 'err');
     } finally {
       setBusy(false);
     }
   }
   async function clearOverride() {
+    // Optimistically revert to the configured mode.
+    setLocal({ ...(local || api.data), override: null, effective: configured });
     setBusy(true);
     try {
       const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
@@ -5784,9 +5859,11 @@ function MtlsModeCard() {
         credentials: 'same-origin',
       });
       if (!r.ok) throw new Error(`status ${r.status}`);
-      if (api.reload) api.reload();
+      const j = await r.json().catch(() => null);
+      if (j && j.mode) setLocal(j.mode);
     } catch (e) {
-      window.toast && window.toast(`mTLS mode clear failed: ${e.message}`, 'err');
+      setLocal(null);
+      (window.aegisToast || window.toast)?.(`mTLS mode clear failed: ${e.message}`, 'err');
     } finally {
       setBusy(false);
     }
@@ -6345,9 +6422,8 @@ const ZT_IDENTITY_APPLIES =
 const ZT_ROTATION_PILL_TITLE = 'Rotated live — hot-applied fleet-wide, no restart';
 
 // Upstream WAF client identity — the shared fleet cert the WAF presents to
-// backends. Read-only metadata + a public-cert download, plus a reference-only
-// upload (PUBLIC cert + a key_ref) gated behind allow_ca_upload. The private
-// key never reaches the browser.
+// backends. Read-only metadata + a public-cert download, plus an upload modal
+// (PUBLIC cert + private key PEM) gated behind allow_ca_upload.
 function ZtIdentityCard() {
   const api = window.useApi('/api/zero-trust/upstream/identity', {
     intervalMs: 15000, fallback: { configured: false },
@@ -6361,21 +6437,73 @@ function ZtIdentityCard() {
   });
   const d = api.data || { configured: false };
   const [certPem, setCertPem] = useStateP('');
-  const [keyRef, setKeyRef] = useStateP('');
+  const [certFileName, setCertFileName] = useStateP('');
+  const [keyPem, setKeyPem] = useStateP('');
+  const [keyFileName, setKeyFileName] = useStateP('');
   const [busy, setBusy] = useStateP(false);
   const [showForm, setShowForm] = useStateP(false);
 
-  function onFile(e) {
+  // Real-time PEM validation helpers.
+  // Returns { ok, err } — err is null when valid or empty.
+  function validateCertPem(pem) {
+    const t = pem.trim();
+    if (!t) return { ok: false, err: null };
+    if (t.includes('PRIVATE KEY'))
+      return { ok: false, err: 'This looks like a private key — upload the PUBLIC certificate here' };
+    if (!t.includes('BEGIN CERTIFICATE'))
+      return { ok: false, err: 'Not a valid certificate PEM (missing BEGIN CERTIFICATE)' };
+    if (!t.includes('END CERTIFICATE'))
+      return { ok: false, err: 'Incomplete PEM — missing END CERTIFICATE' };
+    return { ok: true, err: null };
+  }
+
+  function validateKeyPem(pem) {
+    const t = pem.trim();
+    if (!t) return { ok: false, err: null };
+    if (t.includes('BEGIN CERTIFICATE'))
+      return { ok: false, err: 'This looks like a certificate — upload the PRIVATE KEY here' };
+    const hasBegin = t.includes('BEGIN PRIVATE KEY')
+      || t.includes('BEGIN RSA PRIVATE KEY')
+      || t.includes('BEGIN EC PRIVATE KEY');
+    if (!hasBegin)
+      return { ok: false, err: 'Not a valid private key PEM (expected BEGIN PRIVATE KEY / RSA / EC)' };
+    const hasEnd = t.includes('END PRIVATE KEY')
+      || t.includes('END RSA PRIVATE KEY')
+      || t.includes('END EC PRIVATE KEY');
+    if (!hasEnd)
+      return { ok: false, err: 'Incomplete PEM — missing END marker, file may be truncated' };
+    return { ok: true, err: null };
+  }
+
+  const certValid = validateCertPem(certPem);
+  const keyValid  = validateKeyPem(keyPem);
+  const canSave   = !busy && certValid.ok && keyValid.ok;
+
+  function onCertFile(e) {
     const f = e.target.files?.[0];
     if (!f) return;
+    setCertFileName(f.name);
     const reader = new FileReader();
     reader.onload = () => setCertPem(String(reader.result || ''));
     reader.readAsText(f);
   }
 
+  function onKeyFile(e) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setKeyFileName(f.name);
+    const reader = new FileReader();
+    reader.onload = () => setKeyPem(String(reader.result || ''));
+    reader.readAsText(f);
+  }
+
   async function save() {
-    if (!certPem.trim() || !keyRef.trim()) {
-      window.aegisToast('Paste the public cert and a key reference', 'warn');
+    if (!certValid.ok) {
+      window.aegisToast(certValid.err || 'Upload or paste the public certificate first', 'warn');
+      return;
+    }
+    if (!keyValid.ok) {
+      window.aegisToast(keyValid.err || 'Upload or paste the private key first', 'warn');
       return;
     }
     setBusy(true);
@@ -6383,13 +6511,14 @@ function ZtIdentityCard() {
       const r = await fetch('/api/zero-trust/upstream/identity', {
         method: 'PUT',
         headers: { 'content-type': 'application/json', 'x-csrf-token': ztCsrf() },
-        body: JSON.stringify({ cert_pem: certPem, key_ref: keyRef }),
+        body: JSON.stringify({ cert_pem: certPem, key_pem: keyPem }),
         credentials: 'same-origin',
       });
       const body = await r.json().catch(() => ({}));
       if (r.ok && body.ok) {
         window.aegisToast(d.configured ? 'Identity rotated' : 'Identity stored', 'ok');
-        setCertPem(''); setKeyRef(''); setShowForm(false);
+        setCertPem(''); setKeyPem(''); setCertFileName(''); setKeyFileName('');
+        setShowForm(false);
         api.reload && api.reload();
       } else {
         window.aegisToast(`Identity: ${body.message || body.error || ('HTTP ' + r.status)}`, 'err');
@@ -6472,41 +6601,121 @@ function ZtIdentityCard() {
             In-console upload is off. Set <code>zero_trust.upstream_identity</code> in
             YAML, or enable <code>allow_ca_upload</code>.
           </p>
-        ) : !showForm ? (
+        ) : (
           <button className="btn" onClick={() => setShowForm(true)}>
             {d.configured ? 'Rotate identity' : 'Set identity'}
           </button>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <textarea
-              value={certPem}
-              onChange={e => setCertPem(e.target.value)}
-              placeholder="-----BEGIN CERTIFICATE-----   (public cert chain only)"
-              rows={6}
-              style={{ ...fieldStyle, fontFamily: 'monospace', fontSize: 12, padding: 10 }}
-            />
-            <input
-              type="text"
-              value={keyRef}
-              onChange={e => setKeyRef(e.target.value)}
-              placeholder="key reference — e.g. ${secret:waf_client_key}"
-              style={fieldStyle}
-            />
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <input type="file" accept=".pem,.crt,.cer,application/x-pem-file" onChange={onFile} />
-              <button className="btn primary" disabled={busy || !certPem.trim() || !keyRef.trim()} onClick={save}>
-                {busy ? 'Saving…' : 'Save'}
-              </button>
-              <button className="btn ghost" disabled={busy} onClick={() => { setShowForm(false); setCertPem(''); setKeyRef(''); }}>
-                Cancel
-              </button>
-            </div>
-            <p style={{ fontSize: 12, ...muted, margin: 0 }}>
-              Only the public cert is stored; the private key stays on each node via the key reference.
-            </p>
-          </div>
         )}
       </div>
+
+      {showForm && (() => {
+        const close = () => {
+          if (!busy) {
+            setShowForm(false); setCertPem(''); setCertFileName('');
+            setKeyPem(''); setKeyFileName('');
+          }
+        };
+        const inp = {
+          width: '100%', boxSizing: 'border-box', fontSize: 13,
+          color: 'var(--ink)', background: 'var(--surface-2)', borderRadius: 6,
+        };
+        const label = { fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', marginBottom: 6, display: 'block' };
+        const fileBtn = { fontSize: 12, display: 'inline-block', flexShrink: 0 };
+        return (
+          <div className="modal-backdrop" onClick={close}>
+            <div className="modal" style={{ maxWidth: 560 }} onClick={e => e.stopPropagation()}>
+
+              <div className="modal-head">
+                <div className="modal-title">
+                  {d.configured ? 'Rotate WAF Client Identity' : 'Set WAF Client Identity'}
+                </div>
+                <button className="btn ghost" onClick={close} disabled={busy}>✕</button>
+              </div>
+
+              <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+                {/* ── Public Certificate ── */}
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink)' }}>Public Certificate <span style={{ color: 'var(--ink-mute)', fontWeight: 400 }}>(.pem / .crt)</span></span>
+                    {certValid.ok
+                      ? <span style={{ fontSize: 11, color: 'var(--ok)' }}>✓ valid {certFileName || 'PEM'}</span>
+                      : certValid.err
+                        ? <span style={{ fontSize: 11, color: 'var(--down)' }}>✗ {certValid.err}</span>
+                        : <span style={{ fontSize: 11, color: 'var(--warn)' }}>required</span>}
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+                    <label style={{ cursor: 'pointer' }}>
+                      <span className="btn" style={fileBtn}>📂 Choose cert file</span>
+                      <input type="file" accept=".pem,.crt,.cer,application/x-pem-file" onChange={onCertFile} style={{ display: 'none' }} />
+                    </label>
+                    <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>or paste below</span>
+                  </div>
+                  <textarea
+                    value={certPem}
+                    onChange={e => { setCertPem(e.target.value); setCertFileName(''); }}
+                    placeholder={'-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----'}
+                    rows={5}
+                    style={{
+                      ...inp, fontFamily: 'monospace', fontSize: 11, padding: 10, resize: 'vertical',
+                      border: certValid.ok ? '1px solid var(--ok)' : certValid.err ? '1px solid var(--down)' : '1px solid var(--hairline-strong)',
+                    }}
+                  />
+                </div>
+
+                {/* ── Private Key ── */}
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink)' }}>Private Key</span>
+                    {keyValid.ok
+                      ? <span style={{ fontSize: 11, color: 'var(--ok)' }}>✓ valid {keyFileName || 'PEM'}</span>
+                      : keyValid.err
+                        ? <span style={{ fontSize: 11, color: 'var(--down)' }}>✗ {keyValid.err}</span>
+                        : <span style={{ fontSize: 11, color: 'var(--warn)' }}>required</span>}
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+                    <label style={{ cursor: 'pointer' }}>
+                      <span className="btn" style={fileBtn}>📂 Choose key file</span>
+                      <input type="file" accept=".key,.pem,application/x-pem-file" onChange={onKeyFile} style={{ display: 'none' }} />
+                    </label>
+                    <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>or paste below</span>
+                  </div>
+                  <textarea
+                    value={keyPem}
+                    onChange={e => { setKeyPem(e.target.value); setKeyFileName(''); }}
+                    placeholder={'-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----'}
+                    rows={5}
+                    style={{
+                      ...inp, fontFamily: 'monospace', fontSize: 11, padding: 10, resize: 'vertical',
+                      border: keyValid.ok ? '1px solid var(--ok)' : keyValid.err ? '1px solid var(--down)' : '1px solid var(--hairline-strong)',
+                    }}
+                  />
+                </div>
+
+              </div>
+
+              <div className="modal-foot">
+                <button className="btn" onClick={close} disabled={busy}>Cancel</button>
+                <button
+                  className="btn primary"
+                  disabled={!canSave}
+                  onClick={save}
+                  title={
+                    certValid.err ? certValid.err
+                    : keyValid.err ? keyValid.err
+                    : !certValid.ok ? 'Upload or paste the public certificate'
+                    : !keyValid.ok ? 'Upload or paste the private key'
+                    : ''
+                  }
+                >
+                  {busy ? 'Saving…' : (d.configured ? 'Save & rotate' : 'Save identity')}
+                </button>
+              </div>
+
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -6588,7 +6797,6 @@ function ZtUpstreamPoolsCard() {
 
   async function uploadCert(poolName) {
     if (!pem.trim()) { window.aegisToast('Paste the backend cert first', 'warn'); return; }
-    if (!identityReady) { window.aegisToast('Set the WAF client identity first', 'warn'); return; }
     const bundle = poolBundleName(poolName);
     setBusy(poolName);
     try {
@@ -6602,8 +6810,7 @@ function ZtUpstreamPoolsCard() {
         window.aegisToast(`Cert upload: ${body.message || body.error || ('HTTP ' + r.status)}`, 'err');
         return;
       }
-      await applyPoolMtls(poolName, { enabled: true, trust: bundle });
-      window.aegisToast(`Backend cert pinned to '${poolName}' · mTLS enabled`, 'ok');
+      window.aegisToast(`Backend cert saved for '${poolName}'`, 'ok');
       setPem(''); setOpenPool(null);
       api.reload && api.reload();
       trustApi.reload && trustApi.reload();
@@ -6705,8 +6912,8 @@ function ZtUpstreamPoolsCard() {
                     <p style={{ fontSize: 13, color: 'var(--ink-mute)', marginTop: 0, marginBottom: 10, lineHeight: 1.5 }}>
                       Paste the public certificate that{' '}
                       <strong style={{ color: 'var(--ink)' }}>{openPool}</strong>'s backend
-                      presents. It's stored securely and pinned to this pool — saving also
-                      turns mTLS on.
+                      presents. The cert is saved to the config plane — use the toggle
+                      in the table to enable mTLS once ready.
                     </p>
                     <textarea
                       value={pem}
@@ -6726,10 +6933,10 @@ function ZtUpstreamPoolsCard() {
                 {canUpload && (
                   <button
                     className="btn primary"
-                    disabled={isBusy || !pem.trim() || !identityReady}
+                    disabled={isBusy || !pem.trim()}
                     onClick={() => uploadCert(openPool)}
                   >
-                    {isBusy ? 'Saving…' : 'Save & enable'}
+                    {isBusy ? 'Saving…' : 'Save'}
                   </button>
                 )}
               </div>
@@ -13469,13 +13676,6 @@ function RoutesTable({ poolNames, routesApi, pools, health, onEditPool, onDelete
                           ? <span className="pill" style={{ fontSize: 10 }}>{t}</span>
                           : <span style={{ color: 'var(--ink-dim)' }}>low</span>;
                       })()}</div>
-                      <div style={{ marginTop: 2 }}>
-                        {(r.auth_required || []).length === 0
-                          ? <span style={{ color: 'var(--ink-dim)' }}>open</span>
-                          : (r.auth_required || []).map(a => (
-                            <span key={a} className="pill" style={{ fontSize: 9, padding: '0 6px', marginRight: 3 }}>{a}</span>
-                          ))}
-                      </div>
                     </td>
                     <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }} onClick={e => e.stopPropagation()}>
                       <button className="btn btn-sm" onClick={() => openEdit(r)}>Edit</button>{' '}
@@ -13644,11 +13844,10 @@ function tlsFromScheme(scheme, fallbackTls) {
 // builder instead of two that drift) and the audit chain
 // honest (each pool create is its own `POOL_UPSERT` event).
 
-// Form-shape helpers — `methods` and `auth_required` are
-// **arrays** in the form draft so the checkbox UI can read /
-// write them naturally. `routeBodyFromDraft` accepts either
-// shape (legacy comma-string OR fresh array) so older callers
-// keep working.
+// Form-shape helpers — `methods` is an **array** in the form draft so
+// the checkbox UI can read / write it naturally. `routeBodyFromDraft`
+// accepts either shape (legacy comma-string OR fresh array) so older
+// callers keep working.
 // Translate the legacy "catch_all" tier name (still accepted by the
 // backend as a serde alias) into the canonical "low" so the modal
 // dropdown's selected-value logic picks the right option.
@@ -13665,7 +13864,6 @@ function emptyRouteDraft() {
     methods: [],
     upstream: '',
     tier_override: 'low',
-    auth_required: [],
     default: false,
     enabled: true,
     // 2026-05-12 — strip the route prefix on forward by default.
@@ -13683,7 +13881,6 @@ function routeToDraft(r) {
     methods: r.methods || [],
     upstream: r.upstream || '',
     tier_override: normalizeTier(r.tier_override),
-    auth_required: r.auth_required || [],
     default: !!r.default,
     enabled: r.enabled !== false, // default to true if missing
     // 2026-05-12 — `strip_prefix` defaults to `true` server-side
@@ -13701,7 +13898,6 @@ function routeBodyFromDraft(d) {
     return a.map(s => s.trim()).filter(Boolean).map(s => lc ? s.toLowerCase() : s.toUpperCase());
   };
   const methods = toArray(d.methods, false);
-  const auth_required = toArray(d.auth_required, true);
   const body = {
     id: d.id.trim(),
     path: d.path.trim() || '/',
@@ -13719,7 +13915,6 @@ function routeBodyFromDraft(d) {
   // (defaulting to 'low'), so always send it. Backend accepts
   // critical | high | medium | low (with catch_all kept as alias).
   if (d.tier_override) body.tier_override = d.tier_override;
-  if (auth_required.length > 0) body.auth_required = auth_required;
   return body;
 }
 
@@ -13728,10 +13923,6 @@ function routeBodyFromDraft(d) {
 // Operators rarely need anything else; if they do, fall back to
 // editing YAML.
 const ROUTE_METHOD_CHOICES = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'];
-const ROUTE_AUTH_CHOICES = [
-  ['mtls',      'mTLS — require an mTLS-authenticated client'],
-  ['anonymous', 'Anonymous — admit unauthenticated clients (note: making the route public)'],
-];
 
 function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, onCancel, busy, saveError, clearSaveError, cfgReload }) {
   const [d, setD] = useStateP(() => ({
@@ -13739,9 +13930,6 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
     methods: typeof initial.methods === 'string'
       ? initial.methods.split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
       : (initial.methods || []),
-    auth_required: typeof initial.auth_required === 'string'
-      ? initial.auth_required.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
-      : (initial.auth_required || []),
   }));
   const isAdd = mode === 'add';
   const idClash = isAdd && existingIds.includes(d.id.trim());
@@ -13770,8 +13958,7 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
   const [showAdvanced, setShowAdvanced] = useStateP(
     !isAdd && (
       (d.match_type && d.match_type !== 'prefix') ||
-      d.tier_override ||
-      (d.auth_required && d.auth_required.length > 0)
+      d.tier_override
     )
   );
 
@@ -14020,30 +14207,9 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
                   </select>
                 </div>
               </div>
-              <div className="form-row">
-                <label style={{ fontSize: 11 }}>
-                  Required client identity{' '}
-                  <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>
-                    (none = open route)
-                  </span>
-                </label>
-                <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
-                  {ROUTE_AUTH_CHOICES.map(([k]) => {
-                    const on = (d.auth_required || []).includes(k);
-                    return (
-                      <button
-                        key={k}
-                        type="button"
-                        onClick={() => toggleSet('auth_required', k)}
-                        className={`pill ${on ? 'ok' : 'neutral'}`}
-                        style={{ fontSize: 11, padding: '3px 10px', cursor: 'pointer' }}
-                      >
-                        {on && '✓ '}{k}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
+              {/* 2026-06-12 — per-route "Required client identity"
+                  (auth_required) removed; client mTLS is now owned by the
+                  unified Zero Trust page (plane-level cert verification). */}
 
               {/* PR2 — default + enabled toggles. */}
               <div className="form-row" style={{ display: 'flex', gap: 16, alignItems: 'flex-start', marginTop: 8 }}>

@@ -3,7 +3,9 @@ pub mod body_abuse;
 pub mod brute_force;
 pub mod canary;
 pub mod command_injection;
+pub mod cookie_injection;
 pub mod header_injection;
+pub mod jwt_inspection;
 pub mod mask;
 pub mod nosql_injection;
 pub mod open_redirect;
@@ -527,6 +529,25 @@ pub fn default_detectors_with(
         Box::new(open_redirect::OpenRedirectDetector::new(
             cfg.open_redirect.allowed_domains.clone(),
         )),
+        // 2026-06-12 (JWT report, Phase A1) — JWT attack-shape
+        // detector. Decodes the token header from `Authorization:
+        // Bearer` / `Cookie` and flags malicious structure (alg:none,
+        // inline key material, kid traversal/SQLi). Detection-only —
+        // no signature verification (that stays in the gateway). Not
+        // yet a `DetectorClass`, so it runs unconditionally
+        // (`mask.is_enabled_id` returns true for unknown ids); the
+        // 2026-06-12 (Phase A2) — now a first-class `DetectorClass`
+        // (runtime toggle + per-tier mask + config). The `jku`/`x5u`
+        // external-host rule reads the operator allowlist; empty =
+        // strict (any external key-set URL flags).
+        Box::new(jwt_inspection::JwtInspectionDetector::new(
+            cfg.jwt_inspection.jku_allowed_domains.clone(),
+            cfg.jwt_inspection.flag_privileged_roles,
+        )),
+        // 2026-06-12 (WS report P2) — SQLi/NoSQLi in session cookies.
+        // Gated by the `CookieInjection` mask bit (default OFF), so it's
+        // inert until an operator opts in.
+        Box::new(cookie_injection::CookieInjectionDetector),
     ]
 }
 
@@ -785,8 +806,36 @@ mod tests {
         let d = default_detectors();
         // sqli + xss + path_traversal + ssrf + header_injection
         // + body_abuse + recon + brute_force + command_injection
-        // + template_injection + nosql_injection + open_redirect.
-        assert_eq!(d.len(), 12);
+        // + template_injection + nosql_injection + open_redirect
+        // + jwt_inspection + cookie_injection.
+        assert_eq!(d.len(), 14);
+    }
+
+    /// Drift guard (VELOCITY_SEQUENCE_BUG_REPORT, 2026-06-12). Every
+    /// detector the proxy registers must have an `id()` that maps back
+    /// to a `DetectorClass`; otherwise `mask.is_enabled_id(d.id())`
+    /// falls through to the unknown-id → `true` path and the detector
+    /// runs UNCONDITIONALLY, silently bypassing the operator's mask.
+    /// (That was the velocity bug: `id()` was "velocity_sequence" but
+    /// the class is "velocity".) This fails the build the next time an
+    /// `id()` drifts from its class.
+    #[test]
+    fn all_registered_detectors_map_to_a_class() {
+        // Force-enable the opt-in stateful detectors so the canary
+        // constructor registers all of them (velocity, behavior_signals).
+        let cfg = aegis_core::config::DetectorsConfig {
+            behavior_signals: aegis_core::config::DetectorToggle { enabled: true },
+            velocity: aegis_core::config::DetectorToggle { enabled: true },
+            ..aegis_core::config::DetectorsConfig::default()
+        };
+        let canary_paths = canary::CanaryPaths::new(&[]);
+        for d in default_detectors_with_canary(&cfg, &canary_paths) {
+            assert!(
+                DetectorClass::from_id(d.id()).is_some(),
+                "detector '{}' has no matching DetectorClass — mask gating silently no-ops",
+                d.id(),
+            );
+        }
     }
 
     #[test]

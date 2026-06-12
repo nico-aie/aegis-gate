@@ -96,10 +96,10 @@ pub(crate) async fn handle_data_request(
     bus: &AuditBus,
     upstream_ctx: &Arc<crate::proxy::ProxyContext>,
     detector_hit_metrics: &aegis_control::metrics::detector_hits::DetectorHitMetrics,
-    // MTLS-T4 — per-connection client identity. Plain-HTTP +
-    // anonymous-mTLS connections pass `&ClientIdentity::Anonymous`;
-    // the policy gate below blocks the request if the resolved
-    // route's `auth_required` excludes that identity kind.
+    // Per-connection client identity (mTLS principal or Anonymous).
+    // 2026-06-12 — the per-route `auth_required` gate that read this was
+    // removed; client mTLS is now enforced plane-level by Zero Trust.
+    // Threaded for audit + future per-request zero-trust use.
     identity: &aegis_core::ClientIdentity,
     // 2026-05-18 (QC TLS wire-up — F-CRITICAL-010 / 014 / 015
     // activation): post-handshake TLS fingerprint from the accept
@@ -1502,7 +1502,11 @@ pub(crate) async fn forward_allow_to_upstream(
     parts: http::request::Parts,
     body_bytes: Bytes,
     ctx: &Arc<crate::proxy::ProxyContext>,
-    identity: &aegis_core::ClientIdentity,
+    // 2026-06-12 — the per-route `auth_required` gate that consumed the
+    // client identity here was removed (client mTLS is now Zero Trust,
+    // plane-level). Kept threaded through the chain for future per-request
+    // zero-trust needs; currently unused at this leaf.
+    _identity: &aegis_core::ClientIdentity,
     route_latency_hist: &aegis_control::metrics::route_latency::RouteLatencyHistogram,
     route_activity: &aegis_control::metrics::route_activity::RouteActivityWindow,
     request_start: std::time::Instant,
@@ -1591,38 +1595,10 @@ pub(crate) async fn forward_allow_to_upstream(
     // DashMap-shard lookup + one atomic fetch_add.
     route_activity.record(&route_ctx.route_id);
 
-    // MTLS-T4 — route-scoped client-identity gate.
-    //
-    // `auth_required` empty → any identity admitted (default
-    // open). Non-empty → the identity's `kind()` must appear in
-    // the list. Mismatch returns 403 with rule_id
-    // `mtls_required`; the contract decision is `block` so
-    // upstream rate-limit / risk surfaces still see the
-    // rejection. Body is minimal — operators read the audit
-    // chain for the principal that was rejected.
-    if !route_ctx.auth_required.is_empty()
-        && !route_ctx
-            .auth_required
-            .iter()
-            .any(|kind| kind == identity.kind())
-    {
-        tracing::Span::current().record("outcome", "mtls-required");
-        tracing::debug!(
-            route_id = %route_ctx.route_id,
-            required = ?route_ctx.auth_required,
-            actual_kind = identity.kind(),
-            principal = ?identity.principal(),
-            "blocked: route requires authenticated identity",
-        );
-        let resp = Response::builder()
-            .status(hyper::StatusCode::FORBIDDEN)
-            .header("content-type", "text/plain; charset=utf-8")
-            .body(Full::new(Bytes::from(
-                "forbidden: route requires authenticated client\n",
-            )))
-            .unwrap();
-        return (resp, DecisionTag::block("mtls_required"));
-    }
+    // 2026-06-12 — the MTLS-T4 route-scoped client-identity gate
+    // (`route.auth_required`) was removed. Client mTLS is now enforced by
+    // the unified Zero Trust downstream config at the listener-plane level
+    // (`zero_trust.downstream.mode` + `apply_to`), not per route.
 
     // 2026-05-17 F-CRITICAL-001 (control audit) — operator rule
     // evaluator. Round-1 "Tính hiệu lực" mandate: a rule saved via
@@ -1845,15 +1821,17 @@ pub(crate) async fn forward_allow_to_upstream(
             );
         };
 
+        // 2026-06-12 — WS frame inspection is ON BY DEFAULT: every WS
+        // connection is inspected (enforce) unless the route explicitly
+        // opted out with `ws_inspect: { enabled: false }`. `resolve`
+        // returns the default-on posture when there's no per-route block.
+        let effective_ws_inspect =
+            aegis_core::config::WsInspectConfig::resolve(route_ctx.ws_inspect.as_ref());
         // WS-MSG5 — strip `permessage-deflate` from the forwarded
-        // handshake when this route inspects frames, so the negotiated
-        // connection is uncompressed (compressed frames can't be
-        // decoded for inspection in v1).
-        let strip_ws_extensions = route_ctx
-            .ws_inspect
-            .as_ref()
-            .map(|c| c.is_active())
-            .unwrap_or(false);
+        // handshake when this connection inspects frames, so the
+        // negotiated connection is uncompressed (compressed frames can't
+        // be decoded for inspection in v1).
+        let strip_ws_extensions = effective_ws_inspect.is_active();
         let upstream_handshake = match crate::proto::ws_forward::forward_websocket_upgrade(
             &parts.method,
             &parts.uri,
@@ -1905,9 +1883,10 @@ pub(crate) async fn forward_allow_to_upstream(
             let bus_for_task = bus.clone();
             let route_id_for_task = route_ctx.route_id.clone();
             let upstream_addr = member.addr;
-            // WS-MSG2 — per-route frame-inspection config moved into the
-            // bridge task. `None` / disabled ⇒ the zero-copy path below.
-            let ws_inspect_for_task = route_ctx.ws_inspect.clone();
+            // WS-MSG2 — effective (default-on) frame-inspection config
+            // moved into the bridge task. `enabled: false` ⇒ the zero-copy
+            // path below; otherwise the inspecting bridge runs.
+            let ws_inspect_for_task = effective_ws_inspect.clone();
             // WS-MSG3 — detector handles + the synthetic-view context for
             // the inspecting bridge, all moved into the spawned task.
             // `ws_detectors`/`ws_mask` are `None` on builds that don't
@@ -1975,16 +1954,12 @@ pub(crate) async fn forward_allow_to_upstream(
                                 return;
                             }
                         }
-                        // WS-MSG2 — when the route opts into frame
-                        // inspection, run the parsing bridge; otherwise
-                        // the original zero-copy tunnel, byte-for-byte.
-                        let (c2u, u2c) = if let Some(ws_cfg) = ws_inspect_for_task
-                            .as_ref()
-                            .filter(|c| c.is_active())
-                        {
-                            let bridge_cfg = crate::proto::ws_inspect::WsBridgeConfig {
-                                max_message_bytes: ws_cfg.max_message_bytes,
-                            };
+                        // WS-MSG2 — inspect every WS connection by default
+                        // (the parsing bridge); a route that opted out
+                        // (`enabled: false`) falls back to the original
+                        // zero-copy tunnel, byte-for-byte.
+                        let (c2u, u2c) = if ws_inspect_for_task.is_active() {
+                            let ws_cfg = &ws_inspect_for_task;
                             // WS-MSG3 — per-message inspector: build a
                             // synthetic RequestView from the handshake
                             // context, run the body detectors over the
@@ -1997,6 +1972,13 @@ pub(crate) async fn forward_allow_to_upstream(
                                 ws_cfg.mode,
                                 aegis_core::config::WsInspectMode::Enforce
                             );
+                            let bridge_cfg = crate::proto::ws_inspect::WsBridgeConfig {
+                                max_message_bytes: ws_cfg.max_message_bytes,
+                                // 2026-06-12 — fail-closed (WS 1009) over the
+                                // inspection cap in enforce; forward + meter
+                                // the skip in log_only.
+                                over_cap_close: enforce,
+                            };
                             let inspector = move |payload: &[u8]| {
                                 use crate::proto::ws_inspect::WsVerdict;
                                 let (Some(detectors), Some(mask)) =

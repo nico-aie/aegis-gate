@@ -104,4 +104,4 @@ Existing WebSocket routes are byte-for-byte unchanged.
   `aegis_websocket_active`.
 
 Design + phase history:
-[`plans/future/websocket-message-inspection.md`](../../plans/future/websocket-message-inspection.md).
+[`plans/archive/websocket-message-inspection.md`](../../plans/archive/websocket-message-inspection.md).

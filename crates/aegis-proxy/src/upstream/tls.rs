@@ -72,8 +72,6 @@ pub fn build_upstream_client_config(
 pub fn client_config_from_resolved(
     m: &aegis_core::config::UpstreamMtlsResolved,
 ) -> Result<rustls::ClientConfig, Box<dyn std::error::Error + Send + Sync>> {
-    use aegis_core::config::CertSource;
-
     let mut root_store = rustls::RootCertStore::empty();
     match &m.trust {
         Some(src) => {
@@ -96,10 +94,9 @@ pub fn client_config_from_resolved(
     if certs.is_empty() {
         return Err("upstream_mtls: empty client cert chain".into());
     }
-    // The private key is ALWAYS a reference resolved here — never
-    // carried in config or the resolved struct. (P4 reference-only:
-    // even state-source identities keep the key as a `key_ref`.)
-    let key = load_key(Path::new(&m.client_key_ref))?;
+    // The private key is either a file path or inline PEM (when the
+    // operator uploaded the key via the console).
+    let key = key_from_source(&m.client_key)?;
     let mut client_config = rustls::ClientConfig::builder()
         .with_root_certificates(root_store)
         .with_client_auth_cert(certs, key)?;
@@ -163,6 +160,22 @@ fn load_key(
     let mut reader = BufReader::new(file);
     rustls_pemfile::private_key(&mut reader)?
         .ok_or_else(|| format!("no private key found in {}", path.display()).into())
+}
+
+/// Load a private key from a [`CertSource`] — a file on disk or
+/// in-memory PEM (console-uploaded key via the Rotate Identity modal).
+fn key_from_source(
+    src: &aegis_core::config::CertSource,
+) -> Result<PrivateKeyDer<'static>, Box<dyn std::error::Error + Send + Sync>> {
+    use aegis_core::config::CertSource;
+    match src {
+        CertSource::File(path) => load_key(path),
+        CertSource::Pem(pem) => {
+            let mut reader = BufReader::new(pem.as_bytes());
+            rustls_pemfile::private_key(&mut reader)?
+                .ok_or_else(|| "no private key found in inline PEM".into())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -487,7 +500,7 @@ mod tests {
         // WAF client config: present our cert, but TRUST only CA_B.
         let resolved = UpstreamMtlsResolved {
             client_cert: aegis_core::config::CertSource::File(cli_cert_path.into()),
-            client_key_ref: cli_key_path,
+            client_key: aegis_core::config::CertSource::File(cli_key_path.into()),
             trust: Some(aegis_core::config::CertSource::File(ca_b_path.into())),
             verify: true,
             allowed_sans: Vec::new(),
@@ -507,10 +520,8 @@ mod tests {
     }
 
     /// P4 foundation — `client_config_from_resolved` accepts in-memory
-    /// PEM material (`CertSource::Pem`) for both the client cert and
-    /// the trust anchor, not just files. This is what a state-backed
-    /// identity (cert materialized from the config plane) will use; the
-    /// private key still comes from a `key_ref` on disk (reference-only).
+    /// PEM material (`CertSource::Pem`) for the client cert and trust anchor.
+    /// The key is still file-backed here; inline key PEM is tested separately.
     #[test]
     fn client_config_from_resolved_accepts_pem_source() {
         use aegis_core::config::{CertSource, UpstreamMtlsResolved};
@@ -518,11 +529,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         // (ca_pem, leaf_cert_pem, leaf_key_pem, _ca_key_pem)
         let (ca_pem, cert_pem, key_pem, _) = generate_ca_and_leaf(&["waf"]);
-        // Key stays a file ref (reference-only); cert + trust are PEM.
         let key_path = write_pem(&dir, "waf.key", &key_pem);
         let resolved = UpstreamMtlsResolved {
             client_cert: CertSource::Pem(cert_pem),
-            client_key_ref: key_path,
+            client_key: CertSource::File(key_path.into()),
             trust: Some(CertSource::Pem(ca_pem)),
             verify: true,
             allowed_sans: Vec::new(),

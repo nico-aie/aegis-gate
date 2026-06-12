@@ -633,6 +633,49 @@ impl ProxyConfig {
     }
 }
 
+/// P1-XFF (2026-06-12) — a `trusted_proxies` CIDR is **unsafe** to trust
+/// when it's a default route (`0.0.0.0/0`, `::/0`). Trusting `X-Forwarded-
+/// For` (or PROXY-protocol asserted IPs) from the entire internet lets any
+/// client forge the client IP and bypass rate-limit, IP blocklist, per-IP
+/// risk, and GeoIP. Rejected at boot by [`WafConfig::validate`] so the
+/// spoof vector is closed by construction, not just by the empty-list
+/// default.
+///
+/// NOTE: loopback (`127.0.0.1/32`, `::1`) is intentionally **allowed** —
+/// it's the legitimate same-host front-WAF sidecar pattern
+/// (`config/cluster-proxy.yaml`), where the localhost peer is a trusted
+/// component asserting the real client IP via PROXY protocol. An operator
+/// must not list loopback unless that localhost peer is genuinely trusted.
+pub fn is_unsafe_trusted_proxy(net: &ipnet::IpNet) -> bool {
+    net.prefix_len() == 0
+}
+
+#[cfg(test)]
+mod trusted_proxy_guard_tests {
+    use super::is_unsafe_trusted_proxy;
+
+    #[test]
+    fn rejects_default_route_wildcards() {
+        for c in ["0.0.0.0/0", "::/0"] {
+            assert!(
+                is_unsafe_trusted_proxy(&c.parse().unwrap()),
+                "{c} (trust the whole internet) must be rejected",
+            );
+        }
+    }
+
+    #[test]
+    fn allows_narrow_and_loopback_cidrs() {
+        // Loopback is allowed (PROXY-protocol sidecar); narrow LB CIDRs too.
+        for c in ["10.0.0.0/8", "192.168.1.5/32", "172.16.0.0/12", "fc00::/7", "127.0.0.1/32", "::1/128"] {
+            assert!(
+                !is_unsafe_trusted_proxy(&c.parse().unwrap()),
+                "{c} must be allowed",
+            );
+        }
+    }
+}
+
 /// Adaptive load-shedder knobs. See
 /// `crates/aegis-proxy/src/shed.rs` for the algorithm.
 #[derive(Clone, Debug, Deserialize)]
@@ -1048,10 +1091,25 @@ impl WafConfig {
         // (`ProxyConfig::parsed_trusted_proxies`) can assume well-formed
         // input. An empty list is valid (XFF ignored — the safe default).
         for cidr in &self.proxy.trusted_proxies {
-            if cidr.trim().parse::<ipnet::IpNet>().is_err() {
+            let net = match cidr.trim().parse::<ipnet::IpNet>() {
+                Ok(n) => n,
+                Err(_) => {
+                    return Err(crate::error::WafError::Config(format!(
+                        "proxy.trusted_proxies: '{cidr}' is not a valid CIDR \
+                         (expected e.g. 10.0.0.0/8, 192.168.1.5/32, fc00::/7)",
+                    )));
+                }
+            };
+            // P1-XFF (2026-06-12) — reject a default-route CIDR. Trusting
+            // X-Forwarded-For from the whole internet lets any client spoof
+            // the client IP and bypass rate-limit / blocklist / risk /
+            // GeoIP. Closes the spoof vector by construction.
+            if is_unsafe_trusted_proxy(&net) {
                 return Err(crate::error::WafError::Config(format!(
-                    "proxy.trusted_proxies: '{cidr}' is not a valid CIDR \
-                     (expected e.g. 10.0.0.0/8, 192.168.1.5/32, fc00::/7)",
+                    "proxy.trusted_proxies: '{cidr}' (default route) is too broad to \
+                     trust for X-Forwarded-For — it lets any client spoof the client IP. \
+                     List the load balancer's NARROW CIDR instead, or leave the list \
+                     empty (XFF ignored — the safe default).",
                 )));
             }
         }
@@ -1486,21 +1544,12 @@ pub struct RouteConfig {
     pub failure_mode: Option<FailureModeConfig>,
     #[serde(default)]
     pub quota: Option<QuotaConfig>,
-    /// MTLS-T4 — required client-identity kinds. Empty (default)
-    /// means "any identity admitted" — including `Anonymous`,
-    /// preserving the current open-route behaviour.
-    /// Non-empty acts as an allow-list against
-    /// [`crate::ClientIdentity::kind()`]:
-    /// - `["mtls"]` — only mTLS-authenticated clients.
-    /// - `["spiffe"]` — only SPIFFE-id clients.
-    /// - `["mtls", "spiffe"]` — either authenticated kind.
-    /// - Including `"anonymous"` is equivalent to leaving the
-    ///   list empty; validation flags it as a likely typo.
-    ///
-    ///   Mismatches return 403 with an audit reason; the contract
-    ///   `action` is `block`, `rule_id = mtls_required`.
-    #[serde(default)]
-    pub auth_required: Vec<String>,
+    // 2026-06-12 — `auth_required` (MTLS-T4 per-route client-identity
+    // gate) removed: client mTLS is now owned by the unified Zero Trust
+    // downstream config (`zero_trust.downstream`: plane-level cert
+    // verification + SAN allowlist via `apply_to`), not per route. Old
+    // config docs that still carry `auth_required` parse fine — RouteConfig
+    // is not `deny_unknown_fields`, so the stale key is ignored.
     /// TCP-T1 — destination allowlist for CONNECT-method tunnels.
     /// Only consulted when this route's pool has
     /// `scheme: tcp`. Empty (default) = closed: every CONNECT
@@ -1559,12 +1608,14 @@ fn default_route_enabled() -> bool {
 #[serde(rename_all = "snake_case")]
 pub enum WsInspectMode {
     /// Emit the `websocket_frame_block` audit event but forward the
-    /// frame anyway (`action: would_block`). Default on first enable so
-    /// operators can tune the mask/threshold before enforcing.
-    #[default]
+    /// frame anyway (`action: would_block`). Opt-in for operators who
+    /// want to observe before enforcing.
     LogOnly,
     /// Drop the offending message and close the socket with WS Close
-    /// `1008` (policy violation).
+    /// `1008` (policy violation). **Default** (2026-06-12): WS frame
+    /// inspection is on-by-default and blocks, mirroring how HTTP
+    /// requests are inspected without per-route opt-in.
+    #[default]
     Enforce,
 }
 
@@ -1578,9 +1629,10 @@ pub struct WsInspectConfig {
     /// `log_only` (default) or `enforce`.
     #[serde(default)]
     pub mode: WsInspectMode,
-    /// Reassembled-message cap across fragments; a message over this
-    /// closes the connection with WS Close `1009`. 0 ⇒ the codec
-    /// default (`MAX_MESSAGE_BYTES`, 4 MiB).
+    /// Reassembled-message inspection cap across fragments. In enforce a
+    /// message over this fail-closes (WS `1009`); in log_only it's
+    /// forwarded un-inspected + metered. `0` ⇒ the small default cap
+    /// (256 KiB) — see `ws_inspect::DEFAULT_INSPECT_MAX`.
     #[serde(default)]
     pub max_message_bytes: usize,
 }
@@ -1589,6 +1641,74 @@ impl WsInspectConfig {
     /// True when this route should run the inspecting bridge.
     pub fn is_active(&self) -> bool {
         self.enabled
+    }
+
+    /// 2026-06-12 — the default-on posture used when a route has NO
+    /// explicit `ws_inspect` block (the common case): inspect every
+    /// WebSocket connection in enforce mode at the codec-default cap.
+    /// WS frame inspection is on by default, like HTTP request inspection.
+    pub fn default_on() -> Self {
+        Self {
+            enabled: true,
+            mode: WsInspectMode::Enforce,
+            max_message_bytes: 0,
+        }
+    }
+
+    /// Resolve the effective inspection config for a route: the explicit
+    /// per-route block if present, else [`Self::default_on`]. A route can
+    /// opt OUT of inspection with `ws_inspect: { enabled: false }`.
+    pub fn resolve(route: Option<&WsInspectConfig>) -> WsInspectConfig {
+        route.cloned().unwrap_or_else(Self::default_on)
+    }
+}
+
+#[cfg(test)]
+mod ws_inspect_default_on_tests {
+    use super::*;
+
+    #[test]
+    fn ws_inspect_mode_defaults_to_enforce() {
+        // 2026-06-12 — enabling WS inspection must BLOCK by default, not
+        // log-only, so default-on actually protects.
+        assert_eq!(WsInspectMode::default(), WsInspectMode::Enforce);
+    }
+
+    #[test]
+    fn default_on_is_enabled_and_enforce() {
+        let c = WsInspectConfig::default_on();
+        assert!(c.is_active(), "default-on must inspect");
+        assert_eq!(c.mode, WsInspectMode::Enforce);
+        assert_eq!(c.max_message_bytes, 0, "0 = codec default cap");
+    }
+
+    #[test]
+    fn resolve_none_inspects_by_default() {
+        // No per-route ws_inspect block (the common case) → inspect.
+        assert!(WsInspectConfig::resolve(None).is_active());
+    }
+
+    #[test]
+    fn resolve_explicit_disable_opts_out() {
+        let off = WsInspectConfig {
+            enabled: false,
+            mode: WsInspectMode::Enforce,
+            max_message_bytes: 0,
+        };
+        assert!(
+            !WsInspectConfig::resolve(Some(&off)).is_active(),
+            "explicit `enabled: false` is the opt-out escape hatch",
+        );
+    }
+
+    #[test]
+    fn resolve_explicit_enable_inspects() {
+        let on = WsInspectConfig {
+            enabled: true,
+            mode: WsInspectMode::Enforce,
+            max_message_bytes: 0,
+        };
+        assert!(WsInspectConfig::resolve(Some(&on)).is_active());
     }
 }
 
@@ -1771,11 +1891,9 @@ pub fn resolve_upstream_mtls(
     if !m.enabled {
         return None;
     }
-    // Shared identity only (per-pool override is P4+). The private
-    // key reference is guaranteed present by validation (file) or by
-    // boot materialization from the config plane (state).
+    // Shared identity only (per-pool override is P4+). Both the cert
+    // and key must be resolvable.
     let id = identity?;
-    let client_key_ref = id.key_ref.clone()?;
     // The PUBLIC client cert is either a file on disk (file source)
     // or in-memory PEM materialized from the config plane (state
     // source — `cert_pem` injected at boot). State source without a
@@ -1786,6 +1904,12 @@ pub fn resolve_upstream_mtls(
         Some(pem) => CertSource::Pem(pem),
         None => CertSource::File(id.cert_path.clone()?),
     };
+    // The private key: inline PEM when the operator uploaded it via
+    // the console; otherwise a file path resolved at client-build time.
+    let client_key = match id.key_pem.clone() {
+        Some(pem) => CertSource::Pem(pem),
+        None => CertSource::File(id.key_ref.clone()?.into()),
+    };
     // Backend-CA trust anchor: a console-uploaded bundle materialized
     // from the config plane (state — `trust_pem` injected at boot) or
     // a file on disk; `None` ⇒ public webpki roots.
@@ -1793,14 +1917,12 @@ pub fn resolve_upstream_mtls(
         Some(pem) => Some(CertSource::Pem(pem)),
         None => m.trust.clone().map(CertSource::File),
     };
-    // Stable, transparent fingerprint over the public inputs (the
-    // key_ref is a path, not key bytes). Part of `PoolKey` so a
-    // config change rebuilds the cached client. Content-based
-    // hashing (same-path rotation) is P5.
+    // Stable fingerprint over the effective material. Part of `PoolKey`
+    // so a config change rebuilds the cached client.
     let fingerprint = format!(
         "v1|cert={}|key={}|trust={}|verify={}|sans={}",
         cert_source_fingerprint(&client_cert),
-        client_key_ref,
+        cert_source_fingerprint(&client_key),
         trust
             .as_ref()
             .map(cert_source_fingerprint)
@@ -1810,7 +1932,7 @@ pub fn resolve_upstream_mtls(
     );
     Some(UpstreamMtlsResolved {
         client_cert,
-        client_key_ref,
+        client_key,
         trust,
         verify: m.verify,
         allowed_sans: m.allowed_sans.clone(),
@@ -2018,11 +2140,10 @@ pub struct ConnectionPoolConfig {
     pub upstream_mtls: Option<UpstreamMtlsResolved>,
 }
 
-/// Source of a PUBLIC cert/CA used in upstream mTLS — either a file
-/// on disk (file-source identity / per-pool trust path) or in-memory
-/// PEM bytes materialized from the Redis config plane (state-source,
-/// P4). PUBLIC material only; private keys are never represented here
-/// (they stay a `client_key_ref` resolved at client-build time).
+/// Source of a cert/key material used in upstream mTLS — either a file
+/// on disk or in-memory PEM bytes materialized from the Redis config
+/// plane (state-source, P4). Used for PUBLIC certs, CA bundles, and
+/// (when the operator uploads the key via the console) inline private keys.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CertSource {
     /// PEM file read from disk at client-build time.
@@ -2034,19 +2155,18 @@ pub enum CertSource {
 
 /// Resolved, ready-to-use upstream-mTLS material for one pool.
 ///
-/// The PUBLIC cert + trust anchors are carried as a [`CertSource`]
-/// (file path or in-memory PEM). The private key is **never** loaded
-/// into this struct — only its `client_key_ref` (resolved lazily in
-/// `forward::build_client`), so the struct stays Debug-safe and the
-/// key never lands in config / the client cache key.
+/// Both the PUBLIC cert + trust anchors and the private key are carried
+/// as a [`CertSource`] (file path or in-memory PEM). When the operator
+/// uploads the key via the console, `client_key` is `CertSource::Pem`;
+/// for file-source identities it is `CertSource::File`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpstreamMtlsResolved {
     /// PUBLIC client cert chain the WAF presents to the backend
     /// (the shared fleet identity, `zero_trust.upstream_identity`).
     pub client_cert: CertSource,
-    /// Path / ref to the client private key. Loaded only inside
-    /// `build_client`; never read into this struct.
-    pub client_key_ref: String,
+    /// The client private key — either a file path (file-source
+    /// identity) or in-memory PEM (console-uploaded key).
+    pub client_key: CertSource,
     /// Custom CA bundle to verify the BACKEND's server cert against.
     /// `None` ⇒ fall back to webpki roots.
     pub trust: Option<CertSource>,
@@ -2729,6 +2849,13 @@ pub struct UpstreamIdentityConfig {
     /// private key.
     #[serde(skip)]
     pub cert_pem: Option<String>,
+    /// **Never deserialized** (`#[serde(skip)]`). Inline private-key
+    /// PEM materialized from the config plane when the operator
+    /// uploaded the key via the console (`UpstreamIdentityRecord.key_pem`).
+    /// When set, takes precedence over `key_ref` at client-build time.
+    /// Never returned by any API or included in audit projections.
+    #[serde(skip)]
+    pub key_pem: Option<String>,
 }
 
 /// Config-plane key under which the shared fleet upstream identity is
@@ -2737,19 +2864,24 @@ pub struct UpstreamIdentityConfig {
 pub const UPSTREAM_IDENTITY_STATE_KEY: &str = "aegis:zt:upstream:identity";
 
 /// State-plane record for the `source: state` shared upstream
-/// identity (P4, **reference-only** — no envelope encryption).
+/// identity. Stores the PUBLIC cert and either inline key PEM
+/// (console-uploaded) or a server-side key reference.
 ///
-/// PUBLIC cert material plus a *reference* to the private key. The
-/// key bytes are **never** stored here: `key_ref` is a path /
-/// `${secret:...}` reference resolved at client-build time. Persisted
-/// via [`crate::state::StateBackend::cas_set`] so a multi-node fleet
-/// activates atomically.
+/// Persisted via [`crate::state::StateBackend::cas_set`] so a
+/// multi-node fleet activates atomically.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UpstreamIdentityRecord {
     /// PUBLIC client-cert chain PEM (the shared fleet identity).
     pub cert_pem: String,
-    /// Reference to the private key (path / `${secret:...}`). Never
-    /// the key bytes.
+    /// Inline private-key PEM when the operator uploaded the key via
+    /// the console. Mutually exclusive with `key_ref`; takes precedence
+    /// when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_pem: Option<String>,
+    /// Reference to the private key (path / `${secret:...}`) for
+    /// file-based or secret-ref key sources. Used when `key_pem` is
+    /// absent. Kept for backwards compatibility with existing records.
+    #[serde(default)]
     pub key_ref: String,
 }
 
@@ -3481,6 +3613,22 @@ pub struct DetectorsConfig {
     /// (every external URL flags).
     #[serde(default)]
     pub open_redirect: OpenRedirectConfig,
+    /// 2026-06-12 (JWT report, Phase A2) — JWT attack-shape detector.
+    /// Decodes the token header from `Authorization: Bearer` / `Cookie`
+    /// and flags malicious structure (alg:none, inline key material,
+    /// `kid` traversal/SQLi, external `jku`/`x5u`, forged time claims).
+    /// Detection-only — no signature verification (that stays in the
+    /// gateway). `jku_allowed_domains` is the allowlist of hosts a
+    /// `jku`/`x5u` URL may reference; empty = strict (any external URL
+    /// flags). **Default ON.**
+    #[serde(default)]
+    pub jwt_inspection: JwtInspectionConfig,
+    /// 2026-06-12 (WS report P2) — SQLi/NoSQLi scanning of SESSION cookie
+    /// values (`sid`, `session`, `auth`, `token`, …). **Default OFF**:
+    /// cookie scanning was historically FP-prone (adtech cookies), so it's
+    /// opt-in — operators enable + observe before relying on it.
+    #[serde(default = "default_detector_toggle_off")]
+    pub cookie_injection: DetectorToggle,
     /// 2026-05-19 — Phase F behaviour-signals detector. Stateful
     /// per-IP signals: burst (<50 ms), missing UA, missing Referer
     /// on mutations, zero-depth first-touch. **Default OFF** because
@@ -3573,6 +3721,14 @@ pub struct TierDetectorMask {
     pub nosql_injection: Option<bool>,
     #[serde(default)]
     pub open_redirect: Option<bool>,
+    /// 2026-06-12 (JWT report) — per-tier override for the JWT
+    /// attack-shape detector. `None` = inherit global (default ON).
+    #[serde(default)]
+    pub jwt_inspection: Option<bool>,
+    /// 2026-06-12 (WS report P2) — per-tier override for the cookie-
+    /// injection detector. `None` = inherit global (default OFF).
+    #[serde(default)]
+    pub cookie_injection: Option<bool>,
     /// 2026-05-19 — per-tier override for the Phase F
     /// behaviour-signals detector. `None` = inherit global; the
     /// global default is OFF (cf. `DetectorsConfig::default`).
@@ -3633,6 +3789,8 @@ impl Default for DetectorsConfig {
             template_injection: default_detector_toggle(),
             nosql_injection: default_detector_toggle(),
             open_redirect: OpenRedirectConfig::default(),
+            jwt_inspection: JwtInspectionConfig::default(),
+            cookie_injection: default_detector_toggle_off(),
             behavior_signals: default_detector_toggle_off(),
             velocity: default_detector_toggle(),
             canary: default_detector_toggle_off(),
@@ -3810,6 +3968,54 @@ impl Default for OpenRedirectConfig {
         Self {
             enabled: true,
             allowed_domains: Vec::new(),
+        }
+    }
+}
+
+/// 2026-06-12 (JWT report) — config for the JWT attack-shape detector.
+///
+/// `enabled` mirrors the standard `DetectorToggle.enabled` knob
+/// (default `true`). `jku_allowed_domains` is the operator allowlist
+/// of hosts that a `jku` / `x5u` header URL may reference — each entry
+/// is a literal hostname (`auth.example.com`) or a `*.example.com`
+/// glob. Empty list = strict mode (any external `jku`/`x5u` flags).
+/// The detector never fetches the URL or verifies signatures; the
+/// allowlist only governs the structural "external key-set URL"
+/// signal. YAML shape:
+///
+/// ```yaml
+/// detectors:
+///   jwt_inspection:
+///     enabled: true
+///     jku_allowed_domains:
+///       - "auth.example.com"
+///       - "*.example.com"
+/// ```
+#[derive(Clone, Debug, Deserialize)]
+pub struct JwtInspectionConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub jku_allowed_domains: Vec<String>,
+    /// 2026-06-12 (Phase A3) — opt-in privileged-role claim heuristic.
+    /// When `true`, a decoded payload whose `role`/`scope` claims a
+    /// privileged value (`admin`, `root`, …) emits a low-score
+    /// (`jwt_role_priv`, 20) **observe** signal. **Default `false`** —
+    /// a legitimate admin carries `role: admin` on every request, so
+    /// this is noisy by nature; operators turn it on to observe before
+    /// deciding to promote. It never single-blocks (20 is below every
+    /// per-request tier gate; the cumulative model is max-per-request +
+    /// decay, so a steady-state admin sits at ~20 and never escalates).
+    #[serde(default)]
+    pub flag_privileged_roles: bool,
+}
+
+impl Default for JwtInspectionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            jku_allowed_domains: Vec::new(),
+            flag_privileged_roles: false,
         }
     }
 }
@@ -5855,7 +6061,7 @@ state: {{ backend: in_memory }}
             resolved.client_cert,
             CertSource::File("/etc/waf/client.pem".into())
         );
-        assert_eq!(resolved.client_key_ref, "/etc/waf/client.key");
+        assert_eq!(resolved.client_key, CertSource::File("/etc/waf/client.key".into()));
         assert!(resolved.verify);
         assert!(resolved.trust.is_none()); // webpki fallback
         assert!(!resolved.fingerprint.is_empty());
@@ -6035,7 +6241,7 @@ state: {{ backend: in_memory }}
             "state source must resolve to in-memory PEM, got {:?}",
             resolved.client_cert
         );
-        assert_eq!(resolved.client_key_ref, "/run/secrets/waf-client.key");
+        assert_eq!(resolved.client_key, CertSource::File("/run/secrets/waf-client.key".into()));
         assert!(resolved.fingerprint.contains("pem:"), "fingerprint must mark a PEM cert source");
     }
 

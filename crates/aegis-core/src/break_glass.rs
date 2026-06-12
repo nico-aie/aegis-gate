@@ -26,8 +26,8 @@
 //!   still gates every endpoint.
 //! - Does not change the CA bundle or allowed_sans. If a cert
 //!   IS presented, it's still validated.
-//! - Does not affect data-plane mTLS. Apps continue to enforce
-//!   their per-route `auth_required` lists.
+//! - Does not affect data-plane mTLS. The Zero Trust downstream
+//!   client-cert policy continues to enforce per its `apply_to`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

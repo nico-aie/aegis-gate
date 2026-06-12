@@ -50,13 +50,6 @@ pub struct RouteSummary {
     pub upstream: String,
     /// `None` when the route inherits its tier from the global default.
     pub tier_override: Option<String>,
-    /// MTLS-T11 — required client-identity kinds for this route.
-    /// Empty = "any identity admitted" (default open). Non-empty
-    /// acts as an allow-list against
-    /// [`aegis_core::ClientIdentity::kind()`]. Mirrors
-    /// [`aegis_core::config::RouteConfig::auth_required`].
-    #[serde(default)]
-    pub auth_required: Vec<String>,
     /// PR1 — effective evaluation priority computed from the
     /// route's host / path / method / position. Compact tuple
     /// rendered as `<host>.<path-kind>.<segs>.<method>.<declared>.<yaml-pos>`.
@@ -138,7 +131,6 @@ mod tests {
                 methods: vec!["POST".into()],
                 upstream: "auth-pool".into(),
                 tier_override: Some("critical".into()),
-                auth_required: vec!["mtls".into()],
                 priority: "3.4.1.1.0.0".into(),
                 default: false,
                 enabled: true,
@@ -151,7 +143,6 @@ mod tests {
                 methods: vec![],
                 upstream: "backend-pool".into(),
                 tier_override: None,
-                auth_required: vec![],
                 priority: "0.0.0.0.0.1".into(),
                 default: true,
                 enabled: true,

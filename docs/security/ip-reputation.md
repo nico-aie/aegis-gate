@@ -98,7 +98,7 @@ trusted proxy, the XFF walk continues from it. TLS — and so JA3/JA4 and
 any `zero_trust.downstream` mTLS client-cert check — still runs on the
 client's own ClientHello.
 
-See [`../../plans/future/proxy-protocol.md`](../../plans/future/proxy-protocol.md)
+See [`../../plans/archive/proxy-protocol.md`](../../plans/archive/proxy-protocol.md)
 for the full design and the deployment topology matrix.
 
 ## Pipeline position

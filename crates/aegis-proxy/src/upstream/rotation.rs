@@ -66,6 +66,15 @@ pub fn status() -> RotationStatus {
     (**status_cell().load()).clone()
 }
 
+/// Immediately update the rotation status after a console PUT to
+/// `/api/zero-trust/upstream/identity`, so the GET endpoint reflects
+/// the new cert without waiting for the next poll cycle (≤5 s).
+/// Called from `admin_mutate::handle_zt_upstream_identity_put` on
+/// a successful `cas_set`.
+pub fn notify_identity_updated(cert_pem: Option<String>) {
+    record_applied(cert_pem);
+}
+
 fn record_applied(identity_cert_pem: Option<String>) {
     let prev = status_cell().load();
     status_cell().store(Arc::new(RotationStatus {
@@ -126,8 +135,9 @@ pub async fn read_material(
                 .map(|rec| UpstreamIdentityConfig {
                     source: UpstreamIdentitySource::State,
                     cert_path: None,
-                    key_ref: Some(rec.key_ref),
+                    key_ref: if rec.key_ref.is_empty() { None } else { Some(rec.key_ref) },
                     cert_pem: Some(rec.cert_pem),
+                    key_pem: rec.key_pem,
                 }),
             _ => None,
         }
@@ -237,36 +247,59 @@ pub fn spawn(
         loop {
             tokio::time::sleep(interval).await;
             let pools = registry.current_pools();
-            let any_mtls = pools
-                .values()
-                .any(|p| p.upstream_mtls.as_ref().map(|m| m.enabled).unwrap_or(false));
-            if !any_mtls {
-                continue;
-            }
             let snap = cfg.load_full();
+
+            // Always read ZT material from the config plane so that a
+            // console identity upload (PUT /api/zero-trust/upstream/identity)
+            // is reflected in the GET endpoint overlay even before any pool
+            // has mTLS enabled. Previously the early-exit on `!any_mtls`
+            // blocked this, meaning the dashboard showed `configured: false`
+            // after a successful PUT until the operator turned on mTLS for
+            // at least one pool.
             let material = read_material(&state, &snap, &pools).await;
             if last_fp.as_deref() == Some(material.fingerprint.as_str()) {
                 continue;
             }
+
             // Re-seed the shared identity only on a good read (never
             // downgrade to no-client-auth on a missing/corrupt record).
             if let Some(id) = material.identity.clone() {
                 registry.seed_upstream_identity(Some(id));
             }
-            let folded = fold_pools(&material, &pools);
-            match registry.apply(&folded) {
-                Ok(()) => {
-                    let cert = material.identity.as_ref().and_then(|i| i.cert_pem.clone());
-                    record_applied(cert);
-                    last_fp = Some(material.fingerprint);
-                    tracing::info!(
-                        generation = status().generation,
-                        "zero_trust: hot-rotated upstream-mTLS material (no restart)"
-                    );
+
+            let any_mtls = pools
+                .values()
+                .any(|p| p.upstream_mtls.as_ref().map(|m| m.enabled).unwrap_or(false));
+
+            if any_mtls {
+                // Apply pool changes and record the full rotation.
+                let folded = fold_pools(&material, &pools);
+                match registry.apply(&folded) {
+                    Ok(()) => {
+                        let cert = material.identity.as_ref().and_then(|i| i.cert_pem.clone());
+                        record_applied(cert);
+                        last_fp = Some(material.fingerprint);
+                        tracing::info!(
+                            generation = status().generation,
+                            "zero_trust: hot-rotated upstream-mTLS material (no restart)"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "zero_trust: hot rotation apply failed; keeping last-good");
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!(error = %e, "zero_trust: hot rotation apply failed; keeping last-good");
-                }
+            } else {
+                // No mTLS pools yet — still record the identity change so
+                // the GET /api/zero-trust/upstream/identity overlay reflects
+                // a console upload without requiring a restart or an enabled
+                // pool.
+                let cert = material.identity.as_ref().and_then(|i| i.cert_pem.clone());
+                record_applied(cert);
+                last_fp = Some(material.fingerprint);
+                tracing::debug!(
+                    generation = status().generation,
+                    "zero_trust: identity updated (no mTLS pools active yet)"
+                );
             }
         }
     })
@@ -309,6 +342,7 @@ state: {{ backend: in_memory }}
     async fn store_identity(state: &Arc<dyn StateBackend>, cert: &str) {
         let rec = UpstreamIdentityRecord {
             cert_pem: cert.into(),
+            key_pem: None,
             key_ref: "/run/secrets/waf.key".into(),
         };
         let bytes = serde_json::to_vec(&rec).unwrap();

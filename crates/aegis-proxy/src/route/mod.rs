@@ -34,10 +34,6 @@ struct CompiledRoute {
     upstream: String,
     tier: Tier,
     failure_mode: FailureMode,
-    /// MTLS-T4 — `RouteConfig.auth_required` carried through
-    /// to the resolver so the data-plane handler can gate on
-    /// client identity. Empty = no gate.
-    auth_required: Vec<String>,
     /// TCP-T3c — resolved at compile time from
     /// `cfg.upstreams[upstream].connection.scheme`. Lifted
     /// here so the data-plane CONNECT dispatch is a single
@@ -306,7 +302,6 @@ pub fn route_summaries(
                     aegis_core::tier::Tier::Low => "low",
                 }
                 .to_string()),
-                auth_required: r.auth_required.clone(),
                 priority: priority.fmt_compact(),
                 default: r.default,
                 enabled: r.enabled,
@@ -492,7 +487,6 @@ impl CompiledRouteTable {
                     upstream: rc.upstream.clone(),
                     tier,
                     failure_mode,
-                    auth_required: rc.auth_required.clone(),
                     pool_scheme,
                     tcp_destination_allowlist,
                     max_concurrent_tunnels_per_ip: rc.max_concurrent_tunnels_per_ip,
@@ -597,7 +591,6 @@ impl CompiledRoute {
             tier: self.tier,
             failure_mode: self.failure_mode,
             upstream: self.upstream.clone(),
-            auth_required: self.auth_required.clone(),
             pool_scheme: self.pool_scheme,
             tcp_destination_allowlist: self.tcp_destination_allowlist.clone(),
             max_concurrent_tunnels_per_ip: self.max_concurrent_tunnels_per_ip,
@@ -651,7 +644,6 @@ mod strip_prefix_tests {
             tier_override: None,
             failure_mode: None,
             quota: None,
-            auth_required: Vec::new(),
             tcp_destination_allowlist: Vec::new(),
             max_concurrent_tunnels_per_ip: 0,
             default: false,
@@ -1152,62 +1144,6 @@ state:
             .resolve("any", "/api/v2", &http::Method::GET)
             .unwrap();
         assert_eq!(ctx.route_id, "v2");
-    }
-
-    // ---------------- MTLS-T4 ----------------
-
-    #[test]
-    fn auth_required_default_is_empty_open_route() {
-        // Existing routes don't carry `auth_required:` in YAML —
-        // their RouteCtx must come back with an empty list so
-        // the data-plane gate is a no-op for them.
-        let cfg = five_route_config();
-        let table = RouteTable::build(&cfg).unwrap();
-        let ctx = table
-            .resolve("api.example.com", "/api/v1/users", &http::Method::GET)
-            .unwrap();
-        assert!(ctx.auth_required.is_empty(), "open routes default to no gate");
-    }
-
-    #[test]
-    fn auth_required_threads_from_yaml_to_route_ctx() {
-        // Route declares `auth_required: ["mtls", "spiffe"]` —
-        // resolver must pass that list through unchanged.
-        let yaml = r#"
-listeners:
-  data:
-    - bind: "127.0.0.1:8080"
-  admin:
-    bind: "127.0.0.1:9090"
-routes:
-  - id: secure-api
-    host: "api.example.com"
-    path: "/secure/"
-    upstream: backend
-    auth_required: ["mtls", "spiffe"]
-  - id: catch-all
-    path: "/"
-    upstream: backend
-upstreams:
-  backend:
-    members:
-      - addr: "127.0.0.1:3000"
-state:
-  backend: in_memory
-"#;
-        let cfg: WafConfig = serde_yaml::from_str(yaml).unwrap();
-        let table = RouteTable::build(&cfg).unwrap();
-        let secure = table
-            .resolve("api.example.com", "/secure/billing", &http::Method::GET)
-            .unwrap();
-        assert_eq!(secure.route_id, "secure-api");
-        assert_eq!(secure.auth_required, vec!["mtls", "spiffe"]);
-        // Catch-all stays open.
-        let open = table
-            .resolve("api.example.com", "/public", &http::Method::GET)
-            .unwrap();
-        assert_eq!(open.route_id, "catch-all");
-        assert!(open.auth_required.is_empty());
     }
 
     // -----------------------------------------------------------

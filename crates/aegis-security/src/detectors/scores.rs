@@ -90,6 +90,11 @@ pub mod header_injection {
     /// X-Forwarded-Host poisoning (keyword needles, > 2 hosts,
     /// internal-IP literal). Lower than CRLF — heuristic is broader.
     pub const XFH: u32 = 50;
+    /// 2026-06-12 (HTTP_SMUGGLING_REPORT, workstream B1) — request-
+    /// smuggling header hygiene: CL+TE together, duplicate CL,
+    /// duplicate/obfuscated TE, HTTP/2 forbidden connection-specific
+    /// headers. Block tier (same as CRLF) — unambiguous framing abuse.
+    pub const SMUGGLING: u32 = 70;
 }
 
 pub mod body_abuse {
@@ -140,8 +145,56 @@ pub mod nosql_injection {
     pub const NOSQL_INJECTION: u32 = 70;
 }
 
+pub mod cookie_injection {
+    /// 2026-06-12 (WS report P2) — SQLi/NoSQLi shape in a SESSION cookie
+    /// value (`sid`, `session`, `auth`, `token`, …). Legit session cookies
+    /// are opaque tokens, so a quote / SQL keyword / `$`-operator is
+    /// high-confidence — but the class **defaults OFF** (cookie scanning
+    /// was historically FP-prone on adtech cookies) and scores 50 (high
+    /// tier: single-blocks only on `critical`, accumulates elsewhere) so
+    /// operators opt in and observe before relying on it.
+    pub const COOKIE_INJECTION: u32 = 50;
+}
+
 pub mod open_redirect {
     pub const OPEN_REDIRECT: u32 = 50;
+}
+
+pub mod jwt_inspection {
+    // 2026-06-12 (JWT report, Phase A1) — JWT attack-shape detector.
+    // Decodes the token header (+ later payload) and flags malicious
+    // STRUCTURE only; it never verifies signatures (that stays in the
+    // gateway). All three A1 rules are unambiguous-malicious shapes
+    // with no benign use case, so they score 80 — the structural-block
+    // tier that trips every risk threshold including `low`.
+
+    /// `alg: none` (any case) / `null` / empty — unsigned-token forgery.
+    pub const ALG_NONE: u32 = 80;
+    /// Inline key material in the header — `x5c` cert chain or `jwk`.
+    /// Production tokens reference a server-side JWKS, never embed the
+    /// verification key per request.
+    pub const KEY_INJECTION: u32 = 80;
+    /// `kid` carrying path traversal (`../`, `/etc/`, `/dev/`),
+    /// SQL metacharacters, or a URL/file scheme — RFI / SQLi / empty-
+    /// key forgery primitive.
+    pub const KID_INJECTION: u32 = 80;
+    /// 2026-06-12 (Phase A2) — `jku` / `x5u` header points at a host
+    /// outside `jku_allowed_domains` (empty allowlist = any external
+    /// URL) — SSRF + attacker-controlled-JWKS signature bypass.
+    pub const JKU_EXTERNAL: u32 = 80;
+    /// 2026-06-12 (Phase A2) — forged time claims: `exp` > 10y out,
+    /// `iat` > 10y old, or `iat==0 && nbf==0` (epoch-forged). Scored
+    /// one rung below the unambiguous-key shapes since a clock-skewed
+    /// or oddly-issued legit token is conceivable.
+    pub const TIME_FORGED: u32 = 70;
+    /// 2026-06-12 (Phase A3) — privileged-role claim heuristic
+    /// (`role`/`scope` = admin/root/…). **Opt-in** (config
+    /// `flag_privileged_roles`, default off) and observe-first: 20 is
+    /// below every per-request tier gate, so it never single-blocks; a
+    /// legit admin's steady `role:admin` stays at ~20 under the
+    /// max-per-request + decay cumulative model. Promotion = raise this
+    /// after traffic review (ideally gated on a second signal).
+    pub const ROLE_PRIV: u32 = 20;
 }
 
 pub mod ai {
@@ -227,6 +280,30 @@ pub const CATALOG: &[ScoreEntry] = &[
         note: "X-HTTP-Method-Override / X-Method-Override / X-HTTP-Method header carrying a destructive verb (DELETE / PUT / PATCH / CONNECT / TRACE) — framework method-override bypass.",
     },
     ScoreEntry {
+        class: "header_injection",
+        tag: "smuggling_cl_te",
+        score: header_injection::SMUGGLING,
+        note: "Request carries both Content-Length and Transfer-Encoding — the canonical HTTP request-smuggling primitive (CWE-444).",
+    },
+    ScoreEntry {
+        class: "header_injection",
+        tag: "smuggling_multi_cl",
+        score: header_injection::SMUGGLING,
+        note: "Multiple Content-Length headers — ambiguous body length, request-smuggling primitive.",
+    },
+    ScoreEntry {
+        class: "header_injection",
+        tag: "smuggling_multi_te",
+        score: header_injection::SMUGGLING,
+        note: "Multiple Transfer-Encoding headers or an obfuscated TE value (`xchunked`, `chunked, identity`) — TE.TE smuggling obfuscation.",
+    },
+    ScoreEntry {
+        class: "header_injection",
+        tag: "smuggling_h2_forbidden",
+        score: header_injection::SMUGGLING,
+        note: "HTTP/2 request carrying a forbidden connection-specific header (`transfer-encoding` / `connection`, RFC 9113 §8.2.2) — H2-downgrade smuggling vector.",
+    },
+    ScoreEntry {
         class: "body_abuse",
         tag: "body_oversize",
         score: body_abuse::OVERSIZE,
@@ -293,6 +370,12 @@ pub const CATALOG: &[ScoreEntry] = &[
         note: "Server-side template injection — Jinja2, Twig, Mako, Freemarker, Velocity, SpEL, Handlebars.",
     },
     ScoreEntry {
+        class: "cookie_injection",
+        tag: "cookie_injection",
+        score: cookie_injection::COOKIE_INJECTION,
+        note: "SQLi/NoSQLi shape in a SESSION cookie value (sid/session/auth/token/…). Default-OFF class; opt-in + observe before relying on it.",
+    },
+    ScoreEntry {
         class: "nosql_injection",
         tag: "nosql_injection",
         score: nosql_injection::NOSQL_INJECTION,
@@ -349,6 +432,46 @@ pub const CATALOG: &[ScoreEntry] = &[
         tag: "canary",
         score: 100,
         note: "Hit on an operator-supplied honeypot path (`cfg.risk.canary_paths`). Maximum confidence — single-hit block at every tier.",
+    },
+    // 2026-06-12 (JWT report, Phase A1) — JWT attack-shape detector.
+    // Decodes the token header from `Authorization: Bearer` / `Cookie`
+    // and flags malicious structure. Detection-only — no signature
+    // verification (that stays in the gateway).
+    ScoreEntry {
+        class: "jwt_inspection",
+        tag: "jwt_alg_none",
+        score: jwt_inspection::ALG_NONE,
+        note: "JWT header `alg` is `none` / `null` / empty (any case) — unsigned-token forgery (alg:none bypass).",
+    },
+    ScoreEntry {
+        class: "jwt_inspection",
+        tag: "jwt_x5c_inline",
+        score: jwt_inspection::KEY_INJECTION,
+        note: "JWT header embeds inline key material (`x5c` cert chain or `jwk`) — attacker-supplied verification key.",
+    },
+    ScoreEntry {
+        class: "jwt_inspection",
+        tag: "jwt_kid_injection",
+        score: jwt_inspection::KID_INJECTION,
+        note: "JWT header `kid` carries path traversal (`../`, `/etc/`, `/dev/`), SQL metacharacters, or a URL/file scheme.",
+    },
+    ScoreEntry {
+        class: "jwt_inspection",
+        tag: "jwt_jku_external",
+        score: jwt_inspection::JKU_EXTERNAL,
+        note: "JWT header `jku`/`x5u` references a host outside `jwt_inspection.jku_allowed_domains` (empty = any external) — SSRF + attacker-JWKS bypass.",
+    },
+    ScoreEntry {
+        class: "jwt_inspection",
+        tag: "jwt_time_forged",
+        score: jwt_inspection::TIME_FORGED,
+        note: "JWT payload time claims are forged — `exp` >10y out, `iat` >10y old, or `iat==0 && nbf==0` (epoch-forged).",
+    },
+    ScoreEntry {
+        class: "jwt_inspection",
+        tag: "jwt_role_priv",
+        score: jwt_inspection::ROLE_PRIV,
+        note: "JWT payload claims a privileged `role`/`scope` (admin/root/…). Opt-in heuristic (`jwt_inspection.flag_privileged_roles`); observe-only — never single-blocks.",
     },
 ];
 

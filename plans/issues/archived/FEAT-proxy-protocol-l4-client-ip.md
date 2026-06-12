@@ -1,9 +1,9 @@
 # FEAT — PROXY protocol: real client IP behind an L4 load balancer
 
 > **Type:** FEAT (feature track) · **Status:** ✅ P1–P4 shipped — gates green, ready for PR · **Branch:** `feat/proxy-protocol-l4-client-ip`
-> **Design doc:** [`../future/proxy-protocol.md`](../future/proxy-protocol.md) (decisions + justification live there)
-> **Roadmap slot:** [`../future/world-class-waf-roadmap.md`](../future/world-class-waf-roadmap.md) — HA/LB tier.
-> **Builds on (shipped):** C-5 `proxy.trusted_proxies` ([`../archive/multi-node-consistency-implementation.md`](../archive/multi-node-consistency-implementation.md) P1) — same trust set, extended from XFF to PROXY.
+> **Design doc:** [`../../archive/proxy-protocol.md`](../../archive/proxy-protocol.md) (decisions + justification live there)
+> **Roadmap slot:** [`../../future/world-class-waf-roadmap.md`](../../future/world-class-waf-roadmap.md) — HA/LB tier.
+> **Builds on (shipped):** C-5 `proxy.trusted_proxies` ([`../../archive/multi-node-consistency-implementation.md`](../../archive/multi-node-consistency-implementation.md) P1) — same trust set, extended from XFF to PROXY.
 
 **Goal (one line):** let an L4 / TCP-passthrough load balancer (nginx `stream proxy_protocol on;`
 or HAProxy `send-proxy-v2`) prepend a PROXY-protocol header carrying the **real client IP**; the
