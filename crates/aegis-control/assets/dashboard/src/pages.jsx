@@ -3373,10 +3373,22 @@ function DetectorMaskCard() {
     byClass[row.class].push(row);
   }
 
+  // 2026-06-12 (toggle clobber fix) — `pendingRef` is the SYNCHRONOUS
+  // cumulative set of in-flight flips, mirroring `optimistic`. The PUT
+  // sends the WHOLE mask, so it MUST be built from `baseMask` + ALL
+  // pending flips — not `baseMask` + the single new flip. Otherwise a
+  // second rapid toggle resends the stale `baseMask` (which still has the
+  // first detector ON, because the reload hasn't landed yet) and silently
+  // resurrects it: "I turned it off and it came back on." A ref (not the
+  // `optimistic` state) is needed because back-to-back toggles run before
+  // React re-renders, so the closed-over state would be stale.
+  const pendingRef = useRefP({});
+
   // Reconcile optimistic flips against fresh server state on every
   // reload: drop any optimistic entry that now matches the mask (the
   // PUT landed) and keep only those still mid-flight, so a slow PUT
-  // never snaps the switch back before the server confirms.
+  // never snaps the switch back before the server confirms. `pendingRef`
+  // is kept in lock-step so the next PUT's merge base is accurate.
   useEffectP(() => {
     const mask = api.data?.mask;
     if (!mask) return;
@@ -3385,6 +3397,7 @@ function DetectorMaskCard() {
       for (const cls of Object.keys(prev)) {
         if (!!mask[cls] !== prev[cls]) next[cls] = prev[cls];
       }
+      pendingRef.current = next;
       return Object.keys(next).length === Object.keys(prev).length ? prev : next;
     });
   }, [api.data]);
@@ -3463,31 +3476,37 @@ function DetectorMaskCard() {
   async function commitToggle(cls, next, { undoable = true } = {}) {
     if (rowBusy || lockedClasses.includes(cls)) return;
     const label = CLASS_LABELS[cls] || cls;
-    setOptimistic(o => ({ ...o, [cls]: next }));
+    // Record this flip in the cumulative pending set (synchronous ref +
+    // render state) BEFORE building the PUT body.
+    pendingRef.current = { ...pendingRef.current, [cls]: next };
+    setOptimistic({ ...pendingRef.current });
     setRowBusy(cls);
     try {
       // F7 (2026-06-11) — commit against the freshest mask + version we
       // hold, echoing it in `If-Match`. On a 412 (the mask moved under
       // us — a concurrent toggle or a propagating change) re-fetch the
-      // authoritative state and replay JUST this one flip onto it, so
-      // the operator's intent survives without clobbering the other
-      // change. Bounded retries; falls back to the legacy unconditional
-      // PUT when the server doesn't supply a version (configVersion
-      // undefined → no If-Match → 409 handled by csrfMutate's retry).
-      let mask = baseMask;
-      // Seed from versionRef (synchronous, freshest) — NOT the configVersion
-      // prop, which lags behind the last PUT until a reload lands.
+      // authoritative state and replay our pending flips onto it.
+      // Bounded retries; falls back to the legacy unconditional PUT when
+      // the server supplies no version (→ 409 handled by csrfMutate).
+      //
+      // CLOBBER FIX (2026-06-12): the PUT body is the whole mask built
+      // from `baseMask` + ALL pending flips, NOT `baseMask` + this one
+      // flip. baseMask lags (the reload is async/debounced), so merging
+      // only the current flip would resend a stale value for any other
+      // detector the operator just changed — silently reverting it.
+      let base = baseMask;
       let version = versionRef.current;
       let r;
       for (let attempt = 0; attempt < 3; attempt++) {
-        r = await window.detectorsPut({ mask: { ...mask, [cls]: next } }, { ifMatch: version });
+        const fullMask = { ...base, ...pendingRef.current };
+        r = await window.detectorsPut({ mask: fullMask }, { ifMatch: version });
         if (isHttpOk(r)) break;
         if (r && r.status === 412 && attempt < 2) {
           const fresh = await fetch('/api/detectors', { credentials: 'same-origin' })
             .then(res => (res.ok ? res.json() : null))
             .catch(() => null);
           if (fresh && fresh.mask) {
-            mask = fresh.mask;
+            base = fresh.mask;
             version = fresh.config_version;
             if (typeof version === 'number') versionRef.current = version;
             continue;
@@ -3512,7 +3531,10 @@ function DetectorMaskCard() {
         // with a single debounced reload instead of a heavy GET per flip.
         scheduleReload();
       } else {
-        setOptimistic(o => { const n = { ...o }; delete n[cls]; return n; });
+        // Roll back just this flip from both the ref and the render state.
+        const { [cls]: _drop, ...rest } = pendingRef.current;
+        pendingRef.current = rest;
+        setOptimistic({ ...rest });
         const why = r && r.status === 412
           ? 'mask changed under you — reloaded latest; try again'
           : errMsg(r);
@@ -3521,7 +3543,9 @@ function DetectorMaskCard() {
         api.reload && api.reload();
       }
     } catch (e) {
-      setOptimistic(o => { const n = { ...o }; delete n[cls]; return n; });
+      const { [cls]: _drop, ...rest } = pendingRef.current;
+      pendingRef.current = rest;
+      setOptimistic({ ...rest });
       window.aegisToast(`Toggle error: ${e.message || e}`, 'err');
     } finally {
       setRowBusy(null);
