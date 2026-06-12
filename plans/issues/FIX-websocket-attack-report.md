@@ -31,38 +31,43 @@
 
 ## 2. Workstreams
 
-### P0 — Make `ws_inspect` usable (config + UI) — operator-directed
+### P0 — WS frame inspection ON BY DEFAULT (no config) — operator-directed
 
-Nico's call: the operator should configure **only enable/disable**; mode and
-size use sensible defaults, and enabling should actually **block**.
+Nico's call (2026-06-12, revised): **don't make `ws_inspect` a config at all.**
+Every WebSocket connection should be inspected by default — no YAML block, no
+UI toggle — exactly like HTTP requests are inspected without per-route opt-in.
 
-- **Simplify `WsInspectConfig` semantics.** Change `WsInspectMode::default`
-  from `LogOnly` → **`Enforce`** so `ws_inspect: { enabled: true }` blocks
-  out of the box. Keep `mode` / `max_message_bytes` as optional advanced
-  overrides (non-breaking), but the UI + dev.yaml only set `enabled`. Update
-  the now-stale "default LogOnly so operators can tune first" comment.
-  - *Decision to confirm:* enforce-by-default is a behaviour change. No
-    existing config sets `ws_inspect` (grep-verified), so blast radius is nil,
-    and it matches "make it just work for QC." Going with Enforce.
-- **`config/dev.yaml`** — add to the `catch-all` route:
-  ```yaml
-  ws_inspect:
-    enabled: true
-  ```
-  This makes `make run-copilot` (reads `dev.yaml`) actually inspect WS frames.
-- **Console UI** — add a per-route **"WebSocket frame inspection" enable
-  toggle** to the route editor modal. The backend already round-trips it:
-  `RouteConfigPatch.ws_inspect: Option<WsInspectConfig>` exists (WS-MSG5). Wire
-  the modal draft (`emptyRouteDraft` / `routeToDraft` / `routeBodyFromDraft`,
-  `pages.jsx:~13737`) to send `ws_inspect: { enabled: true }` (or omit to
-  disable). Rebuild `app.js`.
+- **Invert the default in the WS-upgrade path** (`data_plane.rs:~1787`).
+  Today: inspect only if `route.ws_inspect.enabled == true` (default OFF =
+  zero-copy passthrough). Change to: **inspect every WS upgrade by default
+  (enforce)**, taking the default-inspect branch with `strip_extensions: true`.
+  Keep `route.ws_inspect = Some({ enabled: false })` as an **internal opt-OUT
+  escape hatch** (a route that genuinely needs raw passthrough), but it is NOT
+  surfaced in the UI and not needed in normal config.
+- **`WsInspectMode` default `LogOnly` → `Enforce`** so default-on actually
+  blocks. Update the stale "tune before enforcing" comment.
+- **No `dev.yaml` change needed** and **no UI toggle** — default-on means
+  `make run-copilot` inspects WS frames with zero config. (Drop the
+  route-editor-toggle item from the earlier draft.)
+- **Verified-safe caveats** (document, don't block):
+  - *Compression:* inspecting strips `Sec-WebSocket-Extensions` from the
+    forwarded handshake (`ws_forward.rs:80`), so `permessage-deflate` is never
+    negotiated and frames stay decodable. Cost = no WS compression (bandwidth,
+    not breakage).
+  - *Binary frames:* still forwarded verbatim (uninspected) — so a
+    binary-protocol WS keeps working; only text frames are inspected.
+  - *Zero-copy fast path:* lost for WS (the point — we now inspect). CPU/latency
+    cost is per-text-message, bounded by `max_message_bytes`.
+  - *Sanity-check the admin/live-feed WS + SSE* aren't disrupted by default-on
+    enforcement (control-plane frames shouldn't trip detectors, but verify).
 - **Drive-by:** fix the unused-import warning
   `aegis_core::config::CertSource` (`upstream/tls.rs:75`) — delete the line
   (the `match` doesn't name `CertSource::` variants). Keeps `clippy
   --workspace -D warnings` green.
 
-**Effort:** ~half day. Unblocks QC's 13 frame attacks (sqli/xss/nosql/cmdi in
-text frames) — detection is already wired.
+**Effort:** ~half day (mostly the default-inversion + the enforce default +
+tests; no UI work now). Unblocks QC's 13 frame attacks — detection is already
+wired.
 
 ### P1 — WS/SSE Origin allowlist (CSWSH) — real gap, code + config
 
@@ -136,7 +141,7 @@ app-side concern (parameterised queries); this is defense-in-depth.
 
 | Order | Item | Why |
 |---|---|---|
-| 1 | **P0** (enable-only config + enforce default + dev.yaml + UI toggle + CertSource warning) | Unblocks QC's 13 frame attacks immediately; detection already wired. Operator-directed. |
+| 1 | **P0** (WS inspect ON BY DEFAULT — invert default + enforce default + CertSource warning; no YAML/UI) | Unblocks QC's 13 frame attacks immediately; detection already wired. Operator-directed. |
 | 2 | **P1 oversize fail-closed** | Small, closes the bypass-by-size that would otherwise undercut P0. |
 | 3 | **P1 WS/SSE Origin allowlist** | Real CSWSH gap; +5 techniques. Bigger (shared helper + 2 call sites + config/UI). |
 | 4 | **P2 cookie scanning** | FP-prone; ship log_only, review. |
