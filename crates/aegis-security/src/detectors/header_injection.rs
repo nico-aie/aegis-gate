@@ -93,8 +93,109 @@ impl Detector for HeaderInjectionDetector {
         // form-post overrides use it.
         check_method_override(req, &mut signals);
 
+        // 2026-06-12 (HTTP_SMUGGLING_REPORT, workstream B1) — request-
+        // smuggling header hygiene. Defense-in-depth + attribution: the
+        // hyper HTTP/1 parser already rejects most ambiguous CL/TE
+        // framing with a 400 BEFORE this detector runs, so the h1 rules
+        // here fire only for shapes that slip through (or a future code
+        // path that forwards raw framing). The HTTP/2 rule is the one
+        // with real standalone value — forbidden connection-specific
+        // headers (`transfer-encoding`, `connection`) can reach the
+        // service over h2 and are the downgrade-smuggling primitive.
+        check_smuggling(req, &mut signals);
+
         signals
     }
+}
+
+/// Transfer-Encoding token values a well-behaved request may carry.
+/// Anything else — `xchunked`, multiple comma directives like
+/// `chunked, identity`, etc. — is a smuggling-obfuscation signal.
+const VALID_TE_TOKENS: &[&str] = &[
+    "chunked", "identity", "gzip", "x-gzip", "deflate", "compress", "br",
+];
+
+/// HTTP request-smuggling header hygiene (HTTP_SMUGGLING_REPORT
+/// SMUG-001/002/004). Emits **one** signal per request (first match in
+/// priority order) at the CRLF block tier — these are unambiguous
+/// framing-abuse shapes with no benign request use case, so a single
+/// hit should block on the protective tiers.
+///
+/// NOTE on the hyper caveat: the h1 server parser resolves / rejects
+/// most CL+TE ambiguity itself (conflicting `Content-Length` → 400;
+/// `Transfer-Encoding` wins over `Content-Length` per RFC 7230), so
+/// these h1 checks are a backstop + give a labelled `request_smuggling`
+/// audit event for anything that does reach the detector, rather than a
+/// bare unattributed 400. `smuggling_h2_forbidden` is the rule that
+/// fires in normal operation.
+fn check_smuggling(req: &RequestView<'_>, signals: &mut Vec<Signal>) {
+    // SMUG-004 — HTTP/2 forbidden connection-specific headers
+    // (RFC 9113 §8.2.2). `transfer-encoding` over h2 is the downgrade-
+    // smuggling vector; `connection` is the broader protocol violation.
+    // Checked first: it's the most specific + the most likely to fire.
+    if req.version == http::Version::HTTP_2
+        && (req.headers.contains_key("transfer-encoding")
+            || req.headers.contains_key("connection"))
+    {
+        push_smuggling(signals, "smuggling_h2_forbidden");
+        return;
+    }
+
+    let cl_count = req.headers.get_all("content-length").iter().count();
+    let te_values: Vec<&http::HeaderValue> =
+        req.headers.get_all("transfer-encoding").iter().collect();
+
+    // SMUG-001 — `Content-Length` AND `Transfer-Encoding` both present:
+    // the canonical front-end/back-end disagreement primitive.
+    if cl_count > 0 && !te_values.is_empty() {
+        push_smuggling(signals, "smuggling_cl_te");
+        return;
+    }
+
+    // SMUG-001 — multiple `Content-Length` headers.
+    if cl_count > 1 {
+        push_smuggling(signals, "smuggling_multi_cl");
+        return;
+    }
+
+    // SMUG-002 — multiple `Transfer-Encoding` headers, or a single
+    // header whose value is obfuscated (`xchunked`, `chunked, identity`).
+    if te_values.len() > 1 {
+        push_smuggling(signals, "smuggling_multi_te");
+        return;
+    }
+    if let Some(te) = te_values.first() {
+        if let Ok(val) = te.to_str() {
+            if te_value_is_obfuscated(val) {
+                push_smuggling(signals, "smuggling_multi_te");
+            }
+        }
+    }
+}
+
+/// A request `Transfer-Encoding` value is obfuscated when it carries
+/// more than one comma-directive (e.g. `chunked, identity` — chunked is
+/// required to be the sole/last coding) or a token outside the
+/// well-known set (`xchunked`, …). Tokens are trimmed + lowercased; a
+/// bare `chunked` / `gzip` passes clean.
+fn te_value_is_obfuscated(value: &str) -> bool {
+    let mut tokens = 0usize;
+    for tok in value.split(',') {
+        tokens += 1;
+        let t = tok.trim().to_ascii_lowercase();
+        if !VALID_TE_TOKENS.contains(&t.as_str()) {
+            return true;
+        }
+    }
+    tokens > 1
+}
+
+fn push_smuggling(signals: &mut Vec<Signal>, tag: &str) {
+    signals.push(Signal {
+        score: super::scores::header_injection::SMUGGLING,
+        tag: tag.into(),
+        field: "headers".into(),
+    });
 }
 
 /// SEC-L002 — flag X-Forwarded-Host shapes that indicate poisoning.
@@ -915,5 +1016,155 @@ mod tests {
             .find(|s| s.tag == "method_override_bypass")
             .expect("method_override_bypass signal");
         assert_eq!(signal.score, 50, "method_override_bypass should score 50 (header tier — XFH)");
+    }
+
+    // 2026-06-12 (HTTP_SMUGGLING_REPORT, workstream B1) — request-
+    // smuggling header hygiene. These unit tests bypass hyper and feed
+    // the detector the framing shape directly, so they pin the detector
+    // LOGIC; whether hyper delivers a given shape to the detector at
+    // runtime is a separate (environment) question — see the QC doc.
+
+    fn smuggling_signals(h: http::HeaderMap, version: http::Version) -> Vec<Signal> {
+        let d = HeaderInjectionDetector;
+        let m = http::Method::POST;
+        let u: http::Uri = "/".parse().unwrap();
+        let b = BodyPeek::empty();
+        let req = RequestView {
+            method: &m,
+            uri: &u,
+            version,
+            headers: &h,
+            peer: "127.0.0.1:1234".parse().unwrap(),
+            tls: None,
+            body: &b,
+        };
+        d.inspect(&req)
+    }
+
+    fn has(signals: &[Signal], tag: &str) -> bool {
+        signals.iter().any(|s| s.tag == tag)
+    }
+
+    #[test]
+    fn smuggling_cl_te_flags() {
+        let mut h = http::HeaderMap::new();
+        h.insert("content-length", "4".parse().unwrap());
+        h.insert("transfer-encoding", "chunked".parse().unwrap());
+        assert!(has(&smuggling_signals(h, http::Version::HTTP_11), "smuggling_cl_te"));
+    }
+
+    #[test]
+    fn smuggling_multi_cl_flags() {
+        let mut h = http::HeaderMap::new();
+        h.append("content-length", "5".parse().unwrap());
+        h.append("content-length", "6".parse().unwrap());
+        assert!(has(&smuggling_signals(h, http::Version::HTTP_11), "smuggling_multi_cl"));
+    }
+
+    #[test]
+    fn smuggling_multi_te_header_flags() {
+        let mut h = http::HeaderMap::new();
+        h.append("transfer-encoding", "chunked".parse().unwrap());
+        h.append("transfer-encoding", "identity".parse().unwrap());
+        assert!(has(&smuggling_signals(h, http::Version::HTTP_11), "smuggling_multi_te"));
+    }
+
+    #[test]
+    fn smuggling_obfuscated_te_value_flags() {
+        let mut h = http::HeaderMap::new();
+        h.insert("transfer-encoding", "xchunked".parse().unwrap());
+        assert!(has(&smuggling_signals(h, http::Version::HTTP_11), "smuggling_multi_te"));
+    }
+
+    #[test]
+    fn smuggling_multi_directive_te_flags() {
+        let mut h = http::HeaderMap::new();
+        h.insert("transfer-encoding", "chunked, identity".parse().unwrap());
+        assert!(has(&smuggling_signals(h, http::Version::HTTP_11), "smuggling_multi_te"));
+    }
+
+    #[test]
+    fn smuggling_h2_transfer_encoding_flags() {
+        let mut h = http::HeaderMap::new();
+        h.insert("transfer-encoding", "chunked".parse().unwrap());
+        assert!(has(&smuggling_signals(h, http::Version::HTTP_2), "smuggling_h2_forbidden"));
+    }
+
+    #[test]
+    fn smuggling_h2_connection_flags() {
+        let mut h = http::HeaderMap::new();
+        h.insert("connection", "keep-alive".parse().unwrap());
+        assert!(has(&smuggling_signals(h, http::Version::HTTP_2), "smuggling_h2_forbidden"));
+    }
+
+    #[test]
+    fn smuggling_emits_block_tier_score() {
+        let mut h = http::HeaderMap::new();
+        h.insert("content-length", "4".parse().unwrap());
+        h.insert("transfer-encoding", "chunked".parse().unwrap());
+        let s = smuggling_signals(h, http::Version::HTTP_11);
+        let sig = s.iter().find(|s| s.tag.starts_with("smuggling_")).expect("signal");
+        assert_eq!(sig.score, 70, "smuggling is block tier (70)");
+    }
+
+    #[test]
+    fn smuggling_one_signal_per_request() {
+        // CL+TE and a duplicate TE both present — must emit exactly ONE
+        // smuggling signal (no risk amplification).
+        let mut h = http::HeaderMap::new();
+        h.insert("content-length", "4".parse().unwrap());
+        h.append("transfer-encoding", "chunked".parse().unwrap());
+        h.append("transfer-encoding", "x".parse().unwrap());
+        let n = smuggling_signals(h, http::Version::HTTP_11)
+            .iter()
+            .filter(|s| s.tag.starts_with("smuggling_"))
+            .count();
+        assert_eq!(n, 1, "at most one smuggling signal per request");
+    }
+
+    // Negatives — legitimate framing must not flag.
+
+    #[test]
+    fn smuggling_single_cl_clean() {
+        let mut h = http::HeaderMap::new();
+        h.insert("content-length", "42".parse().unwrap());
+        assert!(!has(&smuggling_signals(h, http::Version::HTTP_11), "smuggling_cl_te"));
+    }
+
+    #[test]
+    fn smuggling_single_chunked_te_clean() {
+        let mut h = http::HeaderMap::new();
+        h.insert("transfer-encoding", "chunked".parse().unwrap());
+        let s = smuggling_signals(h, http::Version::HTTP_11);
+        assert!(!s.iter().any(|s| s.tag.starts_with("smuggling_")), "got {s:?}");
+    }
+
+    #[test]
+    fn smuggling_single_gzip_te_clean() {
+        let mut h = http::HeaderMap::new();
+        h.insert("transfer-encoding", "gzip".parse().unwrap());
+        let s = smuggling_signals(h, http::Version::HTTP_11);
+        assert!(!s.iter().any(|s| s.tag.starts_with("smuggling_")), "got {s:?}");
+    }
+
+    #[test]
+    fn smuggling_h1_connection_clean() {
+        // `Connection` is legitimate on HTTP/1.1 — only forbidden on h2.
+        let mut h = http::HeaderMap::new();
+        h.insert("connection", "keep-alive".parse().unwrap());
+        let s = smuggling_signals(h, http::Version::HTTP_11);
+        assert!(!s.iter().any(|s| s.tag.starts_with("smuggling_")), "got {s:?}");
+    }
+
+    #[test]
+    fn smuggling_te_obfuscation_unit() {
+        assert!(!te_value_is_obfuscated("chunked"));
+        assert!(!te_value_is_obfuscated("gzip"));
+        assert!(!te_value_is_obfuscated("CHUNKED"));
+        assert!(te_value_is_obfuscated("xchunked"));
+        assert!(te_value_is_obfuscated("chunked, identity"));
+        // OWS around a token is trimmed → a trailing-space "chunked "
+        // is treated as clean (hyper would have normalised it anyway).
+        assert!(!te_value_is_obfuscated("chunked "));
     }
 }

@@ -141,14 +141,46 @@ Test corpus:
 - Positive: `X-Original-URL: /admin/users`, `X-Rewrite-URL: /administrator/index.php`, `X-Original-URL: /.env`, `X-Original-URL: /../../../etc/passwd`, `X-Original-URL: /__internal/health`, URL-encoded `/%2Fadmin%2Fusers`.
 - Negative: `X-Original-URL: /api/users`, `X-Original-URL: /products/123`, `X-Original-URL: /health`, `X-Original-URL: /metrics`, header absent or empty.
 
-## HTTP request smuggling defense
+## HTTP request smuggling hygiene (added 2026-06-12, workstream B1)
 
-Request smuggling exploits discrepancies in how the WAF and backend parse `Content-Length` vs `Transfer-Encoding`. The WAF enforces:
+Request smuggling (CWE-444) exploits a front-end/back-end disagreement over
+`Content-Length` (CL) vs `Transfer-Encoding` (TE) framing. The detector emits
+**one** signal per request (first match in priority order) at the block tier
+(score 70) for these shapes:
 
-- Reject requests with **both** `Content-Length` and `Transfer-Encoding`
-- Reject `Transfer-Encoding: chunked` with unusual casing or whitespace (`Transfer-Encoding:  chunked `, `Transfer-Encoding: xchunked`, etc.)
-- Reject conflicting `Content-Length` values in multiple headers
-- Enforce strict parsing: the first `Content-Length` wins, subsequent ones are errors
+| Sub-tag | Fires when | Report rule |
+|---|---|---|
+| `smuggling_h2_forbidden` | HTTP/2 request carries a forbidden connection-specific header (`transfer-encoding` or `connection`, RFC 9113 §8.2.2) | SMUG-004 |
+| `smuggling_cl_te` | request carries **both** `Content-Length` and `Transfer-Encoding` | SMUG-001 |
+| `smuggling_multi_cl` | multiple `Content-Length` headers | SMUG-001 |
+| `smuggling_multi_te` | multiple `Transfer-Encoding` headers, or a single obfuscated value (`xchunked`, `chunked, identity`; valid set: `chunked`/`identity`/`gzip`/`x-gzip`/`deflate`/`compress`/`br`) | SMUG-002 |
+
+Class stays `header_injection`; field tag is `headers`. CRLF-in-header-value
+(SMUG-003) is covered by the CRLF patterns above — a `Transfer-Encoding:
+chunked\r\n…`-style value is caught as header/query CRLF.
+
+### Important: the hyper-normalisation caveat
+
+The data plane runs on **hyper**, whose HTTP/1 parser resolves or rejects most
+CL/TE ambiguity **before this detector runs** — conflicting `Content-Length` →
+400; `Transfer-Encoding` takes precedence over `Content-Length` per RFC 7230;
+the upstream request is re-serialised with fresh framing. So the **h1** rules
+here are **defense-in-depth + attribution**: they fire only for a shape that
+slips through hyper (or a future code path that forwards raw framing), and when
+they do they produce a labelled `request_smuggling`-class audit event instead of
+an unattributed 400. **`smuggling_h2_forbidden` is the rule with standalone
+runtime value** — forbidden connection-specific headers can reach the service
+over HTTP/2 and are the H2-downgrade-smuggling primitive.
+
+Live verification (does hyper deliver a given shape to the detector?) needs raw
+sockets, not a normalising client — see the report's testing section
+(`plans/issues/HTTP_SMUGGLING_REPORT.md` §6: `printf … | nc`, `curl --http2`).
+
+FP surface is effectively nil on legitimate traffic: well-behaved clients send a
+single `Content-Length` **or** a single `Transfer-Encoding: chunked`, never both
+and never the obfuscated forms; compliant HTTP/2 clients never send
+`transfer-encoding`/`connection`. Operators can still scope the class to
+`log_only` via `set_profile { policies: ["header_injection"], mode: "log_only" }`.
 
 ## Configuration
 
@@ -164,8 +196,8 @@ detection:
 ## Actions
 
 - CRLF in a parameter: +50 risk, almost always blocked (CRLF in form inputs has no legitimate use)
-- Malformed header: reject with 400, no backend contact
-- Smuggling-shaped request: reject with 400, audit log flagged as smuggling attempt
+- Malformed header: hyper rejects with 400 before the pipeline, no backend contact
+- Smuggling-shaped request: a 70-score `smuggling_*` signal → blocked + attributed in the audit log for any shape that reaches the detector (most h1 ambiguity is already rejected by the hyper parser; the HTTP/2 forbidden-header rule is the one that fires in normal operation — see the smuggling-hygiene section above)
 
 ## Implementation
 
@@ -174,5 +206,10 @@ detection:
 
 ## Design notes
 
-- Smuggling defense is at the **proxy core**, not just the detection module, because it's a structural parsing concern
-- Any smuggling-shaped request is blocked outright — there's no legitimate reason to send one
+- Smuggling defense is **layered**: the hyper HTTP/1 parser is the primary,
+  structural defense (it rejects conflicting CL/TE framing at parse time and
+  re-serialises the upstream request with fresh framing), and the detector's
+  `smuggling_*` rules add attribution + a defense-in-depth backstop for shapes
+  that reach the pipeline (notably HTTP/2 forbidden headers).
+- Any smuggling-shaped request that reaches the detector is blocked outright —
+  there's no legitimate reason to send one.
