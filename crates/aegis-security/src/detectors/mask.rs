@@ -60,6 +60,12 @@ pub enum DetectorClass {
     /// 30; `allowed_domains` allowlist suppresses operator-approved
     /// targets.
     OpenRedirect,
+    /// 2026-06-12 (JWT report) — JWT attack-shape detector. Decodes the
+    /// token header from `Authorization: Bearer` / `Cookie` and flags
+    /// malicious structure (alg:none, inline key material, kid
+    /// traversal/SQLi, external jku/x5u, forged time claims).
+    /// Detection-only — no signature verification. Default ON.
+    JwtInspection,
     /// 2026-05-19 — promoted from "always-on stealth detector" to a
     /// first-class togglable class. Stateful per-IP behaviour
     /// signals: burst (<50 ms), missing UA, missing Referer on
@@ -85,7 +91,7 @@ pub enum DetectorClass {
 
 impl DetectorClass {
     /// All classes in the order they appear in `DetectorsConfig`.
-    pub const ALL: [DetectorClass; 16] = [
+    pub const ALL: [DetectorClass; 17] = [
         DetectorClass::Sqli,
         DetectorClass::Xss,
         DetectorClass::PathTraversal,
@@ -98,6 +104,7 @@ impl DetectorClass {
         DetectorClass::TemplateInjection,
         DetectorClass::NoSqlInjection,
         DetectorClass::OpenRedirect,
+        DetectorClass::JwtInspection,
         DetectorClass::BehaviorSignals,
         DetectorClass::Velocity,
         DetectorClass::Canary,
@@ -120,6 +127,7 @@ impl DetectorClass {
             DetectorClass::TemplateInjection => "template_injection",
             DetectorClass::NoSqlInjection => "nosql_injection",
             DetectorClass::OpenRedirect => "open_redirect",
+            DetectorClass::JwtInspection => "jwt_inspection",
             DetectorClass::BehaviorSignals => "behavior_signals",
             DetectorClass::Velocity => "velocity",
             DetectorClass::Canary => "canary",
@@ -147,6 +155,8 @@ impl DetectorClass {
             DetectorClass::Velocity => 1 << 13,
             DetectorClass::Canary => 1 << 14,
             DetectorClass::Ai => 1 << 15,
+            // 2026-06-12 — appended at the next free bit; never reorder.
+            DetectorClass::JwtInspection => 1 << 16,
         }
     }
 
@@ -223,6 +233,9 @@ impl DetectorMask {
         }
         if cfg.open_redirect.enabled {
             m.set(DetectorClass::OpenRedirect, true);
+        }
+        if cfg.jwt_inspection.enabled {
+            m.set(DetectorClass::JwtInspection, true);
         }
         // 2026-05-19 — Phase F detectors promoted to togglable mask
         // bits. Defaults applied via DetectorsConfig::default in
@@ -326,6 +339,12 @@ pub struct DetectorMaskBody {
     /// `#[serde(default)]` back-compat.
     #[serde(default)]
     pub open_redirect: bool,
+    /// 2026-06-12 (JWT report) — JWT attack-shape detector. Default
+    /// `false` on the wire (`#[serde(default)]`) for back-compat with
+    /// snapshots written before this class existed; the round-trip
+    /// helpers populate it from the bitmask.
+    #[serde(default)]
+    pub jwt_inspection: bool,
     /// 2026-05-19 — behaviour-signals detector (burst / no-UA /
     /// missing-Referer / zero-depth). Stateful per-IP; default OFF
     /// on the schema side, see `DetectorsConfig::default`.
@@ -362,6 +381,7 @@ impl From<DetectorMask> for DetectorMaskBody {
             template_injection: m.is_enabled(DetectorClass::TemplateInjection),
             nosql_injection: m.is_enabled(DetectorClass::NoSqlInjection),
             open_redirect: m.is_enabled(DetectorClass::OpenRedirect),
+            jwt_inspection: m.is_enabled(DetectorClass::JwtInspection),
             behavior_signals: m.is_enabled(DetectorClass::BehaviorSignals),
             velocity: m.is_enabled(DetectorClass::Velocity),
             canary: m.is_enabled(DetectorClass::Canary),
@@ -385,6 +405,7 @@ impl From<DetectorMaskBody> for DetectorMask {
             .with(DetectorClass::TemplateInjection, b.template_injection)
             .with(DetectorClass::NoSqlInjection, b.nosql_injection)
             .with(DetectorClass::OpenRedirect, b.open_redirect)
+            .with(DetectorClass::JwtInspection, b.jwt_inspection)
             .with(DetectorClass::BehaviorSignals, b.behavior_signals)
             .with(DetectorClass::Velocity, b.velocity)
             .with(DetectorClass::Canary, b.canary)
@@ -439,6 +460,10 @@ impl DetectorMask {
         m.set(
             DetectorClass::OpenRedirect,
             tm.open_redirect.unwrap_or(self.is_enabled(DetectorClass::OpenRedirect)),
+        );
+        m.set(
+            DetectorClass::JwtInspection,
+            tm.jwt_inspection.unwrap_or(self.is_enabled(DetectorClass::JwtInspection)),
         );
         m.set(
             DetectorClass::BehaviorSignals,

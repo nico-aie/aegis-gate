@@ -44,8 +44,25 @@ const MAX_TOKENS_PER_REQUEST: usize = 2;
 /// JWT header is tens of bytes; even an `x5c`-bearing one is a few KB.
 const MAX_ENCODED_HEADER_BYTES: usize = 16 * 1024;
 
-/// JWT attack-shape detector. Stateless.
-pub struct JwtInspectionDetector;
+/// Window for "forged" time claims — 10 years in seconds. An `exp`
+/// further out than this, or an `iat` older than this, is not a clock-
+/// skew artifact; it's a hand-edited token.
+const TEN_YEARS_SECS: u64 = 315_360_000;
+
+/// JWT attack-shape detector. Holds the `jku`/`x5u` host allowlist;
+/// otherwise stateless.
+pub struct JwtInspectionDetector {
+    /// Hosts a `jku` / `x5u` URL may reference. Empty = strict mode
+    /// (any external key-set URL flags). Entries are literal hostnames
+    /// or `*.example.com` globs.
+    jku_allowed_domains: Vec<String>,
+}
+
+impl JwtInspectionDetector {
+    pub fn new(jku_allowed_domains: Vec<String>) -> Self {
+        Self { jku_allowed_domains }
+    }
+}
 
 impl Detector for JwtInspectionDetector {
     fn id(&self) -> &'static str {
@@ -55,6 +72,7 @@ impl Detector for JwtInspectionDetector {
     fn inspect(&self, req: &RequestView<'_>) -> Vec<Signal> {
         let mut signals = Vec::new();
         let mut budget = MAX_TOKENS_PER_REQUEST;
+        let now = unix_now();
 
         // Authorization: Bearer <jwt> (also accept a bare JWT value).
         if budget > 0 {
@@ -65,7 +83,7 @@ impl Detector for JwtInspectionDetector {
             {
                 if let Some(tok) = bearer_token(val) {
                     if is_jwt_shaped(tok) {
-                        inspect_token(tok, &mut signals);
+                        self.inspect_token(tok, now, &mut signals);
                         budget -= 1;
                     }
                 }
@@ -92,7 +110,7 @@ impl Detector for JwtInspectionDetector {
                         .unwrap_or("")
                         .trim();
                     if is_jwt_shaped(value) {
-                        inspect_token(value, &mut signals);
+                        self.inspect_token(value, now, &mut signals);
                         budget -= 1;
                     }
                 }
@@ -138,53 +156,92 @@ fn is_b64url(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
 }
 
-/// Decode + inspect a single JWT-shaped token's header. Silent on any
-/// decode/parse failure — a token we can't read is not our signal to
-/// raise (the gateway will reject a malformed token on its own).
-fn inspect_token(token: &str, signals: &mut Vec<Signal>) {
-    let header_part = match token.split('.').next() {
-        Some(h) => h,
-        None => return,
-    };
-    if header_part.len() > MAX_ENCODED_HEADER_BYTES {
-        return;
-    }
-    let Some(header) = decode_json_object(header_part) else {
-        return;
-    };
+impl JwtInspectionDetector {
+    /// Decode + inspect a single JWT-shaped token. Silent on any
+    /// decode/parse failure — a token we can't read is not our signal
+    /// to raise (the gateway will reject a malformed token on its own).
+    fn inspect_token(&self, token: &str, now: u64, signals: &mut Vec<Signal>) {
+        let mut parts = token.split('.');
+        let header_part = parts.next().unwrap_or("");
+        let payload_part = parts.next().unwrap_or("");
+        if header_part.len() > MAX_ENCODED_HEADER_BYTES {
+            return;
+        }
+        let Some(header) = decode_json_object(header_part) else {
+            return;
+        };
 
-    // RULE jwt_alg_none — `alg` none/null/empty, case-insensitive.
-    if let Some(alg) = header.get("alg").and_then(|v| v.as_str()) {
-        let a = alg.trim().to_ascii_lowercase();
-        if a == "none" || a == "null" || a.is_empty() {
+        // RULE jwt_alg_none — `alg` none/null/empty, case-insensitive.
+        if let Some(alg) = header.get("alg").and_then(|v| v.as_str()) {
+            let a = alg.trim().to_ascii_lowercase();
+            if a == "none" || a == "null" || a.is_empty() {
+                signals.push(Signal {
+                    score: scores::jwt_inspection::ALG_NONE,
+                    tag: "jwt_alg_none".into(),
+                    field: "jwt:alg".into(),
+                });
+            }
+        }
+
+        // RULE jwt_x5c_inline — inline key material (`x5c` cert chain
+        // or `jwk`). Presence of the key alone is the signal;
+        // production tokens fetch keys from a server-side JWKS.
+        if header.contains_key("x5c") || header.contains_key("jwk") {
             signals.push(Signal {
-                score: scores::jwt_inspection::ALG_NONE,
-                tag: "jwt_alg_none".into(),
-                field: "jwt:alg".into(),
+                score: scores::jwt_inspection::KEY_INJECTION,
+                tag: "jwt_x5c_inline".into(),
+                field: "jwt:x5c".into(),
             });
+        }
+
+        // RULE jwt_kid_injection — traversal / SQLi / URL scheme in `kid`.
+        if let Some(kid) = header.get("kid").and_then(|v| v.as_str()) {
+            if kid_is_malicious(kid) {
+                signals.push(Signal {
+                    score: scores::jwt_inspection::KID_INJECTION,
+                    tag: "jwt_kid_injection".into(),
+                    field: "jwt:kid".into(),
+                });
+            }
+        }
+
+        // RULE jwt_jku_external — `jku` / `x5u` key-set URL pointing at
+        // a host outside the allowlist (empty allowlist = any external
+        // URL). SSRF + attacker-controlled-JWKS signature bypass.
+        for field in ["jku", "x5u"] {
+            if let Some(url) = header.get(field).and_then(|v| v.as_str()) {
+                if !self.jku_host_allowed(url) {
+                    signals.push(Signal {
+                        score: scores::jwt_inspection::JKU_EXTERNAL,
+                        tag: "jwt_jku_external".into(),
+                        field: format!("jwt:{field}"),
+                    });
+                }
+            }
+        }
+
+        // RULE jwt_time_forged — hand-edited time claims in the payload.
+        if let Some(payload) = decode_json_object(payload_part) {
+            if time_claims_forged(&payload, now) {
+                signals.push(Signal {
+                    score: scores::jwt_inspection::TIME_FORGED,
+                    tag: "jwt_time_forged".into(),
+                    field: "jwt:exp".into(),
+                });
+            }
         }
     }
 
-    // RULE jwt_x5c_inline — inline key material (`x5c` cert chain or
-    // `jwk`). Presence of the key alone is the signal; production
-    // tokens fetch keys from a server-side JWKS.
-    if header.contains_key("x5c") || header.contains_key("jwk") {
-        signals.push(Signal {
-            score: scores::jwt_inspection::KEY_INJECTION,
-            tag: "jwt_x5c_inline".into(),
-            field: "jwt:x5c".into(),
-        });
-    }
-
-    // RULE jwt_kid_injection — traversal / SQLi / URL scheme in `kid`.
-    if let Some(kid) = header.get("kid").and_then(|v| v.as_str()) {
-        if kid_is_malicious(kid) {
-            signals.push(Signal {
-                score: scores::jwt_inspection::KID_INJECTION,
-                tag: "jwt_kid_injection".into(),
-                field: "jwt:kid".into(),
-            });
-        }
+    /// True when a `jku`/`x5u` URL's host is on the allowlist. An
+    /// unparseable URL (no host) is treated as NOT allowed — a token
+    /// whose key-set URL we can't even read is not one to trust.
+    fn jku_host_allowed(&self, url: &str) -> bool {
+        let Some(host) = url_host(url) else {
+            return false;
+        };
+        self.jku_allowed_domains
+            .iter()
+            .any(|entry| domain_matches(entry, &host))
     }
 }
 
@@ -241,6 +298,75 @@ fn kid_is_malicious(kid: &str) -> bool {
     false
 }
 
+/// Extract the lowercased host from a URL string. Returns `None` when
+/// there's no `scheme://host` shape. Strips an optional `userinfo@`
+/// prefix and a trailing `:port` / path / query / fragment.
+fn url_host(url: &str) -> Option<String> {
+    let after_scheme = url.split("://").nth(1)?;
+    // authority ends at the first '/', '?', or '#'.
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    // drop userinfo (`user:pass@host`).
+    let hostport = authority.rsplit('@').next().unwrap_or(authority);
+    // drop `:port` — but not inside a bracketed IPv6 literal.
+    let host = if let Some(stripped) = hostport.strip_prefix('[') {
+        stripped.split(']').next().unwrap_or(stripped)
+    } else {
+        hostport.split(':').next().unwrap_or(hostport)
+    };
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_ascii_lowercase())
+    }
+}
+
+/// Allowlist match: `entry` is a literal host (`auth.example.com`) or a
+/// `*.example.com` glob (matches any sub-domain, not the bare apex).
+/// `host` is already lowercased.
+fn domain_matches(entry: &str, host: &str) -> bool {
+    let entry = entry.trim().to_ascii_lowercase();
+    if let Some(suffix) = entry.strip_prefix("*.") {
+        host.ends_with(&format!(".{suffix}"))
+    } else {
+        host == entry
+    }
+}
+
+/// Forged-time-claim heuristic over the decoded payload. Flags an
+/// `exp` more than 10 years out, an `iat` more than 10 years old, or
+/// the classic `iat==0 && nbf==0` epoch-forged pair.
+fn time_claims_forged(payload: &serde_json::Map<String, Value>, now: u64) -> bool {
+    let exp = payload.get("exp").and_then(Value::as_u64);
+    let iat = payload.get("iat").and_then(Value::as_u64);
+    let nbf = payload.get("nbf").and_then(Value::as_u64);
+
+    if let Some(exp) = exp {
+        if exp > now.saturating_add(TEN_YEARS_SECS) {
+            return true;
+        }
+    }
+    if let Some(iat) = iat {
+        if iat < now.saturating_sub(TEN_YEARS_SECS) {
+            return true;
+        }
+    }
+    // Both issued-at AND not-before pinned to the Unix epoch — no real
+    // issuer does this; it's a hand-zeroed forgery.
+    matches!((iat, nbf), (Some(0), Some(0)))
+}
+
+/// Current Unix time in seconds. Falls back to 0 if the clock is set
+/// before the epoch (the `exp`/`iat` windows degrade gracefully).
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,19 +392,30 @@ mod tests {
     /// Encode a JWT with the given header JSON and a fixed dummy
     /// payload + signature.
     fn tok(header_json: &str) -> String {
-        let h = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(header_json);
-        format!("{h}.eyJ1c2VyIjoiYSJ9.sig")
+        tok2(header_json, r#"{"user":"a"}"#)
     }
 
-    /// Run the detector with the token placed in a `Cookie: sid=`.
+    /// Encode a JWT with explicit header + payload JSON.
+    fn tok2(header_json: &str, payload_json: &str) -> String {
+        let enc = |s: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s);
+        format!("{}.{}.sig", enc(header_json), enc(payload_json))
+    }
+
+    /// Run the detector (strict, empty allowlist) with the token in a
+    /// `Cookie: sid=`.
     fn signals_for_cookie(token: &str) -> Vec<Signal> {
+        signals_for_cookie_with(token, vec![])
+    }
+
+    /// Run the detector with an explicit `jku` allowlist.
+    fn signals_for_cookie_with(token: &str, allowlist: Vec<String>) -> Vec<Signal> {
         let mut h = http::HeaderMap::new();
         h.insert("cookie", format!("sid={token}").parse().unwrap());
         let m = http::Method::GET;
         let u: http::Uri = "/".parse().unwrap();
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
-        JwtInspectionDetector.inspect(&req)
+        JwtInspectionDetector::new(allowlist).inspect(&req)
     }
 
     fn has_tag(signals: &[Signal], tag: &str) -> bool {
@@ -393,7 +530,7 @@ mod tests {
         let u: http::Uri = "/".parse().unwrap();
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
-        assert!(JwtInspectionDetector.inspect(&req).is_empty());
+        assert!(JwtInspectionDetector::new(vec![]).inspect(&req).is_empty());
     }
 
     #[test]
@@ -403,7 +540,7 @@ mod tests {
         let u: http::Uri = "/".parse().unwrap();
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
-        assert!(JwtInspectionDetector.inspect(&req).is_empty());
+        assert!(JwtInspectionDetector::new(vec![]).inspect(&req).is_empty());
     }
 
     #[test]
@@ -437,7 +574,7 @@ mod tests {
         let u: http::Uri = "/".parse().unwrap();
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
-        assert!(has_tag(&JwtInspectionDetector.inspect(&req), "jwt_alg_none"));
+        assert!(has_tag(&JwtInspectionDetector::new(vec![]).inspect(&req), "jwt_alg_none"));
     }
 
     #[test]
@@ -449,7 +586,7 @@ mod tests {
         let u: http::Uri = "/".parse().unwrap();
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
-        assert!(has_tag(&JwtInspectionDetector.inspect(&req), "jwt_alg_none"));
+        assert!(has_tag(&JwtInspectionDetector::new(vec![]).inspect(&req), "jwt_alg_none"));
     }
 
     #[test]
@@ -460,7 +597,7 @@ mod tests {
         let u: http::Uri = "/".parse().unwrap();
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
-        assert!(JwtInspectionDetector.inspect(&req).is_empty());
+        assert!(JwtInspectionDetector::new(vec![]).inspect(&req).is_empty());
     }
 
     // ---- scoring -----------------------------------------------------
@@ -475,7 +612,7 @@ mod tests {
 
     #[test]
     fn id_is_stable() {
-        assert_eq!(JwtInspectionDetector.id(), "jwt_inspection");
+        assert_eq!(JwtInspectionDetector::new(vec![]).id(), "jwt_inspection");
     }
 
     // ---- unit: kid_is_malicious -------------------------------------
@@ -491,5 +628,142 @@ mod tests {
         assert!(!kid_is_malicious("android-2024"));
         assert!(!kid_is_malicious("selection"));
         assert!(!kid_is_malicious(""));
+    }
+
+    // ---- Phase A2: jwt_jku_external ---------------------------------
+
+    #[test]
+    fn jku_external_strict_flags_any_url() {
+        // Empty allowlist (strict) → any jku host flags.
+        let t = tok(r#"{"alg":"RS256","jku":"https://attacker.evil.com/jwks.json"}"#);
+        assert!(has_tag(&signals_for_cookie(&t), "jwt_jku_external"));
+    }
+
+    #[test]
+    fn x5u_external_strict_flags() {
+        let t = tok(r#"{"alg":"RS256","x5u":"https://attacker.evil.com/chain.pem"}"#);
+        assert!(has_tag(&signals_for_cookie(&t), "jwt_jku_external"));
+    }
+
+    #[test]
+    fn jku_real_corpus_header() {
+        // Report ID=3 header decodes with jku=https://attacker.evil.com/jwks.json.
+        let t = concat!(
+            "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImprdSI6Imh0dHBzOi8vYXR0YWNrZXIu",
+            "ZXZpbC5jb20vandrcy5qc29uIn0.eyJ1c2VyIjoiYWRtaW4ifQ.fakersasig"
+        );
+        assert!(has_tag(&signals_for_cookie(t), "jwt_jku_external"));
+    }
+
+    #[test]
+    fn jku_on_allowlist_is_clean() {
+        let t = tok(r#"{"alg":"RS256","jku":"https://auth.example.com/jwks.json"}"#);
+        let s = signals_for_cookie_with(&t, vec!["auth.example.com".into()]);
+        assert!(!has_tag(&s, "jwt_jku_external"), "allowlisted host must not flag: {s:?}");
+    }
+
+    #[test]
+    fn jku_wildcard_allowlist_matches_subdomain() {
+        let t = tok(r#"{"alg":"RS256","jku":"https://keys.auth.example.com/jwks.json"}"#);
+        let s = signals_for_cookie_with(&t, vec!["*.example.com".into()]);
+        assert!(!has_tag(&s, "jwt_jku_external"));
+    }
+
+    #[test]
+    fn jku_off_allowlist_flags_even_with_allowlist_set() {
+        let t = tok(r#"{"alg":"RS256","jku":"https://evil.com/jwks.json"}"#);
+        let s = signals_for_cookie_with(&t, vec!["auth.example.com".into()]);
+        assert!(has_tag(&s, "jwt_jku_external"));
+    }
+
+    #[test]
+    fn jku_with_userinfo_and_port_extracts_host() {
+        // userinfo + port must not fool the host extraction.
+        let t = tok(r#"{"alg":"RS256","jku":"https://auth.example.com@evil.com:8443/jwks"}"#);
+        let s = signals_for_cookie_with(&t, vec!["auth.example.com".into()]);
+        // Real host is evil.com (after `@`), which is NOT allowlisted.
+        assert!(has_tag(&s, "jwt_jku_external"), "host after userinfo is evil.com: {s:?}");
+    }
+
+    #[test]
+    fn no_jku_no_signal() {
+        let t = tok(r#"{"alg":"RS256","typ":"JWT"}"#);
+        assert!(!has_tag(&signals_for_cookie(&t), "jwt_jku_external"));
+    }
+
+    #[test]
+    fn url_host_unit() {
+        assert_eq!(url_host("https://a.com/x").as_deref(), Some("a.com"));
+        assert_eq!(url_host("https://A.COM:443/x").as_deref(), Some("a.com"));
+        assert_eq!(url_host("https://u:p@host.com/x").as_deref(), Some("host.com"));
+        assert_eq!(url_host("https://[::1]:8443/x").as_deref(), Some("::1"));
+        assert_eq!(url_host("not-a-url"), None);
+    }
+
+    // ---- Phase A2: jwt_time_forged ----------------------------------
+
+    #[test]
+    fn time_far_future_exp_flags() {
+        // exp in year 2286.
+        let t = tok2(r#"{"alg":"HS256"}"#, r#"{"role":"admin","exp":9999999999}"#);
+        assert!(has_tag(&signals_for_cookie(&t), "jwt_time_forged"));
+    }
+
+    #[test]
+    fn time_epoch_iat_nbf_flags() {
+        let t = tok2(r#"{"alg":"HS256"}"#, r#"{"user":"alice","iat":0,"nbf":0}"#);
+        assert!(has_tag(&signals_for_cookie(&t), "jwt_time_forged"));
+    }
+
+    #[test]
+    fn time_real_corpus_header() {
+        // Report ID=26 payload: role:admin, exp:9999999999, iat:0, nbf:0.
+        let t = concat!(
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.",
+            "eyJ1c2VyIjoiYWxpY2UiLCJyb2xlIjoiYWRtaW4iLCJleHAiOjk5OTk5OTk5OTksImlhdCI6MCwibmJmIjowfQ.",
+            "invalidsignature"
+        );
+        assert!(has_tag(&signals_for_cookie(t), "jwt_time_forged"));
+    }
+
+    #[test]
+    fn time_sane_token_is_clean() {
+        // exp ~1 year out, iat ~now — a normal token must stay green.
+        let now = unix_now();
+        let payload = format!(r#"{{"user":"a","iat":{},"exp":{}}}"#, now - 60, now + 3600);
+        let t = tok2(r#"{"alg":"HS256"}"#, &payload);
+        assert!(!has_tag(&signals_for_cookie(&t), "jwt_time_forged"));
+    }
+
+    #[test]
+    fn time_no_claims_is_clean() {
+        let t = tok2(r#"{"alg":"HS256"}"#, r#"{"user":"a"}"#);
+        assert!(!has_tag(&signals_for_cookie(&t), "jwt_time_forged"));
+    }
+
+    #[test]
+    fn time_claims_forged_unit() {
+        let now = 1_700_000_000u64;
+        let forged_exp =
+            serde_json::from_str::<serde_json::Map<String, Value>>(r#"{"exp":9999999999}"#).unwrap();
+        assert!(time_claims_forged(&forged_exp, now));
+        let epoch =
+            serde_json::from_str::<serde_json::Map<String, Value>>(r#"{"iat":0,"nbf":0}"#).unwrap();
+        assert!(time_claims_forged(&epoch, now));
+        let sane = serde_json::from_str::<serde_json::Map<String, Value>>(
+            r#"{"iat":1699999940,"exp":1700003600}"#,
+        )
+        .unwrap();
+        assert!(!time_claims_forged(&sane, now));
+    }
+
+    #[test]
+    fn domain_matches_unit() {
+        assert!(domain_matches("a.com", "a.com"));
+        assert!(domain_matches("A.com", "a.com"));
+        assert!(domain_matches("*.example.com", "x.example.com"));
+        assert!(domain_matches("*.example.com", "a.b.example.com"));
+        assert!(!domain_matches("*.example.com", "example.com"));
+        assert!(!domain_matches("a.com", "b.com"));
     }
 }

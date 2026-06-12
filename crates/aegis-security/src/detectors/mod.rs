@@ -535,8 +535,13 @@ pub fn default_detectors_with(
         // no signature verification (that stays in the gateway). Not
         // yet a `DetectorClass`, so it runs unconditionally
         // (`mask.is_enabled_id` returns true for unknown ids); the
-        // runtime toggle + per-tier mask wiring lands in Phase A2.
-        Box::new(jwt_inspection::JwtInspectionDetector),
+        // 2026-06-12 (Phase A2) — now a first-class `DetectorClass`
+        // (runtime toggle + per-tier mask + config). The `jku`/`x5u`
+        // external-host rule reads the operator allowlist; empty =
+        // strict (any external key-set URL flags).
+        Box::new(jwt_inspection::JwtInspectionDetector::new(
+            cfg.jwt_inspection.jku_allowed_domains.clone(),
+        )),
     ]
 }
 
@@ -795,8 +800,9 @@ mod tests {
         let d = default_detectors();
         // sqli + xss + path_traversal + ssrf + header_injection
         // + body_abuse + recon + brute_force + command_injection
-        // + template_injection + nosql_injection + open_redirect.
-        assert_eq!(d.len(), 12);
+        // + template_injection + nosql_injection + open_redirect
+        // + jwt_inspection.
+        assert_eq!(d.len(), 13);
     }
 
     #[test]

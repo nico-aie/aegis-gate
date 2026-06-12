@@ -162,6 +162,15 @@ pub mod jwt_inspection {
     /// SQL metacharacters, or a URL/file scheme — RFI / SQLi / empty-
     /// key forgery primitive.
     pub const KID_INJECTION: u32 = 80;
+    /// 2026-06-12 (Phase A2) — `jku` / `x5u` header points at a host
+    /// outside `jku_allowed_domains` (empty allowlist = any external
+    /// URL) — SSRF + attacker-controlled-JWKS signature bypass.
+    pub const JKU_EXTERNAL: u32 = 80;
+    /// 2026-06-12 (Phase A2) — forged time claims: `exp` > 10y out,
+    /// `iat` > 10y old, or `iat==0 && nbf==0` (epoch-forged). Scored
+    /// one rung below the unambiguous-key shapes since a clock-skewed
+    /// or oddly-issued legit token is conceivable.
+    pub const TIME_FORGED: u32 = 70;
 }
 
 pub mod ai {
@@ -391,6 +400,18 @@ pub const CATALOG: &[ScoreEntry] = &[
         tag: "jwt_kid_injection",
         score: jwt_inspection::KID_INJECTION,
         note: "JWT header `kid` carries path traversal (`../`, `/etc/`, `/dev/`), SQL metacharacters, or a URL/file scheme.",
+    },
+    ScoreEntry {
+        class: "jwt_inspection",
+        tag: "jwt_jku_external",
+        score: jwt_inspection::JKU_EXTERNAL,
+        note: "JWT header `jku`/`x5u` references a host outside `jwt_inspection.jku_allowed_domains` (empty = any external) — SSRF + attacker-JWKS bypass.",
+    },
+    ScoreEntry {
+        class: "jwt_inspection",
+        tag: "jwt_time_forged",
+        score: jwt_inspection::TIME_FORGED,
+        note: "JWT payload time claims are forged — `exp` >10y out, `iat` >10y old, or `iat==0 && nbf==0` (epoch-forged).",
     },
 ];
 

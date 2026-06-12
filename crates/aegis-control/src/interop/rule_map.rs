@@ -53,6 +53,12 @@ pub fn rule_to_feature(rule_id: &str) -> Option<(&'static str, &'static str)> {
         "template_injection" | "ssti" => ("rules_engine", "template_injection"),
         "nosql_injection" | "nosqli" => ("rules_engine", "nosql_injection"),
         "open_redirect" | "openredir" => ("rules_engine", "open_redirect"),
+        // 2026-06-12 (JWT report) — the JWT attack-shape detector emits
+        // `jwt_alg_none` / `jwt_x5c_inline` / `jwt_kid_injection` /
+        // `jwt_jku_external` / `jwt_time_forged`; map every `jwt_` tag
+        // to the togglable `jwt_inspection` policy so the BTC can see it
+        // in capabilities and flip it enforce↔log_only via set_profile.
+        p if p.starts_with("jwt_") => ("rules_engine", "jwt_inspection"),
 
         // 2026-05-20 — Phase-F detectors (committee interop fix).
         // canary / velocity / behavior_signals can fire AND block,
