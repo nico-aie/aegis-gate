@@ -6379,8 +6379,12 @@ function ZtIdentityCard() {
   }
 
   async function save() {
-    if (!certPem.trim() || !keyRef.trim()) {
-      window.aegisToast('Paste the public cert and a key reference', 'warn');
+    if (!certPem.trim()) {
+      window.aegisToast('Paste or upload the public certificate first', 'warn');
+      return;
+    }
+    if (!keyRef.trim()) {
+      window.aegisToast('Enter a key reference (e.g. /run/secrets/waf.key or ${secret:waf_key})', 'warn');
       return;
     }
     setBusy(true);
@@ -6477,41 +6481,62 @@ function ZtIdentityCard() {
             In-console upload is off. Set <code>zero_trust.upstream_identity</code> in
             YAML, or enable <code>allow_ca_upload</code>.
           </p>
-        ) : !showForm ? (
+        ) : (
           <button className="btn" onClick={() => setShowForm(true)}>
             {d.configured ? 'Rotate identity' : 'Set identity'}
           </button>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <textarea
-              value={certPem}
-              onChange={e => setCertPem(e.target.value)}
-              placeholder="-----BEGIN CERTIFICATE-----   (public cert chain only)"
-              rows={6}
-              style={{ ...fieldStyle, fontFamily: 'monospace', fontSize: 12, padding: 10 }}
-            />
-            <input
-              type="text"
-              value={keyRef}
-              onChange={e => setKeyRef(e.target.value)}
-              placeholder="key reference — e.g. ${secret:waf_client_key}"
-              style={fieldStyle}
-            />
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <input type="file" accept=".pem,.crt,.cer,application/x-pem-file" onChange={onFile} />
-              <button className="btn primary" disabled={busy || !certPem.trim() || !keyRef.trim()} onClick={save}>
-                {busy ? 'Saving…' : 'Save'}
-              </button>
-              <button className="btn ghost" disabled={busy} onClick={() => { setShowForm(false); setCertPem(''); setKeyRef(''); }}>
-                Cancel
-              </button>
-            </div>
-            <p style={{ fontSize: 12, ...muted, margin: 0 }}>
-              Only the public cert is stored; the private key stays on each node via the key reference.
-            </p>
-          </div>
         )}
       </div>
+
+      {showForm && (() => {
+        const close = () => { if (!busy) { setShowForm(false); setCertPem(''); setKeyRef(''); } };
+        return (
+          <div className="modal-backdrop" onClick={close}>
+            <div className="modal" style={{ maxWidth: 580 }} onClick={e => e.stopPropagation()}>
+              <div className="modal-head">
+                <div className="modal-title">
+                  {d.configured ? 'Rotate WAF Client Identity' : 'Set WAF Client Identity'}
+                </div>
+                <button className="btn ghost" onClick={close} disabled={busy}>✕</button>
+              </div>
+              <div className="modal-body">
+                <p style={{ fontSize: 13, color: 'var(--ink-mute)', marginTop: 0, marginBottom: 10, lineHeight: 1.5 }}>
+                  Upload the public certificate chain the WAF presents to backends, plus a
+                  reference to the private key. The key never leaves the node — only the
+                  public cert is stored.
+                </p>
+                <textarea
+                  value={certPem}
+                  onChange={e => setCertPem(e.target.value)}
+                  placeholder="-----BEGIN CERTIFICATE-----   (public cert chain only)"
+                  rows={6}
+                  style={{ width: '100%', boxSizing: 'border-box', fontFamily: 'monospace', fontSize: 12, padding: 10, color: 'var(--ink)', background: 'var(--surface-2)', border: '1px solid var(--hairline-strong)', borderRadius: 6 }}
+                />
+                <input
+                  type="text"
+                  value={keyRef}
+                  onChange={e => setKeyRef(e.target.value)}
+                  placeholder="Private key path or secret ref — e.g. /run/secrets/waf.key or ${secret:waf_key}  (required)"
+                  style={{ width: '100%', boxSizing: 'border-box', marginTop: 8, fontSize: 13, padding: '8px 10px', color: 'var(--ink)', background: 'var(--surface-2)', border: '1px solid var(--hairline-strong)', borderRadius: 6 }}
+                />
+                <div style={{ marginTop: 10 }}>
+                  <input type="file" accept=".pem,.crt,.cer,application/x-pem-file" onChange={onFile} />
+                </div>
+              </div>
+              <div className="modal-foot">
+                <button className="btn" onClick={close} disabled={busy}>Cancel</button>
+                <button
+                  className="btn primary"
+                  disabled={busy || !certPem.trim()}
+                  onClick={save}
+                >
+                  {busy ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -6734,7 +6759,7 @@ function ZtUpstreamPoolsCard() {
                     disabled={isBusy || !pem.trim() || !identityReady}
                     onClick={() => uploadCert(openPool)}
                   >
-                    {isBusy ? 'Saving…' : 'Save & enable'}
+                    {isBusy ? 'Saving…' : 'Save'}
                   </button>
                 )}
               </div>
