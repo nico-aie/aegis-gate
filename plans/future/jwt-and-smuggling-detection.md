@@ -230,13 +230,13 @@ so this one ships **log_only** and is evaluated before any promotion. Lives in
 
 ## 4. Phasing
 
-| Phase | Scope | Gate to next |
-|-------|-------|-------------|
-| **A1** | JWT decode core + `jwt_alg_none`, `jwt_x5c_inline`, `jwt_kid_injection` (the no-config structural blocks) + tests | unit green, no FP on legit-JWT corpus |
-| **A2** | `jwt_jku_external` (+ `jku_allowed_domains` config), `jwt_time_forged`; mask + scores + catalog + config + dashboard | `/api/detectors` shows class; toggle works |
-| **A3** | `jwt_role_priv` **log_only**; per-detector doc; QC test-plan document (descriptive, per [[feedback_qc_script_means_doc]]) | reviewed in `log_only`, decide promote |
-| **B1** | §3.1 four header-hygiene rules in `header_injection` + tests + scores | unit green; re-run smuggling dataset shows 403+attribution on CL/TE/multi-TE/H2 rows |
-| **B2** | §3.2 body-embedded-request-line **log_only** | evaluate FP before any promote |
+| Phase | Scope | Status |
+|-------|-------|--------|
+| **A1** | JWT decode core + `jwt_alg_none`, `jwt_x5c_inline`, `jwt_kid_injection` (the no-config structural blocks) + tests | **SHIPPED** (detector runs unconditionally as unknown id) |
+| **A2** | `jwt_jku_external` (+ `jku_allowed_domains` config), `jwt_time_forged`; mask + scores + catalog + config + dashboard | **SHIPPED** (first-class `DetectorClass::JwtInspection`, bit 1<<16; dashboard toggle + `/api/detectors` catalog; set_profile via `jwt_` rule_map prefix) |
+| **A3** | `jwt_role_priv` **log_only**; per-detector doc; QC test-plan document (descriptive, per [[feedback_qc_script_means_doc]]) | TODO — reviewed in `log_only`, decide promote |
+| **B1** | §3.1 four header-hygiene rules in `header_injection` + tests + scores | TODO — re-run smuggling dataset for 403+attribution on CL/TE/multi-TE/H2 rows |
+| **B2** | §3.2 body-embedded-request-line **log_only** | TODO — evaluate FP before any promote |
 
 A-phases first. B is independent and can slot whenever; it's smaller.
 
