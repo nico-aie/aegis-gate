@@ -5796,6 +5796,15 @@ function MtlsModeCard() {
     ? window.useApi('/api/zero-trust/downstream/mode', { intervalMs: 10000, fallback: null })
     : { data: null };
   const [busy, setBusy] = useStateP(false);
+  // 2026-06-12 — optimistic local override so the buttons flip INSTANTLY on
+  // click. Previously the active state came only from `api.data` (a 10s
+  // poll), so a toggle didn't visually update until the next poll/reload —
+  // "very slow to update". The PUT already echoes the authoritative new
+  // mode (used below); this effect drops the optimistic value once the
+  // poll brings fresh server state, so a change from another operator still
+  // reconciles.
+  const [local, setLocal] = useStateP(null);
+  useEffectP(() => { setLocal(null); }, [api.data]);
 
   if (!api.data) {
     return (
@@ -5804,7 +5813,8 @@ function MtlsModeCard() {
       </div>
     );
   }
-  const { configured, override: ovr, effective, requires_restart } = api.data;
+  const view = local || api.data;
+  const { configured, override: ovr, effective, requires_restart } = view;
 
   async function setMode(target) {
     if (target === 'required') {
@@ -5813,6 +5823,8 @@ function MtlsModeCard() {
       );
       if (!ok) return;
     }
+    // Flip the button immediately (an override sets effective = target).
+    setLocal({ ...(local || api.data), override: target, effective: target });
     setBusy(true);
     try {
       const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
@@ -5823,14 +5835,20 @@ function MtlsModeCard() {
         credentials: 'same-origin',
       });
       if (!r.ok) throw new Error(`status ${r.status}`);
-      if (api.reload) api.reload();
+      // The PUT echoes the authoritative new mode — use it directly instead
+      // of a separate GET round-trip.
+      const j = await r.json().catch(() => null);
+      if (j && j.mode) setLocal(j.mode);
     } catch (e) {
-      window.toast && window.toast(`mTLS mode set failed: ${e.message}`, 'err');
+      setLocal(null); // revert the optimistic flip
+      (window.aegisToast || window.toast)?.(`mTLS mode set failed: ${e.message}`, 'err');
     } finally {
       setBusy(false);
     }
   }
   async function clearOverride() {
+    // Optimistically revert to the configured mode.
+    setLocal({ ...(local || api.data), override: null, effective: configured });
     setBusy(true);
     try {
       const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
@@ -5841,9 +5859,11 @@ function MtlsModeCard() {
         credentials: 'same-origin',
       });
       if (!r.ok) throw new Error(`status ${r.status}`);
-      if (api.reload) api.reload();
+      const j = await r.json().catch(() => null);
+      if (j && j.mode) setLocal(j.mode);
     } catch (e) {
-      window.toast && window.toast(`mTLS mode clear failed: ${e.message}`, 'err');
+      setLocal(null);
+      (window.aegisToast || window.toast)?.(`mTLS mode clear failed: ${e.message}`, 'err');
     } finally {
       setBusy(false);
     }
