@@ -19,8 +19,8 @@ const NAV = [
   { group: 'Security Ops', items: [
     { id: 'overview',      label: 'Overview',         icon: <window.I.Shield />,   badge: null },
     { id: 'live',          label: 'Live Feed',        icon: <window.I.Activity />, badge: 'LIVE', tone: 'live' },
-    { id: 'incidents',     label: 'Incidents',        icon: <window.I.Siren />,    badge: 'NEW', tone: 'warn' },
-    { id: 'investigation', label: 'Investigation',    icon: <window.I.Search />,   badge: 'NEW', tone: 'warn' },
+    { id: 'incidents',     label: 'Incidents',        icon: <window.I.Siren />,    badge: null },
+    { id: 'investigation', label: 'Investigation',    icon: <window.I.Search />,   badge: null },
     { id: 'top-attackers', label: 'Top Attackers',    icon: <window.I.Siren />,    badge: null },
     // 2026-05-10 — Threat Intel sidebar entry retired. Backend
     // (TAXII / MISP feed scraper, ThreatIntelStore) still ships
@@ -42,7 +42,7 @@ const NAV = [
     // lock-by-mode deferral (see plans/future/compliance-profiles.md).
     // Re-add when the lock returns.
     { id: 'upstreams',     label: 'Routing & Upstreams', icon: <window.I.Server />, badge: null },
-    { id: 'traffic-gates', label: 'Traffic Gates',    icon: <window.I.Shield />,   badge: 'NEW', tone: 'warn' },
+    { id: 'traffic-gates', label: 'Traffic Gates',    icon: <window.I.Shield />,   badge: null },
     { id: 'access-lists',  label: 'Access Lists',     icon: <window.I.Ban />,      badge: null },
     { id: 'detectors',     label: 'Detectors & Tiers', icon: <window.I.Cluster />, badge: null },
     { id: 'rules',         label: 'Rules',            icon: <window.I.Layers />,   badge: null },
@@ -53,14 +53,14 @@ const NAV = [
     // (floating launcher, bottom-right) reachable from anywhere, including
     // the Overview "Open Copilot" button. Old #/copilot links redirect to
     // Overview (see ROUTE_REDIRECTS).
-    { id: 'performance',   label: 'Performance',      icon: <window.I.Gauge />,    badge: 'NEW', tone: 'warn' },
+    { id: 'performance',   label: 'Performance',      icon: <window.I.Gauge />,    badge: null },
     { id: 'health',        label: 'Health & SLOs',    icon: <window.I.Heart />,    badge: 'SLO', tone: 'warn' },
     { id: 'audit',         label: 'Audit Trail',      icon: <window.I.Book />,     badge: null },
     { id: 'scaling',       label: 'Scaling',          icon: <window.I.Cluster />,  badge: null },
   ]},
   { group: 'Admin', items: [
     { id: 'settings',      label: 'Settings',         icon: <window.I.Settings />, badge: null },
-    { id: 'reports',       label: 'Reports',          icon: <window.I.Download />, badge: 'NEW', tone: 'warn' },
+    { id: 'reports',       label: 'Reports',          icon: <window.I.Download />, badge: null },
     { id: 'help',          label: 'Help & Guide',     icon: <window.I.Book />,     badge: null },
   ]},
 ];
