@@ -15,17 +15,21 @@
 //! frames. This overrides design decision §4.1's "unmasked" lean in
 //! favour of the documented preserve-masking fallback.
 //!
-//! ## Oversize policy (operator steer, 2026-06-11)
+//! ## Oversize policy (2026-06-12 — fail-closed in enforce)
 //!
-//! A reassembled text message that exceeds `max_message_bytes` is **not
-//! closed**. Inspection is **skipped** and the message is forwarded
-//! (bounded memory: we stop buffering at the cap and stream the rest),
-//! incrementing a skip counter. This favours availability for
-//! legitimately large messages over the design's fail-closed `1009`.
-//! The trade-off — an attacker can pad past the cap to evade — is
-//! metered so operators can see it and tune the cap. A single *frame*
-//! over [`ws_codec::MAX_FRAME_PAYLOAD`] is still a protocol-level close
-//! (an individual multi-MiB text frame is anomalous).
+//! The inspection cap is small by default ([`DEFAULT_INSPECT_MAX`],
+//! 256 KiB) so buffering stays cheap and every realistic small-message WS
+//! payload is inspected. A reassembled text message that exceeds the cap:
+//! - **enforce** (`over_cap_close: true`) ⇒ **fail-closed**: the bridge
+//!   closes with WS `1009` (Message Too Big). This shuts the
+//!   bypass-by-size — an attacker can no longer pad past the cap to evade
+//!   inspection.
+//! - **log_only** (`over_cap_close: false`) ⇒ forward un-inspected +
+//!   increment `messages_skipped_oversize` (bounded memory; metered so
+//!   operators can see size-bypass attempts before enforcing).
+//!
+//! A single *frame* over [`ws_codec::MAX_FRAME_PAYLOAD`] is still a
+//! protocol-level close regardless of mode.
 //!
 //! WS-MSG2 lands the bridge + reassembly (no detection yet — the hook
 //! is "allow all"). WS-MSG3 plugs the body detectors into the
@@ -39,18 +43,29 @@ use super::ws_codec::{self, FrameHeader, HeaderParse, Opcode, WsCodecError};
 /// buffering used elsewhere in the proto layer.
 const COPY_CHUNK: usize = 16 * 1024;
 
+/// Default reassembled-message inspection cap (256 KiB). 2026-06-12 —
+/// WS for this app class carries small control/JSON messages, so a small
+/// cap keeps buffering/inspection cheap AND covers every realistic
+/// payload; `ws_codec::MAX_MESSAGE_BYTES` (4 MiB) remains the codec's hard
+/// frame ceiling. A message over this is fail-closed (1009) in enforce.
+pub const DEFAULT_INSPECT_MAX: usize = 256 * 1024;
+
 /// Per-bridge configuration (from `RouteConfig.ws_inspect`).
 #[derive(Clone, Copy, Debug)]
 pub struct WsBridgeConfig {
-    /// Reassembled-message cap; over this, inspection is skipped and the
-    /// message forwarded. 0 ⇒ [`ws_codec::MAX_MESSAGE_BYTES`].
+    /// Reassembled-message cap. 0 ⇒ [`DEFAULT_INSPECT_MAX`] (256 KiB).
     pub max_message_bytes: usize,
+    /// 2026-06-12 — over-cap policy. `true` (enforce) ⇒ a message over the
+    /// cap fail-closes the connection (WS Close `1009`) instead of being
+    /// forwarded uninspected (which is a bypass-by-size). `false`
+    /// (log_only) ⇒ forward + count `messages_skipped_oversize`.
+    pub over_cap_close: bool,
 }
 
 impl WsBridgeConfig {
     fn effective_max(&self) -> usize {
         if self.max_message_bytes == 0 {
-            ws_codec::MAX_MESSAGE_BYTES
+            DEFAULT_INSPECT_MAX
         } else {
             self.max_message_bytes
         }
@@ -128,6 +143,9 @@ enum FrameAction {
 /// forward, buffer, or surface a completed message for inspection.
 struct Reassembly {
     max: usize,
+    /// 2026-06-12 — when `true` (enforce), a text message over `max`
+    /// fail-closes (1009) instead of being forwarded uninspected.
+    over_cap_close: bool,
     /// The opcode that started the in-progress fragmented message
     /// (`Text` or `Binary`); `None` between messages.
     current: Option<Opcode>,
@@ -139,13 +157,27 @@ struct Reassembly {
 }
 
 impl Reassembly {
-    fn new(max: usize) -> Self {
+    fn new(max: usize, over_cap_close: bool) -> Self {
         Self {
             max,
+            over_cap_close,
             current: None,
             skipping: false,
             text_payload: Vec::new(),
             text_raw: Vec::new(),
+        }
+    }
+
+    /// The action for a text message that exceeded the cap: fail-closed
+    /// (1009) in enforce, or forward-uninspected (log_only).
+    fn over_cap_action(&self, raw: Vec<u8>) -> FrameAction {
+        if self.over_cap_close {
+            FrameAction::Protocol(WsCodecError::MessageTooLarge)
+        } else {
+            FrameAction::Forward {
+                raw,
+                skipped_oversize: true,
+            }
         }
     }
 
@@ -192,10 +224,7 @@ impl Reassembly {
                 if fin {
                     // Single-frame text message.
                     if frame.unmasked_payload.len() > self.max {
-                        FrameAction::Forward {
-                            raw: frame.raw,
-                            skipped_oversize: true,
-                        }
+                        self.over_cap_action(frame.raw)
                     } else {
                         FrameAction::InspectText {
                             payload: frame.unmasked_payload,
@@ -207,10 +236,7 @@ impl Reassembly {
                     self.current = Some(Opcode::Text);
                     if frame.unmasked_payload.len() > self.max {
                         self.skipping = true;
-                        FrameAction::Forward {
-                            raw: frame.raw,
-                            skipped_oversize: true,
-                        }
+                        self.over_cap_action(frame.raw)
                     } else {
                         self.text_payload = frame.unmasked_payload;
                         self.text_raw = frame.raw;
@@ -231,17 +257,18 @@ impl Reassembly {
                 }
                 Some(Opcode::Text) => {
                     if self.skipping {
-                        // Already over the cap — stream through.
+                        // Already over the cap — stream through (log_only)
+                        // or fail-closed (enforce). In enforce the bridge
+                        // already closed at the first over-cap frame, so
+                        // this path is effectively log_only-only.
                         if fin {
                             self.reset_text();
                         }
-                        FrameAction::Forward {
-                            raw: frame.raw,
-                            skipped_oversize: true,
-                        }
+                        self.over_cap_action(frame.raw)
                     } else if self.text_payload.len() + frame.unmasked_payload.len() > self.max {
                         // This fragment tips the message over the cap →
-                        // flush buffered + this frame, switch to skip.
+                        // flush buffered + this frame (log_only), or
+                        // fail-close (enforce).
                         self.skipping = true;
                         let mut out = std::mem::take(&mut self.text_raw);
                         out.extend_from_slice(&frame.raw);
@@ -249,10 +276,7 @@ impl Reassembly {
                         if fin {
                             self.reset_text();
                         }
-                        FrameAction::Forward {
-                            raw: out,
-                            skipped_oversize: true,
-                        }
+                        self.over_cap_action(out)
                     } else {
                         self.text_payload.extend_from_slice(&frame.unmasked_payload);
                         self.text_raw.extend_from_slice(&frame.raw);
@@ -354,7 +378,7 @@ where
     let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream);
     let mut cbuf: Vec<u8> = Vec::new();
     let mut up_chunk = [0u8; COPY_CHUNK];
-    let mut reasm = Reassembly::new(cfg.effective_max());
+    let mut reasm = Reassembly::new(cfg.effective_max(), cfg.over_cap_close);
     let mut stats = WsBridgeStats::default();
 
     loop {
@@ -522,6 +546,7 @@ mod tests {
     fn big_cfg() -> WsBridgeConfig {
         WsBridgeConfig {
             max_message_bytes: 0,
+            over_cap_close: false,
         }
     }
 
@@ -558,9 +583,11 @@ mod tests {
 
     #[tokio::test]
     async fn oversize_text_message_is_skipped_not_closed() {
-        // Cap at 8 bytes; send a 20-byte single text frame.
+        // log_only (over_cap_close: false): cap 8, send 20 bytes → forward
+        // un-inspected + count the skip, do NOT close.
         let cfg = WsBridgeConfig {
             max_message_bytes: 8,
+            over_cap_close: false,
         };
         let payload = vec![b'A'; 20];
         let frame = client_frame(Opcode::Text, &payload, true, KEY);
@@ -572,10 +599,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oversize_text_fails_closed_when_enforced() {
+        // 2026-06-12 — enforce (over_cap_close: true): an over-cap text
+        // message must FAIL-CLOSED (WS 1009) instead of being forwarded
+        // uninspected (the bypass-by-size).
+        let cfg = WsBridgeConfig {
+            max_message_bytes: 8,
+            over_cap_close: true,
+        };
+        let payload = vec![b'A'; 20];
+        let frame = client_frame(Opcode::Text, &payload, true, KEY);
+        let (got, stats) = run_with(frame, cfg).await;
+        assert_eq!(
+            stats.close_code,
+            Some(ws_codec::close_code::MESSAGE_TOO_BIG),
+            "over-cap in enforce must close with 1009",
+        );
+        assert_eq!(stats.messages_skipped_oversize, 0, "fail-closed, not skipped");
+        assert!(got.is_empty(), "the oversize frame must NOT reach the upstream");
+    }
+
+    #[test]
+    fn default_inspect_cap_is_256k() {
+        // 0 ⇒ the small default cap, not the 4 MiB codec ceiling.
+        let cfg = WsBridgeConfig {
+            max_message_bytes: 0,
+            over_cap_close: true,
+        };
+        assert_eq!(cfg.effective_max(), DEFAULT_INSPECT_MAX);
+        assert_eq!(DEFAULT_INSPECT_MAX, 256 * 1024);
+    }
+
+    #[tokio::test]
     async fn fragmented_text_over_cap_switches_to_skip() {
         // Cap 5: "abcd" (4, ok so far) + "efgh" (tips over) → skip.
         let cfg = WsBridgeConfig {
             max_message_bytes: 5,
+            over_cap_close: false,
         };
         let f1 = client_frame(Opcode::Text, b"abcd", false, KEY);
         let f2 = client_frame(Opcode::Continuation, b"efgh", true, KEY);

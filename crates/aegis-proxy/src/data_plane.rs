@@ -1984,9 +1984,6 @@ pub(crate) async fn forward_allow_to_upstream(
                         // zero-copy tunnel, byte-for-byte.
                         let (c2u, u2c) = if ws_inspect_for_task.is_active() {
                             let ws_cfg = &ws_inspect_for_task;
-                            let bridge_cfg = crate::proto::ws_inspect::WsBridgeConfig {
-                                max_message_bytes: ws_cfg.max_message_bytes,
-                            };
                             // WS-MSG3 — per-message inspector: build a
                             // synthetic RequestView from the handshake
                             // context, run the body detectors over the
@@ -1999,6 +1996,13 @@ pub(crate) async fn forward_allow_to_upstream(
                                 ws_cfg.mode,
                                 aegis_core::config::WsInspectMode::Enforce
                             );
+                            let bridge_cfg = crate::proto::ws_inspect::WsBridgeConfig {
+                                max_message_bytes: ws_cfg.max_message_bytes,
+                                // 2026-06-12 — fail-closed (WS 1009) over the
+                                // inspection cap in enforce; forward + meter
+                                // the skip in log_only.
+                                over_cap_close: enforce,
+                            };
                             let inspector = move |payload: &[u8]| {
                                 use crate::proto::ws_inspect::WsVerdict;
                                 let (Some(detectors), Some(mask)) =

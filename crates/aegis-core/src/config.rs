@@ -633,6 +633,49 @@ impl ProxyConfig {
     }
 }
 
+/// P1-XFF (2026-06-12) — a `trusted_proxies` CIDR is **unsafe** to trust
+/// when it's a default route (`0.0.0.0/0`, `::/0`). Trusting `X-Forwarded-
+/// For` (or PROXY-protocol asserted IPs) from the entire internet lets any
+/// client forge the client IP and bypass rate-limit, IP blocklist, per-IP
+/// risk, and GeoIP. Rejected at boot by [`WafConfig::validate`] so the
+/// spoof vector is closed by construction, not just by the empty-list
+/// default.
+///
+/// NOTE: loopback (`127.0.0.1/32`, `::1`) is intentionally **allowed** —
+/// it's the legitimate same-host front-WAF sidecar pattern
+/// (`config/cluster-proxy.yaml`), where the localhost peer is a trusted
+/// component asserting the real client IP via PROXY protocol. An operator
+/// must not list loopback unless that localhost peer is genuinely trusted.
+pub fn is_unsafe_trusted_proxy(net: &ipnet::IpNet) -> bool {
+    net.prefix_len() == 0
+}
+
+#[cfg(test)]
+mod trusted_proxy_guard_tests {
+    use super::is_unsafe_trusted_proxy;
+
+    #[test]
+    fn rejects_default_route_wildcards() {
+        for c in ["0.0.0.0/0", "::/0"] {
+            assert!(
+                is_unsafe_trusted_proxy(&c.parse().unwrap()),
+                "{c} (trust the whole internet) must be rejected",
+            );
+        }
+    }
+
+    #[test]
+    fn allows_narrow_and_loopback_cidrs() {
+        // Loopback is allowed (PROXY-protocol sidecar); narrow LB CIDRs too.
+        for c in ["10.0.0.0/8", "192.168.1.5/32", "172.16.0.0/12", "fc00::/7", "127.0.0.1/32", "::1/128"] {
+            assert!(
+                !is_unsafe_trusted_proxy(&c.parse().unwrap()),
+                "{c} must be allowed",
+            );
+        }
+    }
+}
+
 /// Adaptive load-shedder knobs. See
 /// `crates/aegis-proxy/src/shed.rs` for the algorithm.
 #[derive(Clone, Debug, Deserialize)]
@@ -1048,10 +1091,25 @@ impl WafConfig {
         // (`ProxyConfig::parsed_trusted_proxies`) can assume well-formed
         // input. An empty list is valid (XFF ignored — the safe default).
         for cidr in &self.proxy.trusted_proxies {
-            if cidr.trim().parse::<ipnet::IpNet>().is_err() {
+            let net = match cidr.trim().parse::<ipnet::IpNet>() {
+                Ok(n) => n,
+                Err(_) => {
+                    return Err(crate::error::WafError::Config(format!(
+                        "proxy.trusted_proxies: '{cidr}' is not a valid CIDR \
+                         (expected e.g. 10.0.0.0/8, 192.168.1.5/32, fc00::/7)",
+                    )));
+                }
+            };
+            // P1-XFF (2026-06-12) — reject a default-route CIDR. Trusting
+            // X-Forwarded-For from the whole internet lets any client spoof
+            // the client IP and bypass rate-limit / blocklist / risk /
+            // GeoIP. Closes the spoof vector by construction.
+            if is_unsafe_trusted_proxy(&net) {
                 return Err(crate::error::WafError::Config(format!(
-                    "proxy.trusted_proxies: '{cidr}' is not a valid CIDR \
-                     (expected e.g. 10.0.0.0/8, 192.168.1.5/32, fc00::/7)",
+                    "proxy.trusted_proxies: '{cidr}' (default route) is too broad to \
+                     trust for X-Forwarded-For — it lets any client spoof the client IP. \
+                     List the load balancer's NARROW CIDR instead, or leave the list \
+                     empty (XFF ignored — the safe default).",
                 )));
             }
         }
@@ -1580,9 +1638,10 @@ pub struct WsInspectConfig {
     /// `log_only` (default) or `enforce`.
     #[serde(default)]
     pub mode: WsInspectMode,
-    /// Reassembled-message cap across fragments; a message over this
-    /// closes the connection with WS Close `1009`. 0 ⇒ the codec
-    /// default (`MAX_MESSAGE_BYTES`, 4 MiB).
+    /// Reassembled-message inspection cap across fragments. In enforce a
+    /// message over this fail-closes (WS `1009`); in log_only it's
+    /// forwarded un-inspected + metered. `0` ⇒ the small default cap
+    /// (256 KiB) — see `ws_inspect::DEFAULT_INSPECT_MAX`.
     #[serde(default)]
     pub max_message_bytes: usize,
 }
