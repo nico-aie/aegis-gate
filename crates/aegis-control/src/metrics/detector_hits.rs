@@ -40,6 +40,8 @@ pub mod class_label {
     pub const TEMPLATE_INJECTION: &str = "template_injection";
     pub const NOSQL_INJECTION: &str = "nosql_injection";
     pub const OPEN_REDIRECT: &str = "open_redirect";
+    // 2026-06-12 (JWT report) — JWT attack-shape detector.
+    pub const JWT_INSPECTION: &str = "jwt_inspection";
     // 2026-05-19 — DetectorClass extension (Phase F + AI promotion
     // to first-class togglable classes). Keep this list in sync
     // with `DetectorClass::ALL`; `class_constants_match_detector_enum`
@@ -49,9 +51,9 @@ pub mod class_label {
     pub const CANARY: &str = "canary";
     pub const AI: &str = "ai";
 
-    pub const ALL: [&str; 16] = [
+    pub const ALL: [&str; 17] = [
         SQLI, XSS, PATH_TRAVERSAL, SSRF, HEADER_INJECTION, BODY_ABUSE, RECON, BRUTE_FORCE,
-        COMMAND_INJECTION, TEMPLATE_INJECTION, NOSQL_INJECTION, OPEN_REDIRECT,
+        COMMAND_INJECTION, TEMPLATE_INJECTION, NOSQL_INJECTION, OPEN_REDIRECT, JWT_INSPECTION,
         BEHAVIOR_SIGNALS, VELOCITY, CANARY, AI,
     ];
 }

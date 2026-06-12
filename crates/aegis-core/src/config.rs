@@ -3481,6 +3481,16 @@ pub struct DetectorsConfig {
     /// (every external URL flags).
     #[serde(default)]
     pub open_redirect: OpenRedirectConfig,
+    /// 2026-06-12 (JWT report, Phase A2) — JWT attack-shape detector.
+    /// Decodes the token header from `Authorization: Bearer` / `Cookie`
+    /// and flags malicious structure (alg:none, inline key material,
+    /// `kid` traversal/SQLi, external `jku`/`x5u`, forged time claims).
+    /// Detection-only — no signature verification (that stays in the
+    /// gateway). `jku_allowed_domains` is the allowlist of hosts a
+    /// `jku`/`x5u` URL may reference; empty = strict (any external URL
+    /// flags). **Default ON.**
+    #[serde(default)]
+    pub jwt_inspection: JwtInspectionConfig,
     /// 2026-05-19 — Phase F behaviour-signals detector. Stateful
     /// per-IP signals: burst (<50 ms), missing UA, missing Referer
     /// on mutations, zero-depth first-touch. **Default OFF** because
@@ -3573,6 +3583,10 @@ pub struct TierDetectorMask {
     pub nosql_injection: Option<bool>,
     #[serde(default)]
     pub open_redirect: Option<bool>,
+    /// 2026-06-12 (JWT report) — per-tier override for the JWT
+    /// attack-shape detector. `None` = inherit global (default ON).
+    #[serde(default)]
+    pub jwt_inspection: Option<bool>,
     /// 2026-05-19 — per-tier override for the Phase F
     /// behaviour-signals detector. `None` = inherit global; the
     /// global default is OFF (cf. `DetectorsConfig::default`).
@@ -3633,6 +3647,7 @@ impl Default for DetectorsConfig {
             template_injection: default_detector_toggle(),
             nosql_injection: default_detector_toggle(),
             open_redirect: OpenRedirectConfig::default(),
+            jwt_inspection: JwtInspectionConfig::default(),
             behavior_signals: default_detector_toggle_off(),
             velocity: default_detector_toggle(),
             canary: default_detector_toggle_off(),
@@ -3810,6 +3825,54 @@ impl Default for OpenRedirectConfig {
         Self {
             enabled: true,
             allowed_domains: Vec::new(),
+        }
+    }
+}
+
+/// 2026-06-12 (JWT report) — config for the JWT attack-shape detector.
+///
+/// `enabled` mirrors the standard `DetectorToggle.enabled` knob
+/// (default `true`). `jku_allowed_domains` is the operator allowlist
+/// of hosts that a `jku` / `x5u` header URL may reference — each entry
+/// is a literal hostname (`auth.example.com`) or a `*.example.com`
+/// glob. Empty list = strict mode (any external `jku`/`x5u` flags).
+/// The detector never fetches the URL or verifies signatures; the
+/// allowlist only governs the structural "external key-set URL"
+/// signal. YAML shape:
+///
+/// ```yaml
+/// detectors:
+///   jwt_inspection:
+///     enabled: true
+///     jku_allowed_domains:
+///       - "auth.example.com"
+///       - "*.example.com"
+/// ```
+#[derive(Clone, Debug, Deserialize)]
+pub struct JwtInspectionConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub jku_allowed_domains: Vec<String>,
+    /// 2026-06-12 (Phase A3) — opt-in privileged-role claim heuristic.
+    /// When `true`, a decoded payload whose `role`/`scope` claims a
+    /// privileged value (`admin`, `root`, …) emits a low-score
+    /// (`jwt_role_priv`, 20) **observe** signal. **Default `false`** —
+    /// a legitimate admin carries `role: admin` on every request, so
+    /// this is noisy by nature; operators turn it on to observe before
+    /// deciding to promote. It never single-blocks (20 is below every
+    /// per-request tier gate; the cumulative model is max-per-request +
+    /// decay, so a steady-state admin sits at ~20 and never escalates).
+    #[serde(default)]
+    pub flag_privileged_roles: bool,
+}
+
+impl Default for JwtInspectionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            jku_allowed_domains: Vec::new(),
+            flag_privileged_roles: false,
         }
     }
 }

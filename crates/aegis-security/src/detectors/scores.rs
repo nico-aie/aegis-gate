@@ -144,6 +144,43 @@ pub mod open_redirect {
     pub const OPEN_REDIRECT: u32 = 50;
 }
 
+pub mod jwt_inspection {
+    // 2026-06-12 (JWT report, Phase A1) — JWT attack-shape detector.
+    // Decodes the token header (+ later payload) and flags malicious
+    // STRUCTURE only; it never verifies signatures (that stays in the
+    // gateway). All three A1 rules are unambiguous-malicious shapes
+    // with no benign use case, so they score 80 — the structural-block
+    // tier that trips every risk threshold including `low`.
+
+    /// `alg: none` (any case) / `null` / empty — unsigned-token forgery.
+    pub const ALG_NONE: u32 = 80;
+    /// Inline key material in the header — `x5c` cert chain or `jwk`.
+    /// Production tokens reference a server-side JWKS, never embed the
+    /// verification key per request.
+    pub const KEY_INJECTION: u32 = 80;
+    /// `kid` carrying path traversal (`../`, `/etc/`, `/dev/`),
+    /// SQL metacharacters, or a URL/file scheme — RFI / SQLi / empty-
+    /// key forgery primitive.
+    pub const KID_INJECTION: u32 = 80;
+    /// 2026-06-12 (Phase A2) — `jku` / `x5u` header points at a host
+    /// outside `jku_allowed_domains` (empty allowlist = any external
+    /// URL) — SSRF + attacker-controlled-JWKS signature bypass.
+    pub const JKU_EXTERNAL: u32 = 80;
+    /// 2026-06-12 (Phase A2) — forged time claims: `exp` > 10y out,
+    /// `iat` > 10y old, or `iat==0 && nbf==0` (epoch-forged). Scored
+    /// one rung below the unambiguous-key shapes since a clock-skewed
+    /// or oddly-issued legit token is conceivable.
+    pub const TIME_FORGED: u32 = 70;
+    /// 2026-06-12 (Phase A3) — privileged-role claim heuristic
+    /// (`role`/`scope` = admin/root/…). **Opt-in** (config
+    /// `flag_privileged_roles`, default off) and observe-first: 20 is
+    /// below every per-request tier gate, so it never single-blocks; a
+    /// legit admin's steady `role:admin` stays at ~20 under the
+    /// max-per-request + decay cumulative model. Promotion = raise this
+    /// after traffic review (ideally gated on a second signal).
+    pub const ROLE_PRIV: u32 = 20;
+}
+
 pub mod ai {
     /// AI / ML classifier verdict (model confidence ≥ threshold).
     /// 2026-05-20 — restored to 60 (briefly 40). With the AI
@@ -349,6 +386,46 @@ pub const CATALOG: &[ScoreEntry] = &[
         tag: "canary",
         score: 100,
         note: "Hit on an operator-supplied honeypot path (`cfg.risk.canary_paths`). Maximum confidence — single-hit block at every tier.",
+    },
+    // 2026-06-12 (JWT report, Phase A1) — JWT attack-shape detector.
+    // Decodes the token header from `Authorization: Bearer` / `Cookie`
+    // and flags malicious structure. Detection-only — no signature
+    // verification (that stays in the gateway).
+    ScoreEntry {
+        class: "jwt_inspection",
+        tag: "jwt_alg_none",
+        score: jwt_inspection::ALG_NONE,
+        note: "JWT header `alg` is `none` / `null` / empty (any case) — unsigned-token forgery (alg:none bypass).",
+    },
+    ScoreEntry {
+        class: "jwt_inspection",
+        tag: "jwt_x5c_inline",
+        score: jwt_inspection::KEY_INJECTION,
+        note: "JWT header embeds inline key material (`x5c` cert chain or `jwk`) — attacker-supplied verification key.",
+    },
+    ScoreEntry {
+        class: "jwt_inspection",
+        tag: "jwt_kid_injection",
+        score: jwt_inspection::KID_INJECTION,
+        note: "JWT header `kid` carries path traversal (`../`, `/etc/`, `/dev/`), SQL metacharacters, or a URL/file scheme.",
+    },
+    ScoreEntry {
+        class: "jwt_inspection",
+        tag: "jwt_jku_external",
+        score: jwt_inspection::JKU_EXTERNAL,
+        note: "JWT header `jku`/`x5u` references a host outside `jwt_inspection.jku_allowed_domains` (empty = any external) — SSRF + attacker-JWKS bypass.",
+    },
+    ScoreEntry {
+        class: "jwt_inspection",
+        tag: "jwt_time_forged",
+        score: jwt_inspection::TIME_FORGED,
+        note: "JWT payload time claims are forged — `exp` >10y out, `iat` >10y old, or `iat==0 && nbf==0` (epoch-forged).",
+    },
+    ScoreEntry {
+        class: "jwt_inspection",
+        tag: "jwt_role_priv",
+        score: jwt_inspection::ROLE_PRIV,
+        note: "JWT payload claims a privileged `role`/`scope` (admin/root/…). Opt-in heuristic (`jwt_inspection.flag_privileged_roles`); observe-only — never single-blocks.",
     },
 ];
 

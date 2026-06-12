@@ -1309,6 +1309,7 @@ const DETECTOR_COLORS = {
   template_injection:  '#FB923C', // orange
   ssti:                '#FB923C',
   open_redirect:       '#38BDF8', // sky
+  jwt_inspection:      '#D946EF', // fuchsia
   header_injection:    '#B45309', // brown
   body_abuse:          '#84CC16', // lime
   brute_force:         '#E11D48', // rose
@@ -3216,6 +3217,8 @@ const MASK_CLASSES = [
   'sqli', 'xss', 'path_traversal', 'ssrf', 'header_injection',
   'body_abuse', 'recon', 'brute_force', 'command_injection',
   'template_injection', 'nosql_injection', 'open_redirect',
+  // 2026-06-12 (JWT report) — JWT attack-shape detector.
+  'jwt_inspection',
   // 2026-05-19 — Phase F detectors promoted to first-class togglable
   // classes. Order matches DetectorClass::ALL on the backend.
   'behavior_signals', 'velocity', 'canary', 'ai',
@@ -3239,6 +3242,7 @@ const CLASS_DESCRIPTIONS = {
   template_injection: 'Server-side template injection (Jinja2, Twig, Mako, Freemarker, Velocity, SpEL, Handlebars).',
   nosql_injection: 'MongoDB-flavour operator injection (`?param[$ne]=foo`, `{$where:…}`).',
   open_redirect: 'Suspicious external URLs in `?next=` / `?redirect_uri=`. Allowlist via `cfg.detectors.open_redirect.allowed_domains`.',
+  jwt_inspection: 'JWT attack shapes in `Authorization: Bearer` / `Cookie` — alg:none, inline key material (x5c/jwk), kid traversal/SQLi, external jku/x5u, forged time claims. Detection-only (no signature check). Allowlist jku/x5u hosts via `cfg.detectors.jwt_inspection.jku_allowed_domains`.',
   behavior_signals: 'Stateful per-IP signals — missing UA, missing Referer on mutations, zero-depth first-touch. DEFAULT OFF — designed to stack with OWASP detectors on bot-shaped traffic; turn on once you have real-IP traffic.',
   velocity: 'Cross-endpoint sequence engine — flags chains like login→deposit < 5 s, login→withdrawal < 5 s. DEFAULT ON; zero cost when the upstream has no matching routes.',
   canary: 'Operator-supplied recon tripwire (`/wp-admin`, `/.env`, …). DEFAULT OFF AND inert until you populate `cfg.risk.canary_paths` — enabling alone is a no-op.',
@@ -3262,6 +3266,7 @@ const CLASS_LABELS = {
   template_injection: 'Template injection',
   nosql_injection: 'NoSQL injection',
   open_redirect: 'Open redirect',
+  jwt_inspection: 'JWT inspection',
   behavior_signals: 'Behavior signals',
   velocity: 'Velocity sequences',
   canary: 'Canary tripwire',
