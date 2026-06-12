@@ -351,8 +351,25 @@ state: {{ backend: in_memory }}
     /// A real self-signed PUBLIC cert (no key) for parse tests.
     /// Generated out of band; PUBLIC material only.
     const TEST_CERT_PEM: &str = "-----BEGIN CERTIFICATE-----
-MIIBhTCCASugAwIBAgIUO0nGZ7Wm0Q6kJ8Yk0Y5Q0Z0Q0wwCgYIKoZIzj0EAwIw
+MIIBUTCCAQOgAwIBAgIUF/68xi1exftjKyXZsrgD1z37ovIwBQYDK2VwMB4xHDAa
+BgNVBAMME2FlZ2lzLXRlc3QtaWRlbnRpdHkwHhcNMjYwNjEyMTU0MDA5WhcNMzYw
+NjA5MTU0MDA5WjAeMRwwGgYDVQQDDBNhZWdpcy10ZXN0LWlkZW50aXR5MCowBQYD
+K2VwAyEAPZU5VLeESTO2VscT3Y8EnW4nz3pQuXxlKT2f7v43EiWjUzBRMB0GA1Ud
+DgQWBBRcLGD3E43ddgDqDY1SWEwr7xdhmzAfBgNVHSMEGDAWgBRcLGD3E43ddgDq
+DY1SWEwr7xdhmzAPBgNVHRMBAf8EBTADAQH/MAUGAytlcANBAIAy0sJVQxl+OQrC
+/9dpjkZOZm85eSPGLFBZ3xF+S7Sdf++waLe0xt4er9qsE+eIUc0ZcXCT6B2Tj6gb
+lxZ9tQs=
 -----END CERTIFICATE-----
+";
+
+    /// A real, parseable Ed25519 PKCS#8 PRIVATE key matching the cert above
+    /// (test-only, generated out of band). `validate_identity_upload` now
+    /// parses BOTH the cert bundle and the inline key PEM (added with the
+    /// mTLS-v2 work) to reject malformed material early, so the happy-path
+    /// test needs genuine cert + key bytes, not placeholders.
+    const TEST_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIMbSBeiFVtDKm3t//GlSSypMbWxqJPGb4/w5soWCAH93
+-----END PRIVATE KEY-----
 ";
 
     #[test]
@@ -415,12 +432,14 @@ MIIBhTCCASugAwIBAgIUO0nGZ7Wm0Q6kJ8Yk0Y5Q0Z0Q0wwCgYIKoZIzj0EAwIw
     fn validate_identity_upload_accepts_key_pem() {
         let req = IdentityUploadRequest {
             cert_pem: TEST_CERT_PEM.into(),
-            key_pem: Some("-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n".into()),
+            key_pem: Some(TEST_KEY_PEM.into()),
             key_ref: None,
         };
-        // cert_pem is valid; key_pem just needs to be non-empty — we don't
-        // parse the key here (that happens at client-build time in tls.rs).
-        assert!(validate_identity_upload(&req).is_ok());
+        // cert_pem is a valid PUBLIC chain and key_pem is a real PKCS#8
+        // private key — `validate_identity_upload` parses the inline key
+        // (mTLS-v2) to reject malformed material early, so the happy path
+        // needs genuine key bytes.
+        assert!(validate_identity_upload(&req).is_ok(), "{:?}", validate_identity_upload(&req));
     }
 
     #[test]
