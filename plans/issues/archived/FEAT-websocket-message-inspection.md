@@ -2,9 +2,9 @@
 
 > **Type:** FEAT (feature track) · **Status:** ✅ WS-MSG1–6 shipped — ready for PR · **Branch:** `feat/websocket-message-inspection`
 > **Track ID prefix:** `WS-MSG<n>`
-> **Design doc:** [`../future/websocket-message-inspection.md`](../future/websocket-message-inspection.md) (decisions + justification live there)
-> **Roadmap slot:** [`../future/world-class-waf-roadmap.md`](../future/world-class-waf-roadmap.md) — protocol-coverage gap.
-> **Builds on (shipped):** WS-T WebSocket bridge ([`../archive/websocket-bridge.md`](../archive/websocket-bridge.md)) — which scoped frame-level abuse detection *out of v1*; this is the follow-up.
+> **Design doc:** [`../../archive/websocket-message-inspection.md`](../../archive/websocket-message-inspection.md) (decisions + justification live there)
+> **Roadmap slot:** [`../../future/world-class-waf-roadmap.md`](../../future/world-class-waf-roadmap.md) — protocol-coverage gap.
+> **Builds on (shipped):** WS-T WebSocket bridge ([`../../archive/websocket-bridge.md`](../../archive/websocket-bridge.md)) — which scoped frame-level abuse detection *out of v1*; this is the follow-up.
 
 **Goal (one line):** today the WAF inspects only the WebSocket *handshake* and then byte-tunnels
 every frame via `copy_bidirectional` (`data_plane.rs:1894`). This adds an opt-in frame-parsing
