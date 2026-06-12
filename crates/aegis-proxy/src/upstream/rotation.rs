@@ -237,36 +237,59 @@ pub fn spawn(
         loop {
             tokio::time::sleep(interval).await;
             let pools = registry.current_pools();
-            let any_mtls = pools
-                .values()
-                .any(|p| p.upstream_mtls.as_ref().map(|m| m.enabled).unwrap_or(false));
-            if !any_mtls {
-                continue;
-            }
             let snap = cfg.load_full();
+
+            // Always read ZT material from the config plane so that a
+            // console identity upload (PUT /api/zero-trust/upstream/identity)
+            // is reflected in the GET endpoint overlay even before any pool
+            // has mTLS enabled. Previously the early-exit on `!any_mtls`
+            // blocked this, meaning the dashboard showed `configured: false`
+            // after a successful PUT until the operator turned on mTLS for
+            // at least one pool.
             let material = read_material(&state, &snap, &pools).await;
             if last_fp.as_deref() == Some(material.fingerprint.as_str()) {
                 continue;
             }
+
             // Re-seed the shared identity only on a good read (never
             // downgrade to no-client-auth on a missing/corrupt record).
             if let Some(id) = material.identity.clone() {
                 registry.seed_upstream_identity(Some(id));
             }
-            let folded = fold_pools(&material, &pools);
-            match registry.apply(&folded) {
-                Ok(()) => {
-                    let cert = material.identity.as_ref().and_then(|i| i.cert_pem.clone());
-                    record_applied(cert);
-                    last_fp = Some(material.fingerprint);
-                    tracing::info!(
-                        generation = status().generation,
-                        "zero_trust: hot-rotated upstream-mTLS material (no restart)"
-                    );
+
+            let any_mtls = pools
+                .values()
+                .any(|p| p.upstream_mtls.as_ref().map(|m| m.enabled).unwrap_or(false));
+
+            if any_mtls {
+                // Apply pool changes and record the full rotation.
+                let folded = fold_pools(&material, &pools);
+                match registry.apply(&folded) {
+                    Ok(()) => {
+                        let cert = material.identity.as_ref().and_then(|i| i.cert_pem.clone());
+                        record_applied(cert);
+                        last_fp = Some(material.fingerprint);
+                        tracing::info!(
+                            generation = status().generation,
+                            "zero_trust: hot-rotated upstream-mTLS material (no restart)"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "zero_trust: hot rotation apply failed; keeping last-good");
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!(error = %e, "zero_trust: hot rotation apply failed; keeping last-good");
-                }
+            } else {
+                // No mTLS pools yet — still record the identity change so
+                // the GET /api/zero-trust/upstream/identity overlay reflects
+                // a console upload without requiring a restart or an enabled
+                // pool.
+                let cert = material.identity.as_ref().and_then(|i| i.cert_pem.clone());
+                record_applied(cert);
+                last_fp = Some(material.fingerprint);
+                tracing::debug!(
+                    generation = status().generation,
+                    "zero_trust: identity updated (no mTLS pools active yet)"
+                );
             }
         }
     })
