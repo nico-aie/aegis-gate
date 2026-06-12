@@ -3401,6 +3401,38 @@ function DetectorMaskCard() {
     return () => window.removeEventListener('aegis:config-reload', onReload);
   }, [api.reload]);
 
+  // 2026-06-12 (toggle UX) — `versionRef` is the SYNCHRONOUS source of
+  // truth for the `If-Match` config version, independent of the async GET
+  // reload. Each successful PUT returns the new `version`; we stamp it
+  // here immediately so a back-to-back toggle uses the fresh version
+  // instead of the stale `configVersion` prop (which only updates after a
+  // full reload lands). That stale prop was the cause of the spurious
+  // "mask changed under you" 412 churn. Kept monotonic so a slow reload
+  // carrying an older version never lowers it.
+  const versionRef = useRefP(configVersion);
+  useEffectP(() => {
+    if (configVersion == null) return;
+    if (versionRef.current == null || configVersion > versionRef.current) {
+      versionRef.current = configVersion;
+    }
+  }, [configVersion]);
+
+  // Debounced reload: collapse a burst of rapid toggles into ONE GET
+  // refresh at the end instead of a full (heavy) reload per flip — the
+  // optimistic switch state + versionRef already carry the truth, so the
+  // reload only reconciles derived data (signal counts, overrides).
+  const reloadTimerRef = useRefP(null);
+  const scheduleReload = () => {
+    if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
+    reloadTimerRef.current = setTimeout(() => {
+      reloadTimerRef.current = null;
+      api.reload && api.reload();
+    }, 700);
+  };
+  useEffectP(() => () => {
+    if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
+  }, []);
+
   if (!baseMask) {
     return (
       <div className="card" style={{ marginBottom: 12, padding: 12 }}>
@@ -3443,7 +3475,9 @@ function DetectorMaskCard() {
       // PUT when the server doesn't supply a version (configVersion
       // undefined → no If-Match → 409 handled by csrfMutate's retry).
       let mask = baseMask;
-      let version = configVersion;
+      // Seed from versionRef (synchronous, freshest) — NOT the configVersion
+      // prop, which lags behind the last PUT until a reload lands.
+      let version = versionRef.current;
       let r;
       for (let attempt = 0; attempt < 3; attempt++) {
         r = await window.detectorsPut({ mask: { ...mask, [cls]: next } }, { ifMatch: version });
@@ -3455,12 +3489,16 @@ function DetectorMaskCard() {
           if (fresh && fresh.mask) {
             mask = fresh.mask;
             version = fresh.config_version;
+            if (typeof version === 'number') versionRef.current = version;
             continue;
           }
         }
         break;
       }
       if (isHttpOk(r)) {
+        // Stamp the new version SYNCHRONOUSLY so the next toggle doesn't
+        // race a stale If-Match. The PUT body carries `version`.
+        if (typeof r.version === 'number') versionRef.current = r.version;
         window.aegisToast(
           `${label} ${next ? 'enabled' : 'disabled'}`,
           'ok',
@@ -3470,7 +3508,9 @@ function DetectorMaskCard() {
             action: { label: 'Undo', onClick: () => commitToggle(cls, !next, { undoable: false }) },
           } : null,
         );
-        api.reload && api.reload();
+        // Optimistic state already shows the flip; reconcile derived data
+        // with a single debounced reload instead of a heavy GET per flip.
+        scheduleReload();
       } else {
         setOptimistic(o => { const n = { ...o }; delete n[cls]; return n; });
         const why = r && r.status === 412

@@ -182,17 +182,8 @@ impl ConfigStore {
         let new_bytes = serde_json::to_vec(&doc)
             .map_err(|e| WafError::State(format!("config doc encode: {e}")))?;
 
-        // Immutable, write-once, persistent snapshot for rollback. A
-        // collision here (snapshot already exists for this version) means
-        // a racing writer beat us to the same number — harmless, the CAS
-        // below decides the winner. Best-effort.
-        let _ = self
-            .backend
-            .cas_set(&snapshot_key(next), None, blob.as_bytes(), None)
-            .await;
-
-        // Atomic activation: CAS the active document from the exact bytes
-        // we loaded (or absent) to the new document. `None` ttl = persist.
+        // Compute the CAS expected-bytes (the exact doc we loaded) up
+        // front so the two Redis writes below can overlap.
         let expected_bytes = match &current {
             Some(d) => Some(
                 serde_json::to_vec(d)
@@ -200,10 +191,25 @@ impl ConfigStore {
             ),
             None => None,
         };
-        let swapped = self
-            .backend
-            .cas_set(DOC_KEY, expected_bytes.as_deref(), &new_bytes, None)
-            .await?;
+
+        // 2026-06-12 (config-plane latency) — run the immutable rollback
+        // snapshot write and the atomic activation CAS CONCURRENTLY. They
+        // touch different keys and are independent, so overlapping them
+        // shaves a Redis round-trip off the operator-visible mutation path
+        // WITHOUT changing semantics: the snapshot is still durable before
+        // this returns (rollback stays correct) and the doc CAS is still
+        // the sole arbiter of the activation. The snapshot is best-effort —
+        // a collision means a racing writer took the same version number;
+        // the CAS decides the real winner.
+        let snap_key = snapshot_key(next);
+        let (snap_res, swap_res) = tokio::join!(
+            self.backend
+                .cas_set(&snap_key, None, blob.as_bytes(), None),
+            self.backend
+                .cas_set(DOC_KEY, expected_bytes.as_deref(), &new_bytes, None),
+        );
+        let _ = snap_res;
+        let swapped = swap_res?;
 
         if swapped {
             // N2 — wake every node's watcher (incl. ours) so the new
