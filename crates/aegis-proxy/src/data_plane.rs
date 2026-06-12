@@ -1845,15 +1845,17 @@ pub(crate) async fn forward_allow_to_upstream(
             );
         };
 
+        // 2026-06-12 — WS frame inspection is ON BY DEFAULT: every WS
+        // connection is inspected (enforce) unless the route explicitly
+        // opted out with `ws_inspect: { enabled: false }`. `resolve`
+        // returns the default-on posture when there's no per-route block.
+        let effective_ws_inspect =
+            aegis_core::config::WsInspectConfig::resolve(route_ctx.ws_inspect.as_ref());
         // WS-MSG5 — strip `permessage-deflate` from the forwarded
-        // handshake when this route inspects frames, so the negotiated
-        // connection is uncompressed (compressed frames can't be
-        // decoded for inspection in v1).
-        let strip_ws_extensions = route_ctx
-            .ws_inspect
-            .as_ref()
-            .map(|c| c.is_active())
-            .unwrap_or(false);
+        // handshake when this connection inspects frames, so the
+        // negotiated connection is uncompressed (compressed frames can't
+        // be decoded for inspection in v1).
+        let strip_ws_extensions = effective_ws_inspect.is_active();
         let upstream_handshake = match crate::proto::ws_forward::forward_websocket_upgrade(
             &parts.method,
             &parts.uri,
@@ -1905,9 +1907,10 @@ pub(crate) async fn forward_allow_to_upstream(
             let bus_for_task = bus.clone();
             let route_id_for_task = route_ctx.route_id.clone();
             let upstream_addr = member.addr;
-            // WS-MSG2 — per-route frame-inspection config moved into the
-            // bridge task. `None` / disabled ⇒ the zero-copy path below.
-            let ws_inspect_for_task = route_ctx.ws_inspect.clone();
+            // WS-MSG2 — effective (default-on) frame-inspection config
+            // moved into the bridge task. `enabled: false` ⇒ the zero-copy
+            // path below; otherwise the inspecting bridge runs.
+            let ws_inspect_for_task = effective_ws_inspect.clone();
             // WS-MSG3 — detector handles + the synthetic-view context for
             // the inspecting bridge, all moved into the spawned task.
             // `ws_detectors`/`ws_mask` are `None` on builds that don't
@@ -1975,13 +1978,12 @@ pub(crate) async fn forward_allow_to_upstream(
                                 return;
                             }
                         }
-                        // WS-MSG2 — when the route opts into frame
-                        // inspection, run the parsing bridge; otherwise
-                        // the original zero-copy tunnel, byte-for-byte.
-                        let (c2u, u2c) = if let Some(ws_cfg) = ws_inspect_for_task
-                            .as_ref()
-                            .filter(|c| c.is_active())
-                        {
+                        // WS-MSG2 — inspect every WS connection by default
+                        // (the parsing bridge); a route that opted out
+                        // (`enabled: false`) falls back to the original
+                        // zero-copy tunnel, byte-for-byte.
+                        let (c2u, u2c) = if ws_inspect_for_task.is_active() {
+                            let ws_cfg = &ws_inspect_for_task;
                             let bridge_cfg = crate::proto::ws_inspect::WsBridgeConfig {
                                 max_message_bytes: ws_cfg.max_message_bytes,
                             };

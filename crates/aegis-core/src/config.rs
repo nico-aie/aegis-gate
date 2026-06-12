@@ -1559,12 +1559,14 @@ fn default_route_enabled() -> bool {
 #[serde(rename_all = "snake_case")]
 pub enum WsInspectMode {
     /// Emit the `websocket_frame_block` audit event but forward the
-    /// frame anyway (`action: would_block`). Default on first enable so
-    /// operators can tune the mask/threshold before enforcing.
-    #[default]
+    /// frame anyway (`action: would_block`). Opt-in for operators who
+    /// want to observe before enforcing.
     LogOnly,
     /// Drop the offending message and close the socket with WS Close
-    /// `1008` (policy violation).
+    /// `1008` (policy violation). **Default** (2026-06-12): WS frame
+    /// inspection is on-by-default and blocks, mirroring how HTTP
+    /// requests are inspected without per-route opt-in.
+    #[default]
     Enforce,
 }
 
@@ -1589,6 +1591,74 @@ impl WsInspectConfig {
     /// True when this route should run the inspecting bridge.
     pub fn is_active(&self) -> bool {
         self.enabled
+    }
+
+    /// 2026-06-12 — the default-on posture used when a route has NO
+    /// explicit `ws_inspect` block (the common case): inspect every
+    /// WebSocket connection in enforce mode at the codec-default cap.
+    /// WS frame inspection is on by default, like HTTP request inspection.
+    pub fn default_on() -> Self {
+        Self {
+            enabled: true,
+            mode: WsInspectMode::Enforce,
+            max_message_bytes: 0,
+        }
+    }
+
+    /// Resolve the effective inspection config for a route: the explicit
+    /// per-route block if present, else [`Self::default_on`]. A route can
+    /// opt OUT of inspection with `ws_inspect: { enabled: false }`.
+    pub fn resolve(route: Option<&WsInspectConfig>) -> WsInspectConfig {
+        route.cloned().unwrap_or_else(Self::default_on)
+    }
+}
+
+#[cfg(test)]
+mod ws_inspect_default_on_tests {
+    use super::*;
+
+    #[test]
+    fn ws_inspect_mode_defaults_to_enforce() {
+        // 2026-06-12 — enabling WS inspection must BLOCK by default, not
+        // log-only, so default-on actually protects.
+        assert_eq!(WsInspectMode::default(), WsInspectMode::Enforce);
+    }
+
+    #[test]
+    fn default_on_is_enabled_and_enforce() {
+        let c = WsInspectConfig::default_on();
+        assert!(c.is_active(), "default-on must inspect");
+        assert_eq!(c.mode, WsInspectMode::Enforce);
+        assert_eq!(c.max_message_bytes, 0, "0 = codec default cap");
+    }
+
+    #[test]
+    fn resolve_none_inspects_by_default() {
+        // No per-route ws_inspect block (the common case) → inspect.
+        assert!(WsInspectConfig::resolve(None).is_active());
+    }
+
+    #[test]
+    fn resolve_explicit_disable_opts_out() {
+        let off = WsInspectConfig {
+            enabled: false,
+            mode: WsInspectMode::Enforce,
+            max_message_bytes: 0,
+        };
+        assert!(
+            !WsInspectConfig::resolve(Some(&off)).is_active(),
+            "explicit `enabled: false` is the opt-out escape hatch",
+        );
+    }
+
+    #[test]
+    fn resolve_explicit_enable_inspects() {
+        let on = WsInspectConfig {
+            enabled: true,
+            mode: WsInspectMode::Enforce,
+            max_message_bytes: 0,
+        };
+        assert!(WsInspectConfig::resolve(Some(&on)).is_active());
     }
 }
 

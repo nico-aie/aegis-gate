@@ -72,8 +72,6 @@ pub fn build_upstream_client_config(
 pub fn client_config_from_resolved(
     m: &aegis_core::config::UpstreamMtlsResolved,
 ) -> Result<rustls::ClientConfig, Box<dyn std::error::Error + Send + Sync>> {
-    use aegis_core::config::CertSource;
-
     let mut root_store = rustls::RootCertStore::empty();
     match &m.trust {
         Some(src) => {
