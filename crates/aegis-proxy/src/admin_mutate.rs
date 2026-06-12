@@ -3622,6 +3622,9 @@ fn tier_override_yaml(mb: &aegis_security::detectors::DetectorMaskBody) -> serde
         ("template_injection", mb.template_injection),
         ("nosql_injection", mb.nosql_injection),
         ("open_redirect", mb.open_redirect),
+        // 2026-06-12 (FIX-jwt-inspection-mask-toggle) — keep per-tier
+        // JWT overrides in sync with the base-mask fix above.
+        ("jwt_inspection", mb.jwt_inspection),
         ("behavior_signals", mb.behavior_signals),
         ("velocity", mb.velocity),
         ("canary", mb.canary),
@@ -3662,9 +3665,9 @@ fn patch_detectors(
     if let Some(mask) = body.mask.as_ref() {
         // AI bit lives in the sibling `cfg.ai` block, not `cfg.detectors`.
         yaml_child_map(map, "ai")?.insert(s("enabled"), serde_yaml::Value::Bool(mask.ai));
-        // The other 15 mask bits all map to a `.enabled` field under
-        // `cfg.detectors` (14 `DetectorToggle` classes + the
-        // `OpenRedirectConfig`, which also carries `.enabled`).
+        // The other 16 mask bits all map to a `.enabled` field under
+        // `cfg.detectors` (14 `DetectorToggle` classes + `OpenRedirectConfig`
+        // + `JwtInspectionConfig`, which also carry `.enabled`).
         let det = yaml_child_map(map, "detectors")?;
         for (class, enabled) in [
             (DetectorClass::Sqli, mask.sqli),
@@ -3679,6 +3682,9 @@ fn patch_detectors(
             (DetectorClass::TemplateInjection, mask.template_injection),
             (DetectorClass::NoSqlInjection, mask.nosql_injection),
             (DetectorClass::OpenRedirect, mask.open_redirect),
+            // 2026-06-12 (FIX-jwt-inspection-mask-toggle) — was missing,
+            // so the JWT toggle never persisted to cfg → couldn't disable.
+            (DetectorClass::JwtInspection, mask.jwt_inspection),
             (DetectorClass::BehaviorSignals, mask.behavior_signals),
             (DetectorClass::Velocity, mask.velocity),
             (DetectorClass::Canary, mask.canary),
@@ -6079,6 +6085,45 @@ zero_trust:
         );
     }
 
+    // Drift guard (FIX-jwt-inspection-mask-toggle, 2026-06-12): EVERY
+    // DetectorClass must be folded into the config by `patch_detectors`,
+    // or its dashboard toggle silently no-ops — the config keeps the old
+    // value, so the rebuilt mask (`from_detectors_config`) keeps the bit
+    // and the detector keeps running. `jwt_inspection` was the class that
+    // slipped when it was added (Phase A2). This fails the build the next
+    // time a class is added to `DetectorClass::ALL` but not to the
+    // `patch_detectors` base-mask list.
+    #[test]
+    fn patch_detectors_writes_every_detector_class() {
+        use aegis_control::api::detectors::DetectorsPutBody;
+        use aegis_security::detectors::{DetectorClass, DetectorMask, DetectorMaskBody};
+        let base = "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\nai:\n  enabled: true\n";
+        let mb = DetectorMaskBody::from(DetectorMask::none()); // every class off
+        let body = DetectorsPutBody {
+            mask: Some(mb),
+            overrides: Default::default(),
+        };
+        let out = patch_detectors(base, &body).unwrap();
+        let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        for c in DetectorClass::ALL {
+            if c == DetectorClass::Ai {
+                // AI routes to the sibling cfg.ai.enabled block.
+                assert_eq!(
+                    v["ai"]["enabled"].as_bool(),
+                    Some(false),
+                    "patch_detectors didn't route the ai bit to cfg.ai.enabled",
+                );
+                continue;
+            }
+            assert_eq!(
+                v["detectors"][c.as_str()]["enabled"].as_bool(),
+                Some(false),
+                "patch_detectors didn't write detectors.{}.enabled — its toggle no-ops",
+                c.as_str(),
+            );
+        }
+    }
+
     #[test]
     fn patch_detectors_writes_per_tier_override() {
         use aegis_control::api::detectors::DetectorsPutBody;
@@ -6096,6 +6141,12 @@ zero_trust:
         );
         assert_eq!(
             v["detectors"]["per_tier"]["medium"]["sqli"].as_bool(),
+            Some(true),
+        );
+        // 2026-06-12 — jwt_inspection must be present in the per-tier
+        // override too (the tier_override_yaml list was missing it).
+        assert_eq!(
+            v["detectors"]["per_tier"]["medium"]["jwt_inspection"].as_bool(),
             Some(true),
         );
     }
