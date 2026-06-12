@@ -42,13 +42,10 @@ pub struct RouteCtx {
     pub upstream: String,
     // 2026-05-19 — `tenant_id` removed (was always `None`; multi-tenant
     // feature deprecated upstream).
-    /// MTLS-T4 — required client-identity kinds for this
-    /// route. Empty = any identity admitted (default open).
-    /// Non-empty acts as an allow-list against
-    /// [`crate::ClientIdentity::kind`]. The data-plane handler
-    /// checks this after route resolution and 403s on mismatch
-    /// (`rule_id = mtls_required`).
-    pub auth_required: Vec<String>,
+    // 2026-06-12 — `auth_required` (MTLS-T4 per-route client-identity
+    // gate) removed: client mTLS is now owned by the unified Zero Trust
+    // downstream config (plane-level cert verification + SAN allowlist),
+    // not per-route.
     /// TCP-T3c — resolved upstream scheme, lifted out of
     /// `cfg.upstreams[upstream].connection.scheme` at compile
     /// time so the CONNECT-method dispatch in the data-plane
@@ -128,7 +125,6 @@ mod tests {
             tier: Tier::Critical,
             failure_mode: FailureMode::FailClose,
             upstream: "auth-pool".into(),
-            auth_required: Vec::new(),
             pool_scheme: crate::config::UpstreamScheme::Auto,
             tcp_destination_allowlist: Vec::new(),
             max_concurrent_tunnels_per_ip: 0,

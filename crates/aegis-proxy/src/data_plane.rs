@@ -96,10 +96,10 @@ pub(crate) async fn handle_data_request(
     bus: &AuditBus,
     upstream_ctx: &Arc<crate::proxy::ProxyContext>,
     detector_hit_metrics: &aegis_control::metrics::detector_hits::DetectorHitMetrics,
-    // MTLS-T4 — per-connection client identity. Plain-HTTP +
-    // anonymous-mTLS connections pass `&ClientIdentity::Anonymous`;
-    // the policy gate below blocks the request if the resolved
-    // route's `auth_required` excludes that identity kind.
+    // Per-connection client identity (mTLS principal or Anonymous).
+    // 2026-06-12 — the per-route `auth_required` gate that read this was
+    // removed; client mTLS is now enforced plane-level by Zero Trust.
+    // Threaded for audit + future per-request zero-trust use.
     identity: &aegis_core::ClientIdentity,
     // 2026-05-18 (QC TLS wire-up — F-CRITICAL-010 / 014 / 015
     // activation): post-handshake TLS fingerprint from the accept
@@ -1502,7 +1502,11 @@ pub(crate) async fn forward_allow_to_upstream(
     parts: http::request::Parts,
     body_bytes: Bytes,
     ctx: &Arc<crate::proxy::ProxyContext>,
-    identity: &aegis_core::ClientIdentity,
+    // 2026-06-12 — the per-route `auth_required` gate that consumed the
+    // client identity here was removed (client mTLS is now Zero Trust,
+    // plane-level). Kept threaded through the chain for future per-request
+    // zero-trust needs; currently unused at this leaf.
+    _identity: &aegis_core::ClientIdentity,
     route_latency_hist: &aegis_control::metrics::route_latency::RouteLatencyHistogram,
     route_activity: &aegis_control::metrics::route_activity::RouteActivityWindow,
     request_start: std::time::Instant,
@@ -1591,38 +1595,10 @@ pub(crate) async fn forward_allow_to_upstream(
     // DashMap-shard lookup + one atomic fetch_add.
     route_activity.record(&route_ctx.route_id);
 
-    // MTLS-T4 — route-scoped client-identity gate.
-    //
-    // `auth_required` empty → any identity admitted (default
-    // open). Non-empty → the identity's `kind()` must appear in
-    // the list. Mismatch returns 403 with rule_id
-    // `mtls_required`; the contract decision is `block` so
-    // upstream rate-limit / risk surfaces still see the
-    // rejection. Body is minimal — operators read the audit
-    // chain for the principal that was rejected.
-    if !route_ctx.auth_required.is_empty()
-        && !route_ctx
-            .auth_required
-            .iter()
-            .any(|kind| kind == identity.kind())
-    {
-        tracing::Span::current().record("outcome", "mtls-required");
-        tracing::debug!(
-            route_id = %route_ctx.route_id,
-            required = ?route_ctx.auth_required,
-            actual_kind = identity.kind(),
-            principal = ?identity.principal(),
-            "blocked: route requires authenticated identity",
-        );
-        let resp = Response::builder()
-            .status(hyper::StatusCode::FORBIDDEN)
-            .header("content-type", "text/plain; charset=utf-8")
-            .body(Full::new(Bytes::from(
-                "forbidden: route requires authenticated client\n",
-            )))
-            .unwrap();
-        return (resp, DecisionTag::block("mtls_required"));
-    }
+    // 2026-06-12 — the MTLS-T4 route-scoped client-identity gate
+    // (`route.auth_required`) was removed. Client mTLS is now enforced by
+    // the unified Zero Trust downstream config at the listener-plane level
+    // (`zero_trust.downstream.mode` + `apply_to`), not per route.
 
     // 2026-05-17 F-CRITICAL-001 (control audit) — operator rule
     // evaluator. Round-1 "Tính hiệu lực" mandate: a rule saved via

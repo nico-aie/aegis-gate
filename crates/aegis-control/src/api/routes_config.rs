@@ -63,8 +63,6 @@ pub struct RouteConfigPatch {
     pub upstream: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier_override: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub auth_required: Vec<String>,
     /// PR2 — explicit "this route is the default fallback for its
     /// host scope". Defaults to false; auto-migration on boot
     /// promotes legacy `path: "/"` no-host routes when no explicit
@@ -108,7 +106,6 @@ impl RouteConfigPatch {
             methods: r.methods.clone(),
             upstream: r.upstream.clone(),
             tier_override: r.tier_override.as_ref().map(tier_str).map(String::from),
-            auth_required: r.auth_required.clone(),
             default: r.default,
             enabled: r.enabled,
             ws_inspect: r.ws_inspect.clone(),
@@ -138,7 +135,6 @@ impl RouteConfigPatch {
             tier_override,
             failure_mode: None,
             quota: None,
-            auth_required: self.auth_required,
             tcp_destination_allowlist: Vec::new(),
             max_concurrent_tunnels_per_ip: 0,
             default: self.default,
@@ -212,9 +208,6 @@ pub enum RouteValidationError {
         upstream: String,
         known: Vec<String>,
     },
-    /// `auth_required` carried a value that isn't a recognised
-    /// identity kind (`mtls`, `spiffe`, `anonymous`).
-    BadAuthRequired(String),
 }
 
 impl RouteValidationError {
@@ -225,7 +218,6 @@ impl RouteValidationError {
             Self::BadMatchType(_) => "bad_match_type",
             Self::BadTier(_) => "bad_tier",
             Self::UnknownUpstream { .. } => "unknown_upstream",
-            Self::BadAuthRequired(_) => "bad_auth_required",
         }
     }
 }
@@ -245,17 +237,11 @@ impl std::fmt::Display for RouteValidationError {
                 f,
                 "upstream {upstream:?} not found; known pools: {known:?}",
             ),
-            Self::BadAuthRequired(s) => write!(
-                f,
-                "auth_required entry {s:?} is not one of mtls | spiffe | anonymous",
-            ),
         }
     }
 }
 
 impl std::error::Error for RouteValidationError {}
-
-const VALID_AUTH_KINDS: &[&str] = &["mtls", "spiffe", "anonymous"];
 
 /// Validate a route patch against the live config. The handler
 /// runs this **before** building the candidate WafConfig.
@@ -280,11 +266,6 @@ pub fn validate_route(
             upstream: patch.upstream.clone(),
             known: cfg.upstreams.keys().cloned().collect(),
         });
-    }
-    for k in &patch.auth_required {
-        if !VALID_AUTH_KINDS.contains(&k.as_str()) {
-            return Err(RouteValidationError::BadAuthRequired(k.clone()));
-        }
     }
     Ok(())
 }
@@ -445,7 +426,6 @@ state:
             methods: None,
             upstream: "api-pool".into(),
             tier_override: None,
-            auth_required: Vec::new(),
             default: false,
             enabled: true,
             ws_inspect: None,
@@ -505,16 +485,6 @@ state:
         }
     }
 
-    #[test]
-    fn bad_auth_required_rejected() {
-        let cfg = base_cfg();
-        let mut p = good_patch();
-        p.auth_required = vec!["jwt".into()];
-        match validate_route(&p, &cfg) {
-            Err(RouteValidationError::BadAuthRequired(s)) => assert_eq!(s, "jwt"),
-            other => panic!("unexpected: {other:?}"),
-        }
-    }
 
     #[test]
     fn last_catchall_flagged() {
@@ -570,7 +540,6 @@ routes:
     methods: [POST]
     upstream: auth-pool
     tier_override: critical
-    auth_required: [mtls]
   - id: catch-all
     path: "/"
     match_type: prefix
@@ -594,6 +563,5 @@ state:
         assert_eq!(rebuilt.host.as_deref(), Some("api.example.com"));
         assert!(matches!(rebuilt.match_type, MatchType::Exact));
         assert_eq!(rebuilt.methods, Some(vec!["POST".to_string()]));
-        assert_eq!(rebuilt.auth_required, vec!["mtls".to_string()]);
     }
 }
