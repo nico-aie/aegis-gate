@@ -45,6 +45,11 @@ pub fn rule_to_feature(rule_id: &str) -> Option<(&'static str, &'static str)> {
         "path_traversal" => ("rules_engine", "path_traversal"),
         "ssrf" => ("rules_engine", "ssrf"),
         "header_injection" | "header_inj" => ("rules_engine", "header_injection"),
+        // 2026-06-12 (smuggling B1) — request-smuggling hygiene sub-tags
+        // (`smuggling_cl_te` / `_multi_cl` / `_multi_te` / `_h2_forbidden`)
+        // are emitted by the header_injection detector; map them to its
+        // policy so set_profile governs them with the rest of the class.
+        p if p.starts_with("smuggling_") => ("rules_engine", "header_injection"),
         "body_abuse" | "xxe" | "mass_assignment" => ("rules_engine", "body_abuse"),
         "recon" => ("rules_engine", "recon"),
         "brute_force" | "brute-force" => ("rules_engine", "brute_force"),

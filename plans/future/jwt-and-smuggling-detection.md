@@ -235,8 +235,8 @@ so this one ships **log_only** and is evaluated before any promotion. Lives in
 | **A1** | JWT decode core + `jwt_alg_none`, `jwt_x5c_inline`, `jwt_kid_injection` (the no-config structural blocks) + tests | **SHIPPED** (detector runs unconditionally as unknown id) |
 | **A2** | `jwt_jku_external` (+ `jku_allowed_domains` config), `jwt_time_forged`; mask + scores + catalog + config + dashboard | **SHIPPED** (first-class `DetectorClass::JwtInspection`, bit 1<<16; dashboard toggle + `/api/detectors` catalog; set_profile via `jwt_` rule_map prefix) |
 | **A3** | `jwt_role_priv` **observe-first**; per-detector doc; QC test-plan document (descriptive, per [[feedback_qc_script_means_doc]]) | **SHIPPED** — opt-in `flag_privileged_roles` (default off), score 20 (never single-blocks; cumulative max+decay keeps a legit admin at ~20). Docs: `docs/security/detectors/jwt-inspection.md` + `docs/security/jwt-inspection-qc.md` |
-| **B1** | §3.1 four header-hygiene rules in `header_injection` + tests + scores | TODO — re-run smuggling dataset for 403+attribution on CL/TE/multi-TE/H2 rows |
-| **B2** | §3.2 body-embedded-request-line **log_only** | TODO — evaluate FP before any promote |
+| **B1** | §3.1 four header-hygiene rules in `header_injection` + tests + scores | **SHIPPED** — `smuggling_cl_te` / `_multi_cl` / `_multi_te` / `_h2_forbidden` (score 70, one signal/request); rule_map `smuggling_` prefix; docs updated. **Live raw-socket verification still open** (does hyper deliver each h1 shape? the H2 rule is the one that fires in normal operation). |
+| **B2** | §3.2 body-embedded-request-line **log_only** | **DEFERRED (recommend not shipping)** — real FP surface (API docs, log shippers, HAR/replay bodies legitimately carry request lines) for marginal value: it's a *secondary* signal for TE attacks that hyper + B1 already cover. If wanted, ship opt-in (`scan_body_for_smuggled_requests`, default off) at observe score 25, like `jwt_role_priv`. |
 
 A-phases first. B is independent and can slot whenever; it's smaller.
 

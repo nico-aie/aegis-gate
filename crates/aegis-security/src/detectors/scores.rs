@@ -90,6 +90,11 @@ pub mod header_injection {
     /// X-Forwarded-Host poisoning (keyword needles, > 2 hosts,
     /// internal-IP literal). Lower than CRLF — heuristic is broader.
     pub const XFH: u32 = 50;
+    /// 2026-06-12 (HTTP_SMUGGLING_REPORT, workstream B1) — request-
+    /// smuggling header hygiene: CL+TE together, duplicate CL,
+    /// duplicate/obfuscated TE, HTTP/2 forbidden connection-specific
+    /// headers. Block tier (same as CRLF) — unambiguous framing abuse.
+    pub const SMUGGLING: u32 = 70;
 }
 
 pub mod body_abuse {
@@ -262,6 +267,30 @@ pub const CATALOG: &[ScoreEntry] = &[
         tag: "method_override_bypass",
         score: header_injection::XFH,
         note: "X-HTTP-Method-Override / X-Method-Override / X-HTTP-Method header carrying a destructive verb (DELETE / PUT / PATCH / CONNECT / TRACE) — framework method-override bypass.",
+    },
+    ScoreEntry {
+        class: "header_injection",
+        tag: "smuggling_cl_te",
+        score: header_injection::SMUGGLING,
+        note: "Request carries both Content-Length and Transfer-Encoding — the canonical HTTP request-smuggling primitive (CWE-444).",
+    },
+    ScoreEntry {
+        class: "header_injection",
+        tag: "smuggling_multi_cl",
+        score: header_injection::SMUGGLING,
+        note: "Multiple Content-Length headers — ambiguous body length, request-smuggling primitive.",
+    },
+    ScoreEntry {
+        class: "header_injection",
+        tag: "smuggling_multi_te",
+        score: header_injection::SMUGGLING,
+        note: "Multiple Transfer-Encoding headers or an obfuscated TE value (`xchunked`, `chunked, identity`) — TE.TE smuggling obfuscation.",
+    },
+    ScoreEntry {
+        class: "header_injection",
+        tag: "smuggling_h2_forbidden",
+        score: header_injection::SMUGGLING,
+        note: "HTTP/2 request carrying a forbidden connection-specific header (`transfer-encoding` / `connection`, RFC 9113 §8.2.2) — H2-downgrade smuggling vector.",
     },
     ScoreEntry {
         class: "body_abuse",
