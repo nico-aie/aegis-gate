@@ -13946,6 +13946,19 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
   const [createPoolOpen, setCreatePoolOpen] = useStateP(false);
   const [createPoolBusy, setCreatePoolBusy] = useStateP(false);
 
+  // When the child modal creates a pool we call cfgReload(), but that
+  // GET roundtrip lands a beat later — so the freshly created pool was
+  // briefly absent from the dropdown (and flagged "no longer in the
+  // live config — refresh") for the ~1–2s until the refetch resolved.
+  // Track names created this session so the option list, validation,
+  // and the selected-pool hint all reflect them instantly; the reload
+  // reconciles shortly after and the sorted union dedupes the overlap.
+  const [optimisticPools, setOptimisticPools] = useStateP([]);
+  const mergedPoolNames = useMemoP(
+    () => Array.from(new Set([...poolNames, ...optimisticPools])).sort(),
+    [poolNames, optimisticPools],
+  );
+
   // MED-02 (2026-05-11) — clear the save error whenever the
   // operator edits anything. The previous shape kept the toast +
   // inline hint visible until the next save; now the error
@@ -13964,7 +13977,7 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
 
   const idValid = d.id.trim().length > 0 && !idClash;
   const pathValid = d.path.trim().startsWith('/');
-  const upstreamValid = poolNames.includes(d.upstream);
+  const upstreamValid = mergedPoolNames.includes(d.upstream);
   const canSave = idValid && pathValid && upstreamValid && !busy;
 
   const set = (k, v) => setWithErrorClear({ ...d, [k]: v });
@@ -13985,6 +13998,9 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
       const r = await window.poolUpsert(name, body);
       if (r.status === 200 && r.ok) {
         window.aegisToast(`Pool "${name}" saved`, 'ok');
+        // Optimistically surface the new pool immediately, then kick
+        // the reload to reconcile against the live config.
+        setOptimisticPools(prev => prev.includes(name) ? prev : [...prev, name]);
         if (cfgReload) cfgReload();
         setD(prev => ({ ...prev, upstream: name }));
         setCreatePoolOpen(false);
@@ -14086,8 +14102,8 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
                 value={d.upstream}
                 onChange={e => set('upstream', e.target.value)}
               >
-                <option value="">{poolNames.length === 0 ? '— no pools yet —' : '— pick a pool —'}</option>
-                {poolNames.map(n => <option key={n} value={n}>{n}</option>)}
+                <option value="">{mergedPoolNames.length === 0 ? '— no pools yet —' : '— pick a pool —'}</option>
+                {mergedPoolNames.map(n => <option key={n} value={n}>{n}</option>)}
               </select>
               <button
                 type="button"
@@ -14097,7 +14113,7 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
                 style={{ fontSize: 12, whiteSpace: 'nowrap' }}
               >+ Create new pool</button>
             </div>
-            {poolNames.length === 0 && (
+            {mergedPoolNames.length === 0 && (
               <div className="form-hint">
                 No pools yet — click <strong>+ Create new pool</strong> to author one.
               </div>
@@ -14106,7 +14122,7 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
               <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginTop: 4 }}>
                 Selected: <code>{d.upstream}</code>{' '}
                 {(() => {
-                  const p = (poolNames || []).includes(d.upstream);
+                  const p = mergedPoolNames.includes(d.upstream);
                   return p ? '· existing pool' : '· (pool no longer in the live config — refresh)';
                 })()}
               </div>
@@ -14303,7 +14319,7 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
       {createPoolOpen && (
         <PoolEditModal
           mode="add"
-          existingNames={poolNames}
+          existingNames={mergedPoolNames}
           initialName=""
           initialPool={null}
           onCancel={() => setCreatePoolOpen(false)}
