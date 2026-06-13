@@ -23,6 +23,7 @@ checklist and acceptance gates, with the full design living in
 
 | File | Type | Severity | Resolution |
 |---|---|---|---|
+| [`archived/TRIAGE-waf-security-report-2026-06-10.md`](./archived/TRIAGE-waf-security-report-2026-06-10.md) | triage + fix plan | 🟢→✅ | **Phase 1 shipped 2026-06-13.** Triage of the [`archived/waf_security_report.md`](./archived/waf_security_report.md) NovaBet pentest. **12 of 14 findings already covered by a detector or are app/gateway-layer flaws** (path-traversal/SSRF/XSS caught at score 70; SSRF *does* scan the body — report is wrong; `.env`/`.git`/`openapi.yaml`/`wp-admin` flagged by `recon` at probe-25). Only **VULN-03** was a real gap: `recon` now also flags bare `config.yaml`/secret-yaml/key+keystore files (FP-anchored, score kept at 25). HTTP-method hardening (VULN-13/14, TRACE/WebDAV) ruled **out of WAF scope** (gateway). No residual. |
 | [`archived/FIX-detector-toggle-and-config-lag.md`](./archived/FIX-detector-toggle-and-config-lag.md) | fix plan | 🟠→✅ | **Shipped 2026-06-12 (PRs #34, #36).** All three linked issues: velocity mask-bypass id fix + drift-guard test (#34), config-plane latency cuts + detector-toggle 412 churn (version-from-PUT-response + serialize) (#34), and the full-mask PUT clobber from stale base (#36). |
 | [`archived/VELOCITY_SEQUENCE_BUG_REPORT.md`](./archived/VELOCITY_SEQUENCE_BUG_REPORT.md) | **BUG** | ✅ Fixed 2026-06-12 (PR #34) | `VelocitySequenceDetector::id()` now returns `"velocity"` (matched `DetectorClass::Velocity`), so the mask gates it; the `all_registered_detectors_map_to_a_class` drift-guard test prevents recurrence. Source report for the fix plan above. |
 | [`archived/JWT_ATTACK_REPORT.md`](./archived/JWT_ATTACK_REPORT.md) | gap analysis | ✅ Resolved 2026-06-12 | Source report (600 samples, ~0% effective). Closed by the `jwt_inspection` detector (`DetectorClass::JwtInspection`, bit 1<<16; dashboard toggle + `/api/detectors` catalog): alg:none, jku/x5u SSRF, x5c/jwk inline, kid traversal/SQLi, time-claim forge all **blocked**; role-escalation **log_only** (opt-in). weak-secret + RS256→HS256 are gateway/app-side, out of WAF scope. Plan: [`../archive/jwt-and-smuggling-detection.md`](../archive/jwt-and-smuggling-detection.md). |
@@ -39,6 +40,8 @@ checklist and acceptance gates, with the full design living in
 | [`archived/BUG-config-plane-audit-sinks-yaml-enum.md`](./archived/BUG-config-plane-audit-sinks-yaml-enum.md) | **BUG** | ✅ Fixed 2026-06-10 | PR #14 (`aa25b21`, merged `develop`). `load_config_str` validates via figment (same as boot); both `audit.sinks` map and `!`-tag forms round-trip. Regression tests added. |
 
 _One open item (the WebSocket report's RC-2/RC-4/RC-5 residual) plus the F14
-carry-over; the 2026-06-12 security-team sweep (velocity, detector-toggle/config
-lag, JWT, smuggling) and the Zero Trust page simplify all shipped, and every
-`pre-prod` deployment + cluster-QC issue is resolved (rows above)._
+carry-over; the 2026-06-13 NovaBet security-report triage (12/14 covered or
+out-of-scope, VULN-03 `recon` extension shipped), the 2026-06-12 security-team
+sweep (velocity, detector-toggle/config lag, JWT, smuggling) and the Zero Trust
+page simplify all shipped, and every `pre-prod` deployment + cluster-QC issue is
+resolved (rows above)._
