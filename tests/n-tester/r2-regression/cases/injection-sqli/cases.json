@@ -1,0 +1,3544 @@
+[
+  {
+    "id": "sqli-0001",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [raw]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: ' OR '1'='1",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=' OR '1'='1",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0002",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [double-urlencode]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: ' OR '1'='1",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=%2527%2520OR%2520%25271%2527%253D%25271",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0003",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [urlencode]",
+    "description": "SQL injection via path:id on /game/{p}: ' OR '1'='1",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/%27%20OR%20%271%27%3D%271",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0004",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [raw]",
+    "description": "SQL injection via query:name on /game/1?name={p}: ' OR '1'='1",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=' OR '1'='1",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0005",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [urlencode]",
+    "description": "SQL injection via body:username on /login: ' OR '1'='1",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"' OR '1'='1\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0006",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [sql-comment]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: ' OR 1=1--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page='/**/OR/**/1=1--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0007",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [double-urlencode]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: ' OR 1=1--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=%2527%2520OR%25201%253D1--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0008",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [sql-comment]",
+    "description": "SQL injection via path:id on /game/{p}: ' OR 1=1--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/'/**/OR/**/1=1--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0009",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [mixed-case]",
+    "description": "SQL injection via query:name on /game/1?name={p}: ' OR 1=1--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=' oR 1=1--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0010",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [sql-comment]",
+    "description": "SQL injection via body:username on /login: ' OR 1=1--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"' OR 1=1--\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0011",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [sql-comment]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: admin'--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=admin'--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0012",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [sql-comment]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: admin'--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=admin'--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0013",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [sql-comment]",
+    "description": "SQL injection via path:id on /game/{p}: admin'--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/admin'--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0014",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [raw]",
+    "description": "SQL injection via query:name on /game/1?name={p}: admin'--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=admin'--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0015",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [urlencode]",
+    "description": "SQL injection via body:username on /login: admin'--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"admin'--\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0016",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [mixed-case]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: ' OR 1=1#",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=' oR 1=1#",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0017",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [double-urlencode]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: ' OR 1=1#",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=%2527%2520OR%25201%253D1%2523",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0018",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [sql-comment]",
+    "description": "SQL injection via path:id on /game/{p}: ' OR 1=1#",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/'/**/OR/**/1=1#",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0019",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [double-urlencode]",
+    "description": "SQL injection via query:name on /game/1?name={p}: ' OR 1=1#",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%2527%2520OR%25201%253D1%2523",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0020",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [sql-comment]",
+    "description": "SQL injection via body:username on /login: ' OR 1=1#",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"' OR 1=1#\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0021",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [mixed-case]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: ') OR ('1'='1",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=') Or ('1'='1",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0022",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [mixed-case]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: ') OR ('1'='1",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=') Or ('1'='1",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0023",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [mixed-case]",
+    "description": "SQL injection via path:id on /game/{p}: ') OR ('1'='1",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/') Or ('1'='1",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0024",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [raw]",
+    "description": "SQL injection via query:name on /game/1?name={p}: ') OR ('1'='1",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=') OR ('1'='1",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0025",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [raw]",
+    "description": "SQL injection via body:username on /login: ') OR ('1'='1",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"') OR ('1'='1\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0026",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [mixed-case]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: 1' UNION SELECT username,password FROM u",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=1' UnIoN SeLeCt uSeRnAmE,PaSsWoRd fRoM UsErS--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0027",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [urlencode]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: 1' UNION SELECT username,password FROM u",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=1%27%20UNION%20SELECT%20username%2Cpassword%20FROM%20users--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0028",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [urlencode]",
+    "description": "SQL injection via path:id on /game/{p}: 1' UNION SELECT username,password FROM u",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1%27%20UNION%20SELECT%20username%2Cpassword%20FROM%20users--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0029",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [urlencode]",
+    "description": "SQL injection via query:name on /game/1?name={p}: 1' UNION SELECT username,password FROM u",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=1%27%20UNION%20SELECT%20username%2Cpassword%20FROM%20users--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0030",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [urlencode]",
+    "description": "SQL injection via body:username on /login: 1' UNION SELECT username,password FROM u",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"1' UNION SELECT username,password FROM users--\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0031",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [double-urlencode]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: 1 UNION SELECT card_number,ssn FROM user",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=1%2520UNION%2520SELECT%2520card_number%252Cssn%2520FROM%2520users",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0032",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [double-urlencode]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: 1 UNION SELECT card_number,ssn FROM user",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=1%2520UNION%2520SELECT%2520card_number%252Cssn%2520FROM%2520users",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0033",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [mixed-case]",
+    "description": "SQL injection via path:id on /game/{p}: 1 UNION SELECT card_number,ssn FROM user",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1 uNiOn sElEcT CaRd_nUmBeR,SsN FrOm uSeRs",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0034",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [mixed-case]",
+    "description": "SQL injection via query:name on /game/1?name={p}: 1 UNION SELECT card_number,ssn FROM user",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=1 uNiOn sElEcT CaRd_nUmBeR,SsN FrOm uSeRs",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0035",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [double-urlencode]",
+    "description": "SQL injection via body:username on /login: 1 UNION SELECT card_number,ssn FROM user",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"1 UNION SELECT card_number,ssn FROM users\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0036",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [raw]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: '; DROP TABLE transactions;--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page='; DROP TABLE transactions;--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0037",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [sql-comment]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: '; DROP TABLE transactions;--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=';/**/DROP/**/TABLE/**/transactions;--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0038",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [mixed-case]",
+    "description": "SQL injection via path:id on /game/{p}: '; DROP TABLE transactions;--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/'; DrOp tAbLe tRaNsAcTiOnS;--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0039",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [urlencode]",
+    "description": "SQL injection via query:name on /game/1?name={p}: '; DROP TABLE transactions;--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%27%3B%20DROP%20TABLE%20transactions%3B--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0040",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [sql-comment]",
+    "description": "SQL injection via body:username on /login: '; DROP TABLE transactions;--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"'; DROP TABLE transactions;--\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0041",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [raw]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: ' AND SLEEP(5)--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=' AND SLEEP(5)--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0042",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [urlencode]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: ' AND SLEEP(5)--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=%27%20AND%20SLEEP%285%29--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0043",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [raw]",
+    "description": "SQL injection via path:id on /game/{p}: ' AND SLEEP(5)--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/' AND SLEEP(5)--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0044",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [double-urlencode]",
+    "description": "SQL injection via query:name on /game/1?name={p}: ' AND SLEEP(5)--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%2527%2520AND%2520SLEEP%25285%2529--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0045",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [urlencode]",
+    "description": "SQL injection via body:username on /login: ' AND SLEEP(5)--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"' AND SLEEP(5)--\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0046",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [double-urlencode]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: 1 AND 1=CONVERT(int,@@version)",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=1%2520AND%25201%253DCONVERT%2528int%252C%2540%2540version%2529",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0047",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [raw]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: 1 AND 1=CONVERT(int,@@version)",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=1 AND 1=CONVERT(int,@@version)",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0048",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [raw]",
+    "description": "SQL injection via path:id on /game/{p}: 1 AND 1=CONVERT(int,@@version)",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1 AND 1=CONVERT(int,@@version)",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0049",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [urlencode]",
+    "description": "SQL injection via query:name on /game/1?name={p}: 1 AND 1=CONVERT(int,@@version)",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=1%20AND%201%3DCONVERT%28int%2C%40%40version%29",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0050",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [raw]",
+    "description": "SQL injection via body:username on /login: 1 AND 1=CONVERT(int,@@version)",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"1 AND 1=CONVERT(int,@@version)\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0051",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [urlencode]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: ' OR '1'='1' /*",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=%27%20OR%20%271%27%3D%271%27%20%2F%2A",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0052",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [urlencode]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: ' OR '1'='1' /*",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=%27%20OR%20%271%27%3D%271%27%20%2F%2A",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0053",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [double-urlencode]",
+    "description": "SQL injection via path:id on /game/{p}: ' OR '1'='1' /*",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/%2527%2520OR%2520%25271%2527%253D%25271%2527%2520%252F%252A",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0054",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [mixed-case]",
+    "description": "SQL injection via query:name on /game/1?name={p}: ' OR '1'='1' /*",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=' oR '1'='1' /*",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0055",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [urlencode]",
+    "description": "SQL injection via body:username on /login: ' OR '1'='1' /*",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"' OR '1'='1' /*\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0056",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [mixed-case]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: 1' ORDER BY 8--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=1' OrDeR By 8--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0057",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [urlencode]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: 1' ORDER BY 8--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=1%27%20ORDER%20BY%208--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0058",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [sql-comment]",
+    "description": "SQL injection via path:id on /game/{p}: 1' ORDER BY 8--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1'/**/ORDER/**/BY/**/8--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0059",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [urlencode]",
+    "description": "SQL injection via query:name on /game/1?name={p}: 1' ORDER BY 8--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=1%27%20ORDER%20BY%208--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0060",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [double-urlencode]",
+    "description": "SQL injection via body:username on /login: 1' ORDER BY 8--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"1' ORDER BY 8--\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0061",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [mixed-case]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: ' UNION ALL SELECT NULL,NULL,NULL--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=' uNiOn aLl sElEcT NuLl,nUlL,NuLl--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0062",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [raw]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: ' UNION ALL SELECT NULL,NULL,NULL--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=' UNION ALL SELECT NULL,NULL,NULL--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0063",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [sql-comment]",
+    "description": "SQL injection via path:id on /game/{p}: ' UNION ALL SELECT NULL,NULL,NULL--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/'/**/UNION/**/ALL/**/SELECT/**/NULL,NULL,NULL--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0064",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [double-urlencode]",
+    "description": "SQL injection via query:name on /game/1?name={p}: ' UNION ALL SELECT NULL,NULL,NULL--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%2527%2520UNION%2520ALL%2520SELECT%2520NULL%252CNULL%252CNULL--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0065",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [mixed-case]",
+    "description": "SQL injection via body:username on /login: ' UNION ALL SELECT NULL,NULL,NULL--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"' UNION ALL SELECT NULL,NULL,NULL--\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0066",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [sql-comment]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: 1) OR SLEEP(5)#",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=1)/**/OR/**/SLEEP(5)#",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0067",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [sql-comment]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: 1) OR SLEEP(5)#",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=1)/**/OR/**/SLEEP(5)#",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0068",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [sql-comment]",
+    "description": "SQL injection via path:id on /game/{p}: 1) OR SLEEP(5)#",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1)/**/OR/**/SLEEP(5)#",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0069",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [double-urlencode]",
+    "description": "SQL injection via query:name on /game/1?name={p}: 1) OR SLEEP(5)#",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=1%2529%2520OR%2520SLEEP%25285%2529%2523",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0070",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [urlencode]",
+    "description": "SQL injection via body:username on /login: 1) OR SLEEP(5)#",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"1) OR SLEEP(5)#\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0071",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [mixed-case]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: ' OR pg_sleep(5)--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=' oR Pg_sLeEp(5)--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0072",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [mixed-case]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: ' OR pg_sleep(5)--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=' oR Pg_sLeEp(5)--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0073",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [raw]",
+    "description": "SQL injection via path:id on /game/{p}: ' OR pg_sleep(5)--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/' OR pg_sleep(5)--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0074",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [raw]",
+    "description": "SQL injection via query:name on /game/1?name={p}: ' OR pg_sleep(5)--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=' OR pg_sleep(5)--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0075",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [sql-comment]",
+    "description": "SQL injection via body:username on /login: ' OR pg_sleep(5)--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"' OR pg_sleep(5)--\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0076",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [mixed-case]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: 1;WAITFOR DELAY '0:0:5'--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=1;wAiTfOr dElAy '0:0:5'--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0077",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [double-urlencode]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: 1;WAITFOR DELAY '0:0:5'--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=1%253BWAITFOR%2520DELAY%2520%25270%253A0%253A5%2527--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0078",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [urlencode]",
+    "description": "SQL injection via path:id on /game/{p}: 1;WAITFOR DELAY '0:0:5'--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1%3BWAITFOR%20DELAY%20%270%3A0%3A5%27--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0079",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [mixed-case]",
+    "description": "SQL injection via query:name on /game/1?name={p}: 1;WAITFOR DELAY '0:0:5'--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=1;wAiTfOr dElAy '0:0:5'--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0080",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [mixed-case]",
+    "description": "SQL injection via body:username on /login: 1;WAITFOR DELAY '0:0:5'--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"1;WAITFOR DELAY '0:0:5'--\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0081",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [mixed-case]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: ' OR 1=1 LIMIT 1 OFFSET 1--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=' oR 1=1 LiMiT 1 OfFsEt 1--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0082",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [raw]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: ' OR 1=1 LIMIT 1 OFFSET 1--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=' OR 1=1 LIMIT 1 OFFSET 1--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0083",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [sql-comment]",
+    "description": "SQL injection via path:id on /game/{p}: ' OR 1=1 LIMIT 1 OFFSET 1--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/'/**/OR/**/1=1/**/LIMIT/**/1/**/OFFSET/**/1--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0084",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [urlencode]",
+    "description": "SQL injection via query:name on /game/1?name={p}: ' OR 1=1 LIMIT 1 OFFSET 1--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%27%20OR%201%3D1%20LIMIT%201%20OFFSET%201--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0085",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [urlencode]",
+    "description": "SQL injection via body:username on /login: ' OR 1=1 LIMIT 1 OFFSET 1--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"' OR 1=1 LIMIT 1 OFFSET 1--\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0086",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [sql-comment]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: %27%20OR%201%3D1--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=%27%20OR%201%3D1--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0087",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [sql-comment]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: %27%20OR%201%3D1--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=%27%20OR%201%3D1--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0088",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [sql-comment]",
+    "description": "SQL injection via path:id on /game/{p}: %27%20OR%201%3D1--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/%27%20OR%201%3D1--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0089",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [urlencode]",
+    "description": "SQL injection via query:name on /game/1?name={p}: %27%20OR%201%3D1--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%2527%2520OR%25201%253D1--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0090",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [raw]",
+    "description": "SQL injection via body:username on /login: %27%20OR%201%3D1--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"%27%20OR%201%3D1--\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0091",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [sql-comment]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: ' UNION SELECT @@version,2,3--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page='/**/UNION/**/SELECT/**/@@version,2,3--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0092",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [urlencode]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: ' UNION SELECT @@version,2,3--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=%27%20UNION%20SELECT%20%40%40version%2C2%2C3--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0093",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [sql-comment]",
+    "description": "SQL injection via path:id on /game/{p}: ' UNION SELECT @@version,2,3--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/'/**/UNION/**/SELECT/**/@@version,2,3--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0094",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [double-urlencode]",
+    "description": "SQL injection via query:name on /game/1?name={p}: ' UNION SELECT @@version,2,3--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%2527%2520UNION%2520SELECT%2520%2540%2540version%252C2%252C3--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0095",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [urlencode]",
+    "description": "SQL injection via body:username on /login: ' UNION SELECT @@version,2,3--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"' UNION SELECT @@version,2,3--\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0096",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [sql-comment]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: 0x27206f7220313d31",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=0x27206f7220313d31",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0097",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [mixed-case]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: 0x27206f7220313d31",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=0X27206F7220313D31",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0098",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [raw]",
+    "description": "SQL injection via path:id on /game/{p}: 0x27206f7220313d31",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/0x27206f7220313d31",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0099",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [sql-comment]",
+    "description": "SQL injection via query:name on /game/1?name={p}: 0x27206f7220313d31",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=0x27206f7220313d31",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0100",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [raw]",
+    "description": "SQL injection via body:username on /login: 0x27206f7220313d31",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"0x27206f7220313d31\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0101",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [sql-comment]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: ' OR 'x'='x' AND email IS NOT NULL--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page='/**/OR/**/'x'='x'/**/AND/**/email/**/IS/**/NOT/**/NULL--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0102",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [raw]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: ' OR 'x'='x' AND email IS NOT NULL--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=' OR 'x'='x' AND email IS NOT NULL--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0103",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [raw]",
+    "description": "SQL injection via path:id on /game/{p}: ' OR 'x'='x' AND email IS NOT NULL--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/' OR 'x'='x' AND email IS NOT NULL--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0104",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [sql-comment]",
+    "description": "SQL injection via query:name on /game/1?name={p}: ' OR 'x'='x' AND email IS NOT NULL--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name='/**/OR/**/'x'='x'/**/AND/**/email/**/IS/**/NOT/**/NULL--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0105",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [double-urlencode]",
+    "description": "SQL injection via body:username on /login: ' OR 'x'='x' AND email IS NOT NULL--",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"' OR 'x'='x' AND email IS NOT NULL--\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0106",
+    "class": "injection-sqli",
+    "name": "SQLi query:page [sql-comment]",
+    "description": "SQL injection via query:page on /api/transactions?page={p}: 1' AND extractvalue(1,concat(0x7e,versio",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:sql-comment",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=1'/**/AND/**/extractvalue(1,concat(0x7e,version()))--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0107",
+    "class": "injection-sqli",
+    "name": "SQLi query:limit [urlencode]",
+    "description": "SQL injection via query:limit on /api/transactions?limit={p}: 1' AND extractvalue(1,concat(0x7e,versio",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?limit=1%27%20AND%20extractvalue%281%2Cconcat%280x7e%2Cversion%28%29%29%29--",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0108",
+    "class": "injection-sqli",
+    "name": "SQLi path:id [mixed-case]",
+    "description": "SQL injection via path:id on /game/{p}: 1' AND extractvalue(1,concat(0x7e,versio",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1' AnD ExTrAcTvAlUe(1,cOnCaT(0x7e,vErSiOn()))--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0109",
+    "class": "injection-sqli",
+    "name": "SQLi query:name [double-urlencode]",
+    "description": "SQL injection via query:name on /game/1?name={p}: 1' AND extractvalue(1,concat(0x7e,versio",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=1%2527%2520AND%2520extractvalue%25281%252Cconcat%25280x7e%252Cversion%2528%2529%2529%2529--",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  },
+  {
+    "id": "sqli-0110",
+    "class": "injection-sqli",
+    "name": "SQLi body:username [urlencode]",
+    "description": "SQL injection via body:username on /login: 1' AND extractvalue(1,concat(0x7e,versio",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"1' AND extractvalue(1,concat(0x7e,version()))--\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "sqli"
+      ]
+    }
+  }
+]

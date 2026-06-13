@@ -1,0 +1,19 @@
+{
+  "auth-jwt": 61,
+  "benign-baseline": 99,
+  "caching": 33,
+  "cors": 24,
+  "injection-cmdi": 76,
+  "injection-nosql": 48,
+  "injection-sqli": 110,
+  "path-traversal": 51,
+  "protocol": 37,
+  "rate-limit": 94,
+  "sse": 92,
+  "ssrf": 32,
+  "websocket": 322,
+  "xss": 80,
+  "_total": 1159,
+  "_benign": 122,
+  "_attack": 1037
+}

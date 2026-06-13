@@ -1,0 +1,2018 @@
+[
+  {
+    "id": "jwt-0001",
+    "class": "auth-jwt",
+    "name": "JWT alg-none",
+    "description": "Forged/invalid JWT (alg-none) presented as Bearer on /api/profile",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:alg-none"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAibm9uZSIsICJ0eXAiOiAiSldUIn0.eyJzdWIiOiAiYWxpY2UiLCAicm9sZSI6ICJhZG1pbiIsICJleHAiOiAxNzg5MDA5OTk5fQ."
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0002",
+    "class": "auth-jwt",
+    "name": "JWT alg-none",
+    "description": "Forged/invalid JWT (alg-none) presented as Bearer on /admin/users",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:alg-none"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAibm9uZSIsICJ0eXAiOiAiSldUIn0.eyJzdWIiOiAiYWxpY2UiLCAicm9sZSI6ICJhZG1pbiIsICJleHAiOiAxNzg5MDA5OTk5fQ."
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0003",
+    "class": "auth-jwt",
+    "name": "JWT alg-none",
+    "description": "Forged/invalid JWT (alg-none) presented as Bearer on /admin/dashboard",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:alg-none"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/dashboard",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAibm9uZSIsICJ0eXAiOiAiSldUIn0.eyJzdWIiOiAiYWxpY2UiLCAicm9sZSI6ICJhZG1pbiIsICJleHAiOiAxNzg5MDA5OTk5fQ."
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0004",
+    "class": "auth-jwt",
+    "name": "JWT alg-none",
+    "description": "Forged/invalid JWT (alg-none) presented as Bearer on /deposit",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:alg-none"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAibm9uZSIsICJ0eXAiOiAiSldUIn0.eyJzdWIiOiAiYWxpY2UiLCAicm9sZSI6ICJhZG1pbiIsICJleHAiOiAxNzg5MDA5OTk5fQ.",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 1, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0005",
+    "class": "auth-jwt",
+    "name": "JWT alg-none-upper",
+    "description": "Forged/invalid JWT (alg-none-upper) presented as Bearer on /api/profile",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:alg-none-upper"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiTk9ORSJ9.eyJzdWIiOiAiYWRtaW4iLCAicm9sZSI6ICJhZG1pbiJ9."
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0006",
+    "class": "auth-jwt",
+    "name": "JWT alg-none-upper",
+    "description": "Forged/invalid JWT (alg-none-upper) presented as Bearer on /admin/users",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:alg-none-upper"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiTk9ORSJ9.eyJzdWIiOiAiYWRtaW4iLCAicm9sZSI6ICJhZG1pbiJ9."
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0007",
+    "class": "auth-jwt",
+    "name": "JWT alg-none-upper",
+    "description": "Forged/invalid JWT (alg-none-upper) presented as Bearer on /admin/dashboard",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:alg-none-upper"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/dashboard",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiTk9ORSJ9.eyJzdWIiOiAiYWRtaW4iLCAicm9sZSI6ICJhZG1pbiJ9."
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0008",
+    "class": "auth-jwt",
+    "name": "JWT alg-none-upper",
+    "description": "Forged/invalid JWT (alg-none-upper) presented as Bearer on /deposit",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:alg-none-upper"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiTk9ORSJ9.eyJzdWIiOiAiYWRtaW4iLCAicm9sZSI6ICJhZG1pbiJ9.",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 1, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0009",
+    "class": "auth-jwt",
+    "name": "JWT alg-none-mixed",
+    "description": "Forged/invalid JWT (alg-none-mixed) presented as Bearer on /api/profile",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:alg-none-mixed"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAibk9uRSJ9.eyJzdWIiOiAiYWRtaW4ifQ."
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0010",
+    "class": "auth-jwt",
+    "name": "JWT alg-none-mixed",
+    "description": "Forged/invalid JWT (alg-none-mixed) presented as Bearer on /admin/users",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:alg-none-mixed"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAibk9uRSJ9.eyJzdWIiOiAiYWRtaW4ifQ."
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0011",
+    "class": "auth-jwt",
+    "name": "JWT alg-none-mixed",
+    "description": "Forged/invalid JWT (alg-none-mixed) presented as Bearer on /admin/dashboard",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:alg-none-mixed"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/dashboard",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAibk9uRSJ9.eyJzdWIiOiAiYWRtaW4ifQ."
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0012",
+    "class": "auth-jwt",
+    "name": "JWT alg-none-mixed",
+    "description": "Forged/invalid JWT (alg-none-mixed) presented as Bearer on /deposit",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:alg-none-mixed"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAibk9uRSJ9.eyJzdWIiOiAiYWRtaW4ifQ.",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 1, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0013",
+    "class": "auth-jwt",
+    "name": "JWT expired",
+    "description": "Forged/invalid JWT (expired) presented as Bearer on /api/profile",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:expired"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAiZXhwIjogMTc4ODkwMDAwMH0.deadbeef"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0014",
+    "class": "auth-jwt",
+    "name": "JWT expired",
+    "description": "Forged/invalid JWT (expired) presented as Bearer on /admin/users",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:expired"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAiZXhwIjogMTc4ODkwMDAwMH0.deadbeef"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0015",
+    "class": "auth-jwt",
+    "name": "JWT expired",
+    "description": "Forged/invalid JWT (expired) presented as Bearer on /admin/dashboard",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:expired"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/dashboard",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAiZXhwIjogMTc4ODkwMDAwMH0.deadbeef"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0016",
+    "class": "auth-jwt",
+    "name": "JWT expired",
+    "description": "Forged/invalid JWT (expired) presented as Bearer on /deposit",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:expired"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAiZXhwIjogMTc4ODkwMDAwMH0.deadbeef",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 1, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0017",
+    "class": "auth-jwt",
+    "name": "JWT not-before",
+    "description": "Forged/invalid JWT (not-before) presented as Bearer on /api/profile",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:not-before"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAibmJmIjogMTc4OTEwMDAwMCwgImV4cCI6IDE3ODkyMDAwMDB9.x"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0018",
+    "class": "auth-jwt",
+    "name": "JWT not-before",
+    "description": "Forged/invalid JWT (not-before) presented as Bearer on /admin/users",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:not-before"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAibmJmIjogMTc4OTEwMDAwMCwgImV4cCI6IDE3ODkyMDAwMDB9.x"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0019",
+    "class": "auth-jwt",
+    "name": "JWT not-before",
+    "description": "Forged/invalid JWT (not-before) presented as Bearer on /admin/dashboard",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:not-before"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/dashboard",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAibmJmIjogMTc4OTEwMDAwMCwgImV4cCI6IDE3ODkyMDAwMDB9.x"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0020",
+    "class": "auth-jwt",
+    "name": "JWT not-before",
+    "description": "Forged/invalid JWT (not-before) presented as Bearer on /deposit",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:not-before"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAibmJmIjogMTc4OTEwMDAwMCwgImV4cCI6IDE3ODkyMDAwMDB9.x",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 1, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0021",
+    "class": "auth-jwt",
+    "name": "JWT wrong-issuer",
+    "description": "Forged/invalid JWT (wrong-issuer) presented as Bearer on /api/profile",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:wrong-issuer"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAiaXNzIjogImh0dHBzOi8vZXZpbC5jb20iLCAiZXhwIjogMTc4OTAwOTk5OX0.x"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0022",
+    "class": "auth-jwt",
+    "name": "JWT wrong-issuer",
+    "description": "Forged/invalid JWT (wrong-issuer) presented as Bearer on /admin/users",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:wrong-issuer"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAiaXNzIjogImh0dHBzOi8vZXZpbC5jb20iLCAiZXhwIjogMTc4OTAwOTk5OX0.x"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0023",
+    "class": "auth-jwt",
+    "name": "JWT wrong-issuer",
+    "description": "Forged/invalid JWT (wrong-issuer) presented as Bearer on /admin/dashboard",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:wrong-issuer"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/dashboard",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAiaXNzIjogImh0dHBzOi8vZXZpbC5jb20iLCAiZXhwIjogMTc4OTAwOTk5OX0.x"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0024",
+    "class": "auth-jwt",
+    "name": "JWT wrong-issuer",
+    "description": "Forged/invalid JWT (wrong-issuer) presented as Bearer on /deposit",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:wrong-issuer"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAiaXNzIjogImh0dHBzOi8vZXZpbC5jb20iLCAiZXhwIjogMTc4OTAwOTk5OX0.x",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 1, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0025",
+    "class": "auth-jwt",
+    "name": "JWT wrong-audience",
+    "description": "Forged/invalid JWT (wrong-audience) presented as Bearer on /api/profile",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:wrong-audience"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAiYXVkIjogImF0dGFja2VyIiwgImV4cCI6IDE3ODkwMDk5OTl9.x"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0026",
+    "class": "auth-jwt",
+    "name": "JWT wrong-audience",
+    "description": "Forged/invalid JWT (wrong-audience) presented as Bearer on /admin/users",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:wrong-audience"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAiYXVkIjogImF0dGFja2VyIiwgImV4cCI6IDE3ODkwMDk5OTl9.x"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0027",
+    "class": "auth-jwt",
+    "name": "JWT wrong-audience",
+    "description": "Forged/invalid JWT (wrong-audience) presented as Bearer on /admin/dashboard",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:wrong-audience"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/dashboard",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAiYXVkIjogImF0dGFja2VyIiwgImV4cCI6IDE3ODkwMDk5OTl9.x"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0028",
+    "class": "auth-jwt",
+    "name": "JWT wrong-audience",
+    "description": "Forged/invalid JWT (wrong-audience) presented as Bearer on /deposit",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:wrong-audience"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAiYXVkIjogImF0dGFja2VyIiwgImV4cCI6IDE3ODkwMDk5OTl9.x",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 1, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0029",
+    "class": "auth-jwt",
+    "name": "JWT forged-sig",
+    "description": "Forged/invalid JWT (forged-sig) presented as Bearer on /api/profile",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:forged-sig"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWRtaW4iLCAicm9sZSI6ICJhZG1pbiIsICJleHAiOiAxNzg5MDA5OTk5fQ.Zm9yZ2Vk"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0030",
+    "class": "auth-jwt",
+    "name": "JWT forged-sig",
+    "description": "Forged/invalid JWT (forged-sig) presented as Bearer on /admin/users",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:forged-sig"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWRtaW4iLCAicm9sZSI6ICJhZG1pbiIsICJleHAiOiAxNzg5MDA5OTk5fQ.Zm9yZ2Vk"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0031",
+    "class": "auth-jwt",
+    "name": "JWT forged-sig",
+    "description": "Forged/invalid JWT (forged-sig) presented as Bearer on /admin/dashboard",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:forged-sig"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/dashboard",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWRtaW4iLCAicm9sZSI6ICJhZG1pbiIsICJleHAiOiAxNzg5MDA5OTk5fQ.Zm9yZ2Vk"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0032",
+    "class": "auth-jwt",
+    "name": "JWT forged-sig",
+    "description": "Forged/invalid JWT (forged-sig) presented as Bearer on /deposit",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:forged-sig"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWRtaW4iLCAicm9sZSI6ICJhZG1pbiIsICJleHAiOiAxNzg5MDA5OTk5fQ.Zm9yZ2Vk",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 1, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0033",
+    "class": "auth-jwt",
+    "name": "JWT alg-confusion-rs256",
+    "description": "Forged/invalid JWT (alg-confusion-rs256) presented as Bearer on /api/profile",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:alg-confusion-rs256"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiUlMyNTYifQ.eyJzdWIiOiAiYWRtaW4iLCAicm9sZSI6ICJhZG1pbiJ9.AAAA"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0034",
+    "class": "auth-jwt",
+    "name": "JWT alg-confusion-rs256",
+    "description": "Forged/invalid JWT (alg-confusion-rs256) presented as Bearer on /admin/users",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:alg-confusion-rs256"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiUlMyNTYifQ.eyJzdWIiOiAiYWRtaW4iLCAicm9sZSI6ICJhZG1pbiJ9.AAAA"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0035",
+    "class": "auth-jwt",
+    "name": "JWT alg-confusion-rs256",
+    "description": "Forged/invalid JWT (alg-confusion-rs256) presented as Bearer on /admin/dashboard",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:alg-confusion-rs256"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/dashboard",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiUlMyNTYifQ.eyJzdWIiOiAiYWRtaW4iLCAicm9sZSI6ICJhZG1pbiJ9.AAAA"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0036",
+    "class": "auth-jwt",
+    "name": "JWT alg-confusion-rs256",
+    "description": "Forged/invalid JWT (alg-confusion-rs256) presented as Bearer on /deposit",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:alg-confusion-rs256"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiUlMyNTYifQ.eyJzdWIiOiAiYWRtaW4iLCAicm9sZSI6ICJhZG1pbiJ9.AAAA",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 1, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0037",
+    "class": "auth-jwt",
+    "name": "JWT kid-sqli",
+    "description": "Forged/invalid JWT (kid-sqli) presented as Bearer on /api/profile",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:kid-sqli"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAia2lkIjogIjEnIE9SICcxJz0nMSJ9.eyJzdWIiOiAiYWxpY2UifQ.x"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0038",
+    "class": "auth-jwt",
+    "name": "JWT kid-sqli",
+    "description": "Forged/invalid JWT (kid-sqli) presented as Bearer on /admin/users",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:kid-sqli"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAia2lkIjogIjEnIE9SICcxJz0nMSJ9.eyJzdWIiOiAiYWxpY2UifQ.x"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0039",
+    "class": "auth-jwt",
+    "name": "JWT kid-sqli",
+    "description": "Forged/invalid JWT (kid-sqli) presented as Bearer on /admin/dashboard",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:kid-sqli"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/dashboard",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAia2lkIjogIjEnIE9SICcxJz0nMSJ9.eyJzdWIiOiAiYWxpY2UifQ.x"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0040",
+    "class": "auth-jwt",
+    "name": "JWT kid-sqli",
+    "description": "Forged/invalid JWT (kid-sqli) presented as Bearer on /deposit",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:kid-sqli"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAia2lkIjogIjEnIE9SICcxJz0nMSJ9.eyJzdWIiOiAiYWxpY2UifQ.x",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 1, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0041",
+    "class": "auth-jwt",
+    "name": "JWT kid-path",
+    "description": "Forged/invalid JWT (kid-path) presented as Bearer on /api/profile",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:kid-path"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAia2lkIjogIi4uLy4uLy4uL2Rldi9udWxsIn0.eyJzdWIiOiAiYWxpY2UifQ.x"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0042",
+    "class": "auth-jwt",
+    "name": "JWT kid-path",
+    "description": "Forged/invalid JWT (kid-path) presented as Bearer on /admin/users",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:kid-path"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAia2lkIjogIi4uLy4uLy4uL2Rldi9udWxsIn0.eyJzdWIiOiAiYWxpY2UifQ.x"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0043",
+    "class": "auth-jwt",
+    "name": "JWT kid-path",
+    "description": "Forged/invalid JWT (kid-path) presented as Bearer on /admin/dashboard",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:kid-path"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/dashboard",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAia2lkIjogIi4uLy4uLy4uL2Rldi9udWxsIn0.eyJzdWIiOiAiYWxpY2UifQ.x"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0044",
+    "class": "auth-jwt",
+    "name": "JWT kid-path",
+    "description": "Forged/invalid JWT (kid-path) presented as Bearer on /deposit",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:kid-path"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAia2lkIjogIi4uLy4uLy4uL2Rldi9udWxsIn0.eyJzdWIiOiAiYWxpY2UifQ.x",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 1, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0045",
+    "class": "auth-jwt",
+    "name": "JWT jku-ssrf",
+    "description": "Forged/invalid JWT (jku-ssrf) presented as Bearer on /api/profile",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:jku-ssrf"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiUlMyNTYiLCAiamt1IjogImh0dHA6Ly8xNjkuMjU0LjE2OS4yNTQvIn0.eyJzdWIiOiAiYWxpY2UifQ.x"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0046",
+    "class": "auth-jwt",
+    "name": "JWT jku-ssrf",
+    "description": "Forged/invalid JWT (jku-ssrf) presented as Bearer on /admin/users",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:jku-ssrf"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiUlMyNTYiLCAiamt1IjogImh0dHA6Ly8xNjkuMjU0LjE2OS4yNTQvIn0.eyJzdWIiOiAiYWxpY2UifQ.x"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0047",
+    "class": "auth-jwt",
+    "name": "JWT jku-ssrf",
+    "description": "Forged/invalid JWT (jku-ssrf) presented as Bearer on /admin/dashboard",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:jku-ssrf"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/dashboard",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiUlMyNTYiLCAiamt1IjogImh0dHA6Ly8xNjkuMjU0LjE2OS4yNTQvIn0.eyJzdWIiOiAiYWxpY2UifQ.x"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0048",
+    "class": "auth-jwt",
+    "name": "JWT jku-ssrf",
+    "description": "Forged/invalid JWT (jku-ssrf) presented as Bearer on /deposit",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:jku-ssrf"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiUlMyNTYiLCAiamt1IjogImh0dHA6Ly8xNjkuMjU0LjE2OS4yNTQvIn0.eyJzdWIiOiAiYWxpY2UifQ.x",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 1, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0049",
+    "class": "auth-jwt",
+    "name": "JWT empty-sig",
+    "description": "Forged/invalid JWT (empty-sig) presented as Bearer on /api/profile",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:empty-sig"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAiZXhwIjogMTc4OTAwOTk5OX0."
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0050",
+    "class": "auth-jwt",
+    "name": "JWT empty-sig",
+    "description": "Forged/invalid JWT (empty-sig) presented as Bearer on /admin/users",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:empty-sig"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAiZXhwIjogMTc4OTAwOTk5OX0."
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0051",
+    "class": "auth-jwt",
+    "name": "JWT empty-sig",
+    "description": "Forged/invalid JWT (empty-sig) presented as Bearer on /admin/dashboard",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:empty-sig"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/dashboard",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAiZXhwIjogMTc4OTAwOTk5OX0."
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0052",
+    "class": "auth-jwt",
+    "name": "JWT empty-sig",
+    "description": "Forged/invalid JWT (empty-sig) presented as Bearer on /deposit",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:empty-sig"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAiZXhwIjogMTc4OTAwOTk5OX0.",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 1, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0053",
+    "class": "auth-jwt",
+    "name": "JWT privilege-claim",
+    "description": "Forged/invalid JWT (privilege-claim) presented as Bearer on /api/profile",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:privilege-claim"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAicm9sZSI6ICJzdXBlcmFkbWluIiwgImlzX2FkbWluIjogdHJ1ZX0.x"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0054",
+    "class": "auth-jwt",
+    "name": "JWT privilege-claim",
+    "description": "Forged/invalid JWT (privilege-claim) presented as Bearer on /admin/users",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:privilege-claim"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAicm9sZSI6ICJzdXBlcmFkbWluIiwgImlzX2FkbWluIjogdHJ1ZX0.x"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0055",
+    "class": "auth-jwt",
+    "name": "JWT privilege-claim",
+    "description": "Forged/invalid JWT (privilege-claim) presented as Bearer on /admin/dashboard",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:privilege-claim"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/dashboard",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAicm9sZSI6ICJzdXBlcmFkbWluIiwgImlzX2FkbWluIjogdHJ1ZX0.x"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0056",
+    "class": "auth-jwt",
+    "name": "JWT privilege-claim",
+    "description": "Forged/invalid JWT (privilege-claim) presented as Bearer on /deposit",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "owasp:A07",
+      "jwt:privilege-claim"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYWxpY2UiLCAicm9sZSI6ICJzdXBlcmFkbWluIiwgImlzX2FkbWluIjogdHJ1ZX0.x",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 1, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0057",
+    "class": "auth-jwt",
+    "name": "JWT oversized token",
+    "description": "Multi-kilobyte bogus Bearer token (parser stress / smuggling)",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "jwt:oversize"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYifQ.eyJzdWIiOiAiYSIsICJwYWQiOiAiQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIn0.sig"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0058",
+    "class": "auth-jwt",
+    "name": "JWT malformed (two segments)",
+    "description": "Structurally malformed Bearer token (missing signature segment)",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "jwt:malformed"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer abc.def"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "jwt"
+      ]
+    }
+  },
+  {
+    "id": "jwt-0059",
+    "class": "auth-jwt",
+    "name": "Benign well-formed JWT (FP check)",
+    "description": "Structurally valid, unexpired Bearer token \u2014 WAF must not block on shape alone",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "jwt:benign"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/public/stats",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAiYWxpY2UiLCAiaXNzIjogImh0dHBzOi8vbG9jYWxob3N0OjgwODAiLCAiYXVkIjogIm5vdmFiZXQiLCAiaWF0IjogMTc4ODk5OTk0MCwgImV4cCI6IDE3ODkwMDE4MDB9.dmFsaWRsb29raW5nMA"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "jwt-0060",
+    "class": "auth-jwt",
+    "name": "Benign well-formed JWT (FP check)",
+    "description": "Structurally valid, unexpired Bearer token \u2014 WAF must not block on shape alone",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "jwt:benign"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/public/stats",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAiYm9iIiwgImlzcyI6ICJodHRwczovL2xvY2FsaG9zdDo4MDgwIiwgImF1ZCI6ICJub3ZhYmV0IiwgImlhdCI6IDE3ODg5OTk5NDAsICJleHAiOiAxNzg5MDAxODAwfQ.dmFsaWRsb29raW5nMQ"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "jwt-0061",
+    "class": "auth-jwt",
+    "name": "Benign well-formed JWT (FP check)",
+    "description": "Structurally valid, unexpired Bearer token \u2014 WAF must not block on shape alone",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "jwt:benign"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/public/stats",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAiY2hhcmxpZSIsICJpc3MiOiAiaHR0cHM6Ly9sb2NhbGhvc3Q6ODA4MCIsICJhdWQiOiAibm92YWJldCIsICJpYXQiOiAxNzg4OTk5OTQwLCAiZXhwIjogMTc4OTAwMTgwMH0.dmFsaWRsb29raW5nMg"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  }
+]

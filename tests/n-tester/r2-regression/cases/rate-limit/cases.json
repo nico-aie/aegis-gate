@@ -1,0 +1,3015 @@
+[
+  {
+    "id": "limit-0001",
+    "class": "rate-limit",
+    "name": "Burst on /login (x60)",
+    "description": "Rapid burst of 60 requests to /login to trip rate limiter / PoW challenge",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "rate-limit",
+      "repeat:60"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"alice\", \"password\": \"wrong\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0002",
+    "class": "rate-limit",
+    "name": "Burst on /api/feedback (x80)",
+    "description": "Rapid burst of 80 requests to /api/feedback to trip rate limiter / PoW challenge",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "rate-limit",
+      "repeat:80"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"spam\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0003",
+    "class": "rate-limit",
+    "name": "Burst on /otp (x50)",
+    "description": "Rapid burst of 50 requests to /otp to trip rate limiter / PoW challenge",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "rate-limit",
+      "repeat:50"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/otp",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"login_token\": \"x\", \"otp_code\": \"000000\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0004",
+    "class": "rate-limit",
+    "name": "Burst on /game/1 (x100)",
+    "description": "Rapid burst of 100 requests to /game/1 to trip rate limiter / PoW challenge",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "rate-limit",
+      "repeat:100"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0005",
+    "class": "rate-limit",
+    "name": "Burst on /api/public/stats (x120)",
+    "description": "Rapid burst of 120 requests to /api/public/stats to trip rate limiter / PoW challenge",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "rate-limit",
+      "repeat:120"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/public/stats",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0006",
+    "class": "rate-limit",
+    "name": "Credential stuffing burst",
+    "description": "Many failed /login attempts across users from one IP",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "rate-limit",
+      "repeat:100",
+      "cred-stuffing"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"alice\", \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0007",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 159, \"keep_alive_seconds\": 50, \"origin\": \"https://attacker.evil.com:8080\"}",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0008",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 265, \"keep_alive_seconds\": 2321, \"origin\": \"https://evil.com\"}",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0009",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 258, \"keep_alive_seconds\": 429, \"origin\": \"http://127.0.0.1\"}",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0010",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 489, \"keep_alive_seconds\": 198, \"origin\": \"http://localhost:3000\"}",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0011",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 355, \"keep_alive_seconds\": 2741, \"origin\": \"http://127.0.0.1\"}",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0012",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 73, \"keep_alive_seconds\": 1815, \"origin\": \"http://localhost:3000\"}",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0013",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 468, \"keep_alive_seconds\": 597, \"origin\": \"https://evil.sec-team.waf-exams.info.attacker.com\"",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0014",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 306, \"keep_alive_seconds\": 445, \"origin\": \"https://xss.evil.com\"}",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0015",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 281, \"keep_alive_seconds\": 1653, \"origin\": \"null\"}",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0016",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 361, \"keep_alive_seconds\": 1560, \"origin\": \"https://sub.attacker.evil.com\"}",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0017",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 499, \"keep_alive_seconds\": 2930, \"origin\": \"https://xss.evil.com\"}",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0018",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 490, \"keep_alive_seconds\": 3541, \"origin\": \"https://evil.sec-team.waf-exams.info.attacker.com",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0019",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 93, \"keep_alive_seconds\": 110, \"origin\": \"https://sub.attacker.evil.com\"}",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0020",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 295, \"keep_alive_seconds\": 520, \"origin\": \"https://sub.attacker.evil.com\"}",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0021",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 357, \"keep_alive_seconds\": 2968, \"origin\": \"http://127.0.0.1\"}",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0022",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 359, \"keep_alive_seconds\": 386, \"origin\": \"null\"}",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0023",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 200, \"keep_alive_seconds\": 2559, \"origin\": \"https://novabet.attacker.evil.com\"}",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0024",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 414, \"keep_alive_seconds\": 301, \"origin\": \"http://127.0.0.1\"}",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0025",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 488, \"keep_alive_seconds\": 2325, \"origin\": \"https://novabet.attacker.evil.com\"}",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0026",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 214, \"keep_alive_seconds\": 3485, \"origin\": \"null\"}",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0027",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 317, \"keep_alive_seconds\": 503, \"origin\": \"http://127.0.0.1\"}",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0028",
+    "class": "rate-limit",
+    "name": "[ds] sse_dos_flood (pattern)",
+    "description": "sse_dos_flood: {\"connections_per_second\": 349, \"keep_alive_seconds\": 319, \"origin\": \"https://sub.attacker.evil.com\"}",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "sse_dos_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0029",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 900, \"bytes_per_interval\": 3, \"interval_ms\": 26083, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0030",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 637, \"bytes_per_interval\": 1, \"interval_ms\": 15312, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0031",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 571, \"bytes_per_interval\": 4, \"interval_ms\": 16645, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0032",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 848, \"bytes_per_interval\": 9, \"interval_ms\": 20359, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0033",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 664, \"bytes_per_interval\": 1, \"interval_ms\": 5699, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0034",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 262, \"bytes_per_interval\": 2, \"interval_ms\": 20523, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0035",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 265, \"bytes_per_interval\": 6, \"interval_ms\": 17745, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0036",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 175, \"bytes_per_interval\": 5, \"interval_ms\": 17512, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0037",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 636, \"bytes_per_interval\": 1, \"interval_ms\": 18436, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0038",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 839, \"bytes_per_interval\": 3, \"interval_ms\": 29456, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0039",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 928, \"bytes_per_interval\": 2, \"interval_ms\": 27003, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0040",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 378, \"bytes_per_interval\": 10, \"interval_ms\": 21297, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0041",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 804, \"bytes_per_interval\": 7, \"interval_ms\": 25511, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0042",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 594, \"bytes_per_interval\": 5, \"interval_ms\": 11652, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0043",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 573, \"bytes_per_interval\": 9, \"interval_ms\": 25761, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0044",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 318, \"bytes_per_interval\": 4, \"interval_ms\": 17642, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0045",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 532, \"bytes_per_interval\": 6, \"interval_ms\": 7879, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0046",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 612, \"bytes_per_interval\": 10, \"interval_ms\": 8118, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0047",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 742, \"bytes_per_interval\": 10, \"interval_ms\": 14921, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0048",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 373, \"bytes_per_interval\": 3, \"interval_ms\": 17281, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0049",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 914, \"bytes_per_interval\": 1, \"interval_ms\": 27810, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0050",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_slowloris (pattern)",
+    "description": "ws_dos_slowloris: {\"connections\": 387, \"bytes_per_interval\": 8, \"interval_ms\": 23399, \"never_complete_frame\": true}",
+    "severity": "medium",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_slowloris"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0051",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 1634, \"target_max_connections\": 22444, \"origin\": \"https://evil.sec-team.waf-exams.info.attack",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0052",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 1215, \"target_max_connections\": 60324, \"origin\": \"https://xss.evil.com\", \"cookie\": \"sid=qvkKj",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0053",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 237, \"target_max_connections\": 34585, \"origin\": \"null\", \"cookie\": \"sid=qIS51SqnEnTVmtRLeRLcBL",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0054",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 4625, \"target_max_connections\": 28013, \"origin\": \"https://sub.attacker.evil.com\", \"cookie\": \"",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0055",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 2824, \"target_max_connections\": 32215, \"origin\": \"https://attacker.evil.com\", \"cookie\": \"sid=",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0056",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 3085, \"target_max_connections\": 14136, \"origin\": \"https://evil.sec-team.waf-exams.info.attack",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0057",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 2829, \"target_max_connections\": 68814, \"origin\": \"https://evil.sec-team.waf-exams.info.attack",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0058",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 1430, \"target_max_connections\": 98428, \"origin\": \"https://novabet.attacker.evil.com\", \"cookie",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0059",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 718, \"target_max_connections\": 98898, \"origin\": \"http://localhost:3000\", \"cookie\": \"sid=iPyH8",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0060",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 1799, \"target_max_connections\": 66187, \"origin\": \"null\", \"cookie\": \"sid=lLZ5U1GBNJJmp5Nv9OYFb",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0061",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 4818, \"target_max_connections\": 73928, \"origin\": \"https://xss.evil.com\", \"cookie\": \"sid=tHGxS",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0062",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 167, \"target_max_connections\": 79048, \"origin\": \"https://novabet.attacker.evil.com\", \"cookie\"",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0063",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 2788, \"target_max_connections\": 32242, \"origin\": \"http://localhost:3000\", \"cookie\": \"sid=cTvY",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0064",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 4972, \"target_max_connections\": 98957, \"origin\": \"https://evil.sec-team.waf-exams.info.attack",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0065",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 1579, \"target_max_connections\": 33955, \"origin\": \"https://evil.sec-team.waf-exams.info.attack",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0066",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 436, \"target_max_connections\": 47278, \"origin\": \"https://novabet.attacker.evil.com\", \"cookie\"",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0067",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 1427, \"target_max_connections\": 27549, \"origin\": \"https://novabet.attacker.evil.com\", \"cookie",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0068",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 1973, \"target_max_connections\": 80564, \"origin\": \"https://attacker.evil.com:8080\", \"cookie\": ",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0069",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 1289, \"target_max_connections\": 94124, \"origin\": \"https://evil.sec-team.waf-exams.info.attack",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0070",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 3098, \"target_max_connections\": 33219, \"origin\": \"https://attacker.evil.com\", \"cookie\": \"sid=",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0071",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 239, \"target_max_connections\": 66185, \"origin\": \"https://novabet.attacker.evil.com\", \"cookie\"",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0072",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_connection_flood (pattern)",
+    "description": "ws_dos_connection_flood: {\"connections_per_second\": 963, \"target_max_connections\": 55623, \"origin\": \"https://xss.evil.com\", \"cookie\": \"sid=q065vY",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_connection_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0073",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 1963, \"message_size_bytes\": 940, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"notific",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0074",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 19938, \"message_size_bytes\": 165, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"payout",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0075",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 43296, \"message_size_bytes\": 839, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"notifi",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0076",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 32467, \"message_size_bytes\": 115, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"game\\\"",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0077",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 24297, \"message_size_bytes\": 819, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"notifi",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0078",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 37903, \"message_size_bytes\": 456, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"result",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0079",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 35702, \"message_size_bytes\": 250, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"game\\\"",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0080",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 22823, \"message_size_bytes\": 100, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"result",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0081",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 13542, \"message_size_bytes\": 816, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"result",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0082",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 17847, \"message_size_bytes\": 748, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"payout",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0083",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 16596, \"message_size_bytes\": 799, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"balanc",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0084",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 23853, \"message_size_bytes\": 607, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"balanc",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0085",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 10999, \"message_size_bytes\": 537, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"result",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0086",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 11160, \"message_size_bytes\": 663, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"balanc",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0087",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 37301, \"message_size_bytes\": 508, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"payout",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0088",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 13443, \"message_size_bytes\": 526, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"balanc",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0089",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 21194, \"message_size_bytes\": 697, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"game\\\"",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0090",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 11564, \"message_size_bytes\": 70, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"balance",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0091",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 13414, \"message_size_bytes\": 554, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"game\\\"",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0092",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 29478, \"message_size_bytes\": 358, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"game\\\"",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0093",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 19050, \"message_size_bytes\": 530, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"notifi",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  },
+  {
+    "id": "limit-0094",
+    "class": "rate-limit",
+    "name": "[ds] ws_dos_message_flood (pattern)",
+    "description": "ws_dos_message_flood: {\"messages_per_second\": 12352, \"message_size_bytes\": 182, \"sample_message\": \"{\\\"op\\\": \\\"subscribe\\\", \\\"topic\\\": \\\"balanc",
+    "severity": "high",
+    "source": "teammate-ws-dataset",
+    "tags": [
+      "dos-pattern",
+      "ws_dos_message_flood"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "ws://sec-team.waf-exams.info/ws/live",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "execute": false,
+      "body": null,
+      "body_b64": false
+    },
+    "expect": {
+      "verdict": "challenge",
+      "rule_id_contains": [
+        "rate_limit"
+      ]
+    }
+  }
+]

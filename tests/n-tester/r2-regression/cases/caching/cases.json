@@ -1,0 +1,1014 @@
+[
+  {
+    "id": "caching-0001",
+    "class": "caching",
+    "name": "Web cache poisoning (unkeyed header)",
+    "description": "Cache poisoning probe with unkeyed header X-Forwarded-Host",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "cache-poison",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/js/app.js",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "X-Forwarded-Host": "evil.com"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cache"
+      ]
+    }
+  },
+  {
+    "id": "caching-0002",
+    "class": "caching",
+    "name": "Web cache poisoning (unkeyed header)",
+    "description": "Cache poisoning probe with unkeyed header X-Forwarded-Scheme",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "cache-poison",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/js/app.js",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "X-Forwarded-Scheme": "nothttps"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cache"
+      ]
+    }
+  },
+  {
+    "id": "caching-0003",
+    "class": "caching",
+    "name": "Web cache poisoning (unkeyed header)",
+    "description": "Cache poisoning probe with unkeyed header X-Host",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "cache-poison",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/js/app.js",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "X-Host": "evil.com"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cache"
+      ]
+    }
+  },
+  {
+    "id": "caching-0004",
+    "class": "caching",
+    "name": "Web cache poisoning (unkeyed header)",
+    "description": "Cache poisoning probe with unkeyed header X-Forwarded-Server",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "cache-poison",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/js/app.js",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "X-Forwarded-Server": "evil.com"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cache"
+      ]
+    }
+  },
+  {
+    "id": "caching-0005",
+    "class": "caching",
+    "name": "Web cache poisoning (unkeyed header)",
+    "description": "Cache poisoning probe with unkeyed header X-Original-URL",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "cache-poison",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/js/app.js",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "X-Original-URL": "/admin/users"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cache"
+      ]
+    }
+  },
+  {
+    "id": "caching-0006",
+    "class": "caching",
+    "name": "Web cache poisoning (unkeyed header)",
+    "description": "Cache poisoning probe with unkeyed header X-Rewrite-URL",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "cache-poison",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/js/app.js",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "X-Rewrite-URL": "/admin/dashboard"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cache"
+      ]
+    }
+  },
+  {
+    "id": "caching-0007",
+    "class": "caching",
+    "name": "Web cache poisoning (unkeyed header)",
+    "description": "Cache poisoning probe with unkeyed header X-Forwarded-Host",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "cache-poison",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/js/app.js",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "X-Forwarded-Host": "evil.com",
+        "X-Forwarded-Port": "1337"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cache"
+      ]
+    }
+  },
+  {
+    "id": "caching-0008",
+    "class": "caching",
+    "name": "Web cache poisoning (unkeyed header)",
+    "description": "Cache poisoning probe with unkeyed header Forwarded",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "cache-poison",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/js/app.js",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Forwarded": "host=evil.com"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cache"
+      ]
+    }
+  },
+  {
+    "id": "caching-0009",
+    "class": "caching",
+    "name": "Cache deception (path confusion)",
+    "description": "Cache deception: trick edge cache into storing authed response as static: /api/profile/nonexistent.css",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "cache-deception"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile/nonexistent.css",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cache"
+      ]
+    }
+  },
+  {
+    "id": "caching-0010",
+    "class": "caching",
+    "name": "Cache deception (path confusion)",
+    "description": "Cache deception: trick edge cache into storing authed response as static: /api/profile;.css",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "cache-deception"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile;.css",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cache"
+      ]
+    }
+  },
+  {
+    "id": "caching-0011",
+    "class": "caching",
+    "name": "Cache deception (path confusion)",
+    "description": "Cache deception: trick edge cache into storing authed response as static: /api/profile%0a.css",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "cache-deception"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile%0a.css",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cache"
+      ]
+    }
+  },
+  {
+    "id": "caching-0012",
+    "class": "caching",
+    "name": "Cache deception (path confusion)",
+    "description": "Cache deception: trick edge cache into storing authed response as static: /api/profile/..%2fapp.js",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "cache-deception"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile/..%2fapp.js",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cache"
+      ]
+    }
+  },
+  {
+    "id": "caching-0013",
+    "class": "caching",
+    "name": "Cache deception (path confusion)",
+    "description": "Cache deception: trick edge cache into storing authed response as static: /admin/users.css",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "cache-deception"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users.css",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cache"
+      ]
+    }
+  },
+  {
+    "id": "caching-0014",
+    "class": "caching",
+    "name": "Cache deception (path confusion)",
+    "description": "Cache deception: trick edge cache into storing authed response as static: /api/transactions/x.js",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "cache-deception"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions/x.js",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cache"
+      ]
+    }
+  },
+  {
+    "id": "caching-0015",
+    "class": "caching",
+    "name": "Cache deception (path confusion)",
+    "description": "Cache deception: trick edge cache into storing authed response as static: /api/profile%00.css",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "cache-deception"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile%00.css",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cache"
+      ]
+    }
+  },
+  {
+    "id": "caching-0016",
+    "class": "caching",
+    "name": "Cache deception (path confusion)",
+    "description": "Cache deception: trick edge cache into storing authed response as static: /deposit/.css",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "cache-deception"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/deposit/.css",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cache"
+      ]
+    }
+  },
+  {
+    "id": "caching-0017",
+    "class": "caching",
+    "name": "Cache key manipulation",
+    "description": "Cache-key confusion / param cloaking: /static/css/style.css?utm_source=evil&callback=alert",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cache-poison"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/css/style.css?utm_source=evil&callback=alert",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cache"
+      ]
+    }
+  },
+  {
+    "id": "caching-0018",
+    "class": "caching",
+    "name": "Cache key manipulation",
+    "description": "Cache-key confusion / param cloaking: /static/js/app.js?;x=1",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cache-poison"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/js/app.js?;x=1",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cache"
+      ]
+    }
+  },
+  {
+    "id": "caching-0019",
+    "class": "caching",
+    "name": "Cache key manipulation",
+    "description": "Cache-key confusion / param cloaking: /static/js/app.js%23/../../admin",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cache-poison"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/js/app.js%23/../../admin",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cache"
+      ]
+    }
+  },
+  {
+    "id": "caching-0020",
+    "class": "caching",
+    "name": "Benign static asset fetch (FP check)",
+    "description": "Normal cacheable asset request: /static/js/app.js",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/js/app.js",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "caching-0021",
+    "class": "caching",
+    "name": "Benign conditional GET (FP check)",
+    "description": "Conditional GET with If-None-Match on /static/js/app.js (legit 304 revalidation)",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "etag"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/js/app.js",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "If-None-Match": "\"a1b2c3d4\""
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "caching-0022",
+    "class": "caching",
+    "name": "Benign static asset fetch (FP check)",
+    "description": "Normal cacheable asset request: /static/css/style.css",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/css/style.css",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "caching-0023",
+    "class": "caching",
+    "name": "Benign conditional GET (FP check)",
+    "description": "Conditional GET with If-None-Match on /static/css/style.css (legit 304 revalidation)",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "etag"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/css/style.css",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "If-None-Match": "\"a1b2c3d4\""
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "caching-0024",
+    "class": "caching",
+    "name": "Benign static asset fetch (FP check)",
+    "description": "Normal cacheable asset request: /assets/logo.png",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/assets/logo.png",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "caching-0025",
+    "class": "caching",
+    "name": "Benign conditional GET (FP check)",
+    "description": "Conditional GET with If-None-Match on /assets/logo.png (legit 304 revalidation)",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "etag"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/assets/logo.png",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "If-None-Match": "\"a1b2c3d4\""
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "caching-0026",
+    "class": "caching",
+    "name": "Benign static asset fetch (FP check)",
+    "description": "Normal cacheable asset request: /public/terms.html",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public/terms.html",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "caching-0027",
+    "class": "caching",
+    "name": "Benign conditional GET (FP check)",
+    "description": "Conditional GET with If-None-Match on /public/terms.html (legit 304 revalidation)",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "etag"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public/terms.html",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "If-None-Match": "\"a1b2c3d4\""
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "caching-0028",
+    "class": "caching",
+    "name": "Benign static asset fetch (FP check)",
+    "description": "Normal cacheable asset request: /public/faq.html",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public/faq.html",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "caching-0029",
+    "class": "caching",
+    "name": "Benign conditional GET (FP check)",
+    "description": "Conditional GET with If-None-Match on /public/faq.html (legit 304 revalidation)",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "etag"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public/faq.html",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "If-None-Match": "\"a1b2c3d4\""
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "caching-0030",
+    "class": "caching",
+    "name": "Benign static asset fetch (FP check)",
+    "description": "Normal cacheable asset request: /sitemap.xml",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/sitemap.xml",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "caching-0031",
+    "class": "caching",
+    "name": "Benign conditional GET (FP check)",
+    "description": "Conditional GET with If-None-Match on /sitemap.xml (legit 304 revalidation)",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "etag"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/sitemap.xml",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "If-None-Match": "\"a1b2c3d4\""
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "caching-0032",
+    "class": "caching",
+    "name": "Benign static asset fetch (FP check)",
+    "description": "Normal cacheable asset request: /favicon.ico",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/favicon.ico",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "caching-0033",
+    "class": "caching",
+    "name": "Benign conditional GET (FP check)",
+    "description": "Conditional GET with If-None-Match on /favicon.ico (legit 304 revalidation)",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "etag"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/favicon.ico",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "If-None-Match": "\"a1b2c3d4\""
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  }
+]

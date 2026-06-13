@@ -2150,8 +2150,17 @@ pub(crate) async fn accept_loop(
                 }
                 Some(ServedIo::Plain(stream)) => {
                     let io = TokioIo::new(stream);
+                    // `.with_upgrades()` is REQUIRED for WebSocket: without
+                    // it hyper's low-level http1 connection rejects the
+                    // `hyper::upgrade::on()` the WS bridge needs, failing
+                    // with "upgrade expected but low level API in use" so
+                    // the client gets a 101 then an immediate drop (no
+                    // frames, bare 1006). The TLS branch already enables
+                    // upgrades via `serve_connection_with_upgrades`; the
+                    // plain branch must match or WS only works over TLS.
                     if let Err(e) = http1::Builder::new()
                         .serve_connection(io, svc)
+                        .with_upgrades()
                         .await
                     {
                         tracing::debug!("connection from {peer} closed: {e}");

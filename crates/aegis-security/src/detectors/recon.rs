@@ -51,6 +51,22 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)(?:Makefile$)",
         r"(?i)(?:\.aws/credentials)",
         r"(?i)(?:\.ssh/)",
+        // VULN-03 (waf_security_report 2026-06-10) — bare config /
+        // secret files served at a path segment leak DB creds & keys.
+        // Anchored to a segment (`^` or `/`) and a value boundary so
+        // they fire on `/config.yaml`, `/app/secrets.yml` but never
+        // mid-word (`/reconfigure-status`). Deliberately NOT the
+        // report's blanket `\.(yaml|yml|json|toml|ini|cfg|conf)$` —
+        // that FPs on the heap of legit `*.json` / `*.yaml` API and
+        // manifest traffic. Score stays at the probe tier (25): a lone
+        // hit accumulates via the per-IP risk model rather than
+        // single-blocking (operator decision 2026-06-13).
+        r"(?i)(?:^|/)config\.ya?ml(?:$|[?#])",
+        r"(?i)(?:^|/)(?:secrets?|settings|credentials)\.ya?ml(?:$|[?#])",
+        // Private-key / keystore material. Restrict to private-bearing
+        // extensions; .crt/.cer/.der are EXCLUDED (public certs are
+        // sometimes legitimately downloadable) to keep FP at zero.
+        r"(?i)\.(?:pem|key|p12|pfx|jks|keystore)(?:$|[?#])",
         // GAP-001 (Run-5, 2026-05-08) — framework recon paths.
         // Spring Boot actuator danger endpoints (/health and /info
         // are intentionally public on most Spring deployments;
@@ -301,6 +317,21 @@ mod tests {
     path_positive!(aws_creds, "/.aws/credentials");
     path_positive!(ssh_dir, "/.ssh/id_rsa");
     path_positive!(hg_dir, "/.hg/store");
+    // VULN-03 (waf_security_report 2026-06-10) — bare config / secret
+    // files + private-key/keystore material.
+    path_positive!(config_yaml,       "/config.yaml");
+    path_positive!(config_yml,        "/config.yml");
+    path_positive!(config_yaml_nested,"/app/config.yaml");
+    path_positive!(config_yaml_query, "/config.yaml?v=1");
+    path_positive!(secrets_yaml,      "/secrets.yaml");
+    path_positive!(secret_yaml,       "/secret.yml");
+    path_positive!(settings_yaml,     "/settings.yml");
+    path_positive!(credentials_yaml,  "/credentials.yaml");
+    path_positive!(key_pem,           "/server.pem");
+    path_positive!(key_file,          "/tls.key");
+    path_positive!(keystore_p12,      "/keystore.p12");
+    path_positive!(keystore_jks,      "/store.jks");
+    path_positive!(cert_pfx,          "/cert.pfx");
     // GAP-001 (Run-5) — framework recon positives.
     path_positive!(actuator_heapdump,     "/actuator/heapdump");
     path_positive!(actuator_env,          "/actuator/env");
@@ -451,4 +482,15 @@ mod tests {
     negative!(clean_app_php,               "/app.php");                // common PHP entry — must not flag
     negative!(clean_phpinfo_substring,     "/api/phpinfocard");        // contains phpinfo as substring but not as filename
     negative!(clean_test_dir,              "/test/results");           // /test/ as directory, not test.php
+    // VULN-03 (waf_security_report 2026-06-10) — the widened config /
+    // key coverage must NOT FP on legit traffic. Pins the segment +
+    // value-boundary anchors and the .crt/.cer exclusion.
+    negative!(clean_data_json,             "/api/data.json");          // legit JSON API surface — blanket *.json rule rejected
+    negative!(clean_config_guide,          "/docs/config-guide");      // "config" substring, no .yaml file
+    negative!(clean_reconfigure,           "/reconfigure-status");     // ends in "figure", not "config.yaml" — segment anchor holds
+    negative!(clean_public_key_info,       "/public-key-info");        // "key" substring, no .key extension boundary
+    negative!(clean_monkey_html,           "/monkey.html");            // "key" inside word, .html not .key
+    negative!(clean_style_css,             "/style.css");              // unrelated extension
+    negative!(clean_public_cert,           "/ca.crt");                 // public cert — deliberately NOT flagged
+    negative!(clean_public_cert_cer,       "/chain.cer");              // public cert — deliberately NOT flagged
 }

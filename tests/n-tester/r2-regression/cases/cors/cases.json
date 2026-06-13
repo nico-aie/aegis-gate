@@ -1,0 +1,779 @@
+[
+  {
+    "id": "cors-0001",
+    "class": "cors",
+    "name": "Benign CORS preflight (FP check)",
+    "description": "Legit OPTIONS preflight for partner embed from https://partner.example.com",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "cors"
+    ],
+    "request": {
+      "method": "OPTIONS",
+      "path": "/api/public/stats",
+      "auth": "none",
+      "headers": {
+        "Origin": "https://partner.example.com",
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "content-type"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "cors-0002",
+    "class": "cors",
+    "name": "Benign CORS preflight (FP check)",
+    "description": "Legit OPTIONS preflight for partner embed from https://affiliate.example.org",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "cors"
+    ],
+    "request": {
+      "method": "OPTIONS",
+      "path": "/api/public/stats",
+      "auth": "none",
+      "headers": {
+        "Origin": "https://affiliate.example.org",
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "content-type"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "cors-0003",
+    "class": "cors",
+    "name": "Benign CORS preflight (FP check)",
+    "description": "Legit OPTIONS preflight for partner embed from http://localhost:8080",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "cors"
+    ],
+    "request": {
+      "method": "OPTIONS",
+      "path": "/api/public/stats",
+      "auth": "none",
+      "headers": {
+        "Origin": "http://localhost:8080",
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "content-type"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "cors-0004",
+    "class": "cors",
+    "name": "CORS abuse (evil origin) /api/profile",
+    "description": "Cross-origin probe with evil origin against credentialed endpoint /api/profile",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cors",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "https://attacker.evil.com:8080"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cors"
+      ]
+    }
+  },
+  {
+    "id": "cors-0005",
+    "class": "cors",
+    "name": "CORS abuse (evil origin) /api/transactions",
+    "description": "Cross-origin probe with evil origin against credentialed endpoint /api/transactions",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cors",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "https://attacker.evil.com:8080"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cors"
+      ]
+    }
+  },
+  {
+    "id": "cors-0006",
+    "class": "cors",
+    "name": "CORS abuse (evil origin) /admin/users",
+    "description": "Cross-origin probe with evil origin against credentialed endpoint /admin/users",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cors",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "https://attacker.evil.com:8080"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cors"
+      ]
+    }
+  },
+  {
+    "id": "cors-0007",
+    "class": "cors",
+    "name": "CORS abuse (null origin) /api/profile",
+    "description": "Cross-origin probe with null origin against credentialed endpoint /api/profile",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cors",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "null"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cors"
+      ]
+    }
+  },
+  {
+    "id": "cors-0008",
+    "class": "cors",
+    "name": "CORS abuse (null origin) /api/transactions",
+    "description": "Cross-origin probe with null origin against credentialed endpoint /api/transactions",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cors",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "null"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cors"
+      ]
+    }
+  },
+  {
+    "id": "cors-0009",
+    "class": "cors",
+    "name": "CORS abuse (null origin) /admin/users",
+    "description": "Cross-origin probe with null origin against credentialed endpoint /admin/users",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cors",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "null"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cors"
+      ]
+    }
+  },
+  {
+    "id": "cors-0010",
+    "class": "cors",
+    "name": "CORS abuse (suffix-match bypass) /api/profile",
+    "description": "Cross-origin probe with suffix-match bypass against credentialed endpoint /api/profile",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cors",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "http://localhost:8080.evil.com"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cors"
+      ]
+    }
+  },
+  {
+    "id": "cors-0011",
+    "class": "cors",
+    "name": "CORS abuse (suffix-match bypass) /api/transactions",
+    "description": "Cross-origin probe with suffix-match bypass against credentialed endpoint /api/transactions",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cors",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "http://localhost:8080.evil.com"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cors"
+      ]
+    }
+  },
+  {
+    "id": "cors-0012",
+    "class": "cors",
+    "name": "CORS abuse (suffix-match bypass) /admin/users",
+    "description": "Cross-origin probe with suffix-match bypass against credentialed endpoint /admin/users",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cors",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "http://localhost:8080.evil.com"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cors"
+      ]
+    }
+  },
+  {
+    "id": "cors-0013",
+    "class": "cors",
+    "name": "CORS abuse (CRLF in Origin) /api/profile",
+    "description": "Cross-origin probe with CRLF in Origin against credentialed endpoint /api/profile",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cors",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "https://evil.com%0d%0aSet-Cookie:x=1"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cors"
+      ]
+    }
+  },
+  {
+    "id": "cors-0014",
+    "class": "cors",
+    "name": "CORS abuse (CRLF in Origin) /api/transactions",
+    "description": "Cross-origin probe with CRLF in Origin against credentialed endpoint /api/transactions",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cors",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "https://evil.com%0d%0aSet-Cookie:x=1"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cors"
+      ]
+    }
+  },
+  {
+    "id": "cors-0015",
+    "class": "cors",
+    "name": "CORS abuse (CRLF in Origin) /admin/users",
+    "description": "Cross-origin probe with CRLF in Origin against credentialed endpoint /admin/users",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cors",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "https://evil.com%0d%0aSet-Cookie:x=1"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cors"
+      ]
+    }
+  },
+  {
+    "id": "cors-0016",
+    "class": "cors",
+    "name": "CORS abuse (prefix confusion) /api/profile",
+    "description": "Cross-origin probe with prefix confusion against credentialed endpoint /api/profile",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cors",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "http://localhost.evil.com"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cors"
+      ]
+    }
+  },
+  {
+    "id": "cors-0017",
+    "class": "cors",
+    "name": "CORS abuse (prefix confusion) /api/transactions",
+    "description": "Cross-origin probe with prefix confusion against credentialed endpoint /api/transactions",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cors",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "http://localhost.evil.com"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cors"
+      ]
+    }
+  },
+  {
+    "id": "cors-0018",
+    "class": "cors",
+    "name": "CORS abuse (prefix confusion) /admin/users",
+    "description": "Cross-origin probe with prefix confusion against credentialed endpoint /admin/users",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cors",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "http://localhost.evil.com"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cors"
+      ]
+    }
+  },
+  {
+    "id": "cors-0019",
+    "class": "cors",
+    "name": "CORS abuse (userinfo confusion) /api/profile",
+    "description": "Cross-origin probe with userinfo confusion against credentialed endpoint /api/profile",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cors",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "https://localhost:8080@evil.com"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cors"
+      ]
+    }
+  },
+  {
+    "id": "cors-0020",
+    "class": "cors",
+    "name": "CORS abuse (userinfo confusion) /api/transactions",
+    "description": "Cross-origin probe with userinfo confusion against credentialed endpoint /api/transactions",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cors",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "https://localhost:8080@evil.com"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cors"
+      ]
+    }
+  },
+  {
+    "id": "cors-0021",
+    "class": "cors",
+    "name": "CORS abuse (userinfo confusion) /admin/users",
+    "description": "Cross-origin probe with userinfo confusion against credentialed endpoint /admin/users",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cors",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "https://localhost:8080@evil.com"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cors"
+      ]
+    }
+  },
+  {
+    "id": "cors-0022",
+    "class": "cors",
+    "name": "CORS abuse (file scheme origin) /api/profile",
+    "description": "Cross-origin probe with file scheme origin against credentialed endpoint /api/profile",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cors",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "file://"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cors"
+      ]
+    }
+  },
+  {
+    "id": "cors-0023",
+    "class": "cors",
+    "name": "CORS abuse (file scheme origin) /api/transactions",
+    "description": "Cross-origin probe with file scheme origin against credentialed endpoint /api/transactions",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cors",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "file://"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cors"
+      ]
+    }
+  },
+  {
+    "id": "cors-0024",
+    "class": "cors",
+    "name": "CORS abuse (file scheme origin) /admin/users",
+    "description": "Cross-origin probe with file scheme origin against credentialed endpoint /admin/users",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "cors",
+      "owasp:A05"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/users",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "file://"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "cors"
+      ]
+    }
+  }
+]

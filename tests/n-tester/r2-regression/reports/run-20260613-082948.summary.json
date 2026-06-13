@@ -1,0 +1,10 @@
+{
+  "ts": "20260613-082948",
+  "base_url": "http://127.0.0.1:8080",
+  "total": 80,
+  "pass": 50,
+  "fail": 30,
+  "false_positives": 0,
+  "false_negatives": 23,
+  "skipped": 0
+}

