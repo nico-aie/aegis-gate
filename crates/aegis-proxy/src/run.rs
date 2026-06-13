@@ -543,6 +543,9 @@ pub async fn run(
     // surgical. Audit-mutated `PUT /api/ai/confidence` reads the
     // shared atomic from `services.ai_threshold` and updates the same
     // backing store the data plane reads per inference.
+    // Mutated only in the `#[cfg(feature = "ai")]` branches below; without
+    // the feature it stays `None` (same gate as `ai_model_reloader_inner`).
+    #[cfg_attr(not(feature = "ai"), allow(unused_mut))]
     let mut ai_runtime_threshold_inner: Option<std::sync::Arc<std::sync::atomic::AtomicU32>> = None;
     // Model hot-reload bridge — captured in the sync AI-detector branch below
     // (the batch path doesn't expose a swappable handle yet). Drives
