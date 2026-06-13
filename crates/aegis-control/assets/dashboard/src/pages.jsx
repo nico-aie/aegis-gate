@@ -1193,12 +1193,16 @@ function PageLiveFeed() {
                   <td><span className="mono" style={{ color: e.method === 'POST' ? 'var(--info)' : e.method === 'DELETE' ? 'var(--down)' : 'var(--ink-mute)' }}>{e.method}</span></td>
                   <td>
                     {e.protocol && e.protocol !== 'http' ? (
+                      // Plain mono text (no pill) so WS rows read like the
+                      // `http` rows and stay on one line in the narrow Proto
+                      // column — just a subtle colour cue (blue = ws,
+                      // accent = other tunnels).
                       <span
-                        className="pill"
+                        className="mono"
                         title={`tunnel event: ${e.protocol}`}
                         style={{
                           fontSize: 10,
-                          background: e.protocol.startsWith('ws') ? 'rgba(96, 165, 250, 0.15)' : 'rgba(244, 196, 48, 0.15)',
+                          whiteSpace: 'nowrap',
                           color: e.protocol.startsWith('ws') ? '#60A5FA' : 'var(--accent)',
                         }}
                       >{e.protocol}</span>
