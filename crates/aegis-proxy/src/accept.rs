@@ -1746,41 +1746,56 @@ pub(crate) async fn accept_loop(
                         );
                         return Ok::<_, Infallible>(resp);
                     }
-                    // 2026-06-13 CRIT-1 — `/__waf_control/*` is a
-                    // reserved namespace that MUST NOT be proxied to
-                    // upstream (contract §2.1). Intercept every control
-                    // path here, ahead of routing/risk-gate, regardless
-                    // of peer address. The handler validates
-                    // `X-Benchmark-Secret` (§2.2) and returns 403 on a
-                    // missing/wrong secret — so unauthorized callers get
-                    // a local 403 instead of the catch-all upstream echo,
-                    // and the org's reset_state/set_profile flow works
-                    // through an L4 VIP. See
-                    // `should_dispatch_data_plane_control`.
-                    if should_dispatch_data_plane_control(&path, &peer) {
-                        if let Some(rt) = interop.as_ref() {
-                            // v2.5 (2026-05-19) — challenge_verify
-                            // is no longer on /__waf_control/*; it
-                            // moved to the public /challenge/verify
-                            // data-plane mount above this branch.
-                            let resp = crate::admin_dispatch::handle_interop_control_with_rt(
-                                req,
-                                rt.as_ref(),
-                            ).await;
-                            // F-CRITICAL-001 (2026-05-17 s-tester
-                            // audit): control-endpoint responses
-                            // previously short-circuited before
-                            // `stamp_interop_response`, so the 6
-                            // mandatory v2.3 §5 headers
-                            // (`X-WAF-Request-Id`, `-Action`,
-                            // `-Mode`, `-Cache`, `-Risk-Score`,
-                            // `-Overhead-Latency`) were missing on
-                            // every /__waf_control/* call. Stamp
-                            // them now with a DecisionTag::allow
-                            // — control endpoints are not security
-                            // decisions, but the OC harness asserts
-                            // header presence uniformly across the
-                            // listener.
+                    // `/__waf_control/*` is a reserved namespace with two
+                    // independent invariants:
+                    //
+                    //   1. CRIT-1 (§2.1) — it MUST NOT be proxied to
+                    //      upstream. So we ALWAYS intercept it here, ahead
+                    //      of routing/risk-gate; a control path never falls
+                    //      through to the catch-all (the old loopback gate
+                    //      did fall through → upstream echo, the bug).
+                    //
+                    //   2. Loopback/admin-only (committee bind contract +
+                    //      2026-06-13 posture decision) — defence-in-depth
+                    //      stays. The benchmarker SSH-tunnels in and calls
+                    //      from loopback; `X-Benchmark-Secret` (§2.2) is the
+                    //      second factor checked inside the handler. A
+                    //      non-loopback caller (e.g. anyone arriving via a
+                    //      public L4 VIP, where source IPs collapse to one
+                    //      identity and peer-trust is meaningless) gets a
+                    //      local 404 that HIDES the namespace's existence —
+                    //      never the upstream echo, and never a 403 that
+                    //      would confirm the surface is there.
+                    match classify_control_request(&path, &peer) {
+                        ControlDisposition::Passthrough => {}
+                        disposition => {
+                            let resp = if disposition == ControlDisposition::Dispatch {
+                                if let Some(rt) = interop.as_ref() {
+                                    // v2.5 (2026-05-19) — challenge_verify
+                                    // is no longer on /__waf_control/*; it
+                                    // moved to the public /challenge/verify
+                                    // data-plane mount above this branch.
+                                    crate::admin_dispatch::handle_interop_control_with_rt(
+                                        req,
+                                        rt.as_ref(),
+                                    )
+                                    .await
+                                } else {
+                                    // Loopback control path but the interop
+                                    // surface isn't wired — still MUST NOT
+                                    // proxy; answer a local 404.
+                                    control_not_found()
+                                }
+                            } else {
+                                control_not_found()
+                            };
+                            // F-CRITICAL-001 (2026-05-17 s-tester audit):
+                            // stamp the 6 mandatory v2.3 §5 headers
+                            // (`X-WAF-Request-Id`, `-Action`, `-Mode`,
+                            // `-Cache`, `-Risk-Score`, `-Overhead-Latency`)
+                            // uniformly — including on the hidden-404 path,
+                            // so it's indistinguishable from any other
+                            // data-plane 404.
                             let resp = crate::admin_dispatch::stamp_interop_response(
                                 resp,
                                 aegis_control::interop::headers::DecisionTag::allow(),
@@ -2167,34 +2182,60 @@ pub(crate) async fn accept_loop(
     }
 }
 
-/// 2026-06-13 CRIT-1 (preprod feature run) — `/__waf_control/*` is a
-/// reserved WAF control namespace and, per contract §2.1, MUST NEVER
-/// be proxied to upstream. We therefore intercept **every** control
-/// path on the data plane regardless of peer address; the handler's
-/// constant-time `X-Benchmark-Secret` check (§2.2) is the security
-/// boundary and returns `403` for a missing/wrong secret.
+/// Disposition of a request against the reserved `/__waf_control/*`
+/// namespace. Two invariants are folded in here:
 ///
-/// This supersedes the 2026-05-19 loopback-only gate. That gate let a
-/// non-loopback caller fall through to the normal pipeline, which
-/// proxied the control path to the catch-all upstream and echoed a
-/// `200` — both a §2.1 violation *and* a dead control surface on any
-/// deployment fronted by an L4 VIP (the VIP terminates the client TCP,
-/// so the WAF peer is the balancer, never loopback). Hiding the
-/// namespace from external scanners is not worth proxying a reserved
-/// path to the backend; an unauthorized caller now gets a local `403`.
-///
-/// `peer` is retained for call-site symmetry / future per-peer policy
-/// but is intentionally not consulted.
-fn should_dispatch_data_plane_control(
-    path: &str,
-    _peer: &std::net::SocketAddr,
-) -> bool {
-    path.starts_with("/__waf_control/")
+///  - **§2.1 — never proxy control paths to upstream.** Any path under
+///    the prefix is handled locally; the only way to reach a backend is
+///    [`ControlDisposition::Passthrough`], which is returned ONLY for
+///    non-control paths.
+///  - **Loopback/admin-only (committee bind contract + 2026-06-13
+///    posture decision).** Only loopback peers may invoke control
+///    ([`ControlDisposition::Dispatch`]); a control path from any other
+///    peer is [`ControlDisposition::HideNotFound`] — answered with a
+///    local 404 that hides the namespace's existence (never the upstream
+///    echo, never a 403 that would confirm the surface).
+#[derive(Debug, PartialEq, Eq)]
+enum ControlDisposition {
+    /// Loopback control path — dispatch to the secret-gated handler.
+    Dispatch,
+    /// Control path from a non-loopback peer — answer a local 404.
+    HideNotFound,
+    /// Not a control path — continue the normal request pipeline.
+    Passthrough,
+}
+
+/// Classify a request against the control namespace. See
+/// [`ControlDisposition`] for the policy this encodes.
+fn classify_control_request(path: &str, peer: &std::net::SocketAddr) -> ControlDisposition {
+    if !path.starts_with("/__waf_control/") {
+        return ControlDisposition::Passthrough;
+    }
+    if peer.ip().is_loopback() {
+        ControlDisposition::Dispatch
+    } else {
+        ControlDisposition::HideNotFound
+    }
+}
+
+/// A minimal local `404` for a control-namespace request we refuse to
+/// dispatch (non-loopback caller, or interop surface not wired). It is
+/// deliberately generic so it's indistinguishable from any other
+/// data-plane 404 — the existence of `/__waf_control/*` is not
+/// confirmed to off-host callers. NEVER proxies to upstream.
+fn control_not_found() -> hyper::Response<http_body_util::Full<hyper::body::Bytes>> {
+    hyper::Response::builder()
+        .status(hyper::StatusCode::NOT_FOUND)
+        .header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(http_body_util::Full::new(hyper::body::Bytes::from_static(
+            b"not found\n",
+        )))
+        .expect("static 404 response always builds")
 }
 
 #[cfg(test)]
 mod control_gate_tests {
-    use super::should_dispatch_data_plane_control;
+    use super::{classify_control_request, ControlDisposition};
     use std::net::SocketAddr;
 
     fn lo() -> SocketAddr {
@@ -2214,66 +2255,76 @@ mod control_gate_tests {
         "[2001:db8::1]:50000".parse().unwrap()
     }
 
+    // Loopback control paths dispatch to the secret-gated handler.
     #[test]
-    fn loopback_v4_dispatches() {
-        assert!(should_dispatch_data_plane_control(
-            "/__waf_control/capabilities",
-            &lo()
-        ));
-        assert!(should_dispatch_data_plane_control(
-            "/__waf_control/reset_state",
-            &lo()
-        ));
+    fn loopback_control_dispatches() {
+        assert_eq!(
+            classify_control_request("/__waf_control/capabilities", &lo()),
+            ControlDisposition::Dispatch
+        );
+        assert_eq!(
+            classify_control_request("/__waf_control/reset_state", &lo()),
+            ControlDisposition::Dispatch
+        );
+        assert_eq!(
+            classify_control_request("/__waf_control/capabilities", &lo_v6()),
+            ControlDisposition::Dispatch
+        );
+    }
+
+    // 2026-06-13 posture decision — control is loopback/admin-only.
+    // A non-loopback caller (incl. anyone behind an L4 VIP) gets the
+    // hidden 404 — NOT a dispatch and NOT a proxy to upstream.
+    #[test]
+    fn non_loopback_control_is_hidden() {
+        assert_eq!(
+            classify_control_request("/__waf_control/capabilities", &remote_v4()),
+            ControlDisposition::HideNotFound
+        );
+        assert_eq!(
+            classify_control_request("/__waf_control/reset_state", &remote_v4()),
+            ControlDisposition::HideNotFound
+        );
+        assert_eq!(
+            classify_control_request("/__waf_control/set_profile", &remote_v6()),
+            ControlDisposition::HideNotFound
+        );
+    }
+
+    // CRIT-1 invariant: a control path is NEVER Passthrough (the only
+    // disposition that proxies to upstream) — for ANY peer. Loopback →
+    // Dispatch, everyone else → HideNotFound, but never upstream.
+    #[test]
+    fn control_paths_are_never_passthrough() {
+        for peer in [lo(), lo_v6(), remote_v4(), remote_v6()] {
+            assert_ne!(
+                classify_control_request("/__waf_control/reset_state", &peer),
+                ControlDisposition::Passthrough,
+                "control path would proxy to upstream for peer {peer}"
+            );
+        }
     }
 
     #[test]
-    fn loopback_v6_dispatches() {
-        assert!(should_dispatch_data_plane_control(
-            "/__waf_control/capabilities",
-            &lo_v6()
-        ));
-    }
-
-    // CRIT-1 (2026-06-13) — control paths MUST be intercepted from
-    // every peer, including behind an L4 VIP, so they are never
-    // proxied to upstream. The handler's X-Benchmark-Secret check is
-    // the security boundary (403 on missing/wrong secret).
-    #[test]
-    fn non_loopback_v4_dispatches() {
-        assert!(should_dispatch_data_plane_control(
-            "/__waf_control/capabilities",
-            &remote_v4()
-        ));
-        assert!(should_dispatch_data_plane_control(
-            "/__waf_control/set_profile",
-            &remote_v4()
-        ));
-    }
-
-    #[test]
-    fn non_loopback_v6_dispatches() {
-        assert!(should_dispatch_data_plane_control(
-            "/__waf_control/capabilities",
-            &remote_v6()
-        ));
-    }
-
-    #[test]
-    fn non_control_path_never_dispatches() {
-        assert!(!should_dispatch_data_plane_control("/", &lo()));
-        assert!(!should_dispatch_data_plane_control("/api/health", &lo()));
-        assert!(!should_dispatch_data_plane_control("/api/health", &remote_v4()));
+    fn non_control_path_passes_through() {
+        assert_eq!(
+            classify_control_request("/", &lo()),
+            ControlDisposition::Passthrough
+        );
+        assert_eq!(
+            classify_control_request("/api/health", &remote_v4()),
+            ControlDisposition::Passthrough
+        );
         // Defensive — the control namespace lives ONLY under the
         // `/__waf_control/` prefix; anything that merely *contains* the
-        // substring deeper in the path must not trigger the
-        // short-circuit (it routes/proxies normally).
-        assert!(!should_dispatch_data_plane_control(
-            "/x/__waf_control/capabilities",
-            &lo()
-        ));
-        assert!(!should_dispatch_data_plane_control(
-            "/x/__waf_control/capabilities",
-            &remote_v4()
-        ));
+        // substring deeper in the path routes/proxies normally.
+        assert_eq!(
+            classify_control_request("/x/__waf_control/capabilities", &lo()),
+            ControlDisposition::Passthrough
+        );
+        assert_eq!(
+            classify_control_request("/x/__waf_control/capabilities", &remote_v4()),
+            ControlDisposition::Passthrough
+        );
     }
 }
