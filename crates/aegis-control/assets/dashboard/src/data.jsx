@@ -352,8 +352,34 @@ function fmtTs(epoch) {
 // instead of just the gate name — the QC "log looks like no detector fired
 // but still challenged" gap. Per-request detector blocks already carry the
 // detector list AS the rule_id, so those are left untouched (no dup).
+// Contract §3 decision vocabulary is the only Action the UI surfaces.
+// WS/TCP tunnel audit actions map to their decision: a blocked frame IS
+// a `block`; open/close are non-blocking lifecycle = `allow` (the
+// lifecycle itself stays visible in the Proto column as ws-open/ws-close).
+const WS_DECISION = {
+  websocket_frame_block: 'block',
+  websocket_open: 'allow',
+  websocket_close: 'allow',
+  tcp_tunnel_open: 'allow',
+  tcp_tunnel_close: 'allow',
+};
+function decisionAction(action) {
+  return WS_DECISION[action] || action || 'allow';
+}
+
+// Labels emitted as `rule_id` for context but which aren't §5 rule_ids
+// (the detector/rule/model that caused the decision). Dropped so the
+// Rules column reads `—` for plain allows + WS lifecycle, per the
+// interop contract, instead of showing `allow` / `ws_bridge_started` /
+// `ws_bridge_closed` (which also use underscores, not the §5 hyphen form).
+const NON_RULE_LABELS = new Set(['allow', 'none', 'ws_bridge_started', 'ws_bridge_closed']);
+function isRealRule(id) {
+  return !!id && !NON_RULE_LABELS.has(id) && !id.startsWith('ws_bridge');
+}
 function feedRules(ruleId, fields, fallback) {
-  if (!ruleId) return fallback || [];
+  if (!isRealRule(ruleId)) {
+    return (fallback || []).filter(isRealRule);
+  }
   const isGate = ruleId === 'risk-challenge' || ruleId === 'risk-score';
   const raw = fields && typeof fields.detectors === 'string' ? fields.detectors : '';
   const dets = raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : [];
@@ -393,7 +419,7 @@ function mapAuditToLiveRow(ev, seq) {
     region: f.region || ev.region || '',
     tier: normalizeWafTier(ev.tier) || tierForRisk(risk),
     risk,
-    action,
+    action: decisionAction(action),
     rules: feedRules(ruleId, f, ev.rules),
     cat: ev.category || ev.cat || null,
     status: f.status || ev.status || (action === 'block' ? 403 : 200),
@@ -427,6 +453,10 @@ function useRealLiveFeed(maxLen = 60, paused = false) {
         const REAL_ACTIONS = new Set([
           'allow', 'block', 'challenge', 'rate_limit',
           'timeout', 'circuit_breaker',
+          // A blocked WS frame is a real block decision — keep it on
+          // reload (mapped to `block` by decisionAction). WS open/close
+          // are lifecycle noise and stay live-stream-only.
+          'websocket_frame_block',
         ]);
         const backfilled = data.events
           .filter(ev => REAL_ACTIONS.has(ev.action))
@@ -503,7 +533,7 @@ function useRealLiveFeed(maxLen = 60, paused = false) {
             region: f.region || ev.region || '',
             tier: normalizeWafTier(ev.tier) || tierForRisk(risk),
             risk,
-            action,
+            action: decisionAction(action),
             rules: feedRules(ruleId, f, ev.rules),
             cat: ev.category || ev.cat || null,
             status: f.status || ev.status || (action === 'block' ? 403 : 200),
