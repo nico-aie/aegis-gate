@@ -1393,7 +1393,9 @@ fn validate_upstream_mtls(
         if !has_identity {
             return Err(crate::error::WafError::Config(format!(
                 "upstream '{name}': upstream_mtls.enabled requires a configured \
-                 zero_trust.upstream_identity (the shared WAF client cert) — none is set"
+                 zero_trust.upstream_identity (the shared WAF client cert) — none is set \
+                 in the active config. If you set it in the boot YAML, re-publish the \
+                 config so the config plane carries the zero_trust section."
             )));
         }
         // mTLS only makes sense over a TLS connection to the backend.

@@ -6596,6 +6596,30 @@ function ZtIdentityCard() {
             Hand this cert to your backend operators for their trust store — the
             private key never leaves the WAF.
           </p>
+          {/* LOW-5 (2026-06-13) — reconcile the confusing split where this
+              card reads CONFIGURED (from the boot YAML / live runtime) but a
+              per-pool mTLS toggle is rejected with "upstream_identity … none
+              is set". A file-sourced identity lives only in the boot config;
+              pool-toggle validation runs against the active config plane,
+              which doesn't carry the file-only zero_trust section until it's
+              published. Say so, with the fix, instead of letting the two
+              surfaces silently disagree. */}
+          {d.source === 'file' && (
+            <div className="banner warn" style={{ marginTop: 10, fontSize: 12 }}>
+              <div style={{ marginTop: 1 }}><window.I.Shield /></div>
+              <div style={{ flex: 1 }}>
+                <div className="banner-strong">File-sourced identity — not yet in the active config plane.</div>
+                <div>
+                  This identity comes from the boot YAML. Enabling a pool's
+                  upstream mTLS validates against the published config and will
+                  be rejected (<code>upstream_identity … none is set</code>) until
+                  the <code>zero_trust</code> section is published to the plane —
+                  re-publish the config (or upload the identity in-console when
+                  <code> allow_ca_upload</code> is on) so both surfaces agree.
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -7005,6 +7029,20 @@ function ZtUpstreamFailuresCard() {
   );
 }
 
+// Lightweight page-level section divider so the Zero Trust page reads
+// as two clearly separated mutual-TLS directions rather than one flat
+// stack of cards. Kept local (not the card-internal SectionHeader) so
+// it can carry a direction-flow caption.
+function ZtDirectionHeading({ title, flow, children }) {
+  return (
+    <div style={{ margin: '18px 0 8px', display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+      <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700, letterSpacing: 0.2 }}>{title}</h2>
+      <span className="pill" style={{ fontFamily: 'var(--mono, monospace)', fontSize: 11 }}>{flow}</span>
+      {children && <span style={{ fontSize: 12, color: 'var(--ink-dim)' }}>{children}</span>}
+    </div>
+  );
+}
+
 function PageZeroTrust() {
   return (
     <>
@@ -7012,11 +7050,26 @@ function PageZeroTrust() {
         <div>
           <h1 className="page-title">Zero Trust</h1>
           <p className="page-subtitle">
-            Mutual TLS from the WAF to your backends
+            Mutual TLS in both directions — clients authenticating to the WAF,
+            and the WAF authenticating to your backends
           </p>
         </div>
       </div>
 
+      {/* MED-4 (2026-06-13) — the downstream direction (client certs
+          presented TO the WAF) was config-only; its cards existed but
+          were never mounted. The page now owns both directions, as the
+          feature doc + the Settings breadcrumb already claim. */}
+      <ZtDirectionHeading title="Downstream" flow="client → WAF">
+        Client certificates presented to the WAF at TLS handshake.
+      </ZtDirectionHeading>
+      <MtlsModeCard />
+      <MtlsCaBundleCard />
+      <MtlsSansCard />
+
+      <ZtDirectionHeading title="Upstream" flow="WAF → backend">
+        The WAF's own client identity + per-pool mTLS to your backends.
+      </ZtDirectionHeading>
       <ZtIdentityCard />
       <ZtUpstreamPoolsCard />
       <ZtUpstreamFailuresCard />
