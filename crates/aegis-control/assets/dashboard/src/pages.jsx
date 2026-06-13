@@ -8834,15 +8834,23 @@ function PageUpstreams() {
   const openPoolEdit = (name, pool) => setEditor({ kind: 'pool', mode: 'edit', name, pool });
   const openPoolAdd  = () => setEditor({ kind: 'pool', mode: 'add' });
 
-  // Reload the config + health views, but only AFTER the config-plane
-  // applies the new version — pool/route mutations land via the async
-  // apply pipeline (watcher's next poll), so reloading immediately reads
-  // the pre-apply config and the UI looks unchanged until a manual
+  // Reload ALL THREE views after a mutation, but only AFTER the config-
+  // plane applies the new version — pool/route mutations land via the
+  // async apply pipeline (watcher's next poll), so reloading immediately
+  // reads the pre-apply config and the UI looks unchanged until a manual
   // refresh. waitForVersion(before + 1) closes that gap.
+  //
+  // 2026-06-13 — reload routes + pools + health TOGETHER. Previously pool
+  // mutations refreshed cfg+health but not routes, and route mutations
+  // refreshed routes+cfg but not health, so whichever view a given action
+  // skipped stayed stale until a manual refresh (e.g. removing a pool from
+  // a route left the pool visibly attached until reload). One shared
+  // reloader keeps every dependent view in sync after any mutation.
   async function reloadAfterApply(before) {
     if (before != null) await window.waitForVersion(before + 1, 10000);
     cfgApi.reload && cfgApi.reload();
     summaryApi.reload && summaryApi.reload();
+    routesApi.reload && routesApi.reload();
   }
 
   async function savePool({ name, body }) {
@@ -8971,6 +8979,7 @@ function PageUpstreams() {
         health={healthByPool}
         onEditPool={openPoolEdit}
         onDeletePool={(n) => setDeleteModal({ name: n, refs: pools[n]?.referenced_by_routes || [] })}
+        onMutated={reloadAfterApply}
         cfgReload={cfgApi.reload}
       />
 
@@ -13317,7 +13326,7 @@ function computeShadowMap(allRoutes) {
   return shadow;
 }
 
-function RoutesTable({ poolNames, routesApi, pools, health, onEditPool, onDeletePool, cfgReload }) {
+function RoutesTable({ poolNames, routesApi, pools, health, onEditPool, onDeletePool, onMutated, cfgReload }) {
   const routes = routesApi.data?.routes || [];
   // routing-upstream #3 — map of shadowed route id → the higher-priority
   // route that already matches its traffic (computed over ALL routes, not
@@ -13408,11 +13417,10 @@ function RoutesTable({ poolNames, routesApi, pools, health, onEditPool, onDelete
         window.aegisToast(`Route "${draft.id}" saved`, 'ok');
         setSaveError(null);
         setEditor(null);
-        // Wait for the async config-plane apply before reloading, else
-        // the table re-reads the pre-apply config and looks unchanged.
-        await window.waitForVersion(before + 1, 10000);
-        routesApi.reload && routesApi.reload();
-        cfgReload && cfgReload();
+        // Refresh routes + pools + health together (reloadAfterApply waits
+        // for the async config-plane apply first) so no dependent view is
+        // left stale until a manual refresh.
+        if (onMutated) await onMutated(before);
       } else {
         const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
         setSaveError(`Save failed: ${msg}`);
@@ -13432,9 +13440,7 @@ function RoutesTable({ poolNames, routesApi, pools, health, onEditPool, onDelete
       if (r.status === 200 && r.ok) {
         window.aegisToast(`Route "${id}" removed`, 'ok');
         setDeleteModal(null);
-        await window.waitForVersion(before + 1, 10000);
-        routesApi.reload && routesApi.reload();
-        cfgReload && cfgReload();
+        if (onMutated) await onMutated(before);
       } else if (r.status === 409 && r.reason === 'last_catchall') {
         setDeleteModal({ id, blocker: r.message || 'last catch-all' });
         window.aegisToast(`Cannot delete "${id}": last catch-all`, 'warn');
