@@ -10,10 +10,15 @@
 package main
 
 import (
+	"bufio"
 	"crypto/rand"
+	"crypto/sha1"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -143,10 +148,152 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
 
+// ---------------------------------------------------------------------------
+// WebSocket — minimal RFC 6455 echo, stdlib-only so this stays a
+// single-file zero-dependency build (built via `go build fast-upstream.go`).
+//
+// Why this exists: the dev profile forwards WS routes (e.g. /ws/live) to
+// this upstream at 127.0.0.1:9999. Without a WS handler the upstream
+// accepts the 101 then EOFs immediately, so the WAF's ws bridge exits
+// before any frame is relayed and ws_inspect never runs (client sees a
+// bare 1006 close). Echoing frames keeps the bridge alive long enough for
+// the inspector to see them. Unfragmented text/binary frames + ping/close
+// only — enough for the WS attack/inspection tests; not a full WS stack.
+// ---------------------------------------------------------------------------
+
+const wsGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+func isWSUpgrade(r *http.Request) bool {
+	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket") &&
+		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade") &&
+		r.Header.Get("Sec-WebSocket-Key") != ""
+}
+
+func handleWS(w http.ResponseWriter, r *http.Request) {
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "websocket: no hijack", http.StatusInternalServerError)
+		return
+	}
+	sum := sha1.Sum([]byte(r.Header.Get("Sec-WebSocket-Key") + wsGUID))
+	accept := base64.StdEncoding.EncodeToString(sum[:])
+	conn, rw, err := hj.Hijack()
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	if _, err := rw.WriteString("HTTP/1.1 101 Switching Protocols\r\n" +
+		"Upgrade: websocket\r\nConnection: Upgrade\r\n" +
+		"Sec-WebSocket-Accept: " + accept + "\r\n\r\n"); err != nil {
+		return
+	}
+	if rw.Flush() != nil {
+		return
+	}
+	fmt.Printf("[ws] open path=%s\n", r.URL.Path)
+	for {
+		op, payload, err := wsRead(rw.Reader)
+		if err != nil {
+			break
+		}
+		switch op {
+		case 0x8: // close → echo close, done
+			_ = wsWrite(rw, 0x8, payload)
+			_ = rw.Flush()
+			fmt.Println("[ws] close")
+			return
+		case 0x9: // ping → pong
+			_ = wsWrite(rw, 0xA, payload)
+			_ = rw.Flush()
+		case 0x1, 0x2: // text / binary → echo (text "bye" closes)
+			if op == 0x1 && strings.TrimSpace(string(payload)) == "bye" {
+				_ = wsWrite(rw, 0x1, []byte("bye"))
+				_ = rw.Flush()
+				return
+			}
+			if wsWrite(rw, op, payload) != nil || rw.Flush() != nil {
+				return
+			}
+		}
+	}
+}
+
+// wsRead reads one client frame (always masked per RFC 6455) and returns
+// its opcode + unmasked payload. Assumes unfragmented frames.
+func wsRead(r *bufio.Reader) (opcode byte, payload []byte, err error) {
+	h := make([]byte, 2)
+	if _, err = io.ReadFull(r, h); err != nil {
+		return
+	}
+	opcode = h[0] & 0x0F
+	masked := h[1]&0x80 != 0
+	n := int(h[1] & 0x7F)
+	switch n {
+	case 126:
+		ext := make([]byte, 2)
+		if _, err = io.ReadFull(r, ext); err != nil {
+			return
+		}
+		n = int(binary.BigEndian.Uint16(ext))
+	case 127:
+		ext := make([]byte, 8)
+		if _, err = io.ReadFull(r, ext); err != nil {
+			return
+		}
+		n = int(binary.BigEndian.Uint64(ext))
+	}
+	var mask []byte
+	if masked {
+		mask = make([]byte, 4)
+		if _, err = io.ReadFull(r, mask); err != nil {
+			return
+		}
+	}
+	payload = make([]byte, n)
+	if _, err = io.ReadFull(r, payload); err != nil {
+		return
+	}
+	if masked {
+		for i := range payload {
+			payload[i] ^= mask[i%4]
+		}
+	}
+	return
+}
+
+// wsWrite writes one unmasked server frame (FIN=1) — server→client frames
+// are never masked.
+func wsWrite(w *bufio.ReadWriter, opcode byte, payload []byte) error {
+	b0 := byte(0x80) | opcode
+	n := len(payload)
+	var hdr []byte
+	switch {
+	case n < 126:
+		hdr = []byte{b0, byte(n)}
+	case n < 65536:
+		hdr = []byte{b0, 126, byte(n >> 8), byte(n)}
+	default:
+		hdr = make([]byte, 10)
+		hdr[0], hdr[1] = b0, 127
+		binary.BigEndian.PutUint64(hdr[2:], uint64(n))
+	}
+	if _, err := w.Write(hdr); err != nil {
+		return err
+	}
+	_, err := w.Write(payload)
+	return err
+}
+
 // Default catch-all for /. Returns a friendly landing JSON so
 // `curl localhost:8080/` succeeds rather than 404'ing on the
 // stub mux.
 func handleRoot(w http.ResponseWriter, r *http.Request) {
+	// WS upgrade on any non-registered path (the dev catch-all routes
+	// everything here) gets the same-port WebSocket echo.
+	if isWSUpgrade(r) {
+		handleWS(w, r)
+		return
+	}
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
@@ -211,8 +358,11 @@ func main() {
 	mux.HandleFunc("/static/", handleStatic)
 	mux.HandleFunc("/public/", handlePublic)
 
+	// /ws/ (and any WS-upgrade request) is handled by the catch-all via
+	// isWSUpgrade → handleWS; no separate registration needed.
+
 	bind := "127.0.0.1:9999"
-	fmt.Printf("fast-upstream listening on %s\n", bind)
+	fmt.Printf("fast-upstream listening on %s (HTTP + WebSocket)\n", bind)
 	srv := &http.Server{
 		Addr:    bind,
 		Handler: mux,
