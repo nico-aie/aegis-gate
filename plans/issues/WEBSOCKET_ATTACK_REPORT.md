@@ -379,3 +379,49 @@ routes:
 2. Hoặc dùng `wscat`: `wscat --listen 9999`
 3. Enable `ws_inspect: { enabled: true }` trong config
 4. Rerun: `python3 ws_attack_analysis.py --types ws`
+
+---
+
+## 8. Verification run — 2026-06-13 (live `run-dev`, real WS upstream)
+
+Re-ran with a **WS-capable upstream** (RC-7 closed: `fast-upstream` /
+`deploy/mock` now echo WS frames on the same port as HTTP — see
+`tests/hackathon/upstream/fast-upstream.go`, `deploy/mock/mock-upstream.go`).
+Fired masked text frames at `/ws/live` through the live WAF and read the
+result + `aegis_websocket_frame_block_total` metric.
+
+### ✅ `ws_inspect` confirmed working
+A SQLi frame (`{"q":"admin' OR 1=1-- -"}`) is caught by the **sqli** detector
+and the bridge closes the client with **WS 1008 (policy violation)**.
+Metric: `aegis_websocket_frame_block_total{route="catch-all",tag="sqli"}`.
+Verified end-to-end through the WAF→upstream bridge on the TLS listener
+(`:8443`).
+
+### 🐞 BUG-WS-1 (FIXED) — plaintext listener never upgraded WebSocket
+The plain data listener (`:8080`) served connections with bare
+`http1::Builder::serve_connection` — **no `.with_upgrades()`** — so every WS
+upgrade returned `101` then dropped immediately (`hyper`: "upgrade expected
+but low level API in use"), client saw a bare `1006`. The TLS listener
+already used `serve_connection_with_upgrades`. **This is the real reason WS
+frame inspection never ran on `:8080`** (not only the upstream EOF in §7).
+Fixed in `crates/aegis-proxy/src/accept.rs` (plain branch now matches the
+TLS branch). WS now upgrades on `:8080`.
+
+### 🔴 BUG-WS-2 (OPEN — documented, left as-is by decision 2026-06-13) — AI detector over-blocks every WS frame
+With `ai.enabled`, the per-frame inspector runs the ONNX classifier on a
+synthetic per-frame view (`GET /ws/live`, body = frame text). That input is
+out-of-distribution for the HTTP-trained model, so **even `x` / `hello`
+score 60 (`tag="ai"`) = the `high`-tier threshold → 1008**. Net effect: in
+**enforce**, `ws_inspect` blocks **100 % of WS traffic** on protective tiers
+(metric `aegis_websocket_frame_block_total{tag="ai"}` climbs on benign
+frames). The WS inspector calls `run_all_filtered` directly and does **not**
+apply the AI short-circuit the normal HTTP pipeline uses (AI only when no
+base detector matched). Fix direction (deferred): exclude the AI classifier
+from per-frame WS inspection; keep the signature/body detectors
+(sqli/xss/nosql/cmdi). **Workaround today:** set the WS route's
+`ws_inspect.mode: log_only`, or disable AI, if benign WS traffic must flow.
+
+### 🟡 BUG-WS-3 (OPEN, minor) — plaintext bridge doesn't deliver the close frame
+On `:8080` a blocked frame closes the client with a bare TCP FIN instead of
+the `1008` WS close frame (TLS `:8443` delivers the `1008` frame cleanly).
+Likely a flush-before-`shutdown` nuance on the plain upgraded socket.
