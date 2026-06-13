@@ -424,6 +424,33 @@ impl ControlContext {
         }
     }
 
+    /// HIGH-2 — publish an operator access-list upsert to the shared
+    /// config plane so peers converge. Best-effort + no-op when cluster
+    /// sync isn't wired (single-node). Called from the access-list POST
+    /// handler AFTER the local apply succeeds. `label` is `blacklist` or
+    /// `whitelist`.
+    pub async fn publish_access_list_upsert(
+        &self,
+        label: &str,
+        entry: &crate::api::blacklist::AccessListEntry,
+    ) {
+        if let Some(state) = self.cluster_state.get() {
+            super::cluster_sync::publish_access_list_upsert(state, label, entry).await;
+            self.fire_nudge().await;
+        }
+    }
+
+    /// HIGH-2 — publish an operator access-list removal to the shared
+    /// config plane so peers converge. Best-effort + no-op without
+    /// cluster sync. Called from the access-list DELETE handler AFTER the
+    /// local delete succeeds.
+    pub async fn publish_access_list_remove(&self, label: &str, id: &str) {
+        if let Some(state) = self.cluster_state.get() {
+            super::cluster_sync::publish_access_list_remove(state, label, id).await;
+            self.fire_nudge().await;
+        }
+    }
+
     /// C-1 — install the shared backend used for cluster propagation.
     /// Called once at boot for Redis deployments. Idempotent (later
     /// calls are ignored).

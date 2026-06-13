@@ -4076,14 +4076,24 @@ pub(crate) async fn handle_access_list_post(
         },
     );
     match outcome {
-        Ok(o) => json_response(
-            201,
-            &serde_json::json!({
-                "ok": true,
-                "entry": o.value,
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(o) => {
+            // HIGH-2 (2026-06-13) — converge the entry fleet-wide. The
+            // local store is already mutated (above); publish the
+            // clamped entry to the shared config plane so the other
+            // nodes' pollers adopt it. Best-effort + no-op on single-node
+            // / in-memory deployments (no cluster_state wired).
+            if let Some(rt) = services.interop.as_ref() {
+                rt.control.publish_access_list_upsert(label, &o.value).await;
+            }
+            json_response(
+                201,
+                &serde_json::json!({
+                    "ok": true,
+                    "entry": o.value,
+                    "request_id": pre.request_id,
+                }),
+            )
+        }
         Err(e) => mutation_error_response(e),
     }
 }
@@ -4141,14 +4151,22 @@ pub(crate) async fn handle_access_list_delete(
             },
         );
     match outcome {
-        Ok(_) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "removed": id,
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(_) => {
+            // HIGH-2 (2026-06-13) — converge the removal fleet-wide so an
+            // un-block on one node lifts on every node. Best-effort /
+            // no-op on single-node deployments.
+            if let Some(rt) = services.interop.as_ref() {
+                rt.control.publish_access_list_remove(label, id).await;
+            }
+            json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "removed": id,
+                    "request_id": pre.request_id,
+                }),
+            )
+        }
         Err(e) => mutation_error_response(e),
     }
 }
