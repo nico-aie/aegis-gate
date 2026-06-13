@@ -1,0 +1,2842 @@
+[
+  {
+    "id": "baseline-0001",
+    "class": "benign-baseline",
+    "name": "Login (valid creds)",
+    "description": "Legit /login for alice",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "auth"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"alice\", \"password\": \"P@ssw0rd1\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0002",
+    "class": "benign-baseline",
+    "name": "OTP verify",
+    "description": "Legit /otp for alice",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "auth"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/otp",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"login_token\": \"valid-token\", \"otp_code\": \"123456\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0003",
+    "class": "benign-baseline",
+    "name": "Login (valid creds)",
+    "description": "Legit /login for bob",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "auth"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"bob\", \"password\": \"S3cureP@ss\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0004",
+    "class": "benign-baseline",
+    "name": "OTP verify",
+    "description": "Legit /otp for bob",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "auth"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/otp",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"login_token\": \"valid-token\", \"otp_code\": \"654321\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0005",
+    "class": "benign-baseline",
+    "name": "Login (valid creds)",
+    "description": "Legit /login for charlie",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "auth"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"charlie\", \"password\": \"Ch@rlie99\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0006",
+    "class": "benign-baseline",
+    "name": "OTP verify",
+    "description": "Legit /otp for charlie",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "auth"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/otp",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"login_token\": \"valid-token\", \"otp_code\": \"111222\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0007",
+    "class": "benign-baseline",
+    "name": "List transactions",
+    "description": "Paginated transaction history page=1 limit=20",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=1&limit=20",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0008",
+    "class": "benign-baseline",
+    "name": "List transactions",
+    "description": "Paginated transaction history page=1 limit=50",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=1&limit=50",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0009",
+    "class": "benign-baseline",
+    "name": "List transactions",
+    "description": "Paginated transaction history page=1 limit=100",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=1&limit=100",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0010",
+    "class": "benign-baseline",
+    "name": "List transactions",
+    "description": "Paginated transaction history page=2 limit=20",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=2&limit=20",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0011",
+    "class": "benign-baseline",
+    "name": "List transactions",
+    "description": "Paginated transaction history page=2 limit=50",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=2&limit=50",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0012",
+    "class": "benign-baseline",
+    "name": "List transactions",
+    "description": "Paginated transaction history page=2 limit=100",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=2&limit=100",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0013",
+    "class": "benign-baseline",
+    "name": "List transactions",
+    "description": "Paginated transaction history page=3 limit=20",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=3&limit=20",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0014",
+    "class": "benign-baseline",
+    "name": "List transactions",
+    "description": "Paginated transaction history page=3 limit=50",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=3&limit=50",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0015",
+    "class": "benign-baseline",
+    "name": "List transactions",
+    "description": "Paginated transaction history page=3 limit=100",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=3&limit=100",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0016",
+    "class": "benign-baseline",
+    "name": "GET /api/profile",
+    "description": "Legit read of /api/profile",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0017",
+    "class": "benign-baseline",
+    "name": "GET /user/settings",
+    "description": "Legit read of /user/settings",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0018",
+    "class": "benign-baseline",
+    "name": "GET /game/list",
+    "description": "Legit read of /game/list",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/list",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0019",
+    "class": "benign-baseline",
+    "name": "GET /health",
+    "description": "Legit read of /health",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/health",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0020",
+    "class": "benign-baseline",
+    "name": "GET /",
+    "description": "Legit read of /",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0021",
+    "class": "benign-baseline",
+    "name": "GET /about",
+    "description": "Legit read of /about",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/about",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0022",
+    "class": "benign-baseline",
+    "name": "GET /sitemap.xml",
+    "description": "Legit read of /sitemap.xml",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/sitemap.xml",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0023",
+    "class": "benign-baseline",
+    "name": "GET /api/public/stats",
+    "description": "Legit read of /api/public/stats",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/public/stats",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0024",
+    "class": "benign-baseline",
+    "name": "GET /admin/dashboard",
+    "description": "Legit read of /admin/dashboard",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/admin/dashboard",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0025",
+    "class": "benign-baseline",
+    "name": "GET /game/1",
+    "description": "Legit game-detail read for game 1",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0026",
+    "class": "benign-baseline",
+    "name": "GET /game/2",
+    "description": "Legit game-detail read for game 2",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/2",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0027",
+    "class": "benign-baseline",
+    "name": "GET /game/3",
+    "description": "Legit game-detail read for game 3",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/3",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0028",
+    "class": "benign-baseline",
+    "name": "GET /game/4",
+    "description": "Legit game-detail read for game 4",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/4",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0029",
+    "class": "benign-baseline",
+    "name": "GET /game/5",
+    "description": "Legit game-detail read for game 5",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/5",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0030",
+    "class": "benign-baseline",
+    "name": "List transactions (deep page)",
+    "description": "Legit transaction history page=4",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=4&limit=20",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0031",
+    "class": "benign-baseline",
+    "name": "List transactions (deep page)",
+    "description": "Legit transaction history page=5",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=5&limit=20",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0032",
+    "class": "benign-baseline",
+    "name": "List transactions (deep page)",
+    "description": "Legit transaction history page=6",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=6&limit=20",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0033",
+    "class": "benign-baseline",
+    "name": "List transactions (deep page)",
+    "description": "Legit transaction history page=7",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=7&limit=20",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0034",
+    "class": "benign-baseline",
+    "name": "List transactions (deep page)",
+    "description": "Legit transaction history page=8",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=8&limit=20",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0035",
+    "class": "benign-baseline",
+    "name": "List transactions (deep page)",
+    "description": "Legit transaction history page=9",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=9&limit=20",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0036",
+    "class": "benign-baseline",
+    "name": "List transactions (deep page)",
+    "description": "Legit transaction history page=10",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=10&limit=20",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0037",
+    "class": "benign-baseline",
+    "name": "List transactions (deep page)",
+    "description": "Legit transaction history page=11",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page=11&limit=20",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0038",
+    "class": "benign-baseline",
+    "name": "Game detail w/ player name (FP trap)",
+    "description": "Personalized welcome with tricky-but-legit name 'Alice'",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "apostrophe"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=Alice",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0039",
+    "class": "benign-baseline",
+    "name": "Game detail w/ player name (FP trap)",
+    "description": "Personalized welcome with tricky-but-legit name \"O'Brien\"",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "apostrophe"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=O%27Brien",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0040",
+    "class": "benign-baseline",
+    "name": "Game detail w/ player name (FP trap)",
+    "description": "Personalized welcome with tricky-but-legit name 'Jean-Luc'",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "apostrophe"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=Jean-Luc",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0041",
+    "class": "benign-baseline",
+    "name": "Game detail w/ player name (FP trap)",
+    "description": "Personalized welcome with tricky-but-legit name 'Ana\u00efs'",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "apostrophe"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=Ana%C3%AFs",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0042",
+    "class": "benign-baseline",
+    "name": "Game detail w/ player name (FP trap)",
+    "description": "Personalized welcome with tricky-but-legit name '\u674e\u96f7'",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "apostrophe"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%E6%9D%8E%E9%9B%B7",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0043",
+    "class": "benign-baseline",
+    "name": "Game detail w/ player name (FP trap)",
+    "description": "Personalized welcome with tricky-but-legit name 'Smith & Co'",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "apostrophe"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=Smith%20%26%20Co",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0044",
+    "class": "benign-baseline",
+    "name": "Game detail w/ player name (FP trap)",
+    "description": "Personalized welcome with tricky-but-legit name '5 < 10 fan'",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "apostrophe"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=5%20%3C%2010%20fan",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0045",
+    "class": "benign-baseline",
+    "name": "Game detail w/ player name (FP trap)",
+    "description": "Personalized welcome with tricky-but-legit name 'user_42'",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "apostrophe"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=user_42",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0046",
+    "class": "benign-baseline",
+    "name": "Deposit",
+    "description": "Legit deposit 500.0 USD",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 500.0, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0047",
+    "class": "benign-baseline",
+    "name": "Deposit",
+    "description": "Legit deposit 10.5 EUR",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 10.5, \"currency\": \"EUR\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0048",
+    "class": "benign-baseline",
+    "name": "Deposit",
+    "description": "Legit deposit 1000000 USD",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 1000000, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0049",
+    "class": "benign-baseline",
+    "name": "Deposit",
+    "description": "Legit deposit 0.01 GBP",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 0.01, \"currency\": \"GBP\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0050",
+    "class": "benign-baseline",
+    "name": "Withdrawal",
+    "description": "Legit withdrawal 100.0 to 1234567890",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/withdrawal",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 100.0, \"bank_account\": \"1234567890\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0051",
+    "class": "benign-baseline",
+    "name": "Withdrawal",
+    "description": "Legit withdrawal 50.25 to 9876543210",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/withdrawal",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 50.25, \"bank_account\": \"9876543210\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0052",
+    "class": "benign-baseline",
+    "name": "Play game",
+    "description": "Legit bet 50.0 on game 1",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/1/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 50.0}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0053",
+    "class": "benign-baseline",
+    "name": "Play game",
+    "description": "Legit bet 1.0 on game 1",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/1/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 1.0}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0054",
+    "class": "benign-baseline",
+    "name": "Play game",
+    "description": "Legit bet 250.5 on game 1",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/1/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 250.5}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0055",
+    "class": "benign-baseline",
+    "name": "Update profile",
+    "description": "Legit profile update alice@example.com",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"email\": \"alice@example.com\", \"display_name\": \"Alice W.\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0056",
+    "class": "benign-baseline",
+    "name": "Update profile",
+    "description": "Legit profile update bob+news@mail.co",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"email\": \"bob+news@mail.co\", \"display_name\": \"Bob (VIP)\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0057",
+    "class": "benign-baseline",
+    "name": "Update profile",
+    "description": "Legit profile update c.h@sub.domain.io",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"email\": \"c.h@sub.domain.io\", \"display_name\": \"Charlie \\u674e\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0058",
+    "class": "benign-baseline",
+    "name": "Update settings",
+    "description": "Legit settings update (withdrawal limit + notifications)",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/user/settings",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"preferences\": {\"withdrawal_limit\": 5000, \"notifications\": true}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0059",
+    "class": "benign-baseline",
+    "name": "Feedback (FP trap prose)",
+    "description": "Legit feedback containing SQL/HTML-looking words in normal prose",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "prose-trap"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"Great platform, love the games!\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0060",
+    "class": "benign-baseline",
+    "name": "Feedback (FP trap prose)",
+    "description": "Legit feedback containing SQL/HTML-looking words in normal prose",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "prose-trap"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"I'd like to select a different table and drop my old bet, please.\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0061",
+    "class": "benign-baseline",
+    "name": "Feedback (FP trap prose)",
+    "description": "Legit feedback containing SQL/HTML-looking words in normal prose",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "prose-trap"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"Why is 5 < 10 always true? Anyway, nice site.\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0062",
+    "class": "benign-baseline",
+    "name": "Feedback (FP trap prose)",
+    "description": "Legit feedback containing SQL/HTML-looking words in normal prose",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "prose-trap"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"Can you add a UNION of poker & blackjack rooms?\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0063",
+    "class": "benign-baseline",
+    "name": "Feedback (FP trap prose)",
+    "description": "Legit feedback containing SQL/HTML-looking words in normal prose",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "prose-trap"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"My password reset link & email didn't arrive.\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0064",
+    "class": "benign-baseline",
+    "name": "Feedback (FP trap prose)",
+    "description": "Legit feedback containing SQL/HTML-looking words in normal prose",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "prose-trap"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"Comment with an apostrophe: it's working O'Brien said.\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0065",
+    "class": "benign-baseline",
+    "name": "Claim reward",
+    "description": "Legit one-time signup reward claim",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/rewards/claim",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0066",
+    "class": "benign-baseline",
+    "name": "Export bet report",
+    "description": "Legit bet-history export as pdf",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \"pdf\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0067",
+    "class": "benign-baseline",
+    "name": "Export bet report",
+    "description": "Legit bet-history export as csv",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \"csv\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0068",
+    "class": "benign-baseline",
+    "name": "Export bet report",
+    "description": "Legit bet-history export as xlsx",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \"xlsx\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0069",
+    "class": "benign-baseline",
+    "name": "Static /static/js/app.js",
+    "description": "Legit static fetch /static/js/app.js",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/js/app.js",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0070",
+    "class": "benign-baseline",
+    "name": "Static /static/css/style.css",
+    "description": "Legit static fetch /static/css/style.css",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/css/style.css",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0071",
+    "class": "benign-baseline",
+    "name": "Static /assets/logo.png",
+    "description": "Legit static fetch /assets/logo.png",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/assets/logo.png",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0072",
+    "class": "benign-baseline",
+    "name": "Static /public/terms.html",
+    "description": "Legit static fetch /public/terms.html",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public/terms.html",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0073",
+    "class": "benign-baseline",
+    "name": "Static /public/faq.html",
+    "description": "Legit static fetch /public/faq.html",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public/faq.html",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0074",
+    "class": "benign-baseline",
+    "name": "Static /favicon.ico",
+    "description": "Legit static fetch /favicon.ico",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/favicon.ico",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0075",
+    "class": "benign-baseline",
+    "name": "CORS preflight stats",
+    "description": "Legit OPTIONS preflight for /api/public/stats partner embed",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "cors"
+    ],
+    "request": {
+      "method": "OPTIONS",
+      "path": "/api/public/stats",
+      "auth": "none",
+      "headers": {
+        "Origin": "https://partner.example.com",
+        "Access-Control-Request-Method": "GET"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0076",
+    "class": "benign-baseline",
+    "name": "KYC document upload (multipart)",
+    "description": "Legit multipart/form-data ID upload \u2014 WAF must not strip the envelope",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "multipart"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/kyc/document",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Content-Type": "multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW"
+      },
+      "body": "LS0tLS0tV2ViS2l0Rm9ybUJvdW5kYXJ5N01BNFlXeGtUclp1MGdXDQpDb250ZW50LURpc3Bvc2l0aW9uOiBmb3JtLWRhdGE7IG5hbWU9ImRvY3VtZW50X3R5cGUiDQoNCmlkX2NhcmQNCi0tLS0tLVdlYktpdEZvcm1Cb3VuZGFyeTdNQTRZV3hrVHJadTBnVw0KQ29udGVudC1EaXNwb3NpdGlvbjogZm9ybS1kYXRhOyBuYW1lPSJkb2N1bWVudCI7IGZpbGVuYW1lPSJpZC5wbmciDQpDb250ZW50LVR5cGU6IGltYWdlL3BuZw0KDQqJUE5HDQoaCgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAANCi0tLS0tLVdlYktpdEZvcm1Cb3VuZGFyeTdNQTRZV3hrVHJadTBnVy0tDQo=",
+      "body_b64": true,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0077",
+    "class": "benign-baseline",
+    "name": "Analytics batch (gzip)",
+    "description": "Legit gzip-compressed analytics batch \u2014 WAF must decompress & allow",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "gzip"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/analytics/events",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Content-Type": "application/json",
+        "Content-Encoding": "gzip"
+      },
+      "body": "H4sIACcULWoC/6tWSi1LzSspVrJSiK5WykvMTQWylAoS01PjyzJTy5V0FJTAkobmFpYGMAAULCjKLwCJVwPVlmSA9OinAzXrGyrV1uooIExKzslMzsY0xRDdlMwUkOqk1BKg/thaAPSy7iOWAAAA",
+      "body_b64": true,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0078",
+    "class": "benign-baseline",
+    "name": "Deposit (varied amount)",
+    "description": "Legit deposit 25.0 USD",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 25.0, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0079",
+    "class": "benign-baseline",
+    "name": "Deposit (varied amount)",
+    "description": "Legit deposit 75.5 USD",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 75.5, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0080",
+    "class": "benign-baseline",
+    "name": "Deposit (varied amount)",
+    "description": "Legit deposit 200.0 USD",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 200.0, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0081",
+    "class": "benign-baseline",
+    "name": "Deposit (varied amount)",
+    "description": "Legit deposit 333.33 USD",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 333.33, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0082",
+    "class": "benign-baseline",
+    "name": "Deposit (varied amount)",
+    "description": "Legit deposit 999.99 USD",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 999.99, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0083",
+    "class": "benign-baseline",
+    "name": "Deposit (varied amount)",
+    "description": "Legit deposit 1500.0 USD",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 1500.0, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0084",
+    "class": "benign-baseline",
+    "name": "Deposit (varied amount)",
+    "description": "Legit deposit 4200.0 USD",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/deposit",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"amount\": 4200.0, \"currency\": \"USD\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0085",
+    "class": "benign-baseline",
+    "name": "Play game (varied)",
+    "description": "Legit bet 5.0 on game 2",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/2/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 5.0}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0086",
+    "class": "benign-baseline",
+    "name": "Play game (varied)",
+    "description": "Legit bet 20.0 on game 3",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/3/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 20.0}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0087",
+    "class": "benign-baseline",
+    "name": "Play game (varied)",
+    "description": "Legit bet 100.0 on game 4",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/4/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 100.0}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0088",
+    "class": "benign-baseline",
+    "name": "Play game (varied)",
+    "description": "Legit bet 75.0 on game 5",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/5/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 75.0}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0089",
+    "class": "benign-baseline",
+    "name": "Play game (varied)",
+    "description": "Legit bet 10.0 on game 1",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/game/1/play",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"bet\": 10.0}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0090",
+    "class": "benign-baseline",
+    "name": "Update profile (i18n/symbols)",
+    "description": "Legit profile update user.name+tag@sub.example.co.uk / Mar\u00eda Jos\u00e9",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "i18n"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"email\": \"user.name+tag@sub.example.co.uk\", \"display_name\": \"Mar\\u00eda Jos\\u00e9\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0091",
+    "class": "benign-baseline",
+    "name": "Update profile (i18n/symbols)",
+    "description": "Legit profile update a_b-c@example.io / Mr. O'Connor",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "i18n"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"email\": \"a_b-c@example.io\", \"display_name\": \"Mr. O'Connor\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0092",
+    "class": "benign-baseline",
+    "name": "Update profile (i18n/symbols)",
+    "description": "Legit profile update test123@mail.org / \u5c71\u7530\u592a\u90ce",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "i18n"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"email\": \"test123@mail.org\", \"display_name\": \"\\u5c71\\u7530\\u592a\\u90ce\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0093",
+    "class": "benign-baseline",
+    "name": "Update profile (i18n/symbols)",
+    "description": "Legit profile update vip@novabet.com / King of Spades \u2660",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "i18n"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"email\": \"vip@novabet.com\", \"display_name\": \"King of Spades \\u2660\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0094",
+    "class": "benign-baseline",
+    "name": "Update profile (i18n/symbols)",
+    "description": "Legit profile update q@e.co / D'Angelo",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "i18n"
+    ],
+    "request": {
+      "method": "PUT",
+      "path": "/api/profile",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"email\": \"q@e.co\", \"display_name\": \"D'Angelo\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0095",
+    "class": "benign-baseline",
+    "name": "Analytics batch (varied shape, gzip)",
+    "description": "Legit analytics batch in an accepted shape, gzip-encoded",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "gzip"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/analytics/events",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Content-Type": "application/json",
+        "Content-Encoding": "gzip"
+      },
+      "body": "H4sIACcULWoC/6tWSi1LzSspVrJSiK5WykvMTQWylAoS01PjyzJTy5V0FJTAkobmFpYGMAAULCjKLwCJVwPVlmSA9Ogr1dbG1gIAcseHn1AAAAA=",
+      "body_b64": true,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0096",
+    "class": "benign-baseline",
+    "name": "Analytics batch (varied shape, gzip)",
+    "description": "Legit analytics batch in an accepted shape, gzip-encoded",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "gzip"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/analytics/events",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Content-Type": "application/json",
+        "Content-Encoding": "gzip"
+      },
+      "body": "H4sIACcULWoC/4uuVspLzE1VslJQKk4uys/JUdJRUCopBvINzS0sDUDACIiBggVF+QUg8WqllNSCkgwgy8KgtjYWAKPFSqZBAAAA",
+      "body_b64": true,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0097",
+    "class": "benign-baseline",
+    "name": "Analytics batch (varied shape, gzip)",
+    "description": "Legit analytics batch in an accepted shape, gzip-encoded",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "gzip"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/analytics/events",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Content-Type": "application/json",
+        "Content-Encoding": "gzip"
+      },
+      "body": "H4sIACcULWoC/6tWykvMTVWyUlBKB9Lx+QWpeUo6CkolxUAhQ3MLSwMQMAZioGBBUX4BSLwarBbIMK6tBQAi+jC1QAAAAA==",
+      "body_b64": true,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0098",
+    "class": "benign-baseline",
+    "name": "Public stats w/ Origin (simple CORS GET)",
+    "description": "Legit cross-origin simple GET for marketing widget",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "cors"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/public/stats",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Origin": "https://partner.example.com"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  },
+  {
+    "id": "baseline-0099",
+    "class": "benign-baseline",
+    "name": "HEAD health probe",
+    "description": "Legit uptime monitor HEAD /health",
+    "severity": "low",
+    "source": "seed",
+    "tags": [
+      "fp-check",
+      "monitor"
+    ],
+    "request": {
+      "method": "HEAD",
+      "path": "/health",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "UptimeRobot/2.0"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "allow"
+    }
+  }
+]

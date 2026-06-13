@@ -1,0 +1,1562 @@
+[
+  {
+    "id": "nosql-0001",
+    "class": "injection-nosql",
+    "name": "NoSQLi username operator",
+    "description": "NoSQL operator injection in username on /login: {\"$gt\":\"\"}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": {\"$gt\": \"\"}, \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0002",
+    "class": "injection-nosql",
+    "name": "NoSQLi password operator",
+    "description": "NoSQL operator injection in password on /login: {\"$gt\":\"\"}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"alice\", \"password\": {\"$gt\": \"\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0003",
+    "class": "injection-nosql",
+    "name": "NoSQLi otp_code operator",
+    "description": "NoSQL operator injection in otp_code on /otp: {\"$gt\":\"\"}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/otp",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"otp_code\": {\"$gt\": \"\"}, \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0004",
+    "class": "injection-nosql",
+    "name": "NoSQLi query bracket operator",
+    "description": "NoSQL operator smuggled through bracket query param",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page[$ne]=1",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0005",
+    "class": "injection-nosql",
+    "name": "NoSQLi username operator",
+    "description": "NoSQL operator injection in username on /login: {\"$ne\":null}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": {\"$ne\": null}, \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0006",
+    "class": "injection-nosql",
+    "name": "NoSQLi password operator",
+    "description": "NoSQL operator injection in password on /login: {\"$ne\":null}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"alice\", \"password\": {\"$ne\": null}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0007",
+    "class": "injection-nosql",
+    "name": "NoSQLi otp_code operator",
+    "description": "NoSQL operator injection in otp_code on /otp: {\"$ne\":null}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/otp",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"otp_code\": {\"$ne\": null}, \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0008",
+    "class": "injection-nosql",
+    "name": "NoSQLi query bracket operator",
+    "description": "NoSQL operator smuggled through bracket query param",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page[$ne]=1",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0009",
+    "class": "injection-nosql",
+    "name": "NoSQLi username operator",
+    "description": "NoSQL operator injection in username on /login: {\"$ne\":1}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": {\"$ne\": 1}, \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0010",
+    "class": "injection-nosql",
+    "name": "NoSQLi password operator",
+    "description": "NoSQL operator injection in password on /login: {\"$ne\":1}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"alice\", \"password\": {\"$ne\": 1}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0011",
+    "class": "injection-nosql",
+    "name": "NoSQLi otp_code operator",
+    "description": "NoSQL operator injection in otp_code on /otp: {\"$ne\":1}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/otp",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"otp_code\": {\"$ne\": 1}, \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0012",
+    "class": "injection-nosql",
+    "name": "NoSQLi query bracket operator",
+    "description": "NoSQL operator smuggled through bracket query param",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page[$ne]=1",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0013",
+    "class": "injection-nosql",
+    "name": "NoSQLi username operator",
+    "description": "NoSQL operator injection in username on /login: {\"$regex\":\".*\"}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": {\"$regex\": \".*\"}, \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0014",
+    "class": "injection-nosql",
+    "name": "NoSQLi password operator",
+    "description": "NoSQL operator injection in password on /login: {\"$regex\":\".*\"}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"alice\", \"password\": {\"$regex\": \".*\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0015",
+    "class": "injection-nosql",
+    "name": "NoSQLi otp_code operator",
+    "description": "NoSQL operator injection in otp_code on /otp: {\"$regex\":\".*\"}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/otp",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"otp_code\": {\"$regex\": \".*\"}, \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0016",
+    "class": "injection-nosql",
+    "name": "NoSQLi query bracket operator",
+    "description": "NoSQL operator smuggled through bracket query param",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page[$ne]=1",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0017",
+    "class": "injection-nosql",
+    "name": "NoSQLi username operator",
+    "description": "NoSQL operator injection in username on /login: {\"$where\":\"1==1\"}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": {\"$where\": \"1==1\"}, \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0018",
+    "class": "injection-nosql",
+    "name": "NoSQLi password operator",
+    "description": "NoSQL operator injection in password on /login: {\"$where\":\"1==1\"}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"alice\", \"password\": {\"$where\": \"1==1\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0019",
+    "class": "injection-nosql",
+    "name": "NoSQLi otp_code operator",
+    "description": "NoSQL operator injection in otp_code on /otp: {\"$where\":\"1==1\"}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/otp",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"otp_code\": {\"$where\": \"1==1\"}, \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0020",
+    "class": "injection-nosql",
+    "name": "NoSQLi query bracket operator",
+    "description": "NoSQL operator smuggled through bracket query param",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page[$ne]=1",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0021",
+    "class": "injection-nosql",
+    "name": "NoSQLi username operator",
+    "description": "NoSQL operator injection in username on /login: {\"$gt\":\"\",\"$lt\":\"~\"}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": {\"$gt\": \"\", \"$lt\": \"~\"}, \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0022",
+    "class": "injection-nosql",
+    "name": "NoSQLi password operator",
+    "description": "NoSQL operator injection in password on /login: {\"$gt\":\"\",\"$lt\":\"~\"}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"alice\", \"password\": {\"$gt\": \"\", \"$lt\": \"~\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0023",
+    "class": "injection-nosql",
+    "name": "NoSQLi otp_code operator",
+    "description": "NoSQL operator injection in otp_code on /otp: {\"$gt\":\"\",\"$lt\":\"~\"}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/otp",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"otp_code\": {\"$gt\": \"\", \"$lt\": \"~\"}, \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0024",
+    "class": "injection-nosql",
+    "name": "NoSQLi query bracket operator",
+    "description": "NoSQL operator smuggled through bracket query param",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page[$ne]=1",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0025",
+    "class": "injection-nosql",
+    "name": "NoSQLi username operator",
+    "description": "NoSQL operator injection in username on /login: {\"username\":{\"$ne\":null},\"password\":{\"$n",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": {\"username\": {\"$ne\": null}, \"password\": {\"$ne\": null}}, \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0026",
+    "class": "injection-nosql",
+    "name": "NoSQLi password operator",
+    "description": "NoSQL operator injection in password on /login: {\"username\":{\"$ne\":null},\"password\":{\"$n",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"alice\", \"password\": {\"username\": {\"$ne\": null}, \"password\": {\"$ne\": null}}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0027",
+    "class": "injection-nosql",
+    "name": "NoSQLi otp_code operator",
+    "description": "NoSQL operator injection in otp_code on /otp: {\"username\":{\"$ne\":null},\"password\":{\"$n",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/otp",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"otp_code\": {\"username\": {\"$ne\": null}, \"password\": {\"$ne\": null}}, \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0028",
+    "class": "injection-nosql",
+    "name": "NoSQLi query bracket operator",
+    "description": "NoSQL operator smuggled through bracket query param",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page[$ne]=1",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0029",
+    "class": "injection-nosql",
+    "name": "NoSQLi username operator",
+    "description": "NoSQL operator injection in username on /login: {\"$or\":[{},{\"a\":\"a\"}]}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": {\"$or\": [{}, {\"a\": \"a\"}]}, \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0030",
+    "class": "injection-nosql",
+    "name": "NoSQLi password operator",
+    "description": "NoSQL operator injection in password on /login: {\"$or\":[{},{\"a\":\"a\"}]}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"alice\", \"password\": {\"$or\": [{}, {\"a\": \"a\"}]}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0031",
+    "class": "injection-nosql",
+    "name": "NoSQLi otp_code operator",
+    "description": "NoSQL operator injection in otp_code on /otp: {\"$or\":[{},{\"a\":\"a\"}]}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/otp",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"otp_code\": {\"$or\": [{}, {\"a\": \"a\"}]}, \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0032",
+    "class": "injection-nosql",
+    "name": "NoSQLi query bracket operator",
+    "description": "NoSQL operator smuggled through bracket query param",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page[$ne]=1",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0033",
+    "class": "injection-nosql",
+    "name": "NoSQLi username operator",
+    "description": "NoSQL operator injection in username on /login: {\"$exists\":true}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": {\"$exists\": true}, \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0034",
+    "class": "injection-nosql",
+    "name": "NoSQLi password operator",
+    "description": "NoSQL operator injection in password on /login: {\"$exists\":true}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"alice\", \"password\": {\"$exists\": true}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0035",
+    "class": "injection-nosql",
+    "name": "NoSQLi otp_code operator",
+    "description": "NoSQL operator injection in otp_code on /otp: {\"$exists\":true}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/otp",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"otp_code\": {\"$exists\": true}, \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0036",
+    "class": "injection-nosql",
+    "name": "NoSQLi query bracket operator",
+    "description": "NoSQL operator smuggled through bracket query param",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page[$ne]=1",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0037",
+    "class": "injection-nosql",
+    "name": "NoSQLi username operator",
+    "description": "NoSQL operator injection in username on /login: [$ne]=1",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"[$ne]=1\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0038",
+    "class": "injection-nosql",
+    "name": "NoSQLi password operator",
+    "description": "NoSQL operator injection in password on /login: [$ne]=1",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"password\": \"[$ne]=1\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0039",
+    "class": "injection-nosql",
+    "name": "NoSQLi otp_code operator",
+    "description": "NoSQL operator injection in otp_code on /otp: [$ne]=1",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/otp",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"otp_code\": \"[$ne]=1\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0040",
+    "class": "injection-nosql",
+    "name": "NoSQLi query bracket operator",
+    "description": "NoSQL operator smuggled through bracket query param",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page[$ne]=1",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0041",
+    "class": "injection-nosql",
+    "name": "NoSQLi username operator",
+    "description": "NoSQL operator injection in username on /login: {\"$gt\":\"\"}; return true",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"{\\\"$gt\\\":\\\"\\\"}; return true\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0042",
+    "class": "injection-nosql",
+    "name": "NoSQLi password operator",
+    "description": "NoSQL operator injection in password on /login: {\"$gt\":\"\"}; return true",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"password\": \"{\\\"$gt\\\":\\\"\\\"}; return true\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0043",
+    "class": "injection-nosql",
+    "name": "NoSQLi otp_code operator",
+    "description": "NoSQL operator injection in otp_code on /otp: {\"$gt\":\"\"}; return true",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:urlencode",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/otp",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"otp_code\": \"{\\\"$gt\\\":\\\"\\\"}; return true\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0044",
+    "class": "injection-nosql",
+    "name": "NoSQLi query bracket operator",
+    "description": "NoSQL operator smuggled through bracket query param",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page[$ne]=1",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0045",
+    "class": "injection-nosql",
+    "name": "NoSQLi username operator",
+    "description": "NoSQL operator injection in username on /login: {\"$regex\":\"^admin\"}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": {\"$regex\": \"^admin\"}, \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0046",
+    "class": "injection-nosql",
+    "name": "NoSQLi password operator",
+    "description": "NoSQL operator injection in password on /login: {\"$regex\":\"^admin\"}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/login",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"username\": \"alice\", \"password\": {\"$regex\": \"^admin\"}}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0047",
+    "class": "injection-nosql",
+    "name": "NoSQLi otp_code operator",
+    "description": "NoSQL operator injection in otp_code on /otp: {\"$regex\":\"^admin\"}",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "evasion:raw",
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/otp",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"otp_code\": {\"$regex\": \"^admin\"}, \"password\": \"x\"}",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  },
+  {
+    "id": "nosql-0048",
+    "class": "injection-nosql",
+    "name": "NoSQLi query bracket operator",
+    "description": "NoSQL operator smuggled through bracket query param",
+    "severity": "medium",
+    "source": "seed",
+    "tags": [
+      "owasp:A03"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/api/transactions?page[$ne]=1",
+      "auth": "session",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "nosql"
+      ]
+    }
+  }
+]

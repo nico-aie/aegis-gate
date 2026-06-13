@@ -1,0 +1,1625 @@
+[
+  {
+    "id": "traversal-0001",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /static/{p}: ../../../../etc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/../../../../etc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0002",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /public/{p}: ../../../../etc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public/../../../../etc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0003",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /assets/{p}: ../../../../etc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/assets/../../../../etc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0004",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /static/{p}: ..%2f..%2f..%2fetc%2fpasswd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/..%2f..%2f..%2fetc%2fpasswd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0005",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /public/{p}: ..%2f..%2f..%2fetc%2fpasswd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public/..%2f..%2f..%2fetc%2fpasswd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0006",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /assets/{p}: ..%2f..%2f..%2fetc%2fpasswd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/assets/..%2f..%2f..%2fetc%2fpasswd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0007",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /static/{p}: ..%252f..%252f..%252fetc%252fpasswd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/..%252f..%252f..%252fetc%252fpasswd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0008",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /public/{p}: ..%252f..%252f..%252fetc%252fpasswd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public/..%252f..%252f..%252fetc%252fpasswd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0009",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /assets/{p}: ..%252f..%252f..%252fetc%252fpasswd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/assets/..%252f..%252f..%252fetc%252fpasswd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0010",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /static/{p}: ....//....//....//etc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/....//....//....//etc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0011",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /public/{p}: ....//....//....//etc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public/....//....//....//etc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0012",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /assets/{p}: ....//....//....//etc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/assets/....//....//....//etc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0013",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /static/{p}: %2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0014",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /public/{p}: %2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public/%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0015",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /assets/{p}: %2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/assets/%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0016",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /static/{p}: ..\\..\\..\\windows\\win.ini",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/..\\..\\..\\windows\\win.ini",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0017",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /public/{p}: ..\\..\\..\\windows\\win.ini",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public/..\\..\\..\\windows\\win.ini",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0018",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /assets/{p}: ..\\..\\..\\windows\\win.ini",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/assets/..\\..\\..\\windows\\win.ini",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0019",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /static/{p}: /etc/passwd%00.png",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static//etc/passwd%00.png",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0020",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /public/{p}: /etc/passwd%00.png",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public//etc/passwd%00.png",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0021",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /assets/{p}: /etc/passwd%00.png",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/assets//etc/passwd%00.png",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0022",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /static/{p}: ..%c0%af..%c0%af..%c0%afetc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/..%c0%af..%c0%af..%c0%afetc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0023",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /public/{p}: ..%c0%af..%c0%af..%c0%afetc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public/..%c0%af..%c0%af..%c0%afetc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0024",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /assets/{p}: ..%c0%af..%c0%af..%c0%afetc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/assets/..%c0%af..%c0%af..%c0%afetc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0025",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /static/{p}: ....\\\\....\\\\....\\\\etc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/....\\\\....\\\\....\\\\etc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0026",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /public/{p}: ....\\\\....\\\\....\\\\etc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public/....\\\\....\\\\....\\\\etc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0027",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /assets/{p}: ....\\\\....\\\\....\\\\etc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/assets/....\\\\....\\\\....\\\\etc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0028",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /static/{p}: file:///etc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/file:///etc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0029",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /public/{p}: file:///etc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public/file:///etc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0030",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /assets/{p}: file:///etc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/assets/file:///etc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0031",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /static/{p}: ../../../../../../proc/self/environ",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/../../../../../../proc/self/environ",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0032",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /public/{p}: ../../../../../../proc/self/environ",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public/../../../../../../proc/self/environ",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0033",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /assets/{p}: ../../../../../../proc/self/environ",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/assets/../../../../../../proc/self/environ",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0034",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /static/{p}: ..%2F..%2F..%2F.env",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/..%2F..%2F..%2F.env",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0035",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /public/{p}: ..%2F..%2F..%2F.env",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public/..%2F..%2F..%2F.env",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0036",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /assets/{p}: ..%2F..%2F..%2F.env",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/assets/..%2F..%2F..%2F.env",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0037",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /static/{p}: .%2e/.%2e/.%2e/.%2e/etc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/.%2e/.%2e/.%2e/.%2e/etc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0038",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /public/{p}: .%2e/.%2e/.%2e/.%2e/etc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public/.%2e/.%2e/.%2e/.%2e/etc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0039",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /assets/{p}: .%2e/.%2e/.%2e/.%2e/etc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/assets/.%2e/.%2e/.%2e/.%2e/etc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0040",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /static/{p}: %2e%2e/%2e%2e/%2e%2e/.env",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/%2e%2e/%2e%2e/%2e%2e/.env",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0041",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /public/{p}: %2e%2e/%2e%2e/%2e%2e/.env",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public/%2e%2e/%2e%2e/%2e%2e/.env",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0042",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /assets/{p}: %2e%2e/%2e%2e/%2e%2e/.env",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/assets/%2e%2e/%2e%2e/%2e%2e/.env",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0043",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /static/{p}: ../../app/config/dev.yaml",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/../../app/config/dev.yaml",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0044",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /public/{p}: ../../app/config/dev.yaml",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public/../../app/config/dev.yaml",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0045",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /assets/{p}: ../../app/config/dev.yaml",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/assets/../../app/config/dev.yaml",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0046",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /static/{p}: ..;/..;/..;/etc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/static/..;/..;/..;/etc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0047",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /public/{p}: ..;/..;/..;/etc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/public/..;/..;/..;/etc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0048",
+    "class": "path-traversal",
+    "name": "Path traversal / LFI",
+    "description": "Directory traversal on /assets/{p}: ..;/..;/..;/etc/passwd",
+    "severity": "high",
+    "source": "seed",
+    "tags": [
+      "owasp:A01",
+      "lfi"
+    ],
+    "request": {
+      "method": "GET",
+      "path": "/assets/..;/..;/..;/etc/passwd",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "http://localhost:8080/"
+      },
+      "body": null,
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0049",
+    "class": "path-traversal",
+    "name": "Round-1 traversal regression",
+    "description": "Replay of committee round-1 traversal/RCE probe: /cgi-bin/.%2e/.%2e/.%2e/.%2e/bin/sh",
+    "severity": "high",
+    "source": "hk-round-1",
+    "tags": [
+      "regression"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/cgi-bin/.%2e/.%2e/.%2e/.%2e/bin/sh",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "libredtail-http",
+        "Content-Type": "text/plain"
+      },
+      "body": "id",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0050",
+    "class": "path-traversal",
+    "name": "Round-1 traversal regression",
+    "description": "Replay of committee round-1 traversal/RCE probe: /cgi-bin/%%32%65%%32%65/%%32%65%%32%65/bin/sh",
+    "severity": "high",
+    "source": "hk-round-1",
+    "tags": [
+      "regression"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/cgi-bin/%%32%65%%32%65/%%32%65%%32%65/bin/sh",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "libredtail-http",
+        "Content-Type": "text/plain"
+      },
+      "body": "id",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  },
+  {
+    "id": "traversal-0051",
+    "class": "path-traversal",
+    "name": "Round-1 traversal regression",
+    "description": "Replay of committee round-1 traversal/RCE probe: /vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php",
+    "severity": "high",
+    "source": "hk-round-1",
+    "tags": [
+      "regression"
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php",
+      "auth": "none",
+      "headers": {
+        "User-Agent": "libredtail-http",
+        "Content-Type": "text/plain"
+      },
+      "body": "id",
+      "body_b64": false,
+      "execute": true
+    },
+    "expect": {
+      "verdict": "block",
+      "rule_id_contains": [
+        "path_traversal"
+      ]
+    }
+  }
+]

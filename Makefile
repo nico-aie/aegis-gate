@@ -362,6 +362,9 @@ mock-build: ## Build the multi-protocol mock upstream (http/ws/grpc/tcp → /tmp
 	@command -v go >/dev/null || { echo "FAIL: go not installed; brew install go"; exit 1; }
 	@cd deploy/mock && go build -o /tmp/aegis-mock .
 	@echo "built /tmp/aegis-mock — run: /tmp/aegis-mock --http :9991 --ws :9992 --grpc :9993 --tcp :9994"
+	@echo "  dev/ws_inspect (matches dev.yaml stub-pool :9999, HTTP+WS same port):"
+	@echo "    make upstream-down   # stop fast-upstream (no WS handler) first"
+	@echo "    /tmp/aegis-mock --http :9999   # serves HTTP + WebSocket on one port"
 
 upstream-up: ## Start the dev mock upstream on :9999 (idempotent — auto-invoked by run-dev)
 	@if lsof -nP -iTCP:9999 -sTCP:LISTEN >/dev/null 2>&1; then \

@@ -3,13 +3,22 @@
 // One binary serving every protocol the WAF forwards, so each upstream
 // path can be exercised end-to-end:
 //
-//	--http :9991   HTTP/1.1 + h2c   (echo + a small API surface)
+//	--http :9991   HTTP/1.1 + h2c   (echo + a small API surface + WS upgrades)
 //	--ws   :9992   WebSocket        (frame echo; "bye" closes)
 //	--grpc :9993   gRPC (HTTP/2)    (echoes ANY method; see echo.proto)
 //	--tcp  :9994   raw TCP          (byte echo; for scheme:tcp upstreams)
 //
 // Each flag is independent; pass "" to disable a listener. Every
 // connection logs its protocol so you can confirm the WAF routed it.
+//
+// SAME-PORT HTTP+WS: the --http listener also upgrades WebSocket requests
+// on the same port, so a single `--http :9999` serves both HTTP and WS.
+// This matches the dev profile (one stub-pool at 127.0.0.1:9999) and is
+// what lets the WAF's ws_inspect actually run: a WS upstream that keeps
+// the connection open + echoes frames means the bridge stays alive long
+// enough for the inspector to see the frames. A plain HTTP upstream
+// (e.g. fast-upstream / nginx with no WS handler) accepts the 101 then
+// EOFs immediately, so the bridge exits before any frame is inspected.
 //
 // Build:  cd deploy/mock && go mod tidy && go build -o aegis-mock .
 // See:    deploy/HACKATHON-DEPLOY.md §5, deploy/HACKATHON-FLEET.md §5.
@@ -86,6 +95,16 @@ func serveHTTP(addr string) error {
 		writeJSON(w, 200, map[string]any{"token": randHex(16)})
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Same-port WebSocket: a route like /ws/live forwarded by the
+		// WAF arrives here as a WS upgrade. Handle it on the SAME
+		// listener so a single `--http :9999` serves both HTTP and WS.
+		// Without this the upstream would echo-JSON the upgrade, the
+		// WAF's ws bridge would see an immediate upstream EOF, and
+		// ws_inspect would never run.
+		if websocket.IsWebSocketUpgrade(r) {
+			wsEcho(w, r)
+			return
+		}
 		log.Printf("[http] %s %s proto=%s from=%s", r.Method, r.URL.Path, r.Proto, r.RemoteAddr)
 		writeJSON(w, 200, map[string]any{
 			"echo": r.URL.RequestURI(), "method": r.Method, "proto": r.Proto, "host": r.Host,
@@ -100,35 +119,43 @@ func serveHTTP(addr string) error {
 
 // ---------------------------------------------------------------------------
 // WebSocket — echo every frame; the text "bye" closes the connection.
+// Shared by the dedicated --ws listener and the --http listener's
+// same-port upgrade path (serveHTTP).
 // ---------------------------------------------------------------------------
 
 var wsUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 
+// wsEcho upgrades an HTTP request to WebSocket and echoes every frame
+// back to the client; the text "bye" sends a final "bye" and closes.
+// Keeping the connection open + echoing is what lets the WAF's
+// ws_inspect bridge stay alive long enough to inspect forwarded frames.
+func wsEcho(w http.ResponseWriter, r *http.Request) {
+	c, err := wsUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("[ws] upgrade failed from=%s: %v", r.RemoteAddr, err)
+		return
+	}
+	defer c.Close()
+	log.Printf("[ws] open from=%s path=%s", r.RemoteAddr, r.URL.Path)
+	for {
+		mt, msg, err := c.ReadMessage()
+		if err != nil {
+			break
+		}
+		if strings.TrimSpace(string(msg)) == "bye" {
+			_ = c.WriteMessage(websocket.TextMessage, []byte("bye"))
+			break
+		}
+		if err := c.WriteMessage(mt, msg); err != nil {
+			break
+		}
+	}
+	log.Printf("[ws] close from=%s", r.RemoteAddr)
+}
+
 func serveWS(addr string) error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		c, err := wsUpgrader.Upgrade(w, r, nil)
-		if err != nil {
-			log.Printf("[ws] upgrade failed from=%s: %v", r.RemoteAddr, err)
-			return
-		}
-		defer c.Close()
-		log.Printf("[ws] open from=%s", r.RemoteAddr)
-		for {
-			mt, msg, err := c.ReadMessage()
-			if err != nil {
-				break
-			}
-			if strings.TrimSpace(string(msg)) == "bye" {
-				_ = c.WriteMessage(websocket.TextMessage, []byte("bye"))
-				break
-			}
-			if err := c.WriteMessage(mt, msg); err != nil {
-				break
-			}
-		}
-		log.Printf("[ws] close from=%s", r.RemoteAddr)
-	})
+	mux.HandleFunc("/", wsEcho)
 	log.Printf("[ws] listening on %s", addr)
 	return (&http.Server{Addr: addr, Handler: mux}).ListenAndServe()
 }
