@@ -1746,22 +1746,17 @@ pub(crate) async fn accept_loop(
                         );
                         return Ok::<_, Infallible>(resp);
                     }
-                    // 2026-05-19 committee deployment contract:
-                    // /__waf_control/* MUST bind local-only on the
-                    // team's server (benchmarker SSH-tunnels in and
-                    // hits it from loopback). Gate the short-circuit
-                    // on peer.is_loopback() so a non-loopback caller
-                    // on the public data plane never sees the control
-                    // surface — the request falls through to the
-                    // normal pipeline, which proxies to upstream and
-                    // returns whatever the target-app would (typically
-                    // 404). This hides the existence of the control
-                    // namespace entirely. X-Benchmark-Secret is still
-                    // enforced inside the handler as defence-in-depth.
-                    //
-                    // Earlier v2.3 contract treated /__waf_control/* as
-                    // reachable on the public TLS data plane; the
-                    // committee's final-round guidance overrides that.
+                    // 2026-06-13 CRIT-1 — `/__waf_control/*` is a
+                    // reserved namespace that MUST NOT be proxied to
+                    // upstream (contract §2.1). Intercept every control
+                    // path here, ahead of routing/risk-gate, regardless
+                    // of peer address. The handler validates
+                    // `X-Benchmark-Secret` (§2.2) and returns 403 on a
+                    // missing/wrong secret — so unauthorized callers get
+                    // a local 403 instead of the catch-all upstream echo,
+                    // and the org's reset_state/set_profile flow works
+                    // through an L4 VIP. See
+                    // `should_dispatch_data_plane_control`.
                     if should_dispatch_data_plane_control(&path, &peer) {
                         if let Some(rt) = interop.as_ref() {
                             // v2.5 (2026-05-19) — challenge_verify
@@ -2172,17 +2167,29 @@ pub(crate) async fn accept_loop(
     }
 }
 
-/// 2026-05-19 committee bind contract — only loopback peers may
-/// reach the `/__waf_control/*` short-circuit on the public data
-/// plane. Non-loopback callers fall through to the normal
-/// security pipeline (which proxies to upstream and returns the
-/// target-app's 404), so the existence of the control namespace
-/// is invisible from outside the host.
+/// 2026-06-13 CRIT-1 (preprod feature run) — `/__waf_control/*` is a
+/// reserved WAF control namespace and, per contract §2.1, MUST NEVER
+/// be proxied to upstream. We therefore intercept **every** control
+/// path on the data plane regardless of peer address; the handler's
+/// constant-time `X-Benchmark-Secret` check (§2.2) is the security
+/// boundary and returns `403` for a missing/wrong secret.
+///
+/// This supersedes the 2026-05-19 loopback-only gate. That gate let a
+/// non-loopback caller fall through to the normal pipeline, which
+/// proxied the control path to the catch-all upstream and echoed a
+/// `200` — both a §2.1 violation *and* a dead control surface on any
+/// deployment fronted by an L4 VIP (the VIP terminates the client TCP,
+/// so the WAF peer is the balancer, never loopback). Hiding the
+/// namespace from external scanners is not worth proxying a reserved
+/// path to the backend; an unauthorized caller now gets a local `403`.
+///
+/// `peer` is retained for call-site symmetry / future per-peer policy
+/// but is intentionally not consulted.
 fn should_dispatch_data_plane_control(
     path: &str,
-    peer: &std::net::SocketAddr,
+    _peer: &std::net::SocketAddr,
 ) -> bool {
-    path.starts_with("/__waf_control/") && peer.ip().is_loopback()
+    path.starts_with("/__waf_control/")
 }
 
 #[cfg(test)]
@@ -2227,21 +2234,25 @@ mod control_gate_tests {
         ));
     }
 
+    // CRIT-1 (2026-06-13) — control paths MUST be intercepted from
+    // every peer, including behind an L4 VIP, so they are never
+    // proxied to upstream. The handler's X-Benchmark-Secret check is
+    // the security boundary (403 on missing/wrong secret).
     #[test]
-    fn non_loopback_v4_does_not_dispatch() {
-        assert!(!should_dispatch_data_plane_control(
+    fn non_loopback_v4_dispatches() {
+        assert!(should_dispatch_data_plane_control(
             "/__waf_control/capabilities",
             &remote_v4()
         ));
-        assert!(!should_dispatch_data_plane_control(
+        assert!(should_dispatch_data_plane_control(
             "/__waf_control/set_profile",
             &remote_v4()
         ));
     }
 
     #[test]
-    fn non_loopback_v6_does_not_dispatch() {
-        assert!(!should_dispatch_data_plane_control(
+    fn non_loopback_v6_dispatches() {
+        assert!(should_dispatch_data_plane_control(
             "/__waf_control/capabilities",
             &remote_v6()
         ));
@@ -2251,12 +2262,18 @@ mod control_gate_tests {
     fn non_control_path_never_dispatches() {
         assert!(!should_dispatch_data_plane_control("/", &lo()));
         assert!(!should_dispatch_data_plane_control("/api/health", &lo()));
-        // Defensive — committee says control namespace ONLY under
-        // /__waf_control/*; anything that merely *contains* the
-        // substring must not trigger the short-circuit.
+        assert!(!should_dispatch_data_plane_control("/api/health", &remote_v4()));
+        // Defensive — the control namespace lives ONLY under the
+        // `/__waf_control/` prefix; anything that merely *contains* the
+        // substring deeper in the path must not trigger the
+        // short-circuit (it routes/proxies normally).
         assert!(!should_dispatch_data_plane_control(
             "/x/__waf_control/capabilities",
             &lo()
+        ));
+        assert!(!should_dispatch_data_plane_control(
+            "/x/__waf_control/capabilities",
+            &remote_v4()
         ));
     }
 }
