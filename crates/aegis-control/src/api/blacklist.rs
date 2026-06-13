@@ -197,7 +197,7 @@ pub trait AccessListCountryLookup: Send + Sync {
     fn country_of(&self, peer: std::net::IpAddr) -> Option<String>;
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AccessListEntry {
     pub id: String,
     /// `ip` (single IP), `cidr` (range), or `asn` (ASN number).
@@ -341,6 +341,36 @@ impl AccessListStore {
             self.hits.forget(id);
         }
         removed
+    }
+
+    /// HIGH-2 (2026-06-13 preprod feature run) — replace the entire
+    /// entry set with a cluster-converged snapshot. Called by the
+    /// convergence poller when a peer publishes a newer access-list
+    /// generation, so an operator add/remove on any node enforces
+    /// fleet-wide instead of staying node-local.
+    ///
+    /// Entries are taken verbatim (the published doc is the already-
+    /// merged authority); no compliance clamp is re-applied because the
+    /// originating node clamped on `put`. Hit counters for ids that
+    /// vanish are forgotten (same rationale as [`Self::delete`]); ids
+    /// that survive keep their local hit history.
+    pub fn replace_entries(&self, entries: Vec<AccessListEntry>) {
+        let new_ids: std::collections::HashSet<&str> =
+            entries.iter().map(|e| e.id.as_str()).collect();
+        let dropped: Vec<String> = {
+            let mut s = self.inner.lock().expect("access list poisoned");
+            let dropped = s
+                .entries
+                .keys()
+                .filter(|id| !new_ids.contains(id.as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
+            s.entries = entries.into_iter().map(|e| (e.id.clone(), e)).collect();
+            dropped
+        };
+        for id in dropped {
+            self.hits.forget(&id);
+        }
     }
 
     /// Runtime check: does ANY entry in the list match the given

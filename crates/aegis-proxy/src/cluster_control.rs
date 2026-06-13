@@ -30,9 +30,20 @@ use aegis_core::state::StateBackend;
 /// targets, cheap enough to run forever.
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// One operator access list converged by the poller, with the local
+/// store to push peer-published snapshots into.
+pub(crate) struct AccessListTarget {
+    pub label: &'static str,
+    pub store: Arc<aegis_control::api::blacklist::AccessListStore>,
+}
+
 /// Spawn the convergence poller. Returns immediately; the task runs
 /// for the lifetime of the process.
-pub(crate) fn spawn_poller(rt: Arc<InteropRuntime>, state: Arc<dyn StateBackend>) {
+pub(crate) fn spawn_poller(
+    rt: Arc<InteropRuntime>,
+    state: Arc<dyn StateBackend>,
+    access_lists: Vec<AccessListTarget>,
+) {
     tokio::spawn(async move {
         use aegis_control::interop::cluster_sync;
 
@@ -40,6 +51,11 @@ pub(crate) fn spawn_poller(rt: Arc<InteropRuntime>, state: Arc<dyn StateBackend>
         // cluster currently has (a freshly booted node converges to the
         // live mode map instead of its `Mode::Enforce` default).
         let mut applied_gen: u64 = 0;
+        // HIGH-2 — per-list applied generation; start at 0 so a freshly
+        // booted node adopts the cluster's current access lists on its
+        // first poll instead of staying empty until the next mutation.
+        let mut applied_access_gen: std::collections::HashMap<&'static str, u64> =
+            access_lists.iter().map(|t| (t.label, 0u64)).collect();
         // Reset epoch: seed with the CURRENT value so a new node does
         // not replay historical resets — it only acts on resets issued
         // after it joined.
@@ -97,6 +113,24 @@ pub(crate) fn spawn_poller(rt: Arc<InteropRuntime>, state: Arc<dyn StateBackend>
                     epoch,
                     "cluster control: peer reset_state — flushed local trackers"
                 );
+            }
+
+            // --- access lists (HIGH-2) ---
+            for target in &access_lists {
+                if let Some(doc) = cluster_sync::read_access_list(&state, target.label).await {
+                    let applied = applied_access_gen.entry(target.label).or_insert(0);
+                    if doc.generation > *applied {
+                        let count = doc.entries.len();
+                        target.store.replace_entries(doc.entries);
+                        *applied = doc.generation;
+                        tracing::debug!(
+                            label = target.label,
+                            generation = *applied,
+                            entries = count,
+                            "cluster control: applied peer-published access list"
+                        );
+                    }
+                }
             }
         }
     });
@@ -167,5 +201,108 @@ mod tests {
 
         let e2 = cluster_sync::publish_reset_epoch(&state).await;
         assert_eq!(e2, Some(2));
+    }
+
+    // -----------------------------------------------------------------
+    // HIGH-2 — operator access-list convergence
+    // -----------------------------------------------------------------
+
+    use aegis_control::api::blacklist::{AccessListEntry, AccessListStore};
+
+    fn entry(id: &str, value: &str) -> AccessListEntry {
+        AccessListEntry {
+            id: id.into(),
+            kind: "ip".into(),
+            value: value.into(),
+            note: String::new(),
+            expires_at: None,
+            bypass: Vec::new(),
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    // The core HIGH-2 guarantee: a blacklist entry added on one node
+    // (published to the shared backend) is enforced on a second node
+    // after it polls + applies — no longer node-local.
+    #[tokio::test]
+    async fn published_blacklist_converges_to_a_second_node() {
+        let state = backend();
+        let ip: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+
+        // Node A blocks the IP and publishes.
+        let gen = cluster_sync::publish_access_list_upsert(
+            &state,
+            "blacklist",
+            &entry("bl-1", "203.0.113.7"),
+        )
+        .await;
+        assert_eq!(gen, Some(1), "first publish is generation 1");
+
+        // Node B starts clean — the IP is NOT blocked yet.
+        let node_b = AccessListStore::new();
+        assert_eq!(node_b.matches(ip, None), None);
+
+        // Node B polls + applies the published doc → now enforced.
+        let doc = cluster_sync::read_access_list(&state, "blacklist")
+            .await
+            .expect("published doc is readable");
+        node_b.replace_entries(doc.entries);
+        assert_eq!(
+            node_b.matches(ip, None),
+            Some("bl-1".to_string()),
+            "node B converged on the peer-published blacklist entry"
+        );
+    }
+
+    // A removal on one node lifts the block on a peer after convergence.
+    #[tokio::test]
+    async fn blacklist_removal_propagates() {
+        let state = backend();
+        let ip: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+
+        cluster_sync::publish_access_list_upsert(&state, "blacklist", &entry("bl-1", "203.0.113.7"))
+            .await;
+
+        // Node B has converged on the entry.
+        let node_b = AccessListStore::new();
+        let doc = cluster_sync::read_access_list(&state, "blacklist").await.unwrap();
+        node_b.replace_entries(doc.entries);
+        assert_eq!(node_b.matches(ip, None), Some("bl-1".to_string()));
+
+        // Operator un-blocks on node A.
+        let gen = cluster_sync::publish_access_list_remove(&state, "blacklist", "bl-1").await;
+        assert_eq!(gen, Some(2), "removal advances the generation");
+
+        // Node B applies the newer doc → block lifted.
+        let doc = cluster_sync::read_access_list(&state, "blacklist").await.unwrap();
+        node_b.replace_entries(doc.entries);
+        assert_eq!(node_b.matches(ip, None), None, "node B lifted the block");
+    }
+
+    // Delta-on-latest publishing: concurrent upserts of DIFFERENT ids
+    // merge instead of clobbering (the reason we read-modify-CAS the
+    // published doc rather than pushing a whole local snapshot).
+    #[tokio::test]
+    async fn distinct_upserts_merge_by_id() {
+        let state = backend();
+        cluster_sync::publish_access_list_upsert(&state, "blacklist", &entry("a", "1.1.1.1")).await;
+        cluster_sync::publish_access_list_upsert(&state, "blacklist", &entry("b", "2.2.2.2")).await;
+
+        let doc = cluster_sync::read_access_list(&state, "blacklist").await.unwrap();
+        let mut ids: Vec<&str> = doc.entries.iter().map(|e| e.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["a", "b"], "both entries survive — no clobber");
+        assert_eq!(doc.generation, 2);
+    }
+
+    // Blacklist and whitelist are independent keys — a blacklist publish
+    // does not bleed into the whitelist doc.
+    #[tokio::test]
+    async fn lists_are_keyed_independently() {
+        let state = backend();
+        cluster_sync::publish_access_list_upsert(&state, "blacklist", &entry("a", "1.1.1.1")).await;
+        assert!(cluster_sync::read_access_list(&state, "whitelist").await.is_none());
+        let bl = cluster_sync::read_access_list(&state, "blacklist").await.unwrap();
+        assert_eq!(bl.entries.len(), 1);
     }
 }

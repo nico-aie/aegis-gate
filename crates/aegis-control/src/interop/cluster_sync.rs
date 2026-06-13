@@ -187,6 +187,138 @@ pub async fn read_reset_epoch(state: &Arc<dyn StateBackend>) -> u64 {
     state.get_counter(RESET_EPOCH_KEY).await.unwrap_or(0)
 }
 
+// ---------------------------------------------------------------------------
+// Access lists — HIGH-2 (operator blacklist/whitelist convergence)
+// ---------------------------------------------------------------------------
+//
+// Before this, `POST /api/blacklist` mutated only the receiving node's
+// in-process `AccessListStore`; behind the LB an IP blocked on one node
+// was still served by the other N-1 (~1/3 enforcement). These functions
+// converge each list through the same shared `StateBackend` as the modes
+// doc: one persistent, generation-stamped doc per list label. Mutations
+// read-modify-CAS the latest doc (delta on the published set, not a whole
+// local snapshot) so concurrent add/remove on different nodes merge by
+// entry id rather than clobbering each other. Pollers replace their local
+// store when the generation advances.
+
+use crate::api::blacklist::AccessListEntry;
+
+/// Key prefix for the per-list converged doc; the list label
+/// (`blacklist` / `whitelist`) is appended.
+pub const ACCESS_LIST_KEY_PREFIX: &str = "control:waf:access_list:";
+
+/// Build the shared-backend key for one access-list label.
+pub fn access_list_key(label: &str) -> String {
+    format!("{ACCESS_LIST_KEY_PREFIX}{label}")
+}
+
+/// Persistent doc holding the full converged entry set for one list +
+/// its monotonic generation. Readers apply a doc only when `generation`
+/// exceeds the one they last applied, so re-reads are idempotent.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ClusterAccessListDoc {
+    pub generation: u64,
+    pub entries: Vec<AccessListEntry>,
+}
+
+/// Read the published doc for `label`, or `None` when the key is absent
+/// or unparseable (the caller keeps its local view).
+pub async fn read_access_list(
+    state: &Arc<dyn StateBackend>,
+    label: &str,
+) -> Option<ClusterAccessListDoc> {
+    let key = access_list_key(label);
+    match state.get(&key).await {
+        Ok(Some(bytes)) => match serde_json::from_slice::<ClusterAccessListDoc>(&bytes) {
+            Ok(doc) => Some(doc),
+            Err(e) => {
+                tracing::warn!(error = %e, label, "cluster access-list doc unparseable — ignoring");
+                None
+            }
+        },
+        Ok(None) => None,
+        Err(e) => {
+            tracing::debug!(error = %e, label, "cluster access-list read failed");
+            None
+        }
+    }
+}
+
+/// Apply `mutate` to the latest published entry set and `cas_set` the
+/// next generation. Read-modify-the-latest-doc (rather than publishing a
+/// whole local snapshot) means concurrent add/remove on different nodes
+/// merge by entry id instead of clobbering each other. Best-effort:
+/// returns the new generation, or `None` on a backend error / lost race
+/// after retries.
+async fn publish_access_list_mutation<F>(
+    state: &Arc<dyn StateBackend>,
+    label: &str,
+    mutate: F,
+) -> Option<u64>
+where
+    F: Fn(&mut Vec<AccessListEntry>),
+{
+    let key = access_list_key(label);
+    for _ in 0..4 {
+        let current = state.get(&key).await.ok().flatten();
+        let (cur_gen, mut entries) = current
+            .as_deref()
+            .and_then(|b| serde_json::from_slice::<ClusterAccessListDoc>(b).ok())
+            .map(|d| (d.generation, d.entries))
+            .unwrap_or((0, Vec::new()));
+        mutate(&mut entries);
+        let doc = ClusterAccessListDoc {
+            generation: cur_gen + 1,
+            entries,
+        };
+        let bytes = match serde_json::to_vec(&doc) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = %e, label, "cluster access-list serialize failed");
+                return None;
+            }
+        };
+        match state.cas_set(&key, current.as_deref(), &bytes, None).await {
+            Ok(true) => return Some(doc.generation),
+            Ok(false) => continue, // lost the race — re-read and retry
+            Err(e) => {
+                tracing::debug!(error = %e, label, "cluster access-list publish failed");
+                return None;
+            }
+        }
+    }
+    None
+}
+
+/// Publish an upsert of `entry` (insert, or replace the entry with the
+/// same id) into the converged list.
+pub async fn publish_access_list_upsert(
+    state: &Arc<dyn StateBackend>,
+    label: &str,
+    entry: &AccessListEntry,
+) -> Option<u64> {
+    publish_access_list_mutation(state, label, |entries| {
+        if let Some(slot) = entries.iter_mut().find(|e| e.id == entry.id) {
+            *slot = entry.clone();
+        } else {
+            entries.push(entry.clone());
+        }
+    })
+    .await
+}
+
+/// Publish a removal of the entry with `id` from the converged list.
+pub async fn publish_access_list_remove(
+    state: &Arc<dyn StateBackend>,
+    label: &str,
+    id: &str,
+) -> Option<u64> {
+    publish_access_list_mutation(state, label, |entries| {
+        entries.retain(|e| e.id != id);
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

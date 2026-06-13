@@ -1586,10 +1586,21 @@ pub async fn run(
             crate::cluster_control::spawn_poller(
                 std::sync::Arc::clone(rt),
                 std::sync::Arc::clone(&state),
+                vec![
+                    crate::cluster_control::AccessListTarget {
+                        label: "blacklist",
+                        store: upstream_ctx.blacklist.clone(),
+                    },
+                    crate::cluster_control::AccessListTarget {
+                        label: "whitelist",
+                        store: upstream_ctx.whitelist.clone(),
+                    },
+                ],
             );
             tracing::info!(
                 "interop: cluster-native control plane enabled (set_profile / \
-                 reset_state converge fleet-wide via the config plane)"
+                 reset_state + operator access-lists converge fleet-wide via \
+                 the config plane)"
             );
         }
     }
