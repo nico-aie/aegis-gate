@@ -206,6 +206,11 @@ pub struct ProxyContext {
     /// kill-switch). Read by `forward()` to classify each upstream
     /// response's [`ResponseMode`](crate::upstream::streaming::ResponseMode).
     pub streaming: aegis_core::config::StreamingConfig,
+    /// Decision 5 — bounds concurrent live streams (each pins an upstream
+    /// connection). `forward()` acquires a permit before streaming and the
+    /// permit rides the response body, releasing on stream end / client
+    /// disconnect. Sized from `cfg.streaming.max_concurrent` at boot.
+    pub streaming_permits: Arc<tokio::sync::Semaphore>,
 }
 
 impl ProxyContext {
@@ -277,6 +282,9 @@ impl ProxyContext {
             ),
             bots_enabled: Arc::new(std::sync::atomic::AtomicBool::new(
                 cfg.bots.enabled,
+            )),
+            streaming_permits: Arc::new(tokio::sync::Semaphore::new(
+                cfg.streaming.max_concurrent,
             )),
             streaming: cfg.streaming.clone(),
         })
@@ -437,6 +445,7 @@ where
         parts.headers,
         body_bytes,
         &ctx.streaming,
+        &ctx.streaming_permits,
     )
     .await;
     let upstream_elapsed = upstream_start.map(|s| s.elapsed());

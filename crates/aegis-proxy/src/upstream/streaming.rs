@@ -123,19 +123,61 @@ where
     }
 }
 
+/// Holds a streaming-concurrency permit for the lifetime of the body it
+/// wraps. Dropping the body (stream end, error, or client disconnect)
+/// drops the permit, releasing one `streaming.max_concurrent` slot — and
+/// with it the pinned upstream connection. Delegates all body behaviour
+/// to the inner body unchanged.
+pub struct PermitBody<B> {
+    inner: B,
+    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl<B> Body for PermitBody<B>
+where
+    B: Body<Data = Bytes> + Unpin,
+{
+    type Data = Bytes;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        Pin::new(&mut self.get_mut().inner).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
+    }
+}
+
 /// Build a pass-through streaming [`DataBody`] from an upstream response
 /// body: apply the idle (inactivity) timeout (plan decision 4), fold any
-/// inner error into a clean end-of-stream, and box into the unified body
+/// inner error into a clean end-of-stream, hold the concurrency `permit`
+/// (decision 5) for the stream's lifetime, and box into the unified body
 /// type. Hop-by-hop header filtering happens separately on the response
 /// head in `forward()`; this handles the body only — no buffering, no
 /// size cap.
-pub fn stream_through<B>(upstream: B, idle: Duration) -> DataBody
+pub fn stream_through<B>(
+    upstream: B,
+    idle: Duration,
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
+) -> DataBody
 where
     B: Body<Data = Bytes> + Unpin + Send + 'static,
     B::Error: std::fmt::Display,
 {
     use http_body_util::BodyExt;
-    EndOnError::new(IdleTimeoutBody::new(upstream, idle)).boxed_unsync()
+    PermitBody {
+        inner: EndOnError::new(IdleTimeoutBody::new(upstream, idle)),
+        _permit: permit,
+    }
+    .boxed_unsync()
 }
 
 #[cfg(test)]
@@ -266,6 +308,7 @@ mod tests {
         let body = stream_through(
             Scripted::new(vec![Ok("hello "), Ok("world"), Err("reset")]),
             Duration::from_secs(60),
+            None,
         );
         let bytes = body.collect().await.unwrap().to_bytes();
         assert_eq!(&bytes[..], b"hello world");

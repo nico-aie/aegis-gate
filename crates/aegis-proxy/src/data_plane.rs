@@ -2344,6 +2344,7 @@ pub(crate) async fn forward_allow_to_upstream(
         parts.headers,
         body_bytes,
         &ctx.streaming,
+        &ctx.streaming_permits,
     )
     .await;
     drop(_inflight_guard);

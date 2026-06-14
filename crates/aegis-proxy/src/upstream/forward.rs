@@ -423,6 +423,7 @@ pub async fn forward(
     headers: HeaderMap,
     body: Bytes,
     streaming: &aegis_core::config::StreamingConfig,
+    stream_permits: &std::sync::Arc<tokio::sync::Semaphore>,
 ) -> Result<
     (
         Response<crate::body::DataBody>,
@@ -599,20 +600,58 @@ pub async fn forward(
         }
     }
 
+    // Decision 5 — bound concurrent live streams. Each pins an upstream
+    // connection for its whole lifetime, which the legacy client pool
+    // (idle-only) does NOT cap. Acquire a permit before committing to
+    // stream; on exhaustion fall back per `on_exhaustion`. `None` here
+    // means "buffer this response" (either it isn't a stream, or the cap
+    // is full and we're degrading to buffered).
+    let stream_permit = if matches!(
+        mode,
+        crate::upstream::streaming::ResponseMode::Streaming
+    ) {
+        match std::sync::Arc::clone(stream_permits).try_acquire_owned() {
+            Ok(permit) => Some(permit),
+            Err(_) => match streaming.on_exhaustion {
+                aegis_core::config::OnStreamExhaustion::Reject => {
+                    // Drop the upstream `resp` (releases its connection at
+                    // once) and shed with 503. Returned as Buffered so the
+                    // data plane handles it as a normal small response.
+                    let resp_503 = Response::builder()
+                        .status(http::StatusCode::SERVICE_UNAVAILABLE)
+                        .body(Full::new(Bytes::from_static(
+                            b"streaming capacity exceeded\n",
+                        )))
+                        .map_err(|e| ForwardError::BadRequest(e.to_string()))?;
+                    return Ok((
+                        crate::body::boxed(resp_503),
+                        crate::upstream::streaming::ResponseMode::Buffered,
+                    ));
+                }
+                aegis_core::config::OnStreamExhaustion::Buffer => None,
+            },
+        }
+    } else {
+        None
+    };
+
     match mode {
-        crate::upstream::streaming::ResponseMode::Streaming => {
+        crate::upstream::streaming::ResponseMode::Streaming if stream_permit.is_some() => {
             // Header-inspected only: stream the body through frame-by-frame
             // with an idle (inactivity) timeout — NO size cap and NO whole-
             // body read deadline (the deadline would kill a live stream).
             // The data plane bypasses its response-filter/cache collect for
-            // this mode (decision 2a / Phase 3).
+            // this mode (decision 2a / Phase 3). The permit rides the body
+            // and releases when the stream ends / the client disconnects.
             let body = crate::upstream::streaming::stream_through(
                 resp.into_body(),
                 streaming.idle_timeout,
+                stream_permit,
             );
-            Ok((filtered.map(|_| body), mode))
+            Ok((filtered.map(|_| body), crate::upstream::streaming::ResponseMode::Streaming))
         }
-        crate::upstream::streaming::ResponseMode::Buffered => {
+        // Buffered, OR streaming-but-cap-exhausted-with-on_exhaustion=buffer.
+        _ => {
             // F-HIGH-003 — cap the buffered body; F-HIGH-stateful — wrap
             // the collect in the read deadline so a slowloris upstream
             // can't pin the slot. Size cap → ReadBody; deadline → Timeout
@@ -639,7 +678,14 @@ pub async fn forward(
                 }
             };
             *filtered.body_mut() = Full::new(body_bytes);
-            Ok((crate::body::boxed(filtered), mode))
+            // Always Buffered here — either it was classified Buffered, or
+            // it was a stream that lost the concurrency race and degraded
+            // (on_exhaustion = buffer). Reporting Buffered keeps the data
+            // plane on its normal collect/filter/cache path.
+            Ok((
+                crate::body::boxed(filtered),
+                crate::upstream::streaming::ResponseMode::Buffered,
+            ))
         }
     }
 }
@@ -973,6 +1019,7 @@ mod tests {
                 hm(&[("host", "ignored.example.com")]),
                 Bytes::new(),
                 &aegis_core::config::StreamingConfig::default(),
+                &std::sync::Arc::new(tokio::sync::Semaphore::new(256)),
             )
             .await
             .expect("forward must succeed");
@@ -1197,6 +1244,7 @@ mod tests {
                 HeaderMap::new(),
                 Bytes::new(),
                 &aegis_core::config::StreamingConfig::default(),
+                &std::sync::Arc::new(tokio::sync::Semaphore::new(256)),
             )
             .await
             .expect("forward must succeed");
@@ -1289,6 +1337,7 @@ mod tests {
             HeaderMap::new(),
             Bytes::new(),
             &streaming,
+            &std::sync::Arc::new(tokio::sync::Semaphore::new(256)),
         )
         .await
         .expect("SSE response must stream, not time out on the read deadline");
@@ -1327,6 +1376,7 @@ mod tests {
             HeaderMap::new(),
             Bytes::new(),
             &streaming,
+            &std::sync::Arc::new(tokio::sync::Semaphore::new(256)),
         )
         .await
         .expect("buffered SSE still succeeds for a fast upstream");
@@ -1335,6 +1385,59 @@ mod tests {
             mode,
             crate::upstream::streaming::ResponseMode::Buffered,
             "kill-switch off must force buffering regardless of media type",
+        );
+    }
+
+    /// Decision 5 — the concurrency cap. With `max_concurrent = 1`, a
+    /// second concurrent stream is shed with 503 (default on_exhaustion =
+    /// reject); once the first stream's body is dropped (releasing its
+    /// permit + upstream connection) a new stream is admitted again.
+    #[tokio::test]
+    async fn streaming_cap_rejects_then_recovers() {
+        use crate::upstream::streaming::ResponseMode;
+        super::_reset_client_cache();
+        let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let cfg = streaming_cfg(Duration::from_secs(5));
+        let streaming = aegis_core::config::StreamingConfig::default(); // on_exhaustion: reject
+
+        let call = |addr: std::net::SocketAddr, p: std::sync::Arc<tokio::sync::Semaphore>, s: aegis_core::config::StreamingConfig, c: ConnectionPoolConfig| async move {
+            forward(
+                &Member::new(addr, 1, None),
+                &c,
+                Method::GET,
+                "/events".parse().unwrap(),
+                HeaderMap::new(),
+                Bytes::new(),
+                &s,
+                &p,
+            )
+            .await
+            .expect("forward must return a response")
+        };
+
+        // First stream takes the only permit; keep its body alive so the
+        // permit stays held.
+        let addr1 = spawn_sse_upstream(3, Duration::from_millis(40), "text/event-stream").await;
+        let (resp1, mode1) = call(addr1, permits.clone(), streaming.clone(), cfg.clone()).await;
+        assert_eq!(mode1, ResponseMode::Streaming);
+        let held_body = resp1.into_body();
+
+        // Second stream: cap exhausted → 503, classified Buffered.
+        let addr2 = spawn_sse_upstream(3, Duration::from_millis(40), "text/event-stream").await;
+        let (resp2, mode2) = call(addr2, permits.clone(), streaming.clone(), cfg.clone()).await;
+        assert_eq!(resp2.status(), 503, "2nd stream must be shed when the cap is full");
+        assert_eq!(mode2, ResponseMode::Buffered);
+
+        // Release the first stream → permit freed.
+        drop(held_body);
+
+        // Third stream is admitted again.
+        let addr3 = spawn_sse_upstream(1, Duration::from_millis(10), "text/event-stream").await;
+        let (_resp3, mode3) = call(addr3, permits.clone(), streaming.clone(), cfg.clone()).await;
+        assert_eq!(
+            mode3,
+            ResponseMode::Streaming,
+            "dropping the first stream's body must free the permit",
         );
     }
 }

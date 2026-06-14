@@ -300,6 +300,24 @@ pub struct StreamingConfig {
     /// this, new candidates fall back per `on_exhaustion`.
     #[serde(default = "default_streaming_max_concurrent")]
     pub max_concurrent: usize,
+    /// What to do when `max_concurrent` is exhausted: `reject` the new
+    /// stream with `503` (releases the upstream connection immediately —
+    /// the default, bounds pinned conns) or `buffer` it like a normal
+    /// response (subject to the buffered read deadline / size cap).
+    #[serde(default)]
+    pub on_exhaustion: OnStreamExhaustion,
+}
+
+/// Fallback when the streaming concurrency cap is hit.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OnStreamExhaustion {
+    /// Refuse the new stream with `503 Service Unavailable`, dropping the
+    /// upstream response so its connection is released at once.
+    #[default]
+    Reject,
+    /// Handle it as a buffered response (size-capped, read-deadline'd).
+    Buffer,
 }
 
 fn default_streaming_enabled() -> bool {
@@ -326,6 +344,7 @@ impl Default for StreamingConfig {
             idle_timeout: default_streaming_idle_timeout(),
             max_duration: None,
             max_concurrent: default_streaming_max_concurrent(),
+            on_exhaustion: OnStreamExhaustion::Reject,
         }
     }
 }
@@ -5200,12 +5219,13 @@ state:
         assert_eq!(cfg.streaming.idle_timeout, std::time::Duration::from_secs(300));
         assert!(cfg.streaming.max_duration.is_none());
         assert_eq!(cfg.streaming.max_concurrent, 256);
+        assert_eq!(cfg.streaming.on_exhaustion, super::OnStreamExhaustion::Reject);
     }
 
     #[test]
     fn streaming_config_parses_overrides() {
         let yaml = format!(
-            "{}streaming:\n  enabled: false\n  content_types: [\"text/event-stream\", \"application/x-ndjson\"]\n  idle_timeout: 90s\n  max_duration: 1h\n  max_concurrent: 32\n",
+            "{}streaming:\n  enabled: false\n  content_types: [\"text/event-stream\", \"application/x-ndjson\"]\n  idle_timeout: 90s\n  max_duration: 1h\n  max_concurrent: 32\n  on_exhaustion: buffer\n",
             minimal_yaml(),
         );
         let cfg = super::load_config_str(&yaml).unwrap();
@@ -5214,6 +5234,7 @@ state:
         assert_eq!(cfg.streaming.idle_timeout, std::time::Duration::from_secs(90));
         assert_eq!(cfg.streaming.max_duration, Some(std::time::Duration::from_secs(3600)));
         assert_eq!(cfg.streaming.max_concurrent, 32);
+        assert_eq!(cfg.streaming.on_exhaustion, super::OnStreamExhaustion::Buffer);
     }
 
     // 2026-05-27 (Phase B rules fold) — cfg.rules.inline carries the
