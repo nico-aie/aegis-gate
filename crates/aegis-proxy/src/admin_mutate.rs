@@ -5476,12 +5476,15 @@ pub(crate) async fn handle_ai_confidence_get(
 // RT-T3 — audit-mutated route CRUD
 // ---------------------------------------------------------------------------
 
-pub(crate) async fn handle_route_upsert(
-    req: hyper::Request<hyper::body::Incoming>,
+pub(crate) async fn handle_route_upsert<B>(
+    req: hyper::Request<B>,
     route_id: &str,
     cfg: &aegis_core::config::WafConfig,
     services: &aegis_control::dashboard_services::DashboardServices,
-) -> Response<Full<Bytes>> {
+) -> Response<Full<Bytes>>
+where
+    B: hyper::body::Body<Data = Bytes>,
+{
     use aegis_control::api::routes_config::{validate_route, RouteConfigPatch};
     use http_body_util::BodyExt;
 
@@ -5625,16 +5628,19 @@ pub(crate) async fn handle_route_upsert(
         .await;
     match outcome {
         Ok(mo) => match mo.value {
-            crate::config_source::config_store::Activate::Applied { version } => json_response(
-                200,
-                &serde_json::json!({
-                    "ok": true,
-                    "route": route_id_owned,
-                    "version": version,
-                    "note": "config activated; propagates to all nodes within a few seconds",
-                    "request_id": pre.request_id,
-                }),
-            ),
+            crate::config_source::config_store::Activate::Applied { version } => {
+                fast_apply_routes_local(services, &patched_cfg, &route_id_owned);
+                json_response(
+                    200,
+                    &serde_json::json!({
+                        "ok": true,
+                        "route": route_id_owned,
+                        "version": version,
+                        "note": "config activated; propagates to all nodes within a few seconds",
+                        "request_id": pre.request_id,
+                    }),
+                )
+            }
             crate::config_source::config_store::Activate::Conflict { current } => json_response(
                 409,
                 &serde_json::json!({
@@ -5649,14 +5655,56 @@ pub(crate) async fn handle_route_upsert(
     }
 }
 
-pub(crate) async fn handle_route_delete(
-    req: hyper::Request<hyper::body::Incoming>,
+/// Read-your-own-write fast-path for route mutations.
+///
+/// `ConfigStore::activate` has already written + activated the shared
+/// config doc — that's the durable, fleet-converging source of truth, and
+/// every node (including this one) re-derives its route table from it on the
+/// config watcher's next tick via `apply_cfg_change_to_routes`. But the
+/// watcher tick is asynchronous, so between the PUT/DELETE returning and this
+/// node's own watcher firing, the live `ArcSwap<CompiledRouteTable>` still
+/// holds the pre-mutation trie. During that window an immediate
+/// `GET /api/routes` (the dashboard's post-save reload) reads the stale route
+/// list, and a data-plane request on this node resolves against the old
+/// routes — e.g. assets briefly unrouted right after a route is saved.
+///
+/// Applying the already-validated config to the local route writer here
+/// closes that window on the originating node. It goes through the SAME
+/// `RouteTable::apply` the watcher uses, so when the watcher later re-applies
+/// the identical doc version it's an idempotent no-op. Peers are unaffected —
+/// they still converge through the watcher. Non-fatal: the table was already
+/// built once for validation upstream, so this can't realistically fail; if it
+/// somehow did, the node still converges on the next watcher tick, so we log
+/// and carry on rather than failing a mutation the config plane already
+/// committed.
+fn fast_apply_routes_local(
+    services: &aegis_control::dashboard_services::DashboardServices,
+    patched_cfg: &aegis_core::config::WafConfig,
+    route_id: &str,
+) {
+    if let Some(writer) = services.route_writer.as_ref() {
+        if let Err(e) = writer.apply(patched_cfg) {
+            tracing::warn!(
+                route = %route_id,
+                error = %e,
+                "route mutation: local route-trie fast-apply failed; \
+                 this node will converge on the next config-watcher tick",
+            );
+        }
+    }
+}
+
+pub(crate) async fn handle_route_delete<B>(
+    req: hyper::Request<B>,
     route_id: &str,
     // The boot `cfg` is no longer consulted — existence + last-catch-all
     // guards run against the active config doc (the fleet source of truth).
     _cfg: &aegis_core::config::WafConfig,
     services: &aegis_control::dashboard_services::DashboardServices,
-) -> Response<Full<Bytes>> {
+) -> Response<Full<Bytes>>
+where
+    B: hyper::body::Body<Data = Bytes>,
+{
     use aegis_control::api::routes_config::is_only_catchall;
 
     let pre = mutation_preamble(&req, "route-delete");
@@ -5752,16 +5800,19 @@ pub(crate) async fn handle_route_delete(
         .await;
     match outcome {
         Ok(mo) => match mo.value {
-            crate::config_source::config_store::Activate::Applied { version } => json_response(
-                200,
-                &serde_json::json!({
-                    "ok": true,
-                    "removed": route_id_owned,
-                    "version": version,
-                    "note": "config activated; propagates to all nodes within a few seconds",
-                    "request_id": pre.request_id,
-                }),
-            ),
+            crate::config_source::config_store::Activate::Applied { version } => {
+                fast_apply_routes_local(services, &patched_cfg, &route_id_owned);
+                json_response(
+                    200,
+                    &serde_json::json!({
+                        "ok": true,
+                        "removed": route_id_owned,
+                        "version": version,
+                        "note": "config activated; propagates to all nodes within a few seconds",
+                        "request_id": pre.request_id,
+                    }),
+                )
+            }
             crate::config_source::config_store::Activate::Conflict { current } => json_response(
                 409,
                 &serde_json::json!({
@@ -6728,6 +6779,105 @@ state:
         assert_eq!(
             r.route_id, "sec",
             "route survives restart because it lives in the config doc",
+        );
+    }
+
+    /// Read-your-own-write: after `handle_route_upsert` returns 200, the
+    /// ORIGINATING node's live route trie must already reflect the new route
+    /// — WITHOUT any config watcher running. The mutation activates the
+    /// shared doc (durable + fleet-converging), but peers only re-derive
+    /// their trie on the watcher's next tick; that async lag previously left
+    /// THIS node serving the pre-mutation trie until its own watcher fired,
+    /// so an immediate `GET /api/routes` (the dashboard's post-save reload)
+    /// showed the old route and freshly-routed assets 404'd for a beat after
+    /// a save. The handler now fast-applies the validated config to the local
+    /// route writer through the same `RouteTable::apply` the watcher uses.
+    ///
+    /// This test wires a `route_writer` but spawns NO watcher, so the only
+    /// thing that can update the live trie is that synchronous fast-apply —
+    /// making the read-your-own-write contract the sole reason the assertion
+    /// can pass. It fails if the fast-apply is removed.
+    #[tokio::test]
+    async fn route_upsert_is_visible_on_origin_node_without_watcher() {
+        use crate::config_source::config_store::{Activate, ConfigStore};
+        use crate::state::in_memory::InMemoryBackend;
+        use aegis_core::audit::AuditBus;
+        use std::sync::Arc;
+
+        // Baseline: catch-all only (no `/sec`), with a `sec-pool` upstream so
+        // the new route validates.
+        let boot_yaml = concat!(
+            "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\n  admin: { bind: \"127.0.0.1:9090\" }\n",
+            "routes:\n  - { id: catch-all, path: \"/\", match_type: prefix, upstream: api-pool }\n",
+            "upstreams:\n",
+            "  api-pool: { members: [{ addr: \"127.0.0.1:1111\" }] }\n",
+            "  sec-pool: { members: [{ addr: \"127.0.0.1:2222\" }] }\n",
+            "state: { backend: in_memory }\n",
+        );
+        let boot_cfg = aegis_core::load_config_str(boot_yaml).unwrap();
+
+        // Shared backend + a config doc seeded at the baseline so the
+        // handler's `load_active_config_doc` reads the doc (not the boot YAML).
+        let backend: Arc<dyn aegis_core::state::StateBackend> =
+            Arc::new(InMemoryBackend::new());
+        let seed_store = ConfigStore::new(backend.clone());
+        assert_eq!(
+            seed_store
+                .activate(0, boot_yaml.to_string(), "seed", "baseline")
+                .await
+                .unwrap(),
+            Activate::Applied { version: 1 },
+            "baseline doc must seed at version 1",
+        );
+
+        // The live route trie this node serves from — wired as the
+        // `route_writer`, exactly as the proxy boot path does.
+        let route_table = Arc::new(crate::route::RouteTable::build(&boot_cfg).unwrap());
+
+        let bus = AuditBus::new(64);
+        let pools: aegis_control::dashboard_services::PoolSnapshotProvider =
+            Arc::new(|| aegis_control::api::upstreams::PoolHealthSnapshot {
+                pools: Vec::new(),
+            });
+        let (mut services, _drain) =
+            aegis_control::dashboard_services::DashboardServices::spawn(bus, pools, None);
+        services.state_backend = Some(backend.clone());
+        services.route_writer = Some(route_table.clone()
+            as Arc<dyn aegis_control::api::routes_config::RouteWriter>);
+
+        // Before: `/sec` falls through to the catch-all.
+        assert_eq!(
+            route_table
+                .resolve("any", "/sec", &http::Method::GET)
+                .unwrap()
+                .route_id,
+            "catch-all",
+            "no /sec route exists before the mutation",
+        );
+
+        // Drive the real PUT /api/routes/sec handler (with CSRF).
+        let req = hyper::Request::builder()
+            .method("PUT")
+            .uri("/api/routes/sec")
+            .header("cookie", "aegis_csrf=tok")
+            .header("x-csrf-token", "tok")
+            .body(Full::new(Bytes::from(
+                r#"{"id":"sec","path":"/sec","match_type":"prefix","upstream":"sec-pool","strip_prefix":false}"#,
+            )))
+            .unwrap();
+        let resp = handle_route_upsert(req, "sec", &boot_cfg, &services).await;
+        assert_eq!(resp.status(), 200, "route upsert must succeed");
+
+        // After: with NO watcher running, the origin node's trie already
+        // resolves `/sec` to the new route — proving the synchronous
+        // fast-apply ran.
+        let m = route_table
+            .resolve("any", "/sec", &http::Method::GET)
+            .expect("/sec must resolve on the origin node immediately after save");
+        assert_eq!(
+            m.route_id, "sec",
+            "origin node serves the new route synchronously (read-your-own-write), \
+             without waiting for a config-watcher tick",
         );
     }
 
