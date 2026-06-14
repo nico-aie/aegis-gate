@@ -5,11 +5,13 @@ pub mod dns_refresh;
 pub mod dns_resolve;
 pub mod forward;
 pub mod identity;
+pub mod idle_timeout;
 pub mod mtls_failures;
 pub mod pinned_resolver;
 pub mod probe;
 pub mod registry;
 pub mod rotation;
+pub mod streaming;
 pub mod tls;
 
 use std::net::SocketAddr;

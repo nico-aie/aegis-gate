@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::BodyExt;
 use hyper::body::Body;
 use hyper::{Request, Response, StatusCode};
 
@@ -202,6 +202,19 @@ pub struct ProxyContext {
     /// holds a clone that the audit-mutated `PUT /api/gates/bots`
     /// flips, so the toggle hot-applies with no restart.
     pub bots_enabled: Arc<std::sync::atomic::AtomicBool>,
+    /// SSE streaming stream-through config (allowlist, idle timeout,
+    /// kill-switch). Read by `forward()` to classify each upstream
+    /// response's [`ResponseMode`](crate::upstream::streaming::ResponseMode).
+    pub streaming: aegis_core::config::StreamingConfig,
+    /// Decision 5 — bounds concurrent live streams (each pins an upstream
+    /// connection). `forward()` acquires a permit before streaming and the
+    /// permit rides the response body, releasing on stream end / client
+    /// disconnect. Sized from `cfg.streaming.max_concurrent` at boot.
+    pub streaming_permits: Arc<tokio::sync::Semaphore>,
+    /// SSE streaming metrics (active gauge / streamed counter / duration +
+    /// bytes histograms). `None` for test bundles that don't wire a
+    /// metrics registry; the boot path installs it once at registration.
+    pub stream_metrics: Option<Arc<aegis_control::metrics::streaming::StreamingMetrics>>,
 }
 
 impl ProxyContext {
@@ -274,6 +287,11 @@ impl ProxyContext {
             bots_enabled: Arc::new(std::sync::atomic::AtomicBool::new(
                 cfg.bots.enabled,
             )),
+            streaming_permits: Arc::new(tokio::sync::Semaphore::new(
+                cfg.streaming.max_concurrent,
+            )),
+            stream_metrics: None,
+            streaming: cfg.streaming.clone(),
         })
     }
 
@@ -326,7 +344,7 @@ impl ProxyContext {
 pub async fn handle_request<B>(
     req: Request<B>,
     ctx: Arc<ProxyContext>,
-) -> Result<Response<Full<Bytes>>, hyper::Error>
+) -> Result<Response<crate::body::DataBody>, hyper::Error>
 where
     B: Body<Data = Bytes> + Send + 'static,
     B::Error: std::fmt::Display,
@@ -353,7 +371,7 @@ where
         None => {
             return Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
-                .body(Full::new(Bytes::from("no matching route\n")))
+                .body(crate::body::full("no matching route\n"))
                 .unwrap());
         }
     };
@@ -363,7 +381,7 @@ where
         if !cb.allow_request() {
             return Ok(Response::builder()
                 .status(StatusCode::SERVICE_UNAVAILABLE)
-                .body(Full::new(Bytes::from("circuit open\n")))
+                .body(crate::body::full("circuit open\n"))
                 .unwrap());
         }
     }
@@ -377,7 +395,7 @@ where
         None => {
             return Ok(Response::builder()
                 .status(StatusCode::BAD_GATEWAY)
-                .body(Full::new(Bytes::from("unknown upstream\n")))
+                .body(crate::body::full("unknown upstream\n"))
                 .unwrap());
         }
     };
@@ -391,7 +409,7 @@ where
             }
             return Ok(Response::builder()
                 .status(StatusCode::BAD_GATEWAY)
-                .body(Full::new(Bytes::from("no healthy upstream\n")))
+                .body(crate::body::full("no healthy upstream\n"))
                 .unwrap());
         }
     };
@@ -411,7 +429,7 @@ where
             tracing::warn!(error = %e, "failed to collect client body");
             return Ok(Response::builder()
                 .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from("body read error\n")))
+                .body(crate::body::full("body read error\n"))
                 .unwrap());
         }
     };
@@ -431,13 +449,17 @@ where
         parts.uri,
         parts.headers,
         body_bytes,
+        &ctx.streaming,
+        &ctx.streaming_permits,
     )
     .await;
     let upstream_elapsed = upstream_start.map(|s| s.elapsed());
     drop(_inflight_guard);
 
     let mut response = match result {
-        Ok(resp) => {
+        // `_mode` unused on this (legacy/test) path — the data plane is
+        // the production response chain that acts on the streaming mode.
+        Ok((resp, _mode)) => {
             if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
                 if resp.status().is_server_error() {
                     cb.record_failure();
@@ -454,7 +476,7 @@ where
             }
             Response::builder()
                 .status(StatusCode::BAD_GATEWAY)
-                .body(Full::new(Bytes::from("upstream error\n")))
+                .body(crate::body::full("upstream error\n"))
                 .unwrap()
         }
     };
@@ -751,7 +773,11 @@ state:
         serde_yaml::from_str(&yaml).unwrap()
     }
 
-    async fn body_string(resp: Response<Full<Bytes>>) -> String {
+    async fn body_string<B>(resp: Response<B>) -> String
+    where
+        B: hyper::body::Body<Data = Bytes>,
+        B::Error: std::fmt::Debug,
+    {
         use http_body_util::BodyExt as _;
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         String::from_utf8(bytes.to_vec()).unwrap()

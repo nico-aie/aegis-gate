@@ -149,26 +149,33 @@ pub struct DecisionTag {
     /// `Miss` (forwarded, possibly stored). The response stamper copies this
     /// onto the stamped `Decision`.
     pub cache: CacheState,
+    /// SSE (2026-06-14) — `true` when this response was streamed through
+    /// (`text/event-stream` etc.) rather than buffered. A streamed response
+    /// is **header-inspected only**: its body is not buffered or
+    /// response-body-inspected. The listener audit derives
+    /// `streamed` / `response_inspection_skipped` / `reason` from this flag
+    /// so the security team can see *why* the body wasn't inspected.
+    pub streamed: bool,
 }
 
 impl DecisionTag {
     pub fn allow() -> Self {
-        Self { action: Action::Allow, rule_id: None, tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass }
+        Self { action: Action::Allow, rule_id: None, tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false }
     }
     pub fn block(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Block, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass }
+        Self { action: Action::Block, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false }
     }
     pub fn rate_limit(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::RateLimit, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass }
+        Self { action: Action::RateLimit, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false }
     }
     pub fn challenge(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Challenge, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass }
+        Self { action: Action::Challenge, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false }
     }
     pub fn timeout(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Timeout, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass }
+        Self { action: Action::Timeout, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false }
     }
     pub fn circuit_breaker(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::CircuitBreaker, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass }
+        Self { action: Action::CircuitBreaker, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false }
     }
 
     /// Attach the per-request detector score (sum of this request's
@@ -209,6 +216,14 @@ impl DecisionTag {
     /// resolution).
     pub fn with_risk_score(mut self, score: u32) -> Self {
         self.risk_score = Some(score);
+        self
+    }
+
+    /// SSE — mark this decision as a streamed (header-inspected-only)
+    /// response. The listener audit records `streamed: true`,
+    /// `response_inspection_skipped: true`, `reason: "streaming"`.
+    pub fn with_streamed(mut self, streamed: bool) -> Self {
+        self.streamed = streamed;
         self
     }
 }

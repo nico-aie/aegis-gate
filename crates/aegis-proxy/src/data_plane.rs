@@ -23,7 +23,6 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use http_body_util::Full;
 use hyper::Response;
 
 use aegis_core::AuditBus;
@@ -107,10 +106,12 @@ pub(crate) async fn handle_data_request(
     // when TLS termination didn't happen at this layer.
     tls_fingerprint: Option<&aegis_core::TlsFingerprint>,
 ) -> (
-    Response<Full<Bytes>>,
+    // The whole inner chain now carries the unified DataBody (buffered
+    // or streamed), so this wrapper just passes it through.
+    Response<crate::body::DataBody>,
     aegis_control::interop::headers::DecisionTag,
 ) {
-    let result = handle_data_request_inner(
+    let (resp, tag) = handle_data_request_inner(
         req,
         peer,
         proxy_via,
@@ -130,8 +131,8 @@ pub(crate) async fn handle_data_request(
         identity,
         tls_fingerprint,
     ).await;
-    tracing::Span::current().record("action", result.1.action.as_str());
-    result
+    tracing::Span::current().record("action", tag.action.as_str());
+    (resp, tag)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -157,7 +158,7 @@ pub(crate) async fn handle_data_request_inner(
     identity: &aegis_core::ClientIdentity,
     tls_fingerprint: Option<&aegis_core::TlsFingerprint>,
 ) -> (
-    Response<Full<Bytes>>,
+    Response<crate::body::DataBody>,
     aegis_control::interop::headers::DecisionTag,
 ) {
     use aegis_control::interop::headers::DecisionTag;
@@ -255,7 +256,7 @@ pub(crate) async fn handle_data_request_inner(
                 .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
                 .header("retry-after", "0")
                 .header("content-type", "application/json")
-                .body(Full::new(Bytes::from(
+                .body(crate::body::full(Bytes::from(
                     serde_json::json!({
                         "error": "reset_in_progress",
                         "retry_after_seconds": 0,
@@ -577,7 +578,7 @@ pub(crate) async fn handle_data_request_inner(
                             .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
                             .header("retry-after", "1")
                             .header("content-type", "application/json")
-                            .body(Full::new(Bytes::from(
+                            .body(crate::body::full(Bytes::from(
                                 serde_json::json!({
                                     "error": "service_unavailable",
                                     "reason": "ddos_check_failed_fail_close",
@@ -700,7 +701,7 @@ pub(crate) async fn handle_data_request_inner(
                 .status(429)
                 .header("content-type", "application/json")
                 .header("retry-after", rate_decision.retry_after_seconds.to_string())
-                .body(Full::new(Bytes::from(
+                .body(crate::body::full(Bytes::from(
                     serde_json::json!({
                         "error": "rate_limited",
                         "reason": reason,
@@ -727,7 +728,7 @@ pub(crate) async fn handle_data_request_inner(
             let resp = Response::builder()
                 .status(hyper::StatusCode::BAD_REQUEST)
                 .header("content-type", "application/json")
-                .body(Full::new(Bytes::from(
+                .body(crate::body::full(Bytes::from(
                     serde_json::json!({ "error": "body_read_error" }).to_string(),
                 )))
                 .unwrap();
@@ -738,7 +739,7 @@ pub(crate) async fn handle_data_request_inner(
         let resp = Response::builder()
             .status(hyper::StatusCode::PAYLOAD_TOO_LARGE)
             .header("content-type", "application/json")
-            .body(Full::new(Bytes::from(
+            .body(crate::body::full(Bytes::from(
                 serde_json::json!({
                     "error": "body_too_large",
                     "max_bytes": max_body_bytes,
@@ -814,7 +815,7 @@ pub(crate) async fn handle_data_request_inner(
                 .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
                 .header("retry-after", "1")
                 .header("content-type", "application/json")
-                .body(Full::new(Bytes::from(
+                .body(crate::body::full(Bytes::from(
                     serde_json::json!({
                         "error": "load_shed",
                         "tier": aegis_security::detectors::tier_str(tier),
@@ -1107,7 +1108,7 @@ pub(crate) async fn handle_data_request_inner(
             let resp = Response::builder()
                 .status(403)
                 .header("content-type", "application/json")
-                .body(Full::new(Bytes::from(
+                .body(crate::body::full(Bytes::from(
                     serde_json::json!({
                         "error": "forbidden",
                         "reason": reason,
@@ -1376,7 +1377,7 @@ pub(crate) async fn handle_data_request_inner(
                     .status(429)
                     .header("content-type", "application/json")
                     .header("retry-after", "5")
-                    .body(Full::new(Bytes::from(body.to_string())))
+                    .body(crate::body::full(Bytes::from(body.to_string())))
                     .unwrap();
                 // NEW-4 (2026-05-08) — stamp current snapshot score
                 // for the challenge response too.
@@ -1518,7 +1519,7 @@ pub(crate) async fn forward_allow_to_upstream(
     // even after this handler has returned.
     bus: &AuditBus,
 ) -> (
-    Response<Full<Bytes>>,
+    Response<crate::body::DataBody>,
     aegis_control::interop::headers::DecisionTag,
 ) {
     use aegis_control::interop::headers::DecisionTag;
@@ -1576,7 +1577,7 @@ pub(crate) async fn forward_allow_to_upstream(
             tracing::Span::current().record("outcome", "unmatched-route");
             let resp = Response::builder()
                 .status(hyper::StatusCode::NOT_FOUND)
-                .body(Full::new(Bytes::from("no matching route\n")))
+                .body(crate::body::full(Bytes::from("no matching route\n")))
                 .unwrap();
             return (resp, DecisionTag::block("unmatched_route"));
         }
@@ -1662,7 +1663,7 @@ pub(crate) async fn forward_allow_to_upstream(
                     .status(status)
                     .header("content-type", "application/json")
                     .header("x-waf-rule-id", rule_id.as_str())
-                    .body(Full::new(Bytes::from(format!(
+                    .body(crate::body::full(Bytes::from(format!(
                         r#"{{"error":"blocked","rule_id":"{}","reason":"{}"}}"#,
                         rule_id.replace('"', "\\\""),
                         decision.reason.replace('"', "\\\""),
@@ -1713,7 +1714,7 @@ pub(crate) async fn forward_allow_to_upstream(
                     .status(hyper::StatusCode::BAD_GATEWAY)
                     .header("x-waf-rule-id", "connect_to_non_tcp_route")
                     .header("content-type", "text/plain; charset=utf-8")
-                    .body(Full::new(Bytes::from(
+                    .body(crate::body::full(Bytes::from(
                         "CONNECT method not allowed on non-tcp route\n",
                     )))
                     .unwrap();
@@ -1725,7 +1726,7 @@ pub(crate) async fn forward_allow_to_upstream(
                     .status(hyper::StatusCode::BAD_GATEWAY)
                     .header("x-waf-rule-id", "non_connect_to_tcp_route")
                     .header("content-type", "text/plain; charset=utf-8")
-                    .body(Full::new(Bytes::from(
+                    .body(crate::body::full(Bytes::from(
                         "tcp route requires CONNECT method\n",
                     )))
                     .unwrap();
@@ -1767,7 +1768,7 @@ pub(crate) async fn forward_allow_to_upstream(
                 let resp = Response::builder()
                     .status(hyper::StatusCode::BAD_GATEWAY)
                     .header("x-waf-rule-id", "websocket_no_upstream_pool")
-                    .body(Full::new(Bytes::from(
+                    .body(crate::body::full(Bytes::from(
                         "WebSocket upgrade: upstream pool missing\n",
                     )))
                     .unwrap();
@@ -1783,7 +1784,7 @@ pub(crate) async fn forward_allow_to_upstream(
                 let resp = Response::builder()
                     .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
                     .header("x-waf-rule-id", "upstream.no_healthy_member")
-                    .body(Full::new(Bytes::from(
+                    .body(crate::body::full(Bytes::from(
                         "WebSocket upgrade: no healthy upstream member\n",
                     )))
                     .unwrap();
@@ -1811,7 +1812,7 @@ pub(crate) async fn forward_allow_to_upstream(
                     "x-waf-rule-id",
                     "websocket_no_upgrade_extension",
                 )
-                .body(Full::new(Bytes::from(
+                .body(crate::body::full(Bytes::from(
                     "WebSocket upgrade: HTTP/2 extended CONNECT not supported\n",
                 )))
                 .unwrap();
@@ -1857,7 +1858,7 @@ pub(crate) async fn forward_allow_to_upstream(
                         "x-waf-rule-id",
                         "upstream.forward_failed",
                     )
-                    .body(Full::new(Bytes::from(
+                    .body(crate::body::full(Bytes::from(
                         "WebSocket upgrade: upstream forward failed\n",
                     )))
                     .unwrap();
@@ -2196,7 +2197,7 @@ pub(crate) async fn forward_allow_to_upstream(
                 resp_builder = resp_builder.header(name, value);
             }
             let resp = resp_builder
-                .body(Full::new(Bytes::new()))
+                .body(crate::body::full(Bytes::new()))
                 .unwrap();
             return (resp, DecisionTag::allow().with_tier(route_ctx.tier));
         }
@@ -2234,7 +2235,7 @@ pub(crate) async fn forward_allow_to_upstream(
             resp_builder = resp_builder.header(name, value);
         }
         let resp = resp_builder
-            .body(Full::new(Bytes::from(body)))
+            .body(crate::body::full(Bytes::from(body)))
             .unwrap();
         return (resp, DecisionTag::allow().with_tier(route_ctx.tier));
     }
@@ -2264,8 +2265,8 @@ pub(crate) async fn forward_allow_to_upstream(
                         rb = rb.header(n, v);
                     }
                     let resp = rb
-                        .body(Full::new(entry.body.clone()))
-                        .unwrap_or_else(|_| Response::new(Full::new(entry.body.clone())));
+                        .body(crate::body::full(entry.body.clone()))
+                        .unwrap_or_else(|_| Response::new(crate::body::full(entry.body.clone())));
                     return (
                         resp,
                         DecisionTag::allow().with_tier(route_ctx.tier).with_cache(
@@ -2286,7 +2287,7 @@ pub(crate) async fn forward_allow_to_upstream(
             tracing::Span::current().record("outcome", "circuit-open");
             let resp = Response::builder()
                 .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
-                .body(Full::new(Bytes::from("circuit open\n")))
+                .body(crate::body::full(Bytes::from("circuit open\n")))
                 .unwrap();
             return (resp, DecisionTag::circuit_breaker("circuit-open").with_tier(route_ctx.tier));
         }
@@ -2298,7 +2299,7 @@ pub(crate) async fn forward_allow_to_upstream(
             tracing::Span::current().record("outcome", "unknown-upstream");
             let resp = Response::builder()
                 .status(hyper::StatusCode::BAD_GATEWAY)
-                .body(Full::new(Bytes::from("unknown upstream\n")))
+                .body(crate::body::full(Bytes::from("unknown upstream\n")))
                 .unwrap();
             return (resp, DecisionTag::block("unknown-upstream"));
         }
@@ -2313,7 +2314,7 @@ pub(crate) async fn forward_allow_to_upstream(
             tracing::Span::current().record("outcome", "no-healthy-upstream");
             let resp = Response::builder()
                 .status(hyper::StatusCode::BAD_GATEWAY)
-                .body(Full::new(Bytes::from("no healthy upstream\n")))
+                .body(crate::body::full(Bytes::from("no healthy upstream\n")))
                 .unwrap();
             return (resp, DecisionTag::circuit_breaker("no-healthy-upstream"));
         }
@@ -2342,12 +2343,18 @@ pub(crate) async fn forward_allow_to_upstream(
         upstream_uri,
         parts.headers,
         body_bytes,
+        &ctx.streaming,
+        &ctx.streaming_permits,
     )
     .await;
     drop(_inflight_guard);
 
     match result {
-        Ok(resp) => {
+        // Phase 2 staging: `forward()` now returns the classified
+        // ResponseMode, but the body is still buffered here (the
+        // streaming bypass that skips this collect/filter/cache path is
+        // the next increment, once the inner chain carries DataBody).
+        Ok((resp, mode)) => {
             let status = resp.status();
             if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
                 if status.is_server_error() {
@@ -2364,9 +2371,36 @@ pub(crate) async fn forward_allow_to_upstream(
                     "ok"
                 },
             );
+            // SSE plan Phase 3 — streaming bypass. A streamed response is
+            // header-inspected only: its body can't be re-read, so we skip
+            // the response-filter pipeline AND the response cache and pass
+            // the live stream straight through. The decision was made once
+            // in forward() (decision 2a); we act on the carried mode here
+            // and never re-parse Content-Type. Request-side + response-
+            // header inspection already ran. (Phase 5 stamps the
+            // `streamed` / `response_inspection_skipped` audit fields.)
+            if mode.is_streaming() {
+                tracing::Span::current().record("outcome", "streamed");
+                // Phase 5 — attach streaming observability (active gauge,
+                // duration + bytes histograms, streamed counter). The
+                // metric guard rides the body and records on drop (stream
+                // end / client disconnect). No-op when metrics aren't wired.
+                let resp = match ctx.stream_metrics.as_ref() {
+                    Some(m) => resp.map(|body| {
+                        crate::upstream::streaming::meter(body, m.clone())
+                    }),
+                    None => resp,
+                };
+                return (
+                    resp,
+                    DecisionTag::allow()
+                        .with_tier(route_ctx.tier)
+                        .with_streamed(true),
+                );
+            }
             // 2026-05-11 PR #7 — response filtering wire-up.
             // The forwarder buffers the entire upstream body
-            // into `Full::new(body_bytes)` (see
+            // into `crate::body::full(body_bytes)` (see
             // `upstream/forward.rs:469-505`), so we apply
             // response filtering as a single `on_body_frame` call
             // here. Once the proxy supports streaming response
@@ -2436,7 +2470,7 @@ pub(crate) async fn forward_allow_to_upstream(
                             CONTENT_LENGTH,
                             HeaderValue::from_str(&body_str.len().to_string()).unwrap(),
                         )
-                        .body(http_body_util::Full::new(bytes::Bytes::from(body_str)))
+                        .body(crate::body::full(bytes::Bytes::from(body_str)))
                         .unwrap();
                     return (
                         aborted,
@@ -2463,7 +2497,7 @@ pub(crate) async fn forward_allow_to_upstream(
                 allow_tag = allow_tag
                     .with_cache(aegis_control::interop::headers::CacheState::Miss);
             }
-            let resp = Response::from_parts(parts_out, Full::new(final_bytes));
+            let resp = Response::from_parts(parts_out, crate::body::full(final_bytes));
             // 5xx from upstream is not a WAF block — we proxied
             // faithfully; the contract action stays `allow` (the
             // upstream's failure is what the client sees).
@@ -2510,7 +2544,7 @@ pub(crate) async fn forward_allow_to_upstream(
             tracing::Span::current().record("outcome", action_tag.action.as_str());
             let resp = Response::builder()
                 .status(hyper::StatusCode::BAD_GATEWAY)
-                .body(Full::new(Bytes::from("upstream error\n")))
+                .body(crate::body::full(Bytes::from("upstream error\n")))
                 .unwrap();
             (resp, action_tag)
         }
@@ -2530,7 +2564,7 @@ async fn forward_connect_tunnel(
     bus: &AuditBus,
     request_id: String,
 ) -> (
-    Response<Full<Bytes>>,
+    Response<crate::body::DataBody>,
     aegis_control::interop::headers::DecisionTag,
 ) {
     use aegis_control::interop::headers::DecisionTag;
@@ -2720,7 +2754,7 @@ async fn forward_connect_tunnel(
     // CONNECT carries no body.
     let resp = Response::builder()
         .status(200)
-        .body(Full::new(Bytes::new()))
+        .body(crate::body::full(Bytes::new()))
         .unwrap();
     (resp, DecisionTag::allow())
 }
@@ -3133,7 +3167,7 @@ fn connect_deny_response(
     route_id: &str,
     peer_ip: std::net::IpAddr,
 ) -> (
-    Response<Full<Bytes>>,
+    Response<crate::body::DataBody>,
     aegis_control::interop::headers::DecisionTag,
 ) {
     use aegis_control::interop::headers::DecisionTag;
@@ -3161,7 +3195,7 @@ fn connect_deny_response(
         .status(status)
         .header("x-waf-rule-id", rule_id)
         .header("content-type", "text/plain; charset=utf-8")
-        .body(Full::new(Bytes::from(format!("{message}\n"))))
+        .body(crate::body::full(Bytes::from(format!("{message}\n"))))
         .unwrap();
     (resp, DecisionTag::block(rule_id))
 }
@@ -3546,7 +3580,7 @@ fn blocked_response(
     // gate blocks (e.g. risk-score) surface the same detail drawer the
     // detector blocks already do. `None` keeps the slim shape.
     echo: Option<serde_json::Map<String, serde_json::Value>>,
-) -> Response<Full<Bytes>> {
+) -> Response<crate::body::DataBody> {
     let ev = aegis_core::audit::AuditEvent {
         schema_version: 1,
         ts: chrono::Utc::now(),
@@ -3594,7 +3628,7 @@ fn blocked_response(
     Response::builder()
         .status(403)
         .header("content-type", "application/json")
-        .body(Full::new(Bytes::from(
+        .body(crate::body::full(Bytes::from(
             serde_json::json!({ "error": "forbidden", "reason": reason }).to_string(),
         )))
         .unwrap()
@@ -3733,7 +3767,7 @@ state: { backend: in_memory }
         out
     }
 
-    fn rule_id_header(resp: &hyper::Response<http_body_util::Full<Bytes>>) -> Option<&str> {
+    fn rule_id_header<B>(resp: &hyper::Response<B>) -> Option<&str> {
         resp.headers().get("x-waf-rule-id").and_then(|v| v.to_str().ok())
     }
 
@@ -4755,7 +4789,7 @@ mod log_only_enforce_tests {
             while let Ok((s, _)) = l.accept().await {
                 tokio::spawn(async move {
                     let svc = service_fn(|_r: hyper::Request<hyper::body::Incoming>| async {
-                        Ok::<_, Infallible>(hyper::Response::new(Full::new(Bytes::from(
+                        Ok::<_, Infallible>(hyper::Response::new(crate::body::full(Bytes::from(
                             "upstream-ok",
                         ))))
                     });

@@ -1242,8 +1242,11 @@ pub(crate) fn read_cert_inventory(
     })
 }
 
-pub(crate) fn stamp_interop_response(
-    mut resp: Response<Full<Bytes>>,
+// Phase 1 (SSE): generic over the body type — this only stamps response
+// headers, never touches the body — so it works for both the buffered
+// `Full<Bytes>` admin responses and the data plane's unified `DataBody`.
+pub(crate) fn stamp_interop_response<B>(
+    mut resp: Response<B>,
     decision_tag: aegis_control::interop::headers::DecisionTag,
     interop: Option<&Arc<aegis_control::interop::InteropRuntime>>,
     peer: std::net::SocketAddr,
@@ -1255,7 +1258,7 @@ pub(crate) fn stamp_interop_response(
     // here (after Decision::stamp) so the header reflects the
     // actual time-on-wire from the WAF's perspective.
     request_start: std::time::Instant,
-) -> Response<Full<Bytes>> {
+) -> Response<B> {
     use aegis_control::interop::audit::MinimalAuditEntry;
     use aegis_control::interop::headers::Decision;
 

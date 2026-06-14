@@ -812,6 +812,12 @@ pub async fn run(
         aegis_control::metrics::websocket::WebSocketMetrics::register(&metrics)
             .expect("websocket metrics registration failed"),
     );
+    // SSE streaming metrics (active gauge / streamed counter / duration +
+    // bytes histograms). Shared into the ProxyContext below.
+    let stream_metrics = std::sync::Arc::new(
+        aegis_control::metrics::streaming::StreamingMetrics::register(&metrics)
+            .expect("streaming metrics registration failed"),
+    );
     // PROM-T1 — upstream pool health gauges
     // `waf_upstream_members_healthy{pool}` /
     // `waf_upstream_members_total{pool}`. Synced once at boot
@@ -913,6 +919,7 @@ pub async fn run(
         // plane bridge code.  Done before Arc-wrap so the field
         // can stay non-OnceLock (it never changes after boot).
         ctx.websocket_metrics = Some(websocket_metrics.clone());
+        ctx.stream_metrics = Some(stream_metrics.clone());
         // WS-MSG3 — hand the detector chain + mask to the WS
         // message-inspection bridge (it runs on a spawned task and needs
         // owned handles). Same Arcs the accept loop / HTTP path use.
