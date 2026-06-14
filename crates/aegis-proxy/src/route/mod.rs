@@ -305,6 +305,7 @@ pub fn route_summaries(
                 priority: priority.fmt_compact(),
                 default: r.default,
                 enabled: r.enabled,
+                strip_prefix: r.strip_prefix,
             };
             (priority, summary)
         })
@@ -1462,6 +1463,37 @@ state: { backend: in_memory }
                 sum.id
             );
         }
+    }
+
+    /// Regression — `route_summaries()` must carry each route's
+    /// `strip_prefix` through to the `/api/routes` summary so the
+    /// console can round-trip an explicit `false`. Previously the
+    /// field was dropped, so the dashboard re-displayed every route
+    /// with the box checked (`undefined !== false === true`) and a
+    /// later edit silently re-enabled stripping.
+    /// See BUG-route-strip-prefix-toggle-not-roundtripped.md.
+    #[test]
+    fn route_summaries_carry_strip_prefix() {
+        let yaml = r#"
+listeners:
+  data:  [{ bind: "127.0.0.1:8080" }]
+  admin: { bind: "127.0.0.1:9090" }
+routes:
+  - { id: keep, host: "api.example.com", path: "/keep", match_type: prefix, upstream: api-pool, strip_prefix: false }
+  - { id: strip, path: "/strip", match_type: prefix, upstream: stub }
+upstreams:
+  api-pool: { members: [{ addr: "127.0.0.1:3000" }] }
+  stub:     { members: [{ addr: "127.0.0.1:9999" }] }
+state: { backend: in_memory }
+"#;
+        let cfg = aegis_core::load_config_str(yaml).unwrap();
+        let summaries = super::route_summaries(&cfg.routes);
+
+        let keep = summaries.iter().find(|s| s.id == "keep").unwrap();
+        assert!(!keep.strip_prefix, "explicit strip_prefix:false must survive");
+
+        let strip = summaries.iter().find(|s| s.id == "strip").unwrap();
+        assert!(strip.strip_prefix, "default strip_prefix is true");
     }
 
     /// `RouteTable::priorities()` returns rows in priority-descending
