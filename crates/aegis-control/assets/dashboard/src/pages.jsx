@@ -7043,6 +7043,16 @@ function ZtDirectionHeading({ title, flow, children }) {
   );
 }
 
+// 2026-06-14 — downstream mTLS (client certs presented TO the WAF) is
+// hidden for now: this deployment fronts human end users, who can't
+// present a client cert at TLS handshake, so the Mode / CA-bundle /
+// allowed-SANs cards (MtlsModeCard / MtlsCaBundleCard / MtlsSansCard)
+// are noise. Flip to `true` to restore the downstream section if the WAF
+// ever fronts service/machine clients. The backend
+// /api/zero-trust/downstream/* endpoints stay live regardless — this is
+// purely a dashboard visibility gate.
+const SHOW_DOWNSTREAM_MTLS = false;
+
 function PageZeroTrust() {
   return (
     <>
@@ -7050,26 +7060,28 @@ function PageZeroTrust() {
         <div>
           <h1 className="page-title">Zero Trust</h1>
           <p className="page-subtitle">
-            Mutual TLS in both directions — clients authenticating to the WAF,
-            and the WAF authenticating to your backends
+            {SHOW_DOWNSTREAM_MTLS
+              ? 'Mutual TLS in both directions — clients authenticating to the WAF, and the WAF authenticating to your backends'
+              : 'Mutual TLS from the WAF to your backends'}
           </p>
         </div>
       </div>
 
-      {/* MED-4 (2026-06-13) — the downstream direction (client certs
-          presented TO the WAF) was config-only; its cards existed but
-          were never mounted. The page now owns both directions, as the
-          feature doc + the Settings breadcrumb already claim. */}
-      <ZtDirectionHeading title="Downstream" flow="client → WAF">
-        Client certificates presented to the WAF at TLS handshake.
-      </ZtDirectionHeading>
-      <MtlsModeCard />
-      <MtlsCaBundleCard />
-      <MtlsSansCard />
+      {SHOW_DOWNSTREAM_MTLS && (
+        <>
+          <ZtDirectionHeading title="Downstream" flow="client → WAF">
+            Client certificates presented to the WAF at TLS handshake.
+          </ZtDirectionHeading>
+          <MtlsModeCard />
+          <MtlsCaBundleCard />
+          <MtlsSansCard />
 
-      <ZtDirectionHeading title="Upstream" flow="WAF → backend">
-        The WAF's own client identity + per-pool mTLS to your backends.
-      </ZtDirectionHeading>
+          <ZtDirectionHeading title="Upstream" flow="WAF → backend">
+            The WAF's own client identity + per-pool mTLS to your backends.
+          </ZtDirectionHeading>
+        </>
+      )}
+
       <ZtIdentityCard />
       <ZtUpstreamPoolsCard />
       <ZtUpstreamFailuresCard />
@@ -7185,14 +7197,18 @@ function PageSettings() {
       <ConfigVersionsCard />
 
       {/* 2026-06-09 — mTLS cards (mode / CA bundle / SANs) moved to the
-          dedicated Zero Trust page (both mutual-TLS directions live
-          there now). Breadcrumb keeps operator memory happy. */}
-      <div style={{ marginBottom: 12, padding: '8px 12px', background: 'var(--surface-2)', borderRadius: 6, border: '1px solid var(--hairline)', fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <window.I.Shield />
-        <span>Looking for mTLS (client-cert mode, CA bundle, allowed SANs)?</span>
-        <span style={{ color: 'var(--ink-mute)' }}>·</span>
-        <a href="#/zero-trust" style={{ color: 'var(--accent)', fontWeight: 600 }}>Zero Trust</a>
-      </div>
+          dedicated Zero Trust page. These are the DOWNSTREAM (client-cert)
+          controls, so the breadcrumb is gated on the same visibility flag
+          (2026-06-14) — no point pointing operators at a section we hide
+          for end-user deployments. */}
+      {SHOW_DOWNSTREAM_MTLS && (
+        <div style={{ marginBottom: 12, padding: '8px 12px', background: 'var(--surface-2)', borderRadius: 6, border: '1px solid var(--hairline)', fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <window.I.Shield />
+          <span>Looking for mTLS (client-cert mode, CA bundle, allowed SANs)?</span>
+          <span style={{ color: 'var(--ink-mute)' }}>·</span>
+          <a href="#/zero-trust" style={{ color: 'var(--accent)', fontWeight: 600 }}>Zero Trust</a>
+        </div>
+      )}
 
       {/* 2026-05-19 — two dashboard features removed from this page
           during cleanup:
