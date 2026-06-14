@@ -74,7 +74,7 @@ impl WebSocketMetrics {
         let frame_block_total = IntCounterVec::new(
             prometheus::Opts::new(
                 "aegis_websocket_frame_block_total",
-                "WebSocket text messages that crossed the inspection block threshold, labelled by route and top detector tag (enforce + log_only; see the websocket_frame_block audit event's mode).",
+                "WebSocket text messages that crossed the inspection block threshold, labelled by route and top detector tag (enforce + log_only; see the block audit event's surface=websocket / mode fields).",
             ),
             &["route", "tag"],
         )?;

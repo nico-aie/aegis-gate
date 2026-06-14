@@ -55,8 +55,6 @@
 //! (`admin_mutate/{rules,alerts,upstreams,settings,drain}.rs`)
 //! if it grows further.
 
-use std::sync::Arc;
-
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::Response;
@@ -67,10 +65,13 @@ use crate::responses::{
     extract_named_cookie, json_body_response, json_response, mutation_error_response,
 };
 
-pub(crate) async fn handle_mode_put(
-    req: hyper::Request<hyper::body::Incoming>,
+pub(crate) async fn handle_mode_put<B>(
+    req: hyper::Request<B>,
     services: &aegis_control::dashboard_services::DashboardServices,
-) -> Response<Full<Bytes>> {
+) -> Response<Full<Bytes>>
+where
+    B: hyper::body::Body<Data = Bytes>,
+{
     use http_body_util::BodyExt;
 
     let pre = mutation_preamble(&req, "mode-put");
@@ -128,14 +129,22 @@ pub(crate) async fn handle_mode_put(
             },
         );
     match outcome {
-        Ok(_) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "mode": new_mode.as_str(),
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(_) => {
+            // A0 (HOTFIX) — propagate the new global mode to peers so the
+            // dashboard Dry-Run toggle is fleet-wide, not node-local. This
+            // mirrors `POST /__waf_control/set_profile`, which publishes
+            // after its local apply (`admin_dispatch.rs`). Best-effort;
+            // no-op on single-node / in-memory backends.
+            rt.control.publish_modes().await;
+            json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "mode": new_mode.as_str(),
+                    "request_id": pre.request_id,
+                }),
+            )
+        }
         Err(e) => mutation_error_response(e),
     }
 }
@@ -2437,8 +2446,8 @@ struct MutationPreamble {
     request_id: String,
 }
 
-fn mutation_preamble(
-    req: &hyper::Request<hyper::body::Incoming>,
+fn mutation_preamble<B>(
+    req: &hyper::Request<B>,
     prefix: &str,
 ) -> MutationPreamble {
     let csrf_cookie = req
@@ -2552,6 +2561,95 @@ fn patch_rule_remove(base: &str, id: &str) -> Result<String, String> {
         return Err("base config is not a YAML mapping".into());
     };
     let seq = rules_inline_seq(map)?;
+    seq.retain(|v| v.get("id").and_then(|x| x.as_str()) != Some(id));
+    serde_yaml::to_string(&doc).map_err(|e| format!("re-serialize config: {e}"))
+}
+
+/// Get-or-create the top-level `routes:` YAML sequence. Unlike
+/// `upstreams` (a mapping), routes are an ordered list — order is
+/// load-bearing for first-match-wins resolution, so the patch helpers
+/// operate on the sequence positionally.
+fn routes_seq(
+    map: &mut serde_yaml::Mapping,
+) -> Result<&mut serde_yaml::Sequence, String> {
+    let s = |x: &str| serde_yaml::Value::String(x.into());
+    let routes = map
+        .entry(s("routes"))
+        .or_insert_with(|| serde_yaml::Value::Sequence(serde_yaml::Sequence::new()));
+    match routes {
+        serde_yaml::Value::Sequence(seq) => Ok(seq),
+        _ => Err("`routes` config is not a sequence".into()),
+    }
+}
+
+/// Upsert one route into the `routes:` sequence on a YAML config blob:
+/// replace the entry with matching `id` **in place** (preserving its
+/// position, so first-match-wins order is stable), or append a new one.
+/// `route_json` is the operator-authored route value (a serialized
+/// `RouteConfigPatch` with `id` forced) — `RouteConfig` is
+/// `Deserialize`-only, so we route the authored JSON → YAML the same way
+/// `patch_upstream_pool_set` does for pools.
+/// Feeds the versioned config plane so route CRUD converges fleet-wide.
+/// See BUG-console-route-mutation-not-fleet-convergent.md.
+fn patch_routes_set(
+    base: &str,
+    id: &str,
+    route_json: &serde_json::Value,
+) -> Result<String, String> {
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(base).map_err(|e| format!("base config not YAML: {e}"))?;
+    let serde_yaml::Value::Mapping(map) = &mut doc else {
+        return Err("base config is not a YAML mapping".into());
+    };
+    let seq = routes_seq(map)?;
+    let entry =
+        serde_yaml::to_value(route_json).map_err(|e| format!("route not serialisable: {e}"))?;
+    match seq
+        .iter()
+        .position(|v| v.get("id").and_then(|x| x.as_str()) == Some(id))
+    {
+        Some(idx) => seq[idx] = entry,
+        None => seq.push(entry),
+    }
+    serde_yaml::to_string(&doc).map_err(|e| format!("re-serialize config: {e}"))
+}
+
+/// BUG-fix 2026-06-14 — build the config a route's upstream reference is
+/// validated against. Overlays the **active config doc** upstreams
+/// (authoritative — a pool write commits to the doc the instant it
+/// activates) and this node's live pool shadow onto the boot cfg, so a
+/// route pointing at a just-created pool validates without waiting for
+/// per-node apply lag. Without the doc overlay, creating a pool inline
+/// then immediately saving the route races the pool's per-node apply and
+/// surfaces a spurious "pool not found".
+/// See BUG-create-route-pool-not-found-race.md.
+fn route_validation_cfg(
+    boot: &aegis_core::config::WafConfig,
+    doc: &aegis_core::config::WafConfig,
+    shadow: &std::collections::HashMap<String, aegis_core::config::PoolConfig>,
+) -> aegis_core::config::WafConfig {
+    let mut cfg = boot.clone();
+    // Doc first (authoritative + immediately consistent), then the
+    // per-node shadow (covers anything applied locally but not yet
+    // re-read into the doc snapshot we loaded).
+    for (name, pool) in &doc.upstreams {
+        cfg.upstreams.insert(name.clone(), pool.clone());
+    }
+    for (name, pool) in shadow {
+        cfg.upstreams.insert(name.clone(), pool.clone());
+    }
+    cfg
+}
+
+/// Remove the route with `id` from the `routes:` sequence (idempotent —
+/// a missing id is a no-op). Used by the folded `DELETE` route handler.
+fn patch_route_remove(base: &str, id: &str) -> Result<String, String> {
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(base).map_err(|e| format!("base config not YAML: {e}"))?;
+    let serde_yaml::Value::Mapping(map) = &mut doc else {
+        return Err("base config is not a YAML mapping".into());
+    };
+    let seq = routes_seq(map)?;
     seq.retain(|v| v.get("id").and_then(|x| x.as_str()) != Some(id));
     serde_yaml::to_string(&doc).map_err(|e| format!("re-serialize config: {e}"))
 }
@@ -4399,17 +4497,6 @@ pub(crate) async fn handle_mtls_sans_test(
     )
 }
 
-// FIX 2026-05-04 — convert a `&[RouteConfig]` to the
-// `RouteSummary` shape `services.routes` exposes via
-// `/api/routes`. The boot path does this from `accept.rs`; we
-// re-invoke after a successful route upsert/delete so the read
-// endpoint stays in sync with the live RouteTable.
-fn route_summaries(
-    routes: &[aegis_core::config::RouteConfig],
-) -> Vec<aegis_control::api::routes::RouteSummary> {
-    crate::route::route_summaries(routes)
-}
-
 // ---------------------------------------------------------------------------
 // TI-T — audit-mutated tier definitions
 // ---------------------------------------------------------------------------
@@ -5389,18 +5476,6 @@ pub(crate) async fn handle_ai_confidence_get(
 // RT-T3 — audit-mutated route CRUD
 // ---------------------------------------------------------------------------
 
-/// Project the route list of a (possibly-modified) `WafConfig`
-/// into the audit-chain `before` / `after` shape — same approach
-/// as `upstreams_audit_view`, but driven off `RouteConfigPatch`
-/// (the Serialize+Deserialize wire shape) so the diff lands in
-/// the audit log without leaking internal enum reprs.
-fn routes_audit_view(routes: &[aegis_core::config::RouteConfig]) -> serde_json::Value {
-    use aegis_control::api::routes_config::RouteConfigPatch;
-    let patches: Vec<RouteConfigPatch> = routes.iter().map(RouteConfigPatch::from_route).collect();
-    serde_json::to_value(&serde_json::json!({ "routes": patches }))
-        .unwrap_or(serde_json::Value::Null)
-}
-
 pub(crate) async fn handle_route_upsert(
     req: hyper::Request<hyper::body::Incoming>,
     route_id: &str,
@@ -5411,11 +5486,6 @@ pub(crate) async fn handle_route_upsert(
     use http_body_util::BodyExt;
 
     let pre = mutation_preamble(&req, "route-upsert");
-    let Some(writer) = services.route_writer.as_ref().cloned() else {
-        return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
-            "route writer not wired".into(),
-        ));
-    };
 
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
@@ -5441,18 +5511,41 @@ pub(crate) async fn handle_route_upsert(
     // `handle_pool_upsert` keys off the URL.
     patch.id = route_id.to_string();
 
-    // FIX 2026-05-04 — `validate_route` checks
-    // `cfg.upstreams.contains_key(...)`, but the boot-time
-    // `cfg` doesn't reflect pools added at runtime via
-    // `PUT /api/upstreams/pool/{id}`. Read the live pool map
-    // from the writer's shadow so routes pointing at a freshly-
-    // added pool validate cleanly.
-    let mut effective_cfg = cfg.clone();
-    if let Some(writer) = services.upstream_writer.as_ref() {
-        for (name, pool_cfg) in writer.current_pools() {
-            effective_cfg.upstreams.insert(name, pool_cfg);
+    // BUG-fix 2026-06-14 — route the mutation through the **versioned
+    // config plane**, exactly like the pool / rule / tier handlers,
+    // instead of a bare local `RouteWriter::apply`. The old local swap
+    // only updated the originating node's `ArcSwap<CompiledRouteTable>`
+    // and never wrote `config:waf:doc`, so peers had nothing to converge
+    // to (version stuck) and the route was lost on restart. Patching the
+    // shared doc + activating fires the config nudge; every node's
+    // watcher re-derives the route table via `apply_cfg_change_to_routes`
+    // and the change is durable + fleet-consistent.
+    // See BUG-console-route-mutation-not-fleet-convergent.md.
+    let (store, base_blob, expected) = match load_active_config_doc(services).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+
+    // Validate the upstream reference against the **active config doc**
+    // (overlaid with this node's live pool shadow), not the boot cfg
+    // alone. A pool created inline ("+ Create new pool") activates into
+    // the doc immediately, but the per-node pool shadow lags by the apply
+    // window — validating against the doc removes the spurious "pool not
+    // found" on the first route save. See BUG-create-route-pool-not-found-race.md.
+    let doc_cfg = match aegis_core::load_config_str(&base_blob) {
+        Ok(c) => c,
+        Err(e) => {
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                format!("active config doc invalid: {e}"),
+            ))
         }
-    }
+    };
+    let shadow = services
+        .upstream_writer
+        .as_ref()
+        .map(|w| w.current_pools())
+        .unwrap_or_default();
+    let effective_cfg = route_validation_cfg(cfg, &doc_cfg, &shadow);
 
     if let Err(e) = validate_route(&patch, &effective_cfg) {
         return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
@@ -5460,39 +5553,53 @@ pub(crate) async fn handle_route_upsert(
         ));
     }
 
-    let new_route = match patch.into_route() {
-        Ok(r) => r,
+    // `RouteConfig` is `Deserialize`-only, so we serialize the validated
+    // `RouteConfigPatch` (Serialize) and route the authored JSON → YAML
+    // into the doc's `routes:` sequence. This carries the same
+    // user-editable subset `into_route()` did (failure_mode / quota /
+    // tcp_* are reset on upsert today — behaviour preserved), now with
+    // `strip_prefix` round-tripping through the doc.
+    let route_json = match serde_json::to_value(&patch) {
+        Ok(v) => v,
         Err(e) => {
             return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+                aegis_control::api::mutation::MutationError::Internal(e.to_string()),
             )
         }
     };
 
-    // Build the candidate route list: existing routes minus the
-    // one with this id (if present), plus the new entry. Order
-    // matters for first-match-wins resolution: replace-in-place
-    // when updating, append when creating.
-    //
-    // FIX 2026-05-04 — read from the live writer's `current_routes`
-    // (boot snapshot + every prior runtime upsert/delete) instead
-    // of the stale `cfg.routes` boot snapshot. Without this, two
-    // consecutive runtime upserts would silently lose the first
-    // because each handler would rebuild from the boot list.
-    let mut next_routes = writer.current_routes();
-    if next_routes.is_empty() {
-        // Default-impl fallback (test bundles / writers that
-        // didn't override `current_routes`).
-        next_routes = cfg.routes.clone();
-    }
-    let existing_idx = next_routes.iter().position(|r| r.id == route_id);
-    match existing_idx {
-        Some(i) => next_routes[i] = new_route,
-        None => next_routes.push(new_route),
+    let new_blob = match patch_routes_set(&base_blob, route_id, &route_json) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
+    };
+    let patched_cfg = match aegis_core::load_config_str(&new_blob) {
+        Ok(c) => c,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(format!(
+                    "patched config failed validation: {e}"
+                )),
+            )
+        }
+    };
+    // `load_config_str` validates config structure but NOT the route
+    // trie (the builder lives in the proxy crate). Run it here so a bad
+    // route (regex compile failure, duplicate default in a host scope)
+    // is a 400 at PUT time — preserving the feedback the old
+    // `RouteWriter::apply` gave — instead of silently failing later on
+    // each node's watcher apply.
+    if let Err(e) = crate::route::RouteTable::build(&patched_cfg) {
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("route table build failed: {e}"),
+        ));
     }
 
-    let before = routes_audit_view(&cfg.routes);
-    let after = routes_audit_view(&next_routes);
+    let before = serde_json::json!({ "version": expected });
+    let after = serde_json::json!({ "route": route_id });
     let resource = format!("/api/routes/{route_id}");
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "PUT",
@@ -5504,32 +5611,40 @@ pub(crate) async fn handle_route_upsert(
         action: "route_upsert",
         reason: "operator upserted route",
     };
-
-    // Build a candidate WafConfig for the writer to compile.
-    let mut next_cfg = cfg.clone();
-    next_cfg.routes = next_routes;
-
-    let writer_for_apply = Arc::clone(&writer);
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
     let route_id_owned = route_id.to_string();
-    // Snapshot the routes we're about to swap into the RouteTable
-    // so we can seed `services.routes` once apply succeeds — keeps
-    // the GET /api/routes cache in sync with the live table.
-    let next_routes_for_cache = next_cfg.routes.clone();
-    let outcome = services.mutate.apply(&req_ctx, before, after, move || {
-        writer_for_apply.apply(&next_cfg)
-    });
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            store_for_apply
+                .activate(expected, blob, &actor, "upsert route")
+                .await
+        })
+        .await;
     match outcome {
-        Ok(_) => {
-            services.routes.set(route_summaries(&next_routes_for_cache));
-            json_response(
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
                 200,
                 &serde_json::json!({
                     "ok": true,
                     "route": route_id_owned,
+                    "version": version,
+                    "note": "config activated; propagates to all nodes within a few seconds",
                     "request_id": pre.request_id,
                 }),
-            )
-        }
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
         Err(e) => mutation_error_response(e),
     }
 }
@@ -5537,44 +5652,45 @@ pub(crate) async fn handle_route_upsert(
 pub(crate) async fn handle_route_delete(
     req: hyper::Request<hyper::body::Incoming>,
     route_id: &str,
-    cfg: &aegis_core::config::WafConfig,
+    // The boot `cfg` is no longer consulted — existence + last-catch-all
+    // guards run against the active config doc (the fleet source of truth).
+    _cfg: &aegis_core::config::WafConfig,
     services: &aegis_control::dashboard_services::DashboardServices,
 ) -> Response<Full<Bytes>> {
     use aegis_control::api::routes_config::is_only_catchall;
 
     let pre = mutation_preamble(&req, "route-delete");
-    let Some(writer) = services.route_writer.as_ref().cloned() else {
-        return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
-            "route writer not wired".into(),
-        ));
-    };
 
-    // FIX 2026-05-04 — read from live writer state, not the
-    // boot snapshot, so route deletes work after runtime upserts.
-    let live_routes = writer.current_routes();
-    let live_routes = if live_routes.is_empty() {
-        cfg.routes.clone()
-    } else {
-        live_routes
+    // BUG-fix 2026-06-14 — route deletes through the versioned config
+    // plane (see `handle_route_upsert`). The existence + last-catch-all
+    // guards run against the **active config doc** (the source of truth
+    // the fleet converges to) rather than a per-node `RouteWriter`
+    // shadow, so the decision is fleet-consistent.
+    // See BUG-console-route-mutation-not-fleet-convergent.md.
+    let (store, base_blob, expected) = match load_active_config_doc(services).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
     };
-    if !live_routes.iter().any(|r| r.id == route_id) {
+    let doc_cfg = match aegis_core::load_config_str(&base_blob) {
+        Ok(c) => c,
+        Err(e) => {
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                format!("active config doc invalid: {e}"),
+            ))
+        }
+    };
+    if !doc_cfg.routes.iter().any(|r| r.id == route_id) {
         return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
             format!("no route with id '{route_id}'"),
         ));
     }
 
-    // Refuse to remove the last catch-all — it would brick
-    // traffic on every path the more-specific routes don't cover,
-    // and `RouteTable::build` rejects the resulting config
-    // outright. 409 with a clear message so the dashboard can
-    // surface "you must add another catch-all first" without
-    // round-tripping a build error.
-    //
-    // Build a synthetic cfg with the live route list so the
-    // catch-all check sees runtime-added routes too.
-    let mut effective_cfg = cfg.clone();
-    effective_cfg.routes = live_routes.clone();
-    if is_only_catchall(&effective_cfg, route_id) {
+    // Refuse to remove the last catch-all — it would brick traffic on
+    // every path the more-specific routes don't cover, and
+    // `RouteTable::build` rejects the resulting config outright. 409
+    // with a clear message so the dashboard can surface "you must add
+    // another catch-all first" without round-tripping a build error.
+    if is_only_catchall(&doc_cfg, route_id) {
         let body = serde_json::json!({
             "ok": false,
             "reason": "last_catchall",
@@ -5585,11 +5701,32 @@ pub(crate) async fn handle_route_delete(
         return json_body_response(409, body.to_string(), "private, no-store");
     }
 
-    let mut next_routes = live_routes;
-    next_routes.retain(|r| r.id != route_id);
+    let new_blob = match patch_route_remove(&base_blob, route_id) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
+    };
+    let patched_cfg = match aegis_core::load_config_str(&new_blob) {
+        Ok(c) => c,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(format!(
+                    "patched config failed validation: {e}"
+                )),
+            )
+        }
+    };
+    if let Err(e) = crate::route::RouteTable::build(&patched_cfg) {
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("route table build failed: {e}"),
+        ));
+    }
 
-    let before = routes_audit_view(&cfg.routes);
-    let after = routes_audit_view(&next_routes);
+    let before = serde_json::json!({ "version": expected });
+    let after = serde_json::json!({ "removed": route_id });
     let resource = format!("/api/routes/{route_id}");
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "DELETE",
@@ -5601,28 +5738,40 @@ pub(crate) async fn handle_route_delete(
         action: "route_delete",
         reason: "operator removed route",
     };
-
-    let mut next_cfg = cfg.clone();
-    next_cfg.routes = next_routes;
-
-    let writer_for_apply = Arc::clone(&writer);
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
     let route_id_owned = route_id.to_string();
-    let next_routes_for_cache = next_cfg.routes.clone();
-    let outcome = services.mutate.apply(&req_ctx, before, after, move || {
-        writer_for_apply.apply(&next_cfg)
-    });
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            store_for_apply
+                .activate(expected, blob, &actor, "remove route")
+                .await
+        })
+        .await;
     match outcome {
-        Ok(_) => {
-            services.routes.set(route_summaries(&next_routes_for_cache));
-            json_response(
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
                 200,
                 &serde_json::json!({
                     "ok": true,
                     "removed": route_id_owned,
+                    "version": version,
+                    "note": "config activated; propagates to all nodes within a few seconds",
                     "request_id": pre.request_id,
                 }),
-            )
-        }
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
         Err(e) => mutation_error_response(e),
     }
 }
@@ -6309,6 +6458,352 @@ state:
         let v2: serde_yaml::Value = serde_yaml::from_str(&out2).unwrap();
         assert!(v2["upstreams"].get("a").is_none(), "removed");
         assert!(v2["upstreams"].get("b").is_some(), "other pool kept");
+    }
+
+    #[test]
+    fn patch_routes_set_replaces_in_place_then_appends() {
+        // routes is a YAML *sequence* (unlike upstreams which is a
+        // mapping). Upsert must replace the entry with a matching `id`
+        // in place (preserving first-match-wins order) and append new
+        // ids. See BUG-console-route-mutation-not-fleet-convergent.md.
+        let base = concat!(
+            "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\n",
+            "routes:\n",
+            "  - { id: catch-all, path: \"/\", match_type: prefix, upstream: api-pool }\n",
+            "upstreams:\n  api-pool:\n    members:\n      - addr: \"127.0.0.1:1111\"\n",
+        );
+        let route: serde_json::Value = serde_json::json!({
+            "id": "sec",
+            "path": "/sec",
+            "match_type": "prefix",
+            "upstream": "api-pool",
+            "strip_prefix": false,
+        });
+
+        // Append: a new id lands at the end of the sequence.
+        let out = patch_routes_set(base, "sec", &route).unwrap();
+        let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        let seq = v["routes"].as_sequence().unwrap();
+        assert_eq!(seq.len(), 2, "new route appended");
+        assert_eq!(seq[0]["id"].as_str(), Some("catch-all"), "order preserved");
+        assert_eq!(seq[1]["id"].as_str(), Some("sec"));
+        assert_eq!(seq[1]["strip_prefix"].as_bool(), Some(false));
+
+        // Replace-in-place: re-upserting the same id keeps its position.
+        let route2: serde_json::Value = serde_json::json!({
+            "id": "sec",
+            "path": "/sec",
+            "match_type": "prefix",
+            "upstream": "api-pool",
+            "strip_prefix": true,
+        });
+        let out2 = patch_routes_set(&out, "sec", &route2).unwrap();
+        let v2: serde_yaml::Value = serde_yaml::from_str(&out2).unwrap();
+        let seq2 = v2["routes"].as_sequence().unwrap();
+        assert_eq!(seq2.len(), 2, "replace in place, no duplicate");
+        assert_eq!(seq2[1]["id"].as_str(), Some("sec"));
+        assert_eq!(seq2[1]["strip_prefix"].as_bool(), Some(true), "value updated");
+    }
+
+    #[test]
+    fn route_validation_cfg_resolves_doc_only_pool() {
+        // The operator created `sec-pool` inline: it has activated into
+        // the config doc, but this node's per-pool shadow hasn't caught
+        // up yet (empty). A route pointing at it must validate against
+        // the doc overlay, not race the per-node apply.
+        // See BUG-create-route-pool-not-found-race.md.
+        use aegis_control::api::routes_config::{validate_route, RouteConfigPatch};
+
+        let boot_yaml = concat!(
+            "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\n  admin: { bind: \"127.0.0.1:9090\" }\n",
+            "routes:\n  - { id: catch-all, path: \"/\", match_type: prefix, upstream: api-pool }\n",
+            "upstreams:\n  api-pool: { members: [{ addr: \"127.0.0.1:1111\" }] }\n",
+            "state: { backend: in_memory }\n",
+        );
+        // Doc = boot + the freshly-created pool the operator just saved.
+        let doc_yaml = concat!(
+            "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\n  admin: { bind: \"127.0.0.1:9090\" }\n",
+            "routes:\n  - { id: catch-all, path: \"/\", match_type: prefix, upstream: api-pool }\n",
+            "upstreams:\n",
+            "  api-pool: { members: [{ addr: \"127.0.0.1:1111\" }] }\n",
+            "  sec-pool: { members: [{ addr: \"127.0.0.1:2222\" }] }\n",
+            "state: { backend: in_memory }\n",
+        );
+        let boot = aegis_core::load_config_str(boot_yaml).unwrap();
+        let doc = aegis_core::load_config_str(doc_yaml).unwrap();
+        let shadow = std::collections::HashMap::new();
+
+        let merged = route_validation_cfg(&boot, &doc, &shadow);
+        assert!(
+            merged.upstreams.contains_key("sec-pool"),
+            "doc-only pool must be overlaid for validation",
+        );
+
+        let patch = RouteConfigPatch {
+            id: "sec".into(),
+            host: None,
+            path: "/sec".into(),
+            match_type: "prefix".into(),
+            strip_prefix: true,
+            methods: None,
+            upstream: "sec-pool".into(),
+            tier_override: None,
+            default: false,
+            enabled: true,
+            ws_inspect: None,
+        };
+        assert!(
+            validate_route(&patch, &merged).is_ok(),
+            "route at a doc-committed pool must validate (no race)",
+        );
+        // Regression guard: against the boot cfg alone it would 'not found'.
+        assert!(
+            validate_route(&patch, &boot).is_err(),
+            "boot cfg lacks the new pool — proves the overlay is what fixes it",
+        );
+    }
+
+    #[test]
+    fn patch_route_remove_drops_only_the_named_route() {
+        let base = concat!(
+            "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\n",
+            "routes:\n",
+            "  - { id: catch-all, path: \"/\", match_type: prefix, upstream: api-pool }\n",
+            "  - { id: sec, path: \"/sec\", match_type: prefix, upstream: api-pool }\n",
+            "upstreams:\n  api-pool:\n    members:\n      - addr: \"127.0.0.1:1111\"\n",
+        );
+        let out = patch_route_remove(base, "sec").unwrap();
+        let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        let seq = v["routes"].as_sequence().unwrap();
+        assert_eq!(seq.len(), 1, "only the named route removed");
+        assert_eq!(seq[0]["id"].as_str(), Some("catch-all"));
+
+        // Idempotent: removing a missing id is a no-op, not an error.
+        let out2 = patch_route_remove(&out, "ghost").unwrap();
+        let v2: serde_yaml::Value = serde_yaml::from_str(&out2).unwrap();
+        assert_eq!(v2["routes"].as_sequence().unwrap().len(), 1);
+    }
+
+    /// Bug-fix regression — console route CRUD must converge across the
+    /// fleet via the versioned config plane, not stay local to the
+    /// mutating node. Two nodes share one config doc (simulating shared
+    /// Redis): a route activated by node A's mutation path must
+    /// (1) appear in node B's live route trie within the convergence SLA,
+    /// (2) bump the shared doc version, and (3) survive a node-A
+    /// "restart" (rebuild from the doc, not the boot YAML).
+    /// See BUG-console-route-mutation-not-fleet-convergent.md.
+    #[tokio::test]
+    async fn console_route_upsert_converges_across_two_nodes() {
+        use crate::config_source::config_store::{Activate, ConfigStore};
+        use crate::config_source::redis_source::{spawn_watcher, ApplyTargets};
+        use crate::state::in_memory::InMemoryBackend;
+        use aegis_core::audit::AuditBus;
+        use arc_swap::ArcSwap;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        // Boot config: catch-all only, no `/sec` route. Two pools exist
+        // so the new route has a valid upstream.
+        let boot_yaml = concat!(
+            "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\n  admin: { bind: \"127.0.0.1:9090\" }\n",
+            "routes:\n  - { id: catch-all, path: \"/\", match_type: prefix, upstream: api-pool }\n",
+            "upstreams:\n",
+            "  api-pool: { members: [{ addr: \"127.0.0.1:1111\" }] }\n",
+            "  sec-pool: { members: [{ addr: \"127.0.0.1:2222\" }] }\n",
+            "state: { backend: in_memory }\n",
+        );
+        let boot_cfg = aegis_core::load_config_str(boot_yaml).unwrap();
+
+        // One shared backend = one shared config doc across both nodes.
+        let backend: Arc<InMemoryBackend> = Arc::new(InMemoryBackend::new());
+        let store_a =
+            ConfigStore::new(backend.clone() as Arc<dyn aegis_core::state::StateBackend>);
+
+        // Node B: a live ProxyContext + a config-plane watcher polling
+        // fast, exactly as `run.rs` wires it (proxy_ctx carries the route
+        // table the watcher rebuilds).
+        let ctx_b = Arc::new(
+            crate::proxy::ProxyContext::build(
+                &boot_cfg,
+                Arc::new(aegis_security::NoopPipeline),
+            )
+            .unwrap(),
+        );
+        let cfg_b = Arc::new(ArcSwap::from_pointee(boot_cfg.clone()));
+        let targets_b = ApplyTargets {
+            detector_mask: None,
+            proxy_ctx: Some(ctx_b.clone()),
+            ip_rate_limiter: None,
+            tls_resolver: None,
+            ai_toggle: None,
+            ai_threshold: None,
+            response_filter_writer: None,
+            tiers: None,
+            rules: None,
+            active_ruleset: None,
+            upstream_writer: None,
+            receiver_writer: None,
+            client_auth: None,
+        };
+        let store_b =
+            ConfigStore::new(backend.clone() as Arc<dyn aegis_core::state::StateBackend>);
+        let handle = spawn_watcher(
+            store_b,
+            "waf-2".to_string(),
+            cfg_b.clone(),
+            AuditBus::new(64),
+            targets_b,
+            Duration::from_millis(50),
+            None,
+        );
+
+        // Before convergence: node B falls through to catch-all on /sec.
+        let before = ctx_b
+            .route_table
+            .resolve("any", "/sec", &http::Method::GET)
+            .unwrap();
+        assert_eq!(
+            before.route_id, "catch-all",
+            "node B must not have the route before the mutation",
+        );
+
+        // Node A's console mutation path: patch the doc's routes sequence
+        // and activate — exactly what `handle_route_upsert` does, minus
+        // the HTTP/services layer.
+        let route_json = serde_json::json!({
+            "id": "sec",
+            "path": "/sec",
+            "match_type": "prefix",
+            "upstream": "sec-pool",
+            "strip_prefix": false,
+        });
+        let new_blob = patch_routes_set(boot_yaml, "sec", &route_json).unwrap();
+        let activated = store_a
+            .activate(0, new_blob, "operator", "upsert route")
+            .await
+            .unwrap();
+        assert_eq!(
+            activated,
+            Activate::Applied { version: 1 },
+            "the mutation must bump the shared doc version",
+        );
+
+        // (1) Node B converges within the SLA via its own watcher.
+        let mut converged = false;
+        for _ in 0..60 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if let Some(m) = ctx_b
+                .route_table
+                .resolve("any", "/sec", &http::Method::GET)
+            {
+                if m.route_id == "sec" {
+                    converged = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            converged,
+            "node B must serve the console-added route after convergence \
+             (this is the fleet-convergence guarantee the bug broke)",
+        );
+        handle.abort();
+
+        // (2) + (3) Restart durability: a fresh node built from the
+        // ACTIVATED DOC (not the boot YAML, which lacks /sec) resolves
+        // the route — proving it's durable, not a transient local swap.
+        let store_c =
+            ConfigStore::new(backend.clone() as Arc<dyn aegis_core::state::StateBackend>);
+        let doc = store_c
+            .load()
+            .await
+            .unwrap()
+            .expect("activated config doc must be present");
+        assert_eq!(doc.version, 1, "shared doc carries the bumped version");
+        let restarted_cfg = aegis_core::load_config_str(&doc.blob).unwrap();
+        let restarted_table = crate::route::RouteTable::build(&restarted_cfg).unwrap();
+        let r = restarted_table
+            .resolve("any", "/sec", &http::Method::GET)
+            .unwrap();
+        assert_eq!(
+            r.route_id, "sec",
+            "route survives restart because it lives in the config doc",
+        );
+    }
+
+    // A0 (HOTFIX) — the dashboard Dry-Run toggle (`PUT /api/mode`) must
+    // propagate the new global mode to peers, exactly as
+    // `POST /__waf_control/set_profile` does. Pre-fix `handle_mode_put`
+    // only flipped the node-local `ModeStore` and never published a
+    // `ClusterModeDoc`, so behind a load balancer the peers kept
+    // enforcing/shadowing on their old mode. Parallels
+    // `cluster_control::tests::published_modes_converge_to_a_second_node`
+    // but drives the real HTTP handler so the missing publish is caught.
+    #[tokio::test]
+    async fn mode_put_publishes_to_cluster_so_peer_converges() {
+        use crate::state::in_memory::InMemoryBackend;
+        use aegis_control::interop::cluster_sync;
+        use aegis_control::interop::headers::Mode;
+        use aegis_control::interop::mode::ModeStore;
+        use aegis_core::audit::AuditBus;
+        use std::sync::Arc;
+
+        // One shared backend = one shared config plane across both nodes.
+        let backend: Arc<dyn aegis_core::state::StateBackend> =
+            Arc::new(InMemoryBackend::new());
+
+        // Node A's interop runtime, cluster-wired (as `run` does post-boot
+        // for Redis deployments via `set_cluster_state`).
+        let cfg = aegis_core::load_config_str(concat!(
+            "listeners:\n  data: [{ bind: \"0.0.0.0:443\" }]\n",
+            "  admin: { bind: \"127.0.0.1:9443\" }\n",
+            "routes:\n  - { id: catch-all, path: \"/\", upstream: api }\n",
+            "upstreams:\n  api: { members: [{ addr: \"127.0.0.1:8443\" }] }\n",
+            "state: { backend: in_memory }\n",
+        ))
+        .unwrap();
+        let risk = aegis_security::risk::RiskTracker::new(
+            &aegis_core::config::RiskConfig::default(),
+        );
+        let iprl = Arc::new(aegis_security::rate_limit::IpRateLimiter::new(
+            Default::default(),
+        ));
+        let rt = crate::run::build_interop_runtime(&cfg, &risk, &iprl)
+            .expect("interop surface is on by default");
+        rt.control.set_cluster_state(backend.clone());
+
+        // DashboardServices bundle wired to this interop runtime.
+        let bus = AuditBus::new(64);
+        let pools: aegis_control::dashboard_services::PoolSnapshotProvider =
+            Arc::new(|| aegis_control::api::upstreams::PoolHealthSnapshot {
+                pools: Vec::new(),
+            });
+        let (mut services, _drain) =
+            aegis_control::dashboard_services::DashboardServices::spawn(bus, pools, None);
+        services.interop = Some(rt.clone());
+
+        // The dashboard Dry-Run toggle: PUT /api/mode { log_only } + CSRF.
+        let req = hyper::Request::builder()
+            .method("PUT")
+            .uri("/api/mode")
+            .header("cookie", "aegis_csrf=tok")
+            .header("x-csrf-token", "tok")
+            .body(Full::new(Bytes::from(r#"{"mode":"log_only"}"#)))
+            .unwrap();
+        let resp = handle_mode_put(req, &services).await;
+        assert_eq!(resp.status(), 200, "mode-put must succeed");
+
+        // Node B starts clean and converges on the peer-published doc.
+        let doc = cluster_sync::read_modes(&backend)
+            .await
+            .expect("node A must publish a modes doc to the cluster plane");
+        let node_b = ModeStore::new(Mode::Enforce);
+        node_b.set_snapshot(doc.to_snapshot());
+        assert_eq!(
+            node_b.resolve("rules_engine", None),
+            Mode::LogOnly,
+            "peer converges on the dashboard-set global mode",
+        );
     }
 
     #[test]

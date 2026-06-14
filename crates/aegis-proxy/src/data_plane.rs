@@ -23,7 +23,6 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use http_body_util::Full;
 use hyper::Response;
 
 use aegis_core::AuditBus;
@@ -107,10 +106,12 @@ pub(crate) async fn handle_data_request(
     // when TLS termination didn't happen at this layer.
     tls_fingerprint: Option<&aegis_core::TlsFingerprint>,
 ) -> (
-    Response<Full<Bytes>>,
+    // The whole inner chain now carries the unified DataBody (buffered
+    // or streamed), so this wrapper just passes it through.
+    Response<crate::body::DataBody>,
     aegis_control::interop::headers::DecisionTag,
 ) {
-    let result = handle_data_request_inner(
+    let (resp, tag) = handle_data_request_inner(
         req,
         peer,
         proxy_via,
@@ -130,8 +131,8 @@ pub(crate) async fn handle_data_request(
         identity,
         tls_fingerprint,
     ).await;
-    tracing::Span::current().record("action", result.1.action.as_str());
-    result
+    tracing::Span::current().record("action", tag.action.as_str());
+    (resp, tag)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -157,7 +158,7 @@ pub(crate) async fn handle_data_request_inner(
     identity: &aegis_core::ClientIdentity,
     tls_fingerprint: Option<&aegis_core::TlsFingerprint>,
 ) -> (
-    Response<Full<Bytes>>,
+    Response<crate::body::DataBody>,
     aegis_control::interop::headers::DecisionTag,
 ) {
     use aegis_control::interop::headers::DecisionTag;
@@ -255,7 +256,7 @@ pub(crate) async fn handle_data_request_inner(
                 .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
                 .header("retry-after", "0")
                 .header("content-type", "application/json")
-                .body(Full::new(Bytes::from(
+                .body(crate::body::full(Bytes::from(
                     serde_json::json!({
                         "error": "reset_in_progress",
                         "retry_after_seconds": 0,
@@ -577,7 +578,7 @@ pub(crate) async fn handle_data_request_inner(
                             .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
                             .header("retry-after", "1")
                             .header("content-type", "application/json")
-                            .body(Full::new(Bytes::from(
+                            .body(crate::body::full(Bytes::from(
                                 serde_json::json!({
                                     "error": "service_unavailable",
                                     "reason": "ddos_check_failed_fail_close",
@@ -700,7 +701,7 @@ pub(crate) async fn handle_data_request_inner(
                 .status(429)
                 .header("content-type", "application/json")
                 .header("retry-after", rate_decision.retry_after_seconds.to_string())
-                .body(Full::new(Bytes::from(
+                .body(crate::body::full(Bytes::from(
                     serde_json::json!({
                         "error": "rate_limited",
                         "reason": reason,
@@ -727,7 +728,7 @@ pub(crate) async fn handle_data_request_inner(
             let resp = Response::builder()
                 .status(hyper::StatusCode::BAD_REQUEST)
                 .header("content-type", "application/json")
-                .body(Full::new(Bytes::from(
+                .body(crate::body::full(Bytes::from(
                     serde_json::json!({ "error": "body_read_error" }).to_string(),
                 )))
                 .unwrap();
@@ -738,7 +739,7 @@ pub(crate) async fn handle_data_request_inner(
         let resp = Response::builder()
             .status(hyper::StatusCode::PAYLOAD_TOO_LARGE)
             .header("content-type", "application/json")
-            .body(Full::new(Bytes::from(
+            .body(crate::body::full(Bytes::from(
                 serde_json::json!({
                     "error": "body_too_large",
                     "max_bytes": max_body_bytes,
@@ -814,7 +815,7 @@ pub(crate) async fn handle_data_request_inner(
                 .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
                 .header("retry-after", "1")
                 .header("content-type", "application/json")
-                .body(Full::new(Bytes::from(
+                .body(crate::body::full(Bytes::from(
                     serde_json::json!({
                         "error": "load_shed",
                         "tier": aegis_security::detectors::tier_str(tier),
@@ -1107,7 +1108,7 @@ pub(crate) async fn handle_data_request_inner(
             let resp = Response::builder()
                 .status(403)
                 .header("content-type", "application/json")
-                .body(Full::new(Bytes::from(
+                .body(crate::body::full(Bytes::from(
                     serde_json::json!({
                         "error": "forbidden",
                         "reason": reason,
@@ -1376,7 +1377,7 @@ pub(crate) async fn handle_data_request_inner(
                     .status(429)
                     .header("content-type", "application/json")
                     .header("retry-after", "5")
-                    .body(Full::new(Bytes::from(body.to_string())))
+                    .body(crate::body::full(Bytes::from(body.to_string())))
                     .unwrap();
                 // NEW-4 (2026-05-08) — stamp current snapshot score
                 // for the challenge response too.
@@ -1518,7 +1519,7 @@ pub(crate) async fn forward_allow_to_upstream(
     // even after this handler has returned.
     bus: &AuditBus,
 ) -> (
-    Response<Full<Bytes>>,
+    Response<crate::body::DataBody>,
     aegis_control::interop::headers::DecisionTag,
 ) {
     use aegis_control::interop::headers::DecisionTag;
@@ -1576,7 +1577,7 @@ pub(crate) async fn forward_allow_to_upstream(
             tracing::Span::current().record("outcome", "unmatched-route");
             let resp = Response::builder()
                 .status(hyper::StatusCode::NOT_FOUND)
-                .body(Full::new(Bytes::from("no matching route\n")))
+                .body(crate::body::full(Bytes::from("no matching route\n")))
                 .unwrap();
             return (resp, DecisionTag::block("unmatched_route"));
         }
@@ -1662,7 +1663,7 @@ pub(crate) async fn forward_allow_to_upstream(
                     .status(status)
                     .header("content-type", "application/json")
                     .header("x-waf-rule-id", rule_id.as_str())
-                    .body(Full::new(Bytes::from(format!(
+                    .body(crate::body::full(Bytes::from(format!(
                         r#"{{"error":"blocked","rule_id":"{}","reason":"{}"}}"#,
                         rule_id.replace('"', "\\\""),
                         decision.reason.replace('"', "\\\""),
@@ -1713,7 +1714,7 @@ pub(crate) async fn forward_allow_to_upstream(
                     .status(hyper::StatusCode::BAD_GATEWAY)
                     .header("x-waf-rule-id", "connect_to_non_tcp_route")
                     .header("content-type", "text/plain; charset=utf-8")
-                    .body(Full::new(Bytes::from(
+                    .body(crate::body::full(Bytes::from(
                         "CONNECT method not allowed on non-tcp route\n",
                     )))
                     .unwrap();
@@ -1725,7 +1726,7 @@ pub(crate) async fn forward_allow_to_upstream(
                     .status(hyper::StatusCode::BAD_GATEWAY)
                     .header("x-waf-rule-id", "non_connect_to_tcp_route")
                     .header("content-type", "text/plain; charset=utf-8")
-                    .body(Full::new(Bytes::from(
+                    .body(crate::body::full(Bytes::from(
                         "tcp route requires CONNECT method\n",
                     )))
                     .unwrap();
@@ -1767,7 +1768,7 @@ pub(crate) async fn forward_allow_to_upstream(
                 let resp = Response::builder()
                     .status(hyper::StatusCode::BAD_GATEWAY)
                     .header("x-waf-rule-id", "websocket_no_upstream_pool")
-                    .body(Full::new(Bytes::from(
+                    .body(crate::body::full(Bytes::from(
                         "WebSocket upgrade: upstream pool missing\n",
                     )))
                     .unwrap();
@@ -1783,7 +1784,7 @@ pub(crate) async fn forward_allow_to_upstream(
                 let resp = Response::builder()
                     .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
                     .header("x-waf-rule-id", "upstream.no_healthy_member")
-                    .body(Full::new(Bytes::from(
+                    .body(crate::body::full(Bytes::from(
                         "WebSocket upgrade: no healthy upstream member\n",
                     )))
                     .unwrap();
@@ -1811,7 +1812,7 @@ pub(crate) async fn forward_allow_to_upstream(
                     "x-waf-rule-id",
                     "websocket_no_upgrade_extension",
                 )
-                .body(Full::new(Bytes::from(
+                .body(crate::body::full(Bytes::from(
                     "WebSocket upgrade: HTTP/2 extended CONNECT not supported\n",
                 )))
                 .unwrap();
@@ -1857,7 +1858,7 @@ pub(crate) async fn forward_allow_to_upstream(
                         "x-waf-rule-id",
                         "upstream.forward_failed",
                     )
-                    .body(Full::new(Bytes::from(
+                    .body(crate::body::full(Bytes::from(
                         "WebSocket upgrade: upstream forward failed\n",
                     )))
                     .unwrap();
@@ -1896,6 +1897,13 @@ pub(crate) async fn forward_allow_to_upstream(
                 .ws_detector_mask
                 .as_ref()
                 .map(|m| m.resolve(Some(route_ctx.tier)));
+            // B1 — the global `ModeStore` (set by `set_profile` / the
+            // dashboard Dry-Run toggle) is AND-ed with the per-route
+            // `ws_inspect.mode`: a frame blocks only when BOTH resolve to
+            // enforce, so a fleet-wide dry-run shadows the WebSocket
+            // surface exactly like it shadows the HTTP detectors. `None`
+            // (interop off) ⇒ treat global as enforce (no override).
+            let ws_modes = ctx.interop_modes.get().cloned();
             let ws_block_at = ctx
                 .tiers
                 .get()
@@ -1972,12 +1980,23 @@ pub(crate) async fn forward_allow_to_upstream(
                                 ws_cfg.mode,
                                 aegis_core::config::WsInspectMode::Enforce
                             );
+                            // B1 — the oversize gate fires before any frame
+                            // (so no per-frame `tag` exists yet); AND the
+                            // per-route enforce flag with the ambient global
+                            // default so a fleet-wide dry-run forwards +
+                            // meters an oversize message instead of fail-
+                            // closing it (WS 1009).
+                            let global_default_enforce = ws_modes
+                                .as_ref()
+                                .map(|m| m.current().default)
+                                .unwrap_or(aegis_control::interop::headers::Mode::Enforce)
+                                == aegis_control::interop::headers::Mode::Enforce;
                             let bridge_cfg = crate::proto::ws_inspect::WsBridgeConfig {
                                 max_message_bytes: ws_cfg.max_message_bytes,
                                 // 2026-06-12 — fail-closed (WS 1009) over the
                                 // inspection cap in enforce; forward + meter
                                 // the skip in log_only.
-                                over_cap_close: enforce,
+                                over_cap_close: enforce && global_default_enforce,
                             };
                             let inspector = move |payload: &[u8]| {
                                 use crate::proto::ws_inspect::WsVerdict;
@@ -2024,7 +2043,26 @@ pub(crate) async fn forward_allow_to_upstream(
                                     .unwrap_or_else(|| "detectors".to_string());
                                 let matched_field =
                                     top.map(|s| s.field.clone()).unwrap_or_default();
-                                let mode_str = if enforce { "enforce" } else { "log_only" };
+                                // B1 — AND the per-route enforce flag with the
+                                // global mode resolved for THIS detector tag
+                                // (e.g. `sqli` → `rules_engine/sqli`), so a
+                                // global `scope:all` dry-run OR a per-policy
+                                // toggle both downgrade the frame to forward +
+                                // would-block audit.
+                                let global_mode = ws_modes
+                                    .as_ref()
+                                    .map(|m| {
+                                        aegis_control::interop::rule_map::mode_for_rule(
+                                            m,
+                                            Some(&tag),
+                                        )
+                                    })
+                                    .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
+                                let effective_enforce = enforce
+                                    && global_mode
+                                        == aegis_control::interop::headers::Mode::Enforce;
+                                let mode_str =
+                                    if effective_enforce { "enforce" } else { "log_only" };
                                 if let Some(m) = ws_metrics_for_inspect.as_ref() {
                                     m.record_frame_block(&ws_route_id, &tag);
                                 }
@@ -2046,7 +2084,18 @@ pub(crate) async fn forward_allow_to_upstream(
                                     class: aegis_core::audit::AuditClass::Access,
                                     tenant_id: None,
                                     tier: Some(ws_tier),
-                                    action: "websocket_frame_block".into(),
+                                    // B2 — consolidate with the WAF rule
+                                    // taxonomy: emit `action: "block"` (not a
+                                    // bespoke `websocket_frame_block`) so the
+                                    // Live Feed renders it via the normal block
+                                    // path and `audit.rs` counts it in the
+                                    // Blocked KPI. The WS-specific signal moves
+                                    // into `fields.surface`; `rule_id` already
+                                    // carries the detector tag and `mode`
+                                    // distinguishes enforce vs would-block. The
+                                    // `aegis_websocket_frame_block_total` metric
+                                    // (above) stays the WS drill-down.
+                                    action: "block".into(),
                                     reason: format!(
                                         "websocket text frame blocked by detectors: {tag} \
                                          (score: {sum})"
@@ -2059,11 +2108,12 @@ pub(crate) async fn forward_allow_to_upstream(
                                     path: None,
                                     mode: Some(mode_str.to_string()),
                                     fields: serde_json::json!({
+                                        "surface": "websocket",
                                         "matched_field": matched_field,
                                         "message_bytes": payload.len(),
                                     }),
                                 });
-                                if enforce {
+                                if effective_enforce {
                                     WsVerdict::Block
                                 } else {
                                     WsVerdict::Allow
@@ -2196,7 +2246,7 @@ pub(crate) async fn forward_allow_to_upstream(
                 resp_builder = resp_builder.header(name, value);
             }
             let resp = resp_builder
-                .body(Full::new(Bytes::new()))
+                .body(crate::body::full(Bytes::new()))
                 .unwrap();
             return (resp, DecisionTag::allow().with_tier(route_ctx.tier));
         }
@@ -2234,7 +2284,7 @@ pub(crate) async fn forward_allow_to_upstream(
             resp_builder = resp_builder.header(name, value);
         }
         let resp = resp_builder
-            .body(Full::new(Bytes::from(body)))
+            .body(crate::body::full(Bytes::from(body)))
             .unwrap();
         return (resp, DecisionTag::allow().with_tier(route_ctx.tier));
     }
@@ -2264,8 +2314,8 @@ pub(crate) async fn forward_allow_to_upstream(
                         rb = rb.header(n, v);
                     }
                     let resp = rb
-                        .body(Full::new(entry.body.clone()))
-                        .unwrap_or_else(|_| Response::new(Full::new(entry.body.clone())));
+                        .body(crate::body::full(entry.body.clone()))
+                        .unwrap_or_else(|_| Response::new(crate::body::full(entry.body.clone())));
                     return (
                         resp,
                         DecisionTag::allow().with_tier(route_ctx.tier).with_cache(
@@ -2286,7 +2336,7 @@ pub(crate) async fn forward_allow_to_upstream(
             tracing::Span::current().record("outcome", "circuit-open");
             let resp = Response::builder()
                 .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
-                .body(Full::new(Bytes::from("circuit open\n")))
+                .body(crate::body::full(Bytes::from("circuit open\n")))
                 .unwrap();
             return (resp, DecisionTag::circuit_breaker("circuit-open").with_tier(route_ctx.tier));
         }
@@ -2298,7 +2348,7 @@ pub(crate) async fn forward_allow_to_upstream(
             tracing::Span::current().record("outcome", "unknown-upstream");
             let resp = Response::builder()
                 .status(hyper::StatusCode::BAD_GATEWAY)
-                .body(Full::new(Bytes::from("unknown upstream\n")))
+                .body(crate::body::full(Bytes::from("unknown upstream\n")))
                 .unwrap();
             return (resp, DecisionTag::block("unknown-upstream"));
         }
@@ -2313,7 +2363,7 @@ pub(crate) async fn forward_allow_to_upstream(
             tracing::Span::current().record("outcome", "no-healthy-upstream");
             let resp = Response::builder()
                 .status(hyper::StatusCode::BAD_GATEWAY)
-                .body(Full::new(Bytes::from("no healthy upstream\n")))
+                .body(crate::body::full(Bytes::from("no healthy upstream\n")))
                 .unwrap();
             return (resp, DecisionTag::circuit_breaker("no-healthy-upstream"));
         }
@@ -2342,12 +2392,18 @@ pub(crate) async fn forward_allow_to_upstream(
         upstream_uri,
         parts.headers,
         body_bytes,
+        &ctx.streaming,
+        &ctx.streaming_permits,
     )
     .await;
     drop(_inflight_guard);
 
     match result {
-        Ok(resp) => {
+        // Phase 2 staging: `forward()` now returns the classified
+        // ResponseMode, but the body is still buffered here (the
+        // streaming bypass that skips this collect/filter/cache path is
+        // the next increment, once the inner chain carries DataBody).
+        Ok((resp, mode)) => {
             let status = resp.status();
             if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
                 if status.is_server_error() {
@@ -2364,9 +2420,36 @@ pub(crate) async fn forward_allow_to_upstream(
                     "ok"
                 },
             );
+            // SSE plan Phase 3 — streaming bypass. A streamed response is
+            // header-inspected only: its body can't be re-read, so we skip
+            // the response-filter pipeline AND the response cache and pass
+            // the live stream straight through. The decision was made once
+            // in forward() (decision 2a); we act on the carried mode here
+            // and never re-parse Content-Type. Request-side + response-
+            // header inspection already ran. (Phase 5 stamps the
+            // `streamed` / `response_inspection_skipped` audit fields.)
+            if mode.is_streaming() {
+                tracing::Span::current().record("outcome", "streamed");
+                // Phase 5 — attach streaming observability (active gauge,
+                // duration + bytes histograms, streamed counter). The
+                // metric guard rides the body and records on drop (stream
+                // end / client disconnect). No-op when metrics aren't wired.
+                let resp = match ctx.stream_metrics.as_ref() {
+                    Some(m) => resp.map(|body| {
+                        crate::upstream::streaming::meter(body, m.clone())
+                    }),
+                    None => resp,
+                };
+                return (
+                    resp,
+                    DecisionTag::allow()
+                        .with_tier(route_ctx.tier)
+                        .with_streamed(true),
+                );
+            }
             // 2026-05-11 PR #7 — response filtering wire-up.
             // The forwarder buffers the entire upstream body
-            // into `Full::new(body_bytes)` (see
+            // into `crate::body::full(body_bytes)` (see
             // `upstream/forward.rs:469-505`), so we apply
             // response filtering as a single `on_body_frame` call
             // here. Once the proxy supports streaming response
@@ -2436,7 +2519,7 @@ pub(crate) async fn forward_allow_to_upstream(
                             CONTENT_LENGTH,
                             HeaderValue::from_str(&body_str.len().to_string()).unwrap(),
                         )
-                        .body(http_body_util::Full::new(bytes::Bytes::from(body_str)))
+                        .body(crate::body::full(bytes::Bytes::from(body_str)))
                         .unwrap();
                     return (
                         aborted,
@@ -2463,7 +2546,7 @@ pub(crate) async fn forward_allow_to_upstream(
                 allow_tag = allow_tag
                     .with_cache(aegis_control::interop::headers::CacheState::Miss);
             }
-            let resp = Response::from_parts(parts_out, Full::new(final_bytes));
+            let resp = Response::from_parts(parts_out, crate::body::full(final_bytes));
             // 5xx from upstream is not a WAF block — we proxied
             // faithfully; the contract action stays `allow` (the
             // upstream's failure is what the client sees).
@@ -2510,7 +2593,7 @@ pub(crate) async fn forward_allow_to_upstream(
             tracing::Span::current().record("outcome", action_tag.action.as_str());
             let resp = Response::builder()
                 .status(hyper::StatusCode::BAD_GATEWAY)
-                .body(Full::new(Bytes::from("upstream error\n")))
+                .body(crate::body::full(Bytes::from("upstream error\n")))
                 .unwrap();
             (resp, action_tag)
         }
@@ -2530,7 +2613,7 @@ async fn forward_connect_tunnel(
     bus: &AuditBus,
     request_id: String,
 ) -> (
-    Response<Full<Bytes>>,
+    Response<crate::body::DataBody>,
     aegis_control::interop::headers::DecisionTag,
 ) {
     use aegis_control::interop::headers::DecisionTag;
@@ -2720,7 +2803,7 @@ async fn forward_connect_tunnel(
     // CONNECT carries no body.
     let resp = Response::builder()
         .status(200)
-        .body(Full::new(Bytes::new()))
+        .body(crate::body::full(Bytes::new()))
         .unwrap();
     (resp, DecisionTag::allow())
 }
@@ -3133,7 +3216,7 @@ fn connect_deny_response(
     route_id: &str,
     peer_ip: std::net::IpAddr,
 ) -> (
-    Response<Full<Bytes>>,
+    Response<crate::body::DataBody>,
     aegis_control::interop::headers::DecisionTag,
 ) {
     use aegis_control::interop::headers::DecisionTag;
@@ -3161,7 +3244,7 @@ fn connect_deny_response(
         .status(status)
         .header("x-waf-rule-id", rule_id)
         .header("content-type", "text/plain; charset=utf-8")
-        .body(Full::new(Bytes::from(format!("{message}\n"))))
+        .body(crate::body::full(Bytes::from(format!("{message}\n"))))
         .unwrap();
     (resp, DecisionTag::block(rule_id))
 }
@@ -3546,7 +3629,7 @@ fn blocked_response(
     // gate blocks (e.g. risk-score) surface the same detail drawer the
     // detector blocks already do. `None` keeps the slim shape.
     echo: Option<serde_json::Map<String, serde_json::Value>>,
-) -> Response<Full<Bytes>> {
+) -> Response<crate::body::DataBody> {
     let ev = aegis_core::audit::AuditEvent {
         schema_version: 1,
         ts: chrono::Utc::now(),
@@ -3594,7 +3677,7 @@ fn blocked_response(
     Response::builder()
         .status(403)
         .header("content-type", "application/json")
-        .body(Full::new(Bytes::from(
+        .body(crate::body::full(Bytes::from(
             serde_json::json!({ "error": "forbidden", "reason": reason }).to_string(),
         )))
         .unwrap()
@@ -3733,7 +3816,7 @@ state: { backend: in_memory }
         out
     }
 
-    fn rule_id_header(resp: &hyper::Response<http_body_util::Full<Bytes>>) -> Option<&str> {
+    fn rule_id_header<B>(resp: &hyper::Response<B>) -> Option<&str> {
         resp.headers().get("x-waf-rule-id").and_then(|v| v.to_str().ok())
     }
 
@@ -4681,10 +4764,16 @@ state: {{ backend: in_memory }}
             "log_only must forward the frame to the upstream",
         );
 
-        // …and a websocket_frame_block audit with mode log_only fired.
+        // …and a would-block audit fired: B2 consolidated the WS block
+        // onto the WAF rule taxonomy (`action: "block"` +
+        // `fields.surface = "websocket"`) so it counts in the Blocked KPI
+        // and renders via the normal block path; `mode` distinguishes the
+        // would-block from a real enforce.
         let mut found = false;
         while let Ok(ev) = audit_rx.try_recv() {
-            if ev.action.as_str() == "websocket_frame_block" {
+            if ev.action.as_str() == "block"
+                && ev.fields.get("surface").and_then(|s| s.as_str()) == Some("websocket")
+            {
                 found = true;
                 assert_eq!(ev.mode.as_deref(), Some("log_only"));
                 assert_eq!(ev.rule_id.as_deref(), Some("sqli"));
@@ -4692,7 +4781,157 @@ state: {{ backend: in_memory }}
                 break;
             }
         }
-        assert!(found, "log_only must emit a websocket_frame_block audit");
+        assert!(found, "log_only must emit a block audit with surface=websocket");
+
+        drop(tx);
+        backend_task.abort();
+        waf_task.abort();
+    }
+
+    /// B1 — the per-route `ws_inspect.mode` is AND-ed with the global
+    /// `ModeStore`: a route pinned to `enforce` must still FORWARD a
+    /// malicious frame (and emit a would-block audit with `mode:
+    /// log_only`) when the fleet-wide mode is dry-run. This mirrors the
+    /// HTTP `set_profile log_only` gate so a global Dry-Run shadows the
+    /// WebSocket surface too, instead of the frame inspector enforcing
+    /// in isolation.
+    #[tokio::test]
+    async fn set_profile_log_only_forwards_ws_frame_block() {
+        use aegis_control::interop::headers::Mode;
+        use aegis_control::interop::mode::ModeStore;
+        use futures::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let backend = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let backend_addr = backend.local_addr().unwrap();
+        let got_message = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let got_message_be = got_message.clone();
+        let backend_task = tokio::spawn(async move {
+            let (stream, _) = backend.accept().await.unwrap();
+            let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let (mut tx, mut rx) = futures::StreamExt::split(ws);
+            while let Some(Ok(msg)) = futures::StreamExt::next(&mut rx).await {
+                if msg.is_text() || msg.is_binary() {
+                    got_message_be.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = tx.send(msg).await;
+                }
+            }
+        });
+
+        // Per-route mode is ENFORCE; only the global mode is dry-run.
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: chat, path: "/", upstream: pool, ws_inspect: {{ enabled: true, mode: enforce }} }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend_addr}" }}] }}
+state: {{ backend: in_memory }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let mut ctx_inner = ProxyContext::build(&cfg, pipeline).unwrap();
+        ctx_inner.ws_detectors =
+            Some(Arc::new(aegis_security::detectors::default_detectors()));
+        ctx_inner.ws_detector_mask =
+            Some(aegis_security::detectors::SharedDetectorMask::default());
+        // Fleet-wide dry-run: every policy resolves to log_only.
+        ctx_inner
+            .interop_modes
+            .set(Arc::new(ModeStore::new(Mode::LogOnly)))
+            .ok();
+        let ctx = Arc::new(ctx_inner);
+
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let bus = AuditBus::new(16);
+        let mut audit_rx = bus.subscribe();
+        let ctx_for_listener = ctx.clone();
+        let bus_for_listener = bus.clone();
+        let rh = Arc::new(route_latency());
+        let waf_task = tokio::spawn(async move {
+            let (stream, peer) = waf.accept().await.unwrap();
+            let ctx_for_svc = ctx_for_listener.clone();
+            let bus_for_svc = bus_for_listener.clone();
+            let rh_for_svc = rh.clone();
+            let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                let ctx = ctx_for_svc.clone();
+                let bus = bus_for_svc.clone();
+                let rh = rh_for_svc.clone();
+                async move {
+                    let (parts, body) = req.into_parts();
+                    let body_bytes = body
+                        .collect()
+                        .await
+                        .map(|c| c.to_bytes())
+                        .unwrap_or_default();
+                    let (resp, _tag) = super::forward_allow_to_upstream(
+                        parts,
+                        body_bytes,
+                        &ctx,
+                        &ClientIdentity::Anonymous,
+                        &rh,
+                        &route_activity_w(),
+                        Instant::now(),
+                        peer.ip(),
+                        &bus,
+                    )
+                    .await;
+                    Ok::<_, Infallible>(resp)
+                }
+            });
+            let io = TokioIo::new(stream);
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(io, svc)
+                .with_upgrades()
+                .await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let url = format!("ws://127.0.0.1:{}/", waf_addr.port());
+        let (ws, _resp) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let (mut tx, mut rx) = futures::StreamExt::split(ws);
+
+        tx.send(Message::Text("' OR 1=1--".into())).await.unwrap();
+
+        // Global log_only forwards → the backend echoes it back.
+        let echo = futures::StreamExt::next(&mut rx)
+            .await
+            .expect("global log_only forwards the frame → echo")
+            .expect("echo ok");
+        assert_eq!(echo.into_text().unwrap(), "' OR 1=1--");
+        assert!(
+            got_message.load(std::sync::atomic::Ordering::SeqCst),
+            "global log_only must forward the frame to the upstream even \
+             though the route is pinned to enforce",
+        );
+
+        // …and a would-block audit fired (B2 taxonomy: action=block +
+        // surface=websocket, mode=log_only).
+        let mut found = false;
+        while let Ok(ev) = audit_rx.try_recv() {
+            if ev.action.as_str() == "block"
+                && ev.fields.get("surface").and_then(|s| s.as_str()) == Some("websocket")
+            {
+                found = true;
+                assert_eq!(ev.mode.as_deref(), Some("log_only"));
+                assert_eq!(ev.rule_id.as_deref(), Some("sqli"));
+                break;
+            }
+        }
+        assert!(
+            found,
+            "global log_only must still emit a block audit (surface=websocket, mode=log_only)",
+        );
 
         drop(tx);
         backend_task.abort();
@@ -4755,7 +4994,7 @@ mod log_only_enforce_tests {
             while let Ok((s, _)) = l.accept().await {
                 tokio::spawn(async move {
                     let svc = service_fn(|_r: hyper::Request<hyper::body::Incoming>| async {
-                        Ok::<_, Infallible>(hyper::Response::new(Full::new(Bytes::from(
+                        Ok::<_, Infallible>(hyper::Response::new(crate::body::full(Bytes::from(
                             "upstream-ok",
                         ))))
                     });

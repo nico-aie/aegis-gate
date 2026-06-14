@@ -14057,7 +14057,9 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
   const idValid = d.id.trim().length > 0 && !idClash;
   const pathValid = d.path.trim().startsWith('/');
   const upstreamValid = mergedPoolNames.includes(d.upstream);
-  const canSave = idValid && pathValid && upstreamValid && !busy;
+  // `!createPoolBusy` keeps route Save disabled while a freshly-created
+  // child pool is still propagating to this node (BUG-create-route-pool-not-found-race).
+  const canSave = idValid && pathValid && upstreamValid && !busy && !createPoolBusy;
 
   const set = (k, v) => setWithErrorClear({ ...d, [k]: v });
   const toggleSet = (k, v) => {
@@ -14074,15 +14076,25 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
   async function handleChildPoolSave({ name, body }) {
     setCreatePoolBusy(true);
     try {
+      // Capture the config version before the pool write so we can wait
+      // for it to land on this node before re-enabling the route Save.
+      const before = await window.currentConfigVersion();
       const r = await window.poolUpsert(name, body);
       if (r.status === 200 && r.ok) {
         window.aegisToast(`Pool "${name}" saved`, 'ok');
-        // Optimistically surface the new pool immediately, then kick
-        // the reload to reconcile against the live config.
+        // Optimistically surface + select the new pool immediately for
+        // instant feedback…
         setOptimisticPools(prev => prev.includes(name) ? prev : [...prev, name]);
-        if (cfgReload) cfgReload();
         setD(prev => ({ ...prev, upstream: name }));
         setCreatePoolOpen(false);
+        // …but keep the route Save gated (createPoolBusy stays true via
+        // the surrounding try) until the pool's config version has
+        // landed on this node, so route validation can resolve it. The
+        // server now also validates the upstream against the active
+        // config doc, so a wait timeout is non-fatal — we just proceed.
+        // BUG-create-route-pool-not-found-race.
+        await window.waitForVersion(before + 1, 10000);
+        if (cfgReload) cfgReload();
       } else {
         const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
         window.aegisToast(`Pool save failed: ${msg}`, 'err');

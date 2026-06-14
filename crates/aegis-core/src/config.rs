@@ -259,6 +259,94 @@ pub struct WafConfig {
     /// their own. Schema only — consumer wiring lands in Phase E.
     #[serde(default)]
     pub fail_mode_by_tier: HashMap<Tier, FailureModeConfig>,
+    /// SSE streaming (Server-Sent Events) stream-through support. When a
+    /// response's media type is in `streaming.content_types`, the proxy
+    /// streams it to the client incrementally instead of buffering to the
+    /// size cap — header-inspected only (see the streaming docs). Default
+    /// enabled for `text/event-stream`.
+    #[serde(default)]
+    pub streaming: StreamingConfig,
+}
+
+/// SSE / streaming stream-through configuration (SSE plan §6).
+///
+/// Streamed responses are delivered frame-by-frame with no buffer cap
+/// and **no response-body inspection** (header-inspected only); the
+/// request side and response headers are still fully inspected. An idle
+/// (inactivity) timeout — reset on every upstream frame, so SSE
+/// heartbeats keep the stream alive — replaces the whole-body read
+/// deadline that would otherwise kill a long-lived stream.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StreamingConfig {
+    /// Kill-switch. When `false`, every response is buffered as before
+    /// regardless of media type.
+    #[serde(default = "default_streaming_enabled")]
+    pub enabled: bool,
+    /// Media types (`type/subtype`, parameters ignored) that stream
+    /// through. Matched case-insensitively. Default: `text/event-stream`.
+    #[serde(default = "default_streaming_content_types")]
+    pub content_types: Vec<String>,
+    /// Inactivity timeout: end the stream if the upstream produces no
+    /// frame for this long. Reset on every frame (heartbeats count).
+    #[serde(default = "default_streaming_idle_timeout", with = "humantime_serde")]
+    pub idle_timeout: Duration,
+    /// Optional absolute cap on a single stream's lifetime. `None` (the
+    /// default) = no absolute cap; the idle timeout is the only bound.
+    #[serde(default, with = "humantime_serde")]
+    pub max_duration: Option<Duration>,
+    /// Max concurrent live streams (each pins an upstream connection for
+    /// its lifetime — the legacy pool only bounds idle conns). Beyond
+    /// this, new candidates fall back per `on_exhaustion`.
+    #[serde(default = "default_streaming_max_concurrent")]
+    pub max_concurrent: usize,
+    /// What to do when `max_concurrent` is exhausted: `reject` the new
+    /// stream with `503` (releases the upstream connection immediately —
+    /// the default, bounds pinned conns) or `buffer` it like a normal
+    /// response (subject to the buffered read deadline / size cap).
+    #[serde(default)]
+    pub on_exhaustion: OnStreamExhaustion,
+}
+
+/// Fallback when the streaming concurrency cap is hit.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OnStreamExhaustion {
+    /// Refuse the new stream with `503 Service Unavailable`, dropping the
+    /// upstream response so its connection is released at once.
+    #[default]
+    Reject,
+    /// Handle it as a buffered response (size-capped, read-deadline'd).
+    Buffer,
+}
+
+fn default_streaming_enabled() -> bool {
+    true
+}
+
+fn default_streaming_content_types() -> Vec<String> {
+    vec!["text/event-stream".to_string()]
+}
+
+fn default_streaming_idle_timeout() -> Duration {
+    Duration::from_secs(300)
+}
+
+fn default_streaming_max_concurrent() -> usize {
+    256
+}
+
+impl Default for StreamingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_streaming_enabled(),
+            content_types: default_streaming_content_types(),
+            idle_timeout: default_streaming_idle_timeout(),
+            max_duration: None,
+            max_concurrent: default_streaming_max_concurrent(),
+            on_exhaustion: OnStreamExhaustion::Reject,
+        }
+    }
 }
 
 /// External interop surface configuration. Always-on by default.
@@ -1609,9 +1697,10 @@ fn default_route_enabled() -> bool {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WsInspectMode {
-    /// Emit the `websocket_frame_block` audit event but forward the
-    /// frame anyway (`action: would_block`). Opt-in for operators who
-    /// want to observe before enforcing.
+    /// Emit the block audit event (`action: "block"` with
+    /// `fields.surface = "websocket"` and `mode: "log_only"`) but
+    /// forward the frame anyway. Opt-in for operators who want to
+    /// observe before enforcing.
     LogOnly,
     /// Drop the offending message and close the socket with WS Close
     /// `1008` (policy violation). **Default** (2026-06-12): WS frame
@@ -5119,6 +5208,34 @@ state:
         assert_eq!(cfg.routes.len(), 1);
         assert_eq!(cfg.routes[0].id, "catch-all");
         assert!(cfg.upstreams.contains_key("default"));
+    }
+
+    #[test]
+    fn streaming_config_defaults_when_absent() {
+        // A config with no `streaming:` block gets the enabled-by-default
+        // SSE posture (plan §6).
+        let cfg = super::load_config_str(minimal_yaml()).unwrap();
+        assert!(cfg.streaming.enabled);
+        assert_eq!(cfg.streaming.content_types, vec!["text/event-stream".to_string()]);
+        assert_eq!(cfg.streaming.idle_timeout, std::time::Duration::from_secs(300));
+        assert!(cfg.streaming.max_duration.is_none());
+        assert_eq!(cfg.streaming.max_concurrent, 256);
+        assert_eq!(cfg.streaming.on_exhaustion, super::OnStreamExhaustion::Reject);
+    }
+
+    #[test]
+    fn streaming_config_parses_overrides() {
+        let yaml = format!(
+            "{}streaming:\n  enabled: false\n  content_types: [\"text/event-stream\", \"application/x-ndjson\"]\n  idle_timeout: 90s\n  max_duration: 1h\n  max_concurrent: 32\n  on_exhaustion: buffer\n",
+            minimal_yaml(),
+        );
+        let cfg = super::load_config_str(&yaml).unwrap();
+        assert!(!cfg.streaming.enabled);
+        assert_eq!(cfg.streaming.content_types.len(), 2);
+        assert_eq!(cfg.streaming.idle_timeout, std::time::Duration::from_secs(90));
+        assert_eq!(cfg.streaming.max_duration, Some(std::time::Duration::from_secs(3600)));
+        assert_eq!(cfg.streaming.max_concurrent, 32);
+        assert_eq!(cfg.streaming.on_exhaustion, super::OnStreamExhaustion::Buffer);
     }
 
     // 2026-05-27 (Phase B rules fold) — cfg.rules.inline carries the

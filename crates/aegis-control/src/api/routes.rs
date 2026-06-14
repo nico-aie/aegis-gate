@@ -67,9 +67,21 @@ pub struct RouteSummary {
     /// config, skipped from trie). The dashboard dims the row.
     #[serde(default = "default_route_summary_enabled")]
     pub enabled: bool,
+    /// `true` when the matched route prefix is stripped from the
+    /// forwarded path. Mirrors [`aegis_core::config::RouteConfig::strip_prefix`]
+    /// and is emitted so the console can round-trip an explicit
+    /// `false` — without it the dashboard reads `undefined !== false`
+    /// and re-checks the box on every edit. Defaults to `true` on
+    /// deserialize to match `default_strip_prefix` for legacy clients.
+    #[serde(default = "default_strip_prefix_summary")]
+    pub strip_prefix: bool,
 }
 
 fn default_route_summary_enabled() -> bool {
+    true
+}
+
+fn default_strip_prefix_summary() -> bool {
     true
 }
 
@@ -134,6 +146,7 @@ mod tests {
                 priority: "3.4.1.1.0.0".into(),
                 default: false,
                 enabled: true,
+                strip_prefix: true,
             },
             RouteSummary {
                 id: "catch-all".into(),
@@ -146,6 +159,7 @@ mod tests {
                 priority: "0.0.0.0.0.1".into(),
                 default: true,
                 enabled: true,
+                strip_prefix: false,
             },
         ]
     }
@@ -174,10 +188,15 @@ mod tests {
         assert_eq!(login["methods"], serde_json::json!(["POST"]));
         assert_eq!(login["tier_override"], "critical");
 
+        // strip_prefix must serialize so the console can round-trip
+        // an explicit false (BUG-route-strip-prefix-toggle-not-roundtripped).
+        assert_eq!(login["strip_prefix"], true);
+
         let catch_all = &routes[1];
         assert!(catch_all["host"].is_null());
         assert!(catch_all["tier_override"].is_null());
         assert!(catch_all["methods"].as_array().unwrap().is_empty());
+        assert_eq!(catch_all["strip_prefix"], false);
     }
 
     #[test]
