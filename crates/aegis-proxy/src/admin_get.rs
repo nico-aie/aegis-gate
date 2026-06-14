@@ -863,10 +863,31 @@ pub(crate) fn admin_router(
             json_body_response(200, body.to_string(), "private, max-age=5")
         }
         "/api/routes" => {
-            // Read-only view of the routing trie seeded from
-            // `cfg.routes` at boot. Cached 30 s — config is
-            // hot-reloadable but doesn't change on every request.
-            json_body_response(200, services.routes.render(), "private, max-age=30")
+            // Read-only view of the routing trie. Render **live** from
+            // the route writer's current routes when wired: the watcher
+            // rebuilds that trie from the activated config doc on every
+            // node, so reading it here keeps `GET /api/routes` fleet-
+            // consistent. The boot-seeded `services.routes` cache is the
+            // fallback for bundles without a wired writer (tests).
+            // BUG-fix 2026-06-14 — before this, the summary cache was only
+            // refreshed on the mutating node, so peers showed stale routes
+            // after a console mutation converged in the data plane.
+            // See BUG-console-route-mutation-not-fleet-convergent.md.
+            // Cached 30 s — config is hot-reloadable but doesn't change on
+            // every request.
+            let body = match services.route_writer.as_ref() {
+                Some(writer) => {
+                    let live = writer.current_routes();
+                    if live.is_empty() {
+                        services.routes.render()
+                    } else {
+                        let summaries = crate::route::route_summaries(&live);
+                        serde_json::json!({ "routes": summaries }).to_string()
+                    }
+                }
+                None => services.routes.render(),
+            };
+            json_body_response(200, body, "private, max-age=30")
         }
         "/api/blacklist" => {
             let body = serde_json::json!({"entries": services.blacklist.list()});
