@@ -106,6 +106,7 @@ admin:
     ip_allowlist: ["127.0.0.1/32", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
     totp_enabled: false
     login_rate_limit: { per_ip: { limit: 100, window: "1m" } }
+    allow_ca_upload: {{ allow_ca_upload | default(false) | lower }}   # enable Zero Trust cert/CA upload from the console (admin-auth gated)
 {% if zero_trust_upstream_identity_cert is defined and zero_trust_upstream_identity_cert %}
 
 # Zero Trust — the shared client identity the WAF presents to backends that require

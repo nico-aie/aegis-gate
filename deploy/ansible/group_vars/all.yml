@@ -59,6 +59,8 @@ copilot_model: "Qwen3.6-35B-A3B"
 # DEV defaults shown; for anything real put these in an ansible-vault file
 # (group_vars/vault.yml) and `ansible-playbook --ask-vault-pass`. The csrf_secret
 # MUST be identical across nodes (leaderless console SSO); control_secret = §2.2.
+# Allow uploading the Zero Trust cert/CA from the dashboard console (admin-auth gated).
+allow_ca_upload: true
 control_secret: "waf-hackathon-2026-ctrl"
 csrf_secret: "contract-csrf-secret-do-not-use-in-prod-32b"
 # argon2id hash of the dashboard password (dev: aegis-test-1234)
