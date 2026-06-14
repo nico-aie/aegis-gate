@@ -304,6 +304,14 @@ async fn apply_and_swap(
     // Failed keep the live store and emit `zero_trust_reload_failed`.
     apply_client_auth_and_audit(new_cfg, bus, targets.client_auth.as_ref(), version);
 
+    // A4 — rebuild the AI Operator Copilot from the converged config so an
+    // enable/disable / model / key-rotation activated on the config plane
+    // takes effect on every node, not just the originator. The file watcher
+    // already did this via `apply_folded_stores`; the shared-store watcher
+    // was missing it (caught by the structural guard test). Per-node key
+    // resolution happens inside the helper.
+    let _ = reload::apply_cfg_change_to_copilot(new_cfg).await;
+
     cfg.store(Arc::new(new_cfg.clone()));
 }
 
@@ -441,6 +449,49 @@ mod tests {
             start.elapsed() >= Duration::from_millis(40),
             "a closed channel must wait out the interval, not hot-loop",
         );
+    }
+
+    // A4 — structural regression guard. `apply_and_swap` is a hand-
+    // maintained list of `reload::apply_cfg_change_to_*` calls; a new
+    // config section is silently node-local-until-restart until someone
+    // adds its helper call here (exactly how the Zero Trust A2 bug
+    // happened). This test enumerates every `apply_cfg_change_to_*` helper
+    // defined in `reload.rs` and asserts the shared-store watcher invokes
+    // each one, so adding a helper without wiring it fails CI.
+    #[test]
+    fn apply_and_swap_invokes_every_reload_helper() {
+        let reload_src = include_str!("reload.rs");
+        let watcher_src = include_str!("redis_source.rs");
+
+        let helpers: Vec<String> = reload_src
+            .lines()
+            .filter_map(|l| {
+                let l = l.trim_start();
+                let rest = l
+                    .strip_prefix("pub fn apply_cfg_change_to_")
+                    .or_else(|| l.strip_prefix("pub async fn apply_cfg_change_to_"))?;
+                let name = rest.split('(').next().unwrap_or("");
+                Some(format!("apply_cfg_change_to_{name}"))
+            })
+            .collect();
+
+        assert!(
+            helpers.len() >= 10,
+            "sanity: expected to discover the reload helpers, found {}",
+            helpers.len(),
+        );
+
+        for h in &helpers {
+            let call = format!("reload::{h}(");
+            assert!(
+                watcher_src.contains(&call),
+                "config-plane regression guard: `{h}` is defined in reload.rs but \
+                 is never invoked from the shared-store watcher (apply_and_swap in \
+                 redis_source.rs). A config section whose reload helper isn't called \
+                 here stays node-local-until-restart — wire it in (this is exactly \
+                 how the Zero Trust A2 bug happened).",
+            );
+        }
     }
 
     // ---- A2 — Zero Trust inbound mTLS converges via the config watcher ----
