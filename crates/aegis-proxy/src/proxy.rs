@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::BodyExt;
 use hyper::body::Body;
 use hyper::{Request, Response, StatusCode};
 
@@ -326,7 +326,7 @@ impl ProxyContext {
 pub async fn handle_request<B>(
     req: Request<B>,
     ctx: Arc<ProxyContext>,
-) -> Result<Response<Full<Bytes>>, hyper::Error>
+) -> Result<Response<crate::body::DataBody>, hyper::Error>
 where
     B: Body<Data = Bytes> + Send + 'static,
     B::Error: std::fmt::Display,
@@ -353,7 +353,7 @@ where
         None => {
             return Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
-                .body(Full::new(Bytes::from("no matching route\n")))
+                .body(crate::body::full("no matching route\n"))
                 .unwrap());
         }
     };
@@ -363,7 +363,7 @@ where
         if !cb.allow_request() {
             return Ok(Response::builder()
                 .status(StatusCode::SERVICE_UNAVAILABLE)
-                .body(Full::new(Bytes::from("circuit open\n")))
+                .body(crate::body::full("circuit open\n"))
                 .unwrap());
         }
     }
@@ -377,7 +377,7 @@ where
         None => {
             return Ok(Response::builder()
                 .status(StatusCode::BAD_GATEWAY)
-                .body(Full::new(Bytes::from("unknown upstream\n")))
+                .body(crate::body::full("unknown upstream\n"))
                 .unwrap());
         }
     };
@@ -391,7 +391,7 @@ where
             }
             return Ok(Response::builder()
                 .status(StatusCode::BAD_GATEWAY)
-                .body(Full::new(Bytes::from("no healthy upstream\n")))
+                .body(crate::body::full("no healthy upstream\n"))
                 .unwrap());
         }
     };
@@ -411,7 +411,7 @@ where
             tracing::warn!(error = %e, "failed to collect client body");
             return Ok(Response::builder()
                 .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from("body read error\n")))
+                .body(crate::body::full("body read error\n"))
                 .unwrap());
         }
     };
@@ -454,7 +454,7 @@ where
             }
             Response::builder()
                 .status(StatusCode::BAD_GATEWAY)
-                .body(Full::new(Bytes::from("upstream error\n")))
+                .body(crate::body::full("upstream error\n"))
                 .unwrap()
         }
     };
@@ -751,7 +751,11 @@ state:
         serde_yaml::from_str(&yaml).unwrap()
     }
 
-    async fn body_string(resp: Response<Full<Bytes>>) -> String {
+    async fn body_string<B>(resp: Response<B>) -> String
+    where
+        B: hyper::body::Body<Data = Bytes>,
+        B::Error: std::fmt::Debug,
+    {
         use http_body_util::BodyExt as _;
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         String::from_utf8(bytes.to_vec()).unwrap()

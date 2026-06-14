@@ -422,7 +422,7 @@ pub async fn forward(
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Response<Full<Bytes>>, ForwardError> {
+) -> Result<Response<crate::body::DataBody>, ForwardError> {
     // P2 — a failure here is an upstream-mTLS client-config/cert load
     // error; fail the dial closed rather than connecting without the
     // client cert.
@@ -612,7 +612,10 @@ pub async fn forward(
         }
     }
     *filtered.body_mut() = Full::new(body_bytes);
-    Ok(filtered)
+    // Phase 1 (SSE): type-erase the buffered response into the unified
+    // DataBody so the whole data-plane chain is one streamable type.
+    // Phase 2 will branch here to stream `text/event-stream` instead.
+    Ok(crate::body::boxed(filtered))
 }
 
 /// Errors raised by [`forward`].
