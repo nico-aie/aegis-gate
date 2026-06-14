@@ -211,6 +211,10 @@ pub struct ProxyContext {
     /// permit rides the response body, releasing on stream end / client
     /// disconnect. Sized from `cfg.streaming.max_concurrent` at boot.
     pub streaming_permits: Arc<tokio::sync::Semaphore>,
+    /// SSE streaming metrics (active gauge / streamed counter / duration +
+    /// bytes histograms). `None` for test bundles that don't wire a
+    /// metrics registry; the boot path installs it once at registration.
+    pub stream_metrics: Option<Arc<aegis_control::metrics::streaming::StreamingMetrics>>,
 }
 
 impl ProxyContext {
@@ -286,6 +290,7 @@ impl ProxyContext {
             streaming_permits: Arc::new(tokio::sync::Semaphore::new(
                 cfg.streaming.max_concurrent,
             )),
+            stream_metrics: None,
             streaming: cfg.streaming.clone(),
         })
     }

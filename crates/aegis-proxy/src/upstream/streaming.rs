@@ -156,6 +156,81 @@ where
     }
 }
 
+/// Wraps a streamed body with observability (SSE plan §7): bumps the
+/// active-streams gauge + streamed counter on construction, tallies the
+/// data bytes that flow through, and on drop (clean end, error, or client
+/// disconnect) releases the gauge and observes the stream's lifetime +
+/// total bytes. Delegates body behaviour to the inner body unchanged.
+pub struct MeteredStreamBody<B> {
+    inner: B,
+    metrics: std::sync::Arc<aegis_control::metrics::streaming::StreamingMetrics>,
+    start: std::time::Instant,
+    bytes: u64,
+}
+
+impl<B> MeteredStreamBody<B> {
+    pub fn new(
+        inner: B,
+        metrics: std::sync::Arc<aegis_control::metrics::streaming::StreamingMetrics>,
+    ) -> Self {
+        metrics.on_stream_start();
+        Self {
+            inner,
+            metrics,
+            start: std::time::Instant::now(),
+            bytes: 0,
+        }
+    }
+}
+
+impl<B> Body for MeteredStreamBody<B>
+where
+    B: Body<Data = Bytes> + Unpin,
+{
+    type Data = Bytes;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        let polled = Pin::new(&mut this.inner).poll_frame(cx);
+        if let Poll::Ready(Some(Ok(ref frame))) = polled {
+            if let Some(data) = frame.data_ref() {
+                this.bytes += data.len() as u64;
+            }
+        }
+        polled
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+impl<B> Drop for MeteredStreamBody<B> {
+    fn drop(&mut self) {
+        self.metrics
+            .on_stream_end(self.start.elapsed().as_secs_f64(), self.bytes);
+    }
+}
+
+/// Wrap a streamed [`DataBody`] with [`MeteredStreamBody`] observability.
+/// Applied in the data plane (which holds the metrics handle) to the body
+/// `forward()` produced, so `forward()` stays metrics-agnostic.
+pub fn meter(
+    body: DataBody,
+    metrics: std::sync::Arc<aegis_control::metrics::streaming::StreamingMetrics>,
+) -> DataBody {
+    use http_body_util::BodyExt;
+    MeteredStreamBody::new(body, metrics).boxed_unsync()
+}
+
 /// Build a pass-through streaming [`DataBody`] from an upstream response
 /// body: apply the idle (inactivity) timeout (plan decision 4), fold any
 /// inner error into a clean end-of-stream, hold the concurrency `permit`
@@ -299,6 +374,30 @@ mod tests {
         let body = EndOnError::new(Scripted::new(vec![Ok("x"), Ok("y"), Ok("z")]));
         let bytes = body.collect().await.unwrap().to_bytes();
         assert_eq!(&bytes[..], b"xyz");
+    }
+
+    #[tokio::test]
+    async fn metered_body_tracks_active_gauge_and_passes_bytes() {
+        use http_body_util::BodyExt;
+        let reg = aegis_control::metrics::MetricsRegistry::init();
+        let m = std::sync::Arc::new(
+            aegis_control::metrics::streaming::StreamingMetrics::register(&reg).unwrap(),
+        );
+        assert_eq!(m.active(), 0.0);
+
+        let body = meter(
+            stream_through(
+                Scripted::new(vec![Ok("ab"), Ok("cde")]),
+                Duration::from_secs(60),
+                None,
+            ),
+            m.clone(),
+        );
+        assert_eq!(m.active(), 1.0, "active gauge bumped while the stream lives");
+
+        let bytes = body.collect().await.unwrap().to_bytes();
+        assert_eq!(&bytes[..], b"abcde", "all frames flow through the meter");
+        assert_eq!(m.active(), 0.0, "dropping the body releases the active slot");
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]

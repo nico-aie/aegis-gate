@@ -2381,7 +2381,22 @@ pub(crate) async fn forward_allow_to_upstream(
             // `streamed` / `response_inspection_skipped` audit fields.)
             if mode.is_streaming() {
                 tracing::Span::current().record("outcome", "streamed");
-                return (resp, DecisionTag::allow().with_tier(route_ctx.tier));
+                // Phase 5 — attach streaming observability (active gauge,
+                // duration + bytes histograms, streamed counter). The
+                // metric guard rides the body and records on drop (stream
+                // end / client disconnect). No-op when metrics aren't wired.
+                let resp = match ctx.stream_metrics.as_ref() {
+                    Some(m) => resp.map(|body| {
+                        crate::upstream::streaming::meter(body, m.clone())
+                    }),
+                    None => resp,
+                };
+                return (
+                    resp,
+                    DecisionTag::allow()
+                        .with_tier(route_ctx.tier)
+                        .with_streamed(true),
+                );
             }
             // 2026-05-11 PR #7 — response filtering wire-up.
             // The forwarder buffers the entire upstream body

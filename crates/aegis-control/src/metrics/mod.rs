@@ -14,6 +14,7 @@ pub mod window_flush;
 pub mod ai;
 pub mod proxy_protocol;
 pub mod state_ops;
+pub mod streaming;
 pub mod upstream_pools;
 pub mod websocket;
 
