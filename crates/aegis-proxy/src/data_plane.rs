@@ -107,10 +107,14 @@ pub(crate) async fn handle_data_request(
     // when TLS termination didn't happen at this layer.
     tls_fingerprint: Option<&aegis_core::TlsFingerprint>,
 ) -> (
-    Response<Full<Bytes>>,
+    // Phase 1 (SSE): the served data-plane boundary speaks the unified
+    // DataBody. `_inner` still builds buffered Full<Bytes> responses; we
+    // type-erase once here. Phase 2 threads the streaming branch deeper
+    // (forward_allow_to_upstream) where a stream must bypass the collect.
+    Response<crate::body::DataBody>,
     aegis_control::interop::headers::DecisionTag,
 ) {
-    let result = handle_data_request_inner(
+    let (resp, tag) = handle_data_request_inner(
         req,
         peer,
         proxy_via,
@@ -130,8 +134,8 @@ pub(crate) async fn handle_data_request(
         identity,
         tls_fingerprint,
     ).await;
-    tracing::Span::current().record("action", result.1.action.as_str());
-    result
+    tracing::Span::current().record("action", tag.action.as_str());
+    (crate::body::boxed(resp), tag)
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -1744,7 +1744,10 @@ pub(crate) async fn accept_loop(
                             0,
                             request_start,
                         );
-                        return Ok::<_, Infallible>(resp);
+                        // Phase 1 (SSE): box the buffered Full response into
+                        // DataBody so this closure has one body type (the
+                        // data path now serves DataBody from handle_data_request).
+                        return Ok::<_, Infallible>(crate::body::boxed(resp));
                     }
                     // `/__waf_control/*` is a reserved namespace with two
                     // independent invariants:
@@ -1806,7 +1809,8 @@ pub(crate) async fn accept_loop(
                                 0,
                                 request_start,
                             );
-                            return Ok::<_, Infallible>(resp);
+                            // Phase 1 (SSE): box into DataBody (see above).
+                            return Ok::<_, Infallible>(crate::body::boxed(resp));
                         }
                     }
                     // 2026-05-03 — capture bot-classification
