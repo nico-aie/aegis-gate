@@ -36,8 +36,8 @@ routes:
 ```
 
 - **`mode: log_only`** (the recommended first step) — a message that
-  crosses the block threshold is **forwarded**, but a
-  `websocket_frame_block` audit event fires (`mode: log_only`) and the
+  crosses the block threshold is **forwarded**, but a `block` audit event
+  fires (`mode: log_only`, `fields.surface: "websocket"`) and the
   `aegis_websocket_frame_block_total{route,tag}` counter increments. Tune
   the detector mask / tier threshold against real traffic before
   enforcing.
@@ -47,6 +47,19 @@ routes:
 The verdict reuses the per-request scoring model: the summed detector
 score for the reassembled message is compared against the route tier's
 per-request threshold — the same logic as the HTTP detector-block path.
+
+### Global mode AND per-route mode
+
+The per-route `ws_inspect.mode` is **AND-ed with the global mode** (the
+fleet-wide `set_profile` / dashboard Dry-Run toggle), exactly as the HTTP
+detectors honour it. A frame is dropped only when **both** the route and
+the global mode resolve to `enforce`; if either says `log_only` the frame
+is **forwarded** and a would-block `block` audit (`mode: log_only`) fires.
+So a fleet Dry-Run shadows the WebSocket surface too, and per-policy
+toggles (e.g. `sqli` → `log_only`) downgrade the matching frame blocks.
+An oversize message (over `max_message_bytes`) fail-closes (WS `1009`)
+only under a global-enforce default; under a global Dry-Run it forwards +
+meters instead.
 
 ## What is and isn't inspected (v1)
 
@@ -94,11 +107,15 @@ Existing WebSocket routes are byte-for-byte unchanged.
 
 ## Observability
 
-- **Audit:** `websocket_frame_block` (`AuditClass::Access`) carries
+- **Audit:** `action: "block"` (`AuditClass::Access`) with
+  `fields.surface: "websocket"` as the WS discriminator. Carries
   `client_ip`, `route_id`, `rule_id` (top detector tag), `risk_score`
   (summed), `mode` (`enforce` / `log_only`), and `fields.matched_field` /
-  `fields.message_bytes`. Additive to the existing `websocket_open` /
-  `websocket_close` shape (`schema_version` unchanged).
+  `fields.message_bytes`. Consolidated onto the WAF rule taxonomy (B2) so
+  it renders via the normal block path and counts in the **Blocked** KPI;
+  `mode` distinguishes a real enforce from a would-block. Additive to the
+  existing `websocket_open` / `websocket_close` lifecycle shape
+  (`schema_version` unchanged).
 - **Metrics:** `aegis_websocket_frame_block_total{route,tag}` alongside
   the existing `aegis_websocket_open_total` / `_close_total` /
   `aegis_websocket_active`.

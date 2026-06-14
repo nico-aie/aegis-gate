@@ -8,14 +8,14 @@
 
 **Given** `ws_inspect` reassembles client→upstream **text** frames and runs
 them through the body detectors (XSS / SQLi / body_abuse). In `log_only`
-mode a frame over the block threshold is **still forwarded**, but a
-`websocket_frame_block` audit event fires with `mode: log_only`.
+mode a frame over the block threshold is **still forwarded**, but a `block`
+audit event (with `surface: websocket`) fires with `mode: log_only`.
 
 **When** the operator sends a SQLi/XSS text frame over an established socket
 to a `log_only` route.
 
 **Then** the frame is **delivered** (echo comes back / upstream sees it),
-**and** a `websocket_frame_block` audit row appears with `mode: log_only`
+**and** a `block` audit row (`surface: websocket`) appears with `mode: log_only`
 and the detector tag — proving detection ran without enforcement (matches
 contract §2.5 log_only semantics).
 
@@ -44,14 +44,15 @@ contract §2.5 log_only semantics).
 >    not dropped), and the close code (should be clean 1000, NOT 1008).
 >
 > 2. On an admin **Audit Trail / Live Feed**, find the
->    `websocket_frame_block` event for this socket. Report its `mode`,
+>    WS block event for this socket (`action: block`, `surface: websocket`).
+>    Report its `mode`,
 >    detector tag (`sqli`), and that it's marked log_only.
 
 ## Pass criteria
 
 - [ ] The SQLi frame is **forwarded** (echoes back) — log_only does not block.
 - [ ] Socket closes clean `1000` (not `1008`) — no enforcement.
-- [ ] A `websocket_frame_block` audit event fires with **`mode: log_only`**
+- [ ] A `block` audit event (`surface: websocket`) fires with **`mode: log_only`**
       and the `sqli` detector tag.
 - [ ] The benign frame also passes (no false positive).
 

@@ -65,10 +65,13 @@ use crate::responses::{
     extract_named_cookie, json_body_response, json_response, mutation_error_response,
 };
 
-pub(crate) async fn handle_mode_put(
-    req: hyper::Request<hyper::body::Incoming>,
+pub(crate) async fn handle_mode_put<B>(
+    req: hyper::Request<B>,
     services: &aegis_control::dashboard_services::DashboardServices,
-) -> Response<Full<Bytes>> {
+) -> Response<Full<Bytes>>
+where
+    B: hyper::body::Body<Data = Bytes>,
+{
     use http_body_util::BodyExt;
 
     let pre = mutation_preamble(&req, "mode-put");
@@ -126,14 +129,22 @@ pub(crate) async fn handle_mode_put(
             },
         );
     match outcome {
-        Ok(_) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "mode": new_mode.as_str(),
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(_) => {
+            // A0 (HOTFIX) — propagate the new global mode to peers so the
+            // dashboard Dry-Run toggle is fleet-wide, not node-local. This
+            // mirrors `POST /__waf_control/set_profile`, which publishes
+            // after its local apply (`admin_dispatch.rs`). Best-effort;
+            // no-op on single-node / in-memory backends.
+            rt.control.publish_modes().await;
+            json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "mode": new_mode.as_str(),
+                    "request_id": pre.request_id,
+                }),
+            )
+        }
         Err(e) => mutation_error_response(e),
     }
 }
@@ -2435,8 +2446,8 @@ struct MutationPreamble {
     request_id: String,
 }
 
-fn mutation_preamble(
-    req: &hyper::Request<hyper::body::Incoming>,
+fn mutation_preamble<B>(
+    req: &hyper::Request<B>,
     prefix: &str,
 ) -> MutationPreamble {
     let csrf_cookie = req
@@ -6632,6 +6643,7 @@ state:
             active_ruleset: None,
             upstream_writer: None,
             receiver_writer: None,
+            client_auth: None,
         };
         let store_b =
             ConfigStore::new(backend.clone() as Arc<dyn aegis_core::state::StateBackend>);
@@ -6716,6 +6728,81 @@ state:
         assert_eq!(
             r.route_id, "sec",
             "route survives restart because it lives in the config doc",
+        );
+    }
+
+    // A0 (HOTFIX) — the dashboard Dry-Run toggle (`PUT /api/mode`) must
+    // propagate the new global mode to peers, exactly as
+    // `POST /__waf_control/set_profile` does. Pre-fix `handle_mode_put`
+    // only flipped the node-local `ModeStore` and never published a
+    // `ClusterModeDoc`, so behind a load balancer the peers kept
+    // enforcing/shadowing on their old mode. Parallels
+    // `cluster_control::tests::published_modes_converge_to_a_second_node`
+    // but drives the real HTTP handler so the missing publish is caught.
+    #[tokio::test]
+    async fn mode_put_publishes_to_cluster_so_peer_converges() {
+        use crate::state::in_memory::InMemoryBackend;
+        use aegis_control::interop::cluster_sync;
+        use aegis_control::interop::headers::Mode;
+        use aegis_control::interop::mode::ModeStore;
+        use aegis_core::audit::AuditBus;
+        use std::sync::Arc;
+
+        // One shared backend = one shared config plane across both nodes.
+        let backend: Arc<dyn aegis_core::state::StateBackend> =
+            Arc::new(InMemoryBackend::new());
+
+        // Node A's interop runtime, cluster-wired (as `run` does post-boot
+        // for Redis deployments via `set_cluster_state`).
+        let cfg = aegis_core::load_config_str(concat!(
+            "listeners:\n  data: [{ bind: \"0.0.0.0:443\" }]\n",
+            "  admin: { bind: \"127.0.0.1:9443\" }\n",
+            "routes:\n  - { id: catch-all, path: \"/\", upstream: api }\n",
+            "upstreams:\n  api: { members: [{ addr: \"127.0.0.1:8443\" }] }\n",
+            "state: { backend: in_memory }\n",
+        ))
+        .unwrap();
+        let risk = aegis_security::risk::RiskTracker::new(
+            &aegis_core::config::RiskConfig::default(),
+        );
+        let iprl = Arc::new(aegis_security::rate_limit::IpRateLimiter::new(
+            Default::default(),
+        ));
+        let rt = crate::run::build_interop_runtime(&cfg, &risk, &iprl)
+            .expect("interop surface is on by default");
+        rt.control.set_cluster_state(backend.clone());
+
+        // DashboardServices bundle wired to this interop runtime.
+        let bus = AuditBus::new(64);
+        let pools: aegis_control::dashboard_services::PoolSnapshotProvider =
+            Arc::new(|| aegis_control::api::upstreams::PoolHealthSnapshot {
+                pools: Vec::new(),
+            });
+        let (mut services, _drain) =
+            aegis_control::dashboard_services::DashboardServices::spawn(bus, pools, None);
+        services.interop = Some(rt.clone());
+
+        // The dashboard Dry-Run toggle: PUT /api/mode { log_only } + CSRF.
+        let req = hyper::Request::builder()
+            .method("PUT")
+            .uri("/api/mode")
+            .header("cookie", "aegis_csrf=tok")
+            .header("x-csrf-token", "tok")
+            .body(Full::new(Bytes::from(r#"{"mode":"log_only"}"#)))
+            .unwrap();
+        let resp = handle_mode_put(req, &services).await;
+        assert_eq!(resp.status(), 200, "mode-put must succeed");
+
+        // Node B starts clean and converges on the peer-published doc.
+        let doc = cluster_sync::read_modes(&backend)
+            .await
+            .expect("node A must publish a modes doc to the cluster plane");
+        let node_b = ModeStore::new(Mode::Enforce);
+        node_b.set_snapshot(doc.to_snapshot());
+        assert_eq!(
+            node_b.resolve("rules_engine", None),
+            Mode::LogOnly,
+            "peer converges on the dashboard-set global mode",
         );
     }
 

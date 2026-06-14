@@ -1530,6 +1530,9 @@ async function fetchConfigState() {
       version: Number(j.version) || 0,
       applied: Array.isArray(j.applied) ? j.applied : [],
       backend: !!j.backend,
+      // A5 — this node's current global mode (enforce / log_only), so the
+      // drift surface can show "applied vN · mode" alongside the version.
+      mode: typeof j.mode === 'string' ? j.mode : null,
     };
   } catch (_) {
     return null;
@@ -1557,8 +1560,11 @@ function notifyConfigConvergence(timeoutMs = 8000) {
         const tot = s.applied.length;
         const ready = s.applied.filter(a => Number(a.version) >= target).length;
         if (tot > 0 && ready >= tot) {
+          // A5 — stamp the node's current global mode onto the pill so the
+          // operator sees both convergence axes (version + enforce/log_only).
+          const modeTag = s.mode ? ` · ${s.mode}` : '';
           window.aegisToast(`Applied on ${ready}/${tot} nodes`, 'ok',
-            `v${target} · ${Date.now() - start}ms`);
+            `v${target}${modeTag} · ${Date.now() - start}ms`);
           return;
         }
       }
