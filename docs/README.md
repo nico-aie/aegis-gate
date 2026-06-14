@@ -82,6 +82,7 @@ each category.
 | [transformations-cors.md](./data-plane/transformations-cors.md) | Header / URL rewrites, CORS |
 | [service-discovery.md](./data-plane/service-discovery.md) | File / DNS / Consul / etcd / k8s |
 | [smart-caching.md](./data-plane/smart-caching.md) | Cache with security awareness |
+| [sse-streaming.md](./data-plane/sse-streaming.md) | SSE stream-through, idle timeout, concurrency cap |
 | [adaptive-load-shedding.md](./data-plane/adaptive-load-shedding.md) | Gradient2 + tier priority |
 | [graceful-degradation.md](./data-plane/graceful-degradation.md) | Circuit breakers, timeouts, fallback |
 

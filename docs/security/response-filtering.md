@@ -23,6 +23,15 @@ runs three rungs over every upstream response body. Each rung is
 independently toggleable via [`ResponseFilterConfig`](#configuration);
 defaults are **all on** (safe-by-default).
 
+> **Streamed responses bypass these rungs.** A response that streams
+> through (SSE / `text/event-stream`, see
+> [`../data-plane/sse-streaming.md`](../data-plane/sse-streaming.md)) is
+> header-inspected only — its body can't be re-read, so the
+> `on_body_frame` pipeline (and the response cache) are skipped. Each such
+> response is audited with `response_inspection_skipped: true, reason:
+> "streaming"`. Set `streaming.enabled: false` to force buffering (and
+> thus body inspection) for every response.
+
 ### Rung 1 — Stack-trace scrubbing
 
 `response_filter::scrub_stack_traces` matches per-framework stack

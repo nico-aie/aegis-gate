@@ -1,8 +1,14 @@
 # SSE / streaming response support — data-plane stream-through (future plan)
 
-> **Status (2026-06-14): PLANNED, not started.** This plan was reviewed
-> (scored ~8.5/10) and revised against that feedback. Pre-code verification
-> of the four highest-risk areas (§11) is mandatory before Phase 1.
+> **Status (2026-06-14): SHIPPED on branch `feat/sse-streaming`.** Phases
+> 1–7 + decision-5 semaphore are implemented and tested; §11 pre-code
+> verification was completed first (results in §11a). Docs:
+> [`../../docs/data-plane/sse-streaming.md`](../../docs/data-plane/sse-streaming.md).
+> Only deferred item is Option C (incremental chunk-by-chunk body
+> inspection, §9) — intentionally future.
+>
+> _Original status: PLANNED, not started. Plan reviewed (~8.5/10) and
+> revised against feedback; §11 verification was mandatory before Phase 1._
 
 ## Goal
 

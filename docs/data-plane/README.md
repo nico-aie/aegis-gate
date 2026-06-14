@@ -26,5 +26,6 @@ selection, TLS, traffic management. Owner: **M1** —
 | [transformations-cors.md](./transformations-cors.md) | Header / URL rewrites, CORS |
 | [service-discovery.md](./service-discovery.md) | File / DNS / Consul / etcd / k8s |
 | [smart-caching.md](./smart-caching.md) | Cache with security awareness |
+| [sse-streaming.md](./sse-streaming.md) | SSE stream-through, idle timeout, concurrency cap |
 | [adaptive-load-shedding.md](./adaptive-load-shedding.md) | Gradient2 + tier priority |
 | [graceful-degradation.md](./graceful-degradation.md) | Circuit breakers, timeouts, fallback |
