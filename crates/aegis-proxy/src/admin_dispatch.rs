@@ -637,8 +637,8 @@ async fn handle_detectors_get(
 /// Errors map to HTTP statuses: NotFound → 404; the rest
 /// (NotAdminClass / NotRollbackable / MissingBefore /
 /// ApplyFailed) → 422 with an operator-readable body.
-async fn handle_rollback(
-    _req: hyper::Request<hyper::body::Incoming>,
+async fn handle_rollback<B>(
+    _req: hyper::Request<B>,
     seq: u64,
     services: &aegis_control::dashboard_services::DashboardServices,
 ) -> Response<Full<Bytes>> {
@@ -707,6 +707,15 @@ async fn handle_rollback(
                     "source": "dashboard",
                 }),
             });
+
+            // A1 — same bug class as A0: a `mode_set` rollback mutated
+            // the node-local `ModeStore`; propagate the resulting
+            // snapshot to peers so the fleet converges. Best-effort;
+            // no-op single-node. (Access-list / config-plane rollbacks
+            // ride their own convergence path and are out of scope here.)
+            if outcome.action == "mode_set" {
+                rt.control.publish_modes().await;
+            }
 
             let body = serde_json::to_string(&serde_json::json!({
                 "ok": true,
@@ -1437,5 +1446,103 @@ mod tests {
         let variant = groups[3].chars().next().unwrap();
         assert!(matches!(variant, '8' | '9' | 'a' | 'b'));
         assert_ne!(a, b);
+    }
+
+    // A1 — same bug class as A0: the audit-ring rollback path
+    // (`POST /api/config/versions/{seq}/rollback`) re-applies a
+    // `mode_set` to the node-local `ModeStore` but, pre-fix, never
+    // published the resulting snapshot to the cluster. A rollback in
+    // the console therefore drifted the fleet just like the Dry-Run
+    // toggle did (A0). Drives the real `handle_rollback` so the missing
+    // publish is caught.
+    #[tokio::test]
+    async fn mode_rollback_publishes_to_cluster_so_peer_converges() {
+        use aegis_control::interop::cluster_sync;
+        use aegis_control::interop::headers::Mode;
+        use aegis_control::interop::mode::ModeStore;
+        use aegis_core::audit::{AuditClass, AuditEvent};
+        use aegis_core::audit::AuditBus;
+        use bytes::Bytes;
+        use http_body_util::Full;
+        use std::sync::Arc;
+
+        let backend: Arc<dyn aegis_core::state::StateBackend> =
+            Arc::new(crate::state::in_memory::InMemoryBackend::new());
+
+        let cfg = aegis_core::load_config_str(concat!(
+            "listeners:\n  data: [{ bind: \"0.0.0.0:443\" }]\n",
+            "  admin: { bind: \"127.0.0.1:9443\" }\n",
+            "routes:\n  - { id: catch-all, path: \"/\", upstream: api }\n",
+            "upstreams:\n  api: { members: [{ addr: \"127.0.0.1:8443\" }] }\n",
+            "state: { backend: in_memory }\n",
+        ))
+        .unwrap();
+        let risk = aegis_security::risk::RiskTracker::new(
+            &aegis_core::config::RiskConfig::default(),
+        );
+        let iprl = Arc::new(aegis_security::rate_limit::IpRateLimiter::new(
+            Default::default(),
+        ));
+        let rt = crate::run::build_interop_runtime(&cfg, &risk, &iprl)
+            .expect("interop surface is on by default");
+        rt.control.set_cluster_state(backend.clone());
+
+        let bus = AuditBus::new(64);
+        let pools: aegis_control::dashboard_services::PoolSnapshotProvider =
+            Arc::new(|| aegis_control::api::upstreams::PoolHealthSnapshot {
+                pools: Vec::new(),
+            });
+        let (mut services, _drain) =
+            aegis_control::dashboard_services::DashboardServices::spawn(bus, pools, None);
+        services.interop = Some(rt.clone());
+
+        // Live store is enforce; a recorded `mode_set` whose captured
+        // `before.mode` is log_only is what the operator rolls back to.
+        rt.modes.set_all(Mode::Enforce);
+        let seq = services.audit_ring.record(AuditEvent {
+            schema_version: 1,
+            ts: chrono::Utc::now(),
+            request_id: String::new(),
+            class: AuditClass::Admin,
+            tenant_id: None,
+            tier: None,
+            action: "mode_set".into(),
+            reason: String::new(),
+            client_ip: String::new(),
+            route_id: None,
+            rule_id: None,
+            risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
+            fields: serde_json::json!({
+                "diff": { "before": { "mode": "log_only" }, "after": { "mode": "enforce" } },
+            }),
+        });
+
+        let req = hyper::Request::builder()
+            .method("POST")
+            .uri(format!("/api/config/versions/{seq}/rollback"))
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let resp = super::handle_rollback(req, seq, &services).await;
+        assert_eq!(resp.status(), 200, "rollback must succeed");
+        assert_eq!(
+            rt.modes.resolve("rules_engine", None),
+            Mode::LogOnly,
+            "local store rolled back to log_only",
+        );
+
+        // Peer converges on the rolled-back mode via the published doc.
+        let doc = cluster_sync::read_modes(&backend)
+            .await
+            .expect("rollback must publish a modes doc to the cluster plane");
+        let node_b = ModeStore::new(Mode::Enforce);
+        node_b.set_snapshot(doc.to_snapshot());
+        assert_eq!(
+            node_b.resolve("rules_engine", None),
+            Mode::LogOnly,
+            "peer converges on the rolled-back global mode",
+        );
     }
 }
