@@ -540,6 +540,14 @@ pub(crate) async fn handle_admin_request(
     if method == hyper::Method::GET && path == "/api/copilot/ask" {
         return crate::admin_get::handle_copilot_ask(req, services).await;
     }
+    // MED-3 (2026-06-14): the spec/contract + any programmatic client POST
+    // a JSON body ({question, minutes}) rather than a query string. Only
+    // GET was wired, so POST /api/copilot/ask fell through to admin_router
+    // and 404'd (the dashboard's own Ask box uses the GET form, masking
+    // it). CSRF-gated by the upstream middleware like every other POST.
+    if method == hyper::Method::POST && path == "/api/copilot/ask" {
+        return crate::admin_get::handle_copilot_ask_post(req, services).await;
+    }
     if method == hyper::Method::GET && path == "/api/copilot/suggestions" {
         return crate::admin_get::handle_copilot_suggestions(req, services).await;
     }

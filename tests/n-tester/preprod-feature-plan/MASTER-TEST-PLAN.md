@@ -11,10 +11,11 @@
 > **Errata (2026-06-13 run).** Live endpoints differ from early drafts: mTLS
 > telemetry lives under **`/api/zero-trust/{upstream,downstream}/*`** (e.g.
 > `/upstream/failures`, `/downstream/ca-bundle/capability`) — **`/api/mtls/*`
-> returns 404**. Copilot exposed **`/api/copilot/summary` + `/suggestions`
-> only** on the deployed `v0.1.0` build; `/api/copilot/ask` 404'd there but **is
-> wired on `develop`** (since 2026-06-02) — the 404 was a stale-deploy artifact,
-> re-test after the cluster is rebuilt. The data plane is **HTTPS-only on
+> returns 404**. Copilot `/api/copilot/ask` 404'd because only **GET** `?q=`
+> was wired (what the dashboard uses) while the spec/test (CP-03) **POSTs**
+> `{question}` — the POST fell through to the router. Fixed 2026-06-14:
+> `POST /api/copilot/ask` now accepts a JSON body (CSRF-gated; `q` aliases
+> `question`); GET form unchanged. The data plane is **HTTPS-only on
 > :56208** (accept the self-signed cert once). Untrusted `X-Forwarded-For` is
 > ignored (§10), so per-IP tests can't be driven by XFF spoofing. See
 > `reports/preprod-2026-06-13-feature-run.md`.
