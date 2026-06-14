@@ -9,7 +9,7 @@
 # WebSocket and blocked the attack:
 #
 #   1. CLIENT      — the attack frame's socket is closed with WS 1008
-#   2. AUDIT       — a `websocket_frame_block` row (action/rule_id/score/mode)
+#   2. AUDIT       — a `block` row with `surface:websocket` (rule_id/score/mode)
 #   3. METRIC      — aegis_websocket_frame_block_total{route,tag} increments
 #   4. LIFECYCLE   — websocket_open … websocket_close bracket the tunnel
 #
@@ -86,12 +86,15 @@ else
   echo "    attack  → $attack_outcome / code $attack_close (expected closed/1008) ✗"
 fi
 
-# Receipt 2 — audit row(s) for websocket_frame_block.
+# Receipt 2 — audit row(s) for the WS block. B2 consolidated the WS
+# frame block onto the WAF rule taxonomy: action is now "block" with a
+# "surface":"websocket" discriminator (was a bespoke
+# "websocket_frame_block" action).
 echo
-echo "[2] AUDIT  (new websocket_frame_block rows in $AUDIT_LOG)"
+echo "[2] AUDIT  (new WS block rows — action:block + surface:websocket — in $AUDIT_LOG)"
 if [ -f "$AUDIT_LOG" ]; then
   tail -n +"$((audit_lines_before + 1))" "$AUDIT_LOG" \
-    | grep '"websocket_frame_block"' \
+    | grep '"surface":"websocket"' \
     | tail -3 \
     | sed 's/^/    /' \
     || echo "    (none found)"

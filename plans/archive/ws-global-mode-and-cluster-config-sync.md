@@ -1,9 +1,43 @@
 # PLAN — WebSocket frame-mode consolidation + cluster config-sync fixes
 
 - **Type:** PLAN (bug fixes + enhancement; two related workstreams)
-- **Status:** 🟡 Planned — not started
-- **Branch:** `feat/sse-streaming`
+- **Status:** ✅ Done — shipped 2026-06-14 on `feat/ws-mode-cluster-sync` (A0–A5 + B1–B2).
+- **Branch:** `feat/ws-mode-cluster-sync` (was planned on `feat/sse-streaming`)
 - **Created:** 2026-06-14 (Nico, from console + 3-node live testing)
+
+## Completion summary (2026-06-14)
+
+All items landed via TDD (RED → GREEN), one commit each:
+
+- **A0** — `PUT /api/mode` now calls `publish_modes()` so the dashboard
+  Dry-Run toggle is fleet-wide. Handler + `mutation_preamble` made generic
+  over the body to unit-test the convergence.
+- **A1** — `mode_set` rollback (`handle_rollback`) publishes after the local
+  apply (same bug class). (Access-list / config-plane rollbacks ride their
+  own convergence and were left out of scope.)
+- **A2** — `apply_cfg_change_to_client_auth` wired into the shared-store
+  watcher's `apply_and_swap` via a new `ApplyTargets.client_auth`; emits
+  `zero_trust_reloaded` / `zero_trust_reload_failed`. Convergence test added.
+- **A3** — was **already implemented** (`block_threshold` / `cumulative_*`
+  carried by `cfg.tiers` + `apply_optional_overrides`); added a regression
+  guard and corrected stale doc comments.
+- **A4** — structural guard test (`apply_and_swap_invokes_every_reload_helper`)
+  asserts every `apply_cfg_change_to_*` is wired into the watcher. It
+  immediately caught a real latent bug: **copilot** reload was file-watcher
+  only — now also wired into `apply_and_swap`.
+- **A5** — `/api/config` now returns this node's current global mode beside
+  each node's applied version; threaded through the dashboard convergence
+  pill (the per-node applied-version drift view already existed).
+- **B1** — WS frame verdict AND-s the per-route `ws_inspect.mode` with the
+  global mode (`mode_for_rule`); oversize gate keys on the ambient global
+  default.
+- **B2** — WS frame block emits `action: "block"` + `fields.surface =
+  "websocket"` (consolidated onto the WAF taxonomy / Blocked KPI); metric
+  name unchanged. Updated e2e tests, `05-websocket-block.sh`, `config.rs`
+  doc, `websocket.md`, the metric description, and WS-03/WS-04 cases.
+
+Docs updated: `docs/security/websocket.md`,
+`docs/operations/cluster-config-distribution.md`.
 - **Area:** Data plane → WebSocket frame inspection; control plane (`control:waf:*` modes) + config plane (`config:waf:doc`) fleet convergence.
 - **Related:** [`BUG-console-route-mutation-not-fleet-convergent.md`](BUG-console-route-mutation-not-fleet-convergent.md) (same convergence theme, config-plane side).
 

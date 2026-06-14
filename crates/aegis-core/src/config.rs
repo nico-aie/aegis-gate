@@ -1697,9 +1697,10 @@ fn default_route_enabled() -> bool {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WsInspectMode {
-    /// Emit the `websocket_frame_block` audit event but forward the
-    /// frame anyway (`action: would_block`). Opt-in for operators who
-    /// want to observe before enforcing.
+    /// Emit the block audit event (`action: "block"` with
+    /// `fields.surface = "websocket"` and `mode: "log_only"`) but
+    /// forward the frame anyway. Opt-in for operators who want to
+    /// observe before enforcing.
     LogOnly,
     /// Drop the offending message and close the socket with WS Close
     /// `1008` (policy violation). **Default** (2026-06-12): WS frame

@@ -4,7 +4,7 @@
 > `upstream/idle_timeout.rs`, `upstream/forward.rs`, `data_plane.rs`;
 > config in `aegis-core/src/config.rs` (`StreamingConfig`).
 >
-> Plan + decisions: [`../../plans/future/sse-streaming-support.md`](../../plans/future/sse-streaming-support.md).
+> Plan + decisions: [`../../plans/archive/sse-streaming-support.md`](../../plans/archive/sse-streaming-support.md).
 
 ## Purpose
 

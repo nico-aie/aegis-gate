@@ -1374,6 +1374,10 @@ pub async fn run(
                 as Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>),
             // N1 — re-derive the alert-receiver list on each swap.
             receiver_writer: Some(Arc::clone(&shared_receivers)),
+            // A2 — re-derive the inbound mTLS trust store on each swap so a
+            // Zero Trust CA rotation converges fleet-wide (was file-watcher
+            // only).
+            client_auth: client_trust.clone(),
         };
         tracing::info!(
             node_id = %node_id,

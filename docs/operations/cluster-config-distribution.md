@@ -39,8 +39,13 @@ Fastly:
 3. **Propagation.** Every node runs the `redis_source` watcher, polling
    the doc version (default 3 s) and applying a new version through the
    `config_source::reload` helpers (route table, detector mask, IP
-   rate-limit, TLS, tiers, rules, upstreams, then the `ArcSwap` swap) —
-   identical side effects to the file/etcd watchers.
+   rate-limit, TLS, tiers — incl. `block_threshold` / `cumulative_*`,
+   AI, response-filter, receivers, rules, upstreams, **Zero Trust inbound
+   mTLS trust store**, **AI Operator Copilot**, then the `ArcSwap` swap) —
+   identical side effects to the file/etcd watchers. A structural test
+   (`apply_and_swap_invokes_every_reload_helper`) asserts every
+   `apply_cfg_change_to_*` helper is wired into this watcher so a new
+   config section can't silently regress to node-local.
 4. **ACK / NACK.** After a successful apply the node records its applied
    version under `config:waf:applied:<node_id>` (TTL'd). A version whose
    blob fails to validate is **not** applied — the node keeps its
@@ -64,7 +69,7 @@ CSRF-gated (the mutating ones). All run through the audit chain.
 
 | Method + path | Purpose | Success / conflict |
 |---|---|---|
-| `GET /api/config` | Drift view: active version + each node's applied version | `200` JSON |
+| `GET /api/config` | Drift view: active version + each node's applied version + this node's current global mode (`enforce`/`log_only`) | `200` JSON |
 | `PUT /api/config` | Activate a full new config version | `200 {version}` / `409 {current}` |
 | `POST /api/config/rollback` | Re-activate an earlier version's snapshot | `200 {version}` / `409` |
 
