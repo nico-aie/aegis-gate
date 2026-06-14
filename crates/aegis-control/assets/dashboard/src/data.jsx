@@ -367,6 +367,26 @@ function decisionAction(action) {
   return WS_DECISION[action] || action || 'allow';
 }
 
+// BUG-streaming-surfaces — the Proto column reflects the SURFACE, not the
+// lifecycle/verdict. A WebSocket connection (the `GET … 101` upgrade) or any
+// blocked WS frame (`fields.surface === 'websocket'`) reads `websocket`; a
+// streamed `text/event-stream` response (`fields.streamed`) reads `sse`. The
+// verdict (allow/block) stays in the Action column. TCP tunnels keep their
+// existing labels. (Chrome DevTools parity: one surface-typed connection row.)
+function streamingProto(action, ev, f) {
+  if (action === 'tcp_tunnel_open') return 'tcp-open';
+  if (action === 'tcp_tunnel_close') return 'tcp-close';
+  const status = Number(f.status ?? ev.status);
+  if (f.surface === 'websocket' || status === 101) return 'websocket';
+  if (f.streamed === true) return 'sse';
+  return 'http';
+}
+
+// Lifecycle events that are always `allow` and carry no decision signal —
+// hidden from the Live Feed (one connection row, not three). They remain in
+// the durable Audit Trail + sinks for forensics.
+const FEED_HIDDEN_ACTIONS = new Set(['websocket_open', 'websocket_close']);
+
 // Labels emitted as `rule_id` for context but which aren't §5 rule_ids
 // (the detector/rule/model that caused the decision). Dropped so the
 // Rules column reads `—` for plain allows + WS lifecycle, per the
@@ -402,12 +422,7 @@ function mapAuditToLiveRow(ev, seq) {
   const action = ev.action || 'allow';
   const ip = ev.client_ip || ev.ip || '0.0.0.0';
   const ruleId = ev.rule_id || ev.reason || null;
-  const protocol =
-    action === 'websocket_open' ? 'ws-open' :
-    action === 'websocket_close' ? 'ws-close' :
-    action === 'tcp_tunnel_open' ? 'tcp-open' :
-    action === 'tcp_tunnel_close' ? 'tcp-close' :
-    'http';
+  const protocol = streamingProto(action, ev, f);
   return {
     id: seq,
     ts: fmtTs(epoch),
@@ -453,13 +468,15 @@ function useRealLiveFeed(maxLen = 60, paused = false) {
         const REAL_ACTIONS = new Set([
           'allow', 'block', 'challenge', 'rate_limit',
           'timeout', 'circuit_breaker',
-          // A blocked WS frame is a real block decision — keep it on
-          // reload (mapped to `block` by decisionAction). WS open/close
-          // are lifecycle noise and stay live-stream-only.
+          // A blocked WS frame is a real `block` decision (current emit) —
+          // already covered by `block`. `websocket_frame_block` kept as a
+          // legacy alias for pre-B2 rows still in the durable ring.
           'websocket_frame_block',
         ]);
+        // BUG-streaming-surfaces — ws-open/ws-close lifecycle rows are dropped
+        // from the Live Feed (Audit Trail keeps them).
         const backfilled = data.events
-          .filter(ev => REAL_ACTIONS.has(ev.action))
+          .filter(ev => REAL_ACTIONS.has(ev.action) && !FEED_HIDDEN_ACTIONS.has(ev.action))
           .map(ev => mapAuditToLiveRow(ev, ++_realLiveSeq));
         if (backfilled.length > 0) {
           setEvents(prev => {
@@ -509,19 +526,16 @@ function useRealLiveFeed(maxLen = 60, paused = false) {
               }));
             } catch (_) { /* CustomEvent unsupported — non-fatal */ }
           }
+          // BUG-streaming-surfaces — drop ws-open/ws-close lifecycle rows
+          // from the Live Feed (Chrome parity: the GET..101 handshake row +
+          // any block rows represent the connection; lifecycle stays in the
+          // Audit Trail). The config_reload dispatch above already ran.
+          if (FEED_HIDDEN_ACTIONS.has(action)) return;
           const ip = ev.client_ip || ev.ip || '0.0.0.0';
           const ruleId = ev.rule_id || ev.reason || null;
-          // WS-T6 — surface the application protocol so the
-          // Live Feed table can pill websocket open / close
-          // events distinctly from plain HTTP.  WAF emits
-          // `websocket_open` and `websocket_close` actions for
-          // the bridged tunnel pair; everything else is HTTP.
-          const protocol =
-            action === 'websocket_open' ? 'ws-open' :
-            action === 'websocket_close' ? 'ws-close' :
-            action === 'tcp_tunnel_open' ? 'tcp-open' :
-            action === 'tcp_tunnel_close' ? 'tcp-close' :
-            'http';
+          // Proto reflects the surface (websocket / sse / http); the
+          // verdict stays in the Action column. See `streamingProto`.
+          const protocol = streamingProto(action, ev, f);
           const mapped = {
             id: ++_realLiveSeq,
             ts: fmtTs(epoch),

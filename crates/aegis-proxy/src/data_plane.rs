@@ -409,6 +409,11 @@ pub(crate) async fn handle_data_request_inner(
     // across record_malicious_with_key calls, then is_strike_blocked
     // returns true once the cap is hit.
     let strike_key = build_risk_key(peer_ip, req.headers(), tls_fingerprint);
+    // BUG-audit-detail Fix A — render the bucket key once here (it is the
+    // same composite key the risk gate uses) and reuse it across this
+    // request's block / challenge audit emits so the Request Detail drawer
+    // shows the bucket on every decision, not just on `allow`.
+    let risk_key_audit = risk_key_audit_value(&strike_key);
     if risk.is_strike_blocked_for_key(&strike_key) {
         // NEW-4 (2026-05-08) — keyed on `peer_ip` (XFF-resolved).
         // Stamp on the DecisionTag so the response stamper picks
@@ -1009,6 +1014,8 @@ pub(crate) async fn handle_data_request_inner(
             // here (post-buffer); rides the same verbosity gate above.
             if let serde_json::Value::Object(ref mut map) = f {
                 map.extend(request_echo_fields(&parts.headers, Some(&body_bytes)));
+                // BUG-audit-detail Fix A — bucket key on the block row too.
+                map.insert("risk_key".to_string(), risk_key_audit.clone());
             }
             f
         };
@@ -1299,6 +1306,10 @@ pub(crate) async fn handle_data_request_inner(
                 if let Some(d) = detected_detectors.as_ref() {
                     rs_fields.insert("detectors".into(), serde_json::Value::String(d.clone()));
                 }
+                // BUG-audit-detail Fix A — always surface the bucket key on a
+                // risk-score block (even an otherwise-slim clean cumulative
+                // block) so the drawer shows which bucket accumulated.
+                rs_fields.insert("risk_key".into(), risk_key_audit.clone());
                 let rs_echo = if rs_fields.is_empty() { None } else { Some(rs_fields) };
                 let resp = blocked_response(
                     peer,
@@ -1420,6 +1431,7 @@ pub(crate) async fn handle_data_request_inner(
                         &parts.method,
                         bus,
                         echo,
+                        Some(risk_key_audit.clone()),
                     );
                 }
                 // Contract §2.7 — honor `set_profile mode=log_only` on
@@ -1927,6 +1939,12 @@ pub(crate) async fn forward_allow_to_upstream(
             let ws_bus = bus.clone();
             let ws_route_id = route_ctx.route_id.clone();
             let ws_tier = route_ctx.tier;
+            // BUG-ws-lifecycle-audit — the spawned bridge task emits the
+            // `websocket_close` event after this handler has returned, so
+            // capture the request path here (full path incl. query, matching
+            // the `websocket_open` event's `fields.path`). Without this the
+            // close event had no path and rendered as the bare `/`.
+            let ws_path_for_close = parts.uri.to_string();
             let ws_metrics_for_inspect = ctx.websocket_metrics.clone();
             // WS-T6 — record bridge open before spawning the task.
             // The matching close is recorded inside the task after
@@ -2104,13 +2122,24 @@ pub(crate) async fn forward_allow_to_upstream(
                                     route_id: Some(ws_route_id.clone()),
                                     rule_id: Some(tag),
                                     risk_score: Some(sum),
-                                    method: None,
+                                    // BUG-streaming-surfaces — attribute the
+                                    // frame block to the WS surface: stamp the
+                                    // real handshake method + path (dynamic,
+                                    // from the upgrade request — `ws_method`/
+                                    // `ws_uri` are already in scope here) so the
+                                    // Live Feed renders `websocket · GET · <path>`
+                                    // instead of an anonymous `block /`. Path
+                                    // rides `fields.path` (consistent with the
+                                    // open/close events); top-level `path` stays
+                                    // None.
+                                    method: Some(ws_method.to_string()),
                                     path: None,
                                     mode: Some(mode_str.to_string()),
                                     fields: serde_json::json!({
                                         "surface": "websocket",
                                         "matched_field": matched_field,
                                         "message_bytes": payload.len(),
+                                        "path": ws_uri.to_string(),
                                     }),
                                 });
                                 if effective_enforce {
@@ -2163,14 +2192,22 @@ pub(crate) async fn forward_allow_to_upstream(
                             .to_string(),
                             class: aegis_core::audit::AuditClass::Access,
                             tenant_id: None,
-                            tier: None,
+                            // BUG-ws-lifecycle-audit — carry the route's real
+                            // tier (was `None`, which made the dashboard fall
+                            // back to the IP-risk bucket → LOW).
+                            tier: Some(ws_tier),
                             action: "websocket_close".into(),
                             reason: "ws_bridge_closed".to_string(),
                             client_ip: peer_ip.to_string(),
                             route_id: Some(route_id_for_task.clone()),
                             rule_id: None,
                             risk_score: None,
-                            method: None,
+                            // WS lifecycle derives from a single `GET … Upgrade`
+                            // handshake; stamp GET explicitly so the Live Feed
+                            // method column is data-driven, not a UI default.
+                            method: Some("GET".into()),
+                            // Keep top-level `path` None to match websocket_open;
+                            // the path rides in `fields.path` (drawer reads it).
                             path: None,
                             mode: None,
                             fields: serde_json::json!({
@@ -2178,6 +2215,7 @@ pub(crate) async fn forward_allow_to_upstream(
                                 "duration_ms": elapsed.as_millis() as u64,
                                 "bytes_to_upstream": c2u,
                                 "bytes_from_upstream": u2c,
+                                "path": ws_path_for_close,
                             }),
                         });
                     }
@@ -2224,7 +2262,9 @@ pub(crate) async fn forward_allow_to_upstream(
                 route_id: Some(route_ctx.route_id.clone()),
                 rule_id: None,
                 risk_score: None,
-                method: None,
+                // Symmetry with websocket_close: WS lifecycle is a single
+                // GET upgrade; stamp it so the column isn't a UI guess.
+                method: Some("GET".into()),
                 path: None,
                 mode: None,
                 fields: serde_json::json!({
@@ -2892,7 +2932,7 @@ mod proxy_via_tests {
 
 #[cfg(test)]
 mod session_extraction_tests {
-    use super::{build_risk_key, extract_session_id};
+    use super::{build_risk_key, extract_session_id, risk_key_audit_value};
     use http::HeaderMap;
 
     fn headers_with(cookie: &str) -> HeaderMap {
@@ -2958,6 +2998,69 @@ mod session_extraction_tests {
     fn handles_whitespace_around_cookie_pairs() {
         let h = headers_with("foo=bar ;  session=trimmed  ; baz=qux");
         assert_eq!(extract_session_id(&h).as_deref(), Some("trimmed"));
+    }
+
+    // ----- risk_key_audit_value (BUG-audit-detail Fix A) -----
+    // The audit-side rendering of a RiskKey: surfaces the bucket axes
+    // for the Request Detail drawer WITHOUT leaking the raw session id.
+
+    #[test]
+    fn risk_key_audit_value_ip_only_marks_no_device_no_session() {
+        let ip: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+        let key = aegis_core::risk::RiskKey {
+            ip,
+            device_fp: None,
+            session: None,
+        };
+        let v = risk_key_audit_value(&key);
+        assert_eq!(v["ip"], "203.0.113.7");
+        assert!(v["device_fp"].is_null(), "no TLS fp ⇒ device_fp null");
+        assert_eq!(v["session_present"], false);
+        assert!(
+            v["key_hash"].as_str().map(|s| s.len() >= 16).unwrap_or(false),
+            "key_hash must be a stable bucket id of >=16 hex chars",
+        );
+    }
+
+    #[test]
+    fn risk_key_audit_value_never_leaks_raw_session() {
+        let ip: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+        let key = aegis_core::risk::RiskKey {
+            ip,
+            device_fp: Some("dfp-hash".into()),
+            session: Some("secret-session-token-123".into()),
+        };
+        let v = risk_key_audit_value(&key);
+        assert_eq!(v["session_present"], true, "session axis present ⇒ true");
+        assert_eq!(v["device_fp"], "dfp-hash");
+        let rendered = serde_json::to_string(&v).unwrap();
+        assert!(
+            !rendered.contains("secret-session-token-123"),
+            "raw session id must never appear in the audit value",
+        );
+    }
+
+    #[test]
+    fn risk_key_audit_value_same_axes_same_hash_diff_axes_diff_hash() {
+        let ip: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+        let mk = |ip, sess: Option<&str>| {
+            risk_key_audit_value(&aegis_core::risk::RiskKey {
+                ip,
+                device_fp: None,
+                session: sess.map(|s| s.to_string()),
+            })
+        };
+        let a = mk(ip, None);
+        let b = mk(ip, None);
+        assert_eq!(a["key_hash"], b["key_hash"], "same axes ⇒ same bucket");
+        let ip2: std::net::IpAddr = "203.0.113.8".parse().unwrap();
+        let c = mk(ip2, None);
+        assert_ne!(a["key_hash"], c["key_hash"], "different ip ⇒ different bucket");
+        let d = mk(ip, Some("sess-x"));
+        assert_ne!(
+            a["key_hash"], d["key_hash"],
+            "adding a session axis ⇒ different bucket",
+        );
     }
 
     /// build_risk_key fills ip + session axes. device_fp stays
@@ -3391,6 +3494,43 @@ pub(crate) fn build_risk_key(
     }
 }
 
+/// 2026-06-14 (BUG-audit-detail Fix A) — render a `RiskKey` into a
+/// privacy-safe audit value for the dashboard's Request Detail drawer.
+///
+/// Surfaces the cumulative-risk *bucket* axes so operators can answer
+/// "did these same-IP requests share one bucket?" directly from the
+/// console (the question recon bursts raise on the Live Feed /
+/// Investigation pages). Emitted on EVERY decision — allow / challenge /
+/// block — not just blocks, so low-score `allow` recon traffic (the
+/// least-inspectable, most-triaged class) is finally visible.
+///
+/// Security: the raw `session` axis can carry a session token, so it is
+/// NEVER emitted — only a boolean presence flag. `device_fp` is already
+/// a non-reversible hash. `key_hash` is a short, stable blake3 digest of
+/// the full composite (`ip|device_fp|session`) so two requests that share
+/// a bucket render the same hash without exposing the session.
+pub(crate) fn risk_key_audit_value(key: &aegis_core::risk::RiskKey) -> serde_json::Value {
+    let composite = format!(
+        "{}|{}|{}",
+        key.ip,
+        key.device_fp.as_deref().unwrap_or("-"),
+        key.session.as_deref().unwrap_or("-"),
+    );
+    // 16 hex chars (64 bits) is ample to distinguish buckets in a UI
+    // without rendering a full 64-char digest.
+    let key_hash: String = blake3::hash(composite.as_bytes())
+        .to_hex()
+        .chars()
+        .take(16)
+        .collect();
+    serde_json::json!({
+        "ip": key.ip.to_string(),
+        "device_fp": key.device_fp,
+        "session_present": key.session.is_some(),
+        "key_hash": key_hash,
+    })
+}
+
 /// 2026-05-20 — bounded, redacted request echo for the audit
 /// `fields` bag so the dashboard's request-detail drawer can show
 /// the headers + payload that tripped a detector. Only invoked on
@@ -3404,7 +3544,7 @@ pub(crate) fn build_risk_key(
 /// UTF-8-lossy preview with a `truncated` flag. `body = None` for
 /// the early IP-reputation block paths that fire before the body
 /// is buffered.
-fn request_echo_fields(
+pub(crate) fn request_echo_fields(
     headers: &http::HeaderMap,
     body: Option<&[u8]>,
 ) -> serde_json::Map<String, serde_json::Value> {
@@ -3562,6 +3702,9 @@ fn emit_challenge_audit(
     method: &hyper::Method,
     bus: &AuditBus,
     echo: Option<serde_json::Map<String, serde_json::Value>>,
+    // BUG-audit-detail Fix A — the cumulative-risk bucket key for the
+    // drawer; `None` keeps the slim shape (e.g. unit tests).
+    risk_key: Option<serde_json::Value>,
 ) {
     let ev = aegis_core::audit::AuditEvent {
         schema_version: 1,
@@ -3604,6 +3747,9 @@ fn emit_challenge_audit(
             }
             if let Some(echo) = echo {
                 f.extend(echo);
+            }
+            if let Some(rk) = risk_key {
+                f.insert("risk_key".to_string(), rk);
             }
             serde_json::Value::Object(f)
         },
@@ -4778,12 +4924,160 @@ state: {{ backend: in_memory }}
                 assert_eq!(ev.mode.as_deref(), Some("log_only"));
                 assert_eq!(ev.rule_id.as_deref(), Some("sqli"));
                 assert_eq!(ev.route_id.as_deref(), Some("chat"));
+                // BUG-streaming-surfaces — the frame-block row must be
+                // attributable: method GET + the real handshake path
+                // (dynamic — here "/", the route this test connected to,
+                // NOT a hardcoded "/ws/live").
+                assert_eq!(
+                    ev.method.as_deref(),
+                    Some("GET"),
+                    "WS frame block must carry method GET",
+                );
+                assert_eq!(
+                    ev.fields.get("path").and_then(|p| p.as_str()),
+                    Some("/"),
+                    "WS frame block must carry the real handshake path in fields.path",
+                );
                 break;
             }
         }
         assert!(found, "log_only must emit a block audit with surface=websocket");
 
         drop(tx);
+        backend_task.abort();
+        waf_task.abort();
+    }
+
+    /// BUG-ws-lifecycle-audit-missing-tier-path — the `websocket_close`
+    /// audit event must carry the route's real tier + the request path +
+    /// `method: GET`, exactly like `websocket_open`. Previously it emitted
+    /// `tier: None` / `path: None` with no `fields.path`, so the Live Feed
+    /// + Investigation rendered the close row as `LOW /` (a HIGH-tier
+    /// `/ws/live` socket reading as low-tier root).
+    #[tokio::test]
+    async fn websocket_close_audit_carries_tier_method_and_path() {
+        use futures::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let backend = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let backend_addr = backend.local_addr().unwrap();
+        let backend_task = tokio::spawn(async move {
+            let (stream, _) = backend.accept().await.unwrap();
+            let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let (mut tx, mut rx) = futures::StreamExt::split(ws);
+            while let Some(Ok(msg)) = futures::StreamExt::next(&mut rx).await {
+                if msg.is_text() || msg.is_binary() {
+                    let _ = tx.send(msg).await;
+                }
+            }
+        });
+
+        // HIGH-tier `/ws/live` route so a correct close event audits as
+        // High (not the None→LOW risk-bucket fallback).
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: live, path: "/ws/live", upstream: pool, tier_override: high, ws_inspect: {{ enabled: true }} }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend_addr}" }}] }}
+state: {{ backend: in_memory }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
+
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let bus = AuditBus::new(16);
+        let mut audit_rx = bus.subscribe();
+        let ctx_for_listener = ctx.clone();
+        let bus_for_listener = bus.clone();
+        let rh = Arc::new(route_latency());
+        let waf_task = tokio::spawn(async move {
+            let (stream, peer) = waf.accept().await.unwrap();
+            let ctx_for_svc = ctx_for_listener.clone();
+            let bus_for_svc = bus_for_listener.clone();
+            let rh_for_svc = rh.clone();
+            let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                let ctx = ctx_for_svc.clone();
+                let bus = bus_for_svc.clone();
+                let rh = rh_for_svc.clone();
+                async move {
+                    let (parts, body) = req.into_parts();
+                    let body_bytes = body
+                        .collect()
+                        .await
+                        .map(|c| c.to_bytes())
+                        .unwrap_or_default();
+                    let (resp, _tag) = super::forward_allow_to_upstream(
+                        parts,
+                        body_bytes,
+                        &ctx,
+                        &ClientIdentity::Anonymous,
+                        &rh,
+                        &route_activity_w(),
+                        Instant::now(),
+                        peer.ip(),
+                        &bus,
+                    )
+                    .await;
+                    Ok::<_, Infallible>(resp)
+                }
+            });
+            let io = TokioIo::new(stream);
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(io, svc)
+                .with_upgrades()
+                .await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let url = format!("ws://127.0.0.1:{}/ws/live", waf_addr.port());
+        let (ws, _resp) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let (mut tx, mut rx) = futures::StreamExt::split(ws);
+        tx.send(Message::Text("hello".into())).await.unwrap();
+        let _ = futures::StreamExt::next(&mut rx).await;
+        // Close the socket so the bridge task emits websocket_close.
+        drop(tx);
+        drop(rx);
+
+        // Give the spawned bridge task time to observe the close + emit.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let mut close_ev = None;
+        while let Ok(ev) = audit_rx.try_recv() {
+            if ev.action.as_str() == "websocket_close" {
+                close_ev = Some(ev);
+                break;
+            }
+        }
+        let ev = close_ev.expect("a websocket_close audit event must be emitted");
+        assert_eq!(
+            ev.tier,
+            Some(aegis_core::tier::Tier::High),
+            "close event must carry the route's real tier, not None→LOW",
+        );
+        assert_eq!(
+            ev.method.as_deref(),
+            Some("GET"),
+            "WS lifecycle method must be data-driven GET, not a UI guess",
+        );
+        assert_eq!(
+            ev.fields.get("path").and_then(|p| p.as_str()),
+            Some("/ws/live"),
+            "close event must carry the request path in fields.path",
+        );
+
         backend_task.abort();
         waf_task.abort();
     }
@@ -5213,9 +5507,23 @@ state: {{ backend: in_memory }}
             &hyper::Method::GET,
             &bus,
             None,
+            Some(super::risk_key_audit_value(&super::build_risk_key(
+                "9.9.9.9".parse().unwrap(),
+                &http::HeaderMap::new(),
+                None,
+            ))),
         );
         let ev = rx.try_recv().expect("challenge audit event emitted");
         assert_eq!(ev.action, "challenge", "challenge rung must audit action=challenge");
+        // BUG-audit-detail Fix A — challenge rows carry the bucket key too.
+        assert_eq!(
+            ev.fields
+                .get("risk_key")
+                .and_then(|rk| rk.get("ip"))
+                .and_then(|ip| ip.as_str()),
+            Some("9.9.9.9"),
+            "challenge audit must carry the risk_key bucket for the drawer",
+        );
         assert_eq!(ev.rule_id.as_deref(), Some("risk-challenge"));
         assert_eq!(ev.tier, Some(aegis_core::tier::Tier::High));
         assert_eq!(ev.risk_score, Some(45), "audit carries the cumulative score");
