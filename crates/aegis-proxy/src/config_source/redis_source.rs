@@ -83,6 +83,15 @@ pub struct ApplyTargets {
     /// node-local receiver store stays as-is).
     pub receiver_writer:
         Option<Arc<arc_swap::ArcSwap<Vec<aegis_control::slo::AlertReceiver>>>>,
+    /// A2 (2026-06-14) — live inbound (downstream) mTLS trust store,
+    /// re-derived from `cfg.zero_trust.downstream.ca_bundle` on each swap
+    /// so a Zero Trust CA rotation activated on any node converges on every
+    /// node instead of staying node-local-until-restart. `None` ⇒ inbound
+    /// mTLS not wired at boot (operators flipping it on at runtime still
+    /// need a restart, same as the file watcher). Mirrors the file-watcher
+    /// path (`supervisor.rs`) which already calls
+    /// `apply_cfg_change_to_client_auth`.
+    pub client_auth: Option<crate::listener::client_trust::ClientTrustStore>,
 }
 
 /// Spawn the shared-store config watcher. Exits when the last strong
@@ -288,7 +297,72 @@ async fn apply_and_swap(
         bus.emit(reload_event("upstreams_reload_failed", reason, "", version));
     }
 
+    // A2 — re-derive the inbound (downstream) mTLS trust store from the
+    // converged config so a Zero Trust CA rotation propagates fleet-wide.
+    // Mirrors the file watcher (`supervisor.rs`): NoStore / SkippedDisabled
+    // are no-ops; Applied emits `zero_trust_reloaded`; MissingCaBundle /
+    // Failed keep the live store and emit `zero_trust_reload_failed`.
+    apply_client_auth_and_audit(new_cfg, bus, targets.client_auth.as_ref(), version);
+
     cfg.store(Arc::new(new_cfg.clone()));
+}
+
+/// A2 — apply the inbound mTLS trust-store reload from a converged config
+/// and audit the outcome on the shared bus. Split out of [`apply_and_swap`]
+/// so the match stays readable; mirrors the file-watcher emission shape in
+/// `supervisor.rs` with `source: "shared"`.
+fn apply_client_auth_and_audit(
+    new_cfg: &WafConfig,
+    bus: &AuditBus,
+    trust_store: Option<&crate::listener::client_trust::ClientTrustStore>,
+    version: u64,
+) {
+    use reload::ClientAuthReloadOutcome as Outcome;
+    match reload::apply_cfg_change_to_client_auth(new_cfg, trust_store) {
+        // Nothing to do: inbound mTLS not wired, or disabled in new cfg.
+        Outcome::NoStore | Outcome::SkippedDisabled => {}
+        Outcome::Applied { cert_count, mode } => {
+            tracing::info!(
+                version,
+                cert_count,
+                mode = ?mode,
+                "shared config: mtls trust store swapped",
+            );
+            let mut ev = reload_event(
+                "zero_trust_reloaded",
+                format!("mtls trust store rebuilt with {cert_count} CA certificate(s)"),
+                "",
+                version,
+            );
+            ev.fields = serde_json::json!({
+                "source": "shared",
+                "version": version,
+                "cert_count": cert_count,
+                "mode": format!("{mode:?}").to_lowercase(),
+            });
+            bus.emit(ev);
+        }
+        Outcome::MissingCaBundle => {
+            tracing::error!(
+                version,
+                "shared config: mtls reload skipped — non-disabled mode but ca_bundle missing",
+            );
+            bus.emit(reload_event(
+                "zero_trust_reload_failed",
+                "client_auth.ca_bundle missing for non-disabled mode".into(),
+                "",
+                version,
+            ));
+        }
+        Outcome::Failed { reason } => {
+            tracing::error!(
+                version,
+                reason = %reason,
+                "shared config: mtls trust store load failed; live trust unchanged",
+            );
+            bus.emit(reload_event("zero_trust_reload_failed", reason, "", version));
+        }
+    }
 }
 
 fn reload_event(action: &str, reason: String, node_id: &str, version: u64) -> AuditEvent {
@@ -366,6 +440,123 @@ mod tests {
         assert!(
             start.elapsed() >= Duration::from_millis(40),
             "a closed channel must wait out the interval, not hot-loop",
+        );
+    }
+
+    // ---- A2 — Zero Trust inbound mTLS converges via the config watcher ----
+
+    /// Write a self-signed CA to a temp file; return (pem_bytes, path).
+    fn make_ca(name: &str) -> (Vec<u8>, std::path::PathBuf) {
+        use std::io::Write;
+        let mut params = rcgen::CertificateParams::new(vec![name.into()]).unwrap();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        let pem = cert.pem().into_bytes();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(format!("{name}.pem"));
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(&pem).unwrap();
+        f.sync_all().unwrap();
+        std::mem::forget(dir); // keep the path valid for the test
+        (pem, path)
+    }
+
+    fn zero_trust_yaml(ca_path: &std::path::Path) -> String {
+        format!(
+            concat!(
+                "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\n",
+                "  admin: {{ bind: \"127.0.0.1:9090\" }}\n",
+                "routes:\n  - {{ id: catch-all, path: \"/\", upstream: pool }}\n",
+                "upstreams:\n  pool: {{ members: [{{ addr: \"127.0.0.1:3000\" }}] }}\n",
+                "state: {{ backend: in_memory }}\n",
+                "tls:\n  certificates: []\n",
+                "zero_trust:\n  downstream:\n    mode: required\n",
+                "    ca_bundle: {ca_path}\n    apply_to: [data]\n",
+            ),
+            ca_path = ca_path.display(),
+        )
+    }
+
+    // A2 — a Zero Trust CA rotation activated on the config plane must
+    // converge on every node via the shared-store watcher, exactly like
+    // detectors / routes / tiers already do. Pre-fix `apply_and_swap`
+    // never called `apply_cfg_change_to_client_auth`, so an inbound-mTLS
+    // CA change stayed node-local-until-restart. We assert the watcher
+    // emits a `zero_trust_reloaded` audit after the activation — proof
+    // the trust store was rebuilt from the converged config.
+    #[tokio::test]
+    async fn zero_trust_ca_converges_via_config_watcher() {
+        use crate::listener::client_trust::ClientTrustStore;
+        use crate::state::in_memory::InMemoryBackend;
+
+        // Live trust starts on CA-A; the activated config points at CA-B.
+        let (pem_a, _path_a) = make_ca("zt-ca-a");
+        let trust = ClientTrustStore::load_from_pem_bytes(&pem_a).unwrap();
+        let (_pem_b, path_b) = make_ca("zt-ca-b");
+
+        let backend: Arc<dyn aegis_core::state::StateBackend> =
+            Arc::new(InMemoryBackend::new());
+        let boot = aegis_core::load_config_str(&zero_trust_yaml(&path_b)).unwrap();
+        let cfg_swap = Arc::new(ArcSwap::from_pointee(boot.clone()));
+
+        let bus = AuditBus::new(64);
+        let mut rx = bus.subscribe();
+
+        let targets = ApplyTargets {
+            detector_mask: None,
+            proxy_ctx: None,
+            ip_rate_limiter: None,
+            tls_resolver: None,
+            ai_toggle: None,
+            ai_threshold: None,
+            response_filter_writer: None,
+            tiers: None,
+            rules: None,
+            active_ruleset: None,
+            upstream_writer: None,
+            receiver_writer: None,
+            // The one target under test.
+            client_auth: Some(trust),
+        };
+
+        let store_w = ConfigStore::new(backend.clone());
+        let handle = spawn_watcher(
+            store_w,
+            "waf-zt".to_string(),
+            cfg_swap.clone(),
+            bus.clone(),
+            targets,
+            Duration::from_millis(50),
+            None,
+        );
+
+        // Activate a new version carrying the rotated CA bundle.
+        let store_a = ConfigStore::new(backend.clone());
+        store_a
+            .activate(0, zero_trust_yaml(&path_b), "operator", "rotate zt ca")
+            .await
+            .unwrap();
+
+        // Within the SLA the watcher applies it and emits the reload audit.
+        let mut reloaded = false;
+        for _ in 0..40 {
+            while let Ok(ev) = rx.try_recv() {
+                if ev.action.as_str() == "zero_trust_reloaded" {
+                    reloaded = true;
+                    break;
+                }
+            }
+            if reloaded {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        handle.abort();
+        assert!(
+            reloaded,
+            "Zero Trust CA rotation must converge via the config watcher \
+             (emit a zero_trust_reloaded audit), not stay node-local",
         );
     }
 }

@@ -6643,6 +6643,7 @@ state:
             active_ruleset: None,
             upstream_writer: None,
             receiver_writer: None,
+            client_auth: None,
         };
         let store_b =
             ConfigStore::new(backend.clone() as Arc<dyn aegis_core::state::StateBackend>);
