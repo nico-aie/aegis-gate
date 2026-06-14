@@ -741,10 +741,27 @@ function RequestDetail({ data }) {
   // 2026-05-21 — per-request detector score (sum of THIS request's
   // signals), distinct from `risk` (cumulative composite-key score).
   const reqScore = Number.isFinite(Number(fields?.request_score)) ? Number(fields.request_score) : null;
+  // BUG-audit-detail Fix A — the cumulative-risk bucket key, emitted on
+  // EVERY decision (allow / challenge / block). Lets an operator confirm
+  // whether same-IP requests share one bucket. Privacy-safe: device_fp is
+  // a hash, the raw session is never sent (only `session_present`).
+  const riskKey = fields?.risk_key && typeof fields.risk_key === 'object' ? fields.risk_key : null;
+  // BUG-streaming-surfaces — streaming-surface detail. A WebSocket frame
+  // block carries `surface: "websocket"` + `matched_field` + `message_bytes`
+  // (the Messages-tab analogue: which frame field tripped which detector). An
+  // SSE response carries `streamed` + `response_inspection_skipped` + a
+  // `reason`, so the row can explain that the event stream is pass-through by
+  // design rather than looking like an un-scanned allow.
+  const wsSurface = fields?.surface === 'websocket';
+  const matchedField = typeof fields?.matched_field === 'string' && fields.matched_field ? fields.matched_field : null;
+  const messageBytes = Number.isFinite(Number(fields?.message_bytes)) ? Number(fields.message_bytes) : null;
+  const isStreamed = fields?.streamed === true;
+  const streamReason = typeof fields?.reason === 'string' ? fields.reason : null;
   // Render any backend-emitted scalar that isn't already covered
   // by the dedicated rows above. Stable key ordering so the
   // drawer doesn't reflow on every poll.
-  const ECHO_KEYS = ['request_headers', 'request_body_preview', 'request_body_bytes', 'request_body_truncated', 'request_score'];
+  const ECHO_KEYS = ['request_headers', 'request_body_preview', 'request_body_bytes', 'request_body_truncated', 'request_score', 'risk_key',
+    'surface', 'matched_field', 'message_bytes', 'streamed', 'response_inspection_skipped'];
   const extraEntries = fields
     ? Object.entries(fields)
         .filter(([k]) => !['method', 'path', 'status', 'region', 'route_id', 'latency_ms', ...ECHO_KEYS].includes(k))
@@ -794,6 +811,16 @@ function RequestDetail({ data }) {
         <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6 }}>Network</div>
         <div style={{ fontSize: 12, lineHeight: 1.7, fontFamily: 'var(--font-mono)' }}>
           <div><span className="dim">client_ip</span> {ip}</div>
+          {riskKey && (
+            <div title="The cumulative-risk bucket this request keyed into (IP + device_fp + session). Requests sharing key_hash accumulate risk together. Shown on allow/challenge/block.">
+              <span className="dim">risk_key</span>{' '}
+              <code style={{ fontSize: 10 }}>{riskKey.key_hash || '—'}</code>
+              <span className="dim">{' · device_fp '}</span>
+              {riskKey.device_fp ? <code style={{ fontSize: 10 }}>{riskKey.device_fp}</code> : <span className="dim">none</span>}
+              <span className="dim">{' · session '}</span>
+              <span>{riskKey.session_present ? 'present' : 'none'}</span>
+            </div>
+          )}
           {geo && (geo.cc || geo.city || geo.lat) && (
             <div>
               <span className="dim">geo</span> {geo.cc || '—'}
@@ -842,6 +869,28 @@ function RequestDetail({ data }) {
               )}
             </div>
           )}
+        </div>
+      )}
+      {(wsSurface || isStreamed) && (
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6 }}>
+            {wsSurface ? 'WebSocket frame' : 'SSE stream'}
+          </div>
+          <div style={{ fontSize: 12, lineHeight: 1.7, fontFamily: 'var(--font-mono)' }}>
+            {wsSurface && (
+              <>
+                <div><span className="dim">surface</span> websocket</div>
+                {matchedField && <div><span className="dim">matched_field</span> {matchedField}</div>}
+                {messageBytes != null && <div><span className="dim">message_bytes</span> {messageBytes}</div>}
+              </>
+            )}
+            {isStreamed && (
+              <div style={{ color: 'var(--ink-dim)' }}>
+                Response stream not inspected (by design){streamReason ? ` · ${streamReason}` : ''}.
+                Request + response headers were inspected; the streamed body is pass-through.
+              </div>
+            )}
+          </div>
         </div>
       )}
       {rules.length > 0 && (
