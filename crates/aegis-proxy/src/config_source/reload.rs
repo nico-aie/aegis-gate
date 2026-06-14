@@ -328,8 +328,10 @@ pub fn apply_cfg_change_to_response_filter(
 pub enum TiersReloadOutcome {
     /// No `TierStore` handle wired.
     NoStore,
-    /// Per-tier `risk_threshold` + `challenges_enabled` were re-applied
-    /// from `cfg.tiers`.
+    /// Per-tier settings were re-applied from `cfg.tiers`:
+    /// `risk_threshold` + `challenges_enabled` for every tier, plus the
+    /// richer `block_threshold` / `cumulative_*` / `pipeline` fields for
+    /// any tier whose `cfg.tiers.<name>` entry carries them.
     Applied,
 }
 
@@ -340,9 +342,11 @@ pub enum TiersReloadOutcome {
 /// Reuses the same `apply_*` methods the boot path uses
 /// (`accept.rs` seeds the store identically at startup). Tiers omitted
 /// from `cfg.tiers` keep their current value (the methods only touch
-/// listed tiers). The richer per-tier fields (block_threshold /
-/// cumulative_*) aren't in `cfg.tiers` yet — folding the dedicated
-/// `PUT /api/tiers/<name>` fully needs that schema extension (tracked).
+/// listed tiers). A3 (2026-06-14) — the richer per-tier fields
+/// (`block_threshold` / `cumulative_*` / `pipeline`) are now carried by
+/// `cfg.tiers.<name>` (`TierThresholdConfig`) and applied below via
+/// `apply_optional_overrides`, so the dedicated `PUT /api/tiers/<name>`
+/// folds fully into the converged config.
 pub fn apply_cfg_change_to_tiers(
     new_cfg: &WafConfig,
     tiers: Option<&Arc<aegis_control::api::tiers::TierStore>>,
@@ -352,8 +356,8 @@ pub fn apply_cfg_change_to_tiers(
     };
     tiers.apply_risk_thresholds(new_cfg.tiers.risk_threshold_overrides());
     tiers.apply_challenges_enabled(new_cfg.tiers.challenges_enabled_overrides());
-    // The richer per-tier fields (block_threshold / cumulative_* /
-    // pipeline) — applied where the cfg entry carries them.
+    // A3 — the richer per-tier fields (block_threshold / cumulative_* /
+    // pipeline), applied for each tier whose cfg entry carries them.
     let optional = [
         ("critical", &new_cfg.tiers.critical),
         ("high", &new_cfg.tiers.high),
@@ -1082,6 +1086,55 @@ tiers:
         let high = tiers.get("high").expect("high tier exists");
         assert_eq!(high.risk_threshold, 55);
         assert!(high.challenges_enabled);
+    }
+
+    // A3 — the richer per-tier fields (block_threshold + cumulative_*)
+    // must converge too, not just risk_threshold / challenges_enabled.
+    // Guards the config-plane fold so a `PUT /api/tiers/<name>` that edits
+    // them is fleet-wide, not node-local-until-restart.
+    #[test]
+    fn tiers_reload_applies_block_threshold_and_cumulative_from_cfg() {
+        let tiers = Arc::new(aegis_control::api::tiers::TierStore::new());
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+tiers:
+  critical:
+    risk_threshold: 40
+    block_threshold: 80
+    cumulative_challenge_at: 30
+    cumulative_block_at: 60
+"#;
+        let cfg = parse(yaml);
+        assert_eq!(
+            apply_cfg_change_to_tiers(&cfg, Some(&tiers)),
+            TiersReloadOutcome::Applied,
+        );
+        let critical = tiers.get("critical").expect("critical tier exists");
+        assert_eq!(critical.block_threshold, 80, "block_threshold must converge");
+        assert_eq!(
+            critical.cumulative_challenge_at,
+            Some(30),
+            "cumulative_challenge_at must converge",
+        );
+        assert_eq!(
+            critical.cumulative_block_at,
+            Some(60),
+            "cumulative_block_at must converge",
+        );
     }
 
     #[test]
