@@ -1210,4 +1210,131 @@ mod tests {
             "keep_alive=false must open one TCP per request; observed {observed}",
         );
     }
+
+    // ---- SSE streaming (SSE plan §8 — slow-SSE regression) ----------
+
+    /// Spin up an HTTP/1.1 upstream that replies `text/event-stream` and
+    /// trickles `n` chunked SSE events `gap` apart, then closes. Models a
+    /// live SSE source emitting an event every `gap`.
+    async fn spawn_sse_upstream(
+        n: usize,
+        gap: Duration,
+        content_type: &'static str,
+    ) -> std::net::SocketAddr {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _peer) = match listener.accept().await {
+                Ok(p) => p,
+                Err(_) => return,
+            };
+            let mut buf = vec![0u8; 4096];
+            let _ = sock.read(&mut buf).await; // consume the request head
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nTransfer-Encoding: chunked\r\n\r\n",
+            );
+            if sock.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            for i in 0..n {
+                tokio::time::sleep(gap).await;
+                let event = format!("data: {i}\n\n");
+                // chunked framing: <hex-len>\r\n<payload>\r\n
+                let framed = format!("{:x}\r\n{}\r\n", event.len(), event);
+                if sock.write_all(framed.as_bytes()).await.is_err() {
+                    return;
+                }
+                let _ = sock.flush().await;
+            }
+            let _ = sock.write_all(b"0\r\n\r\n").await; // terminating chunk
+        });
+        addr
+    }
+
+    fn streaming_cfg(read_timeout: Duration) -> ConnectionPoolConfig {
+        ConnectionPoolConfig {
+            max_idle_per_host: 32,
+            idle_timeout: Duration::from_secs(30),
+            keep_alive: true,
+            tls: false,
+            scheme: aegis_core::config::UpstreamScheme::Auto,
+            max_response_body_bytes: 10 * 1024 * 1024,
+            response_body_read_timeout: read_timeout,
+            upstream_mtls: None,
+        }
+    }
+
+    /// The regression proof: an SSE upstream that trickles events over far
+    /// longer than the whole-body read deadline still streams through. The
+    /// old buffered path would `collect()` and hit `response_body_read_
+    /// timeout` (→ Timeout); the streaming path ignores that deadline and
+    /// delivers every event.
+    #[tokio::test]
+    async fn sse_streams_through_past_the_read_deadline() {
+        super::_reset_client_cache();
+        // 3 events, 80ms apart (~240ms total) — well past the 20ms buffered
+        // read deadline below, which proves that deadline no longer applies.
+        let addr = spawn_sse_upstream(3, Duration::from_millis(80), "text/event-stream").await;
+        let member = Member::new(addr, 1, None);
+        let cfg = streaming_cfg(Duration::from_millis(20));
+        let streaming = aegis_core::config::StreamingConfig::default();
+
+        let (resp, mode) = forward(
+            &member,
+            &cfg,
+            Method::GET,
+            "/events".parse().unwrap(),
+            HeaderMap::new(),
+            Bytes::new(),
+            &streaming,
+        )
+        .await
+        .expect("SSE response must stream, not time out on the read deadline");
+
+        assert_eq!(mode, crate::upstream::streaming::ResponseMode::Streaming);
+        assert_eq!(resp.status(), 200);
+
+        use http_body_util::BodyExt;
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("data: 0"), "first event missing: {text:?}");
+        assert!(text.contains("data: 2"), "last event missing: {text:?}");
+    }
+
+    /// Kill-switch: with `streaming.enabled = false`, even a
+    /// `text/event-stream` response is classified Buffered (and would be
+    /// subject to the buffered read deadline / size cap as before).
+    #[tokio::test]
+    async fn streaming_disabled_buffers_event_stream() {
+        super::_reset_client_cache();
+        // Fast upstream so the buffered collect completes within the cfg
+        // read deadline.
+        let addr = spawn_sse_upstream(2, Duration::from_millis(1), "text/event-stream").await;
+        let member = Member::new(addr, 1, None);
+        let cfg = streaming_cfg(Duration::from_secs(5));
+        let streaming = aegis_core::config::StreamingConfig {
+            enabled: false,
+            ..Default::default()
+        };
+
+        let (_resp, mode) = forward(
+            &member,
+            &cfg,
+            Method::GET,
+            "/events".parse().unwrap(),
+            HeaderMap::new(),
+            Bytes::new(),
+            &streaming,
+        )
+        .await
+        .expect("buffered SSE still succeeds for a fast upstream");
+
+        assert_eq!(
+            mode,
+            crate::upstream::streaming::ResponseMode::Buffered,
+            "kill-switch off must force buffering regardless of media type",
+        );
+    }
 }
