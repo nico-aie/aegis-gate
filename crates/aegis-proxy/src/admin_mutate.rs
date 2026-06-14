@@ -6573,6 +6573,152 @@ state:
         assert_eq!(v2["routes"].as_sequence().unwrap().len(), 1);
     }
 
+    /// Bug-fix regression — console route CRUD must converge across the
+    /// fleet via the versioned config plane, not stay local to the
+    /// mutating node. Two nodes share one config doc (simulating shared
+    /// Redis): a route activated by node A's mutation path must
+    /// (1) appear in node B's live route trie within the convergence SLA,
+    /// (2) bump the shared doc version, and (3) survive a node-A
+    /// "restart" (rebuild from the doc, not the boot YAML).
+    /// See BUG-console-route-mutation-not-fleet-convergent.md.
+    #[tokio::test]
+    async fn console_route_upsert_converges_across_two_nodes() {
+        use crate::config_source::config_store::{Activate, ConfigStore};
+        use crate::config_source::redis_source::{spawn_watcher, ApplyTargets};
+        use crate::state::in_memory::InMemoryBackend;
+        use aegis_core::audit::AuditBus;
+        use arc_swap::ArcSwap;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        // Boot config: catch-all only, no `/sec` route. Two pools exist
+        // so the new route has a valid upstream.
+        let boot_yaml = concat!(
+            "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\n  admin: { bind: \"127.0.0.1:9090\" }\n",
+            "routes:\n  - { id: catch-all, path: \"/\", match_type: prefix, upstream: api-pool }\n",
+            "upstreams:\n",
+            "  api-pool: { members: [{ addr: \"127.0.0.1:1111\" }] }\n",
+            "  sec-pool: { members: [{ addr: \"127.0.0.1:2222\" }] }\n",
+            "state: { backend: in_memory }\n",
+        );
+        let boot_cfg = aegis_core::load_config_str(boot_yaml).unwrap();
+
+        // One shared backend = one shared config doc across both nodes.
+        let backend: Arc<InMemoryBackend> = Arc::new(InMemoryBackend::new());
+        let store_a =
+            ConfigStore::new(backend.clone() as Arc<dyn aegis_core::state::StateBackend>);
+
+        // Node B: a live ProxyContext + a config-plane watcher polling
+        // fast, exactly as `run.rs` wires it (proxy_ctx carries the route
+        // table the watcher rebuilds).
+        let ctx_b = Arc::new(
+            crate::proxy::ProxyContext::build(
+                &boot_cfg,
+                Arc::new(aegis_security::NoopPipeline),
+            )
+            .unwrap(),
+        );
+        let cfg_b = Arc::new(ArcSwap::from_pointee(boot_cfg.clone()));
+        let targets_b = ApplyTargets {
+            detector_mask: None,
+            proxy_ctx: Some(ctx_b.clone()),
+            ip_rate_limiter: None,
+            tls_resolver: None,
+            ai_toggle: None,
+            ai_threshold: None,
+            response_filter_writer: None,
+            tiers: None,
+            rules: None,
+            active_ruleset: None,
+            upstream_writer: None,
+            receiver_writer: None,
+        };
+        let store_b =
+            ConfigStore::new(backend.clone() as Arc<dyn aegis_core::state::StateBackend>);
+        let handle = spawn_watcher(
+            store_b,
+            "waf-2".to_string(),
+            cfg_b.clone(),
+            AuditBus::new(64),
+            targets_b,
+            Duration::from_millis(50),
+            None,
+        );
+
+        // Before convergence: node B falls through to catch-all on /sec.
+        let before = ctx_b
+            .route_table
+            .resolve("any", "/sec", &http::Method::GET)
+            .unwrap();
+        assert_eq!(
+            before.route_id, "catch-all",
+            "node B must not have the route before the mutation",
+        );
+
+        // Node A's console mutation path: patch the doc's routes sequence
+        // and activate — exactly what `handle_route_upsert` does, minus
+        // the HTTP/services layer.
+        let route_json = serde_json::json!({
+            "id": "sec",
+            "path": "/sec",
+            "match_type": "prefix",
+            "upstream": "sec-pool",
+            "strip_prefix": false,
+        });
+        let new_blob = patch_routes_set(boot_yaml, "sec", &route_json).unwrap();
+        let activated = store_a
+            .activate(0, new_blob, "operator", "upsert route")
+            .await
+            .unwrap();
+        assert_eq!(
+            activated,
+            Activate::Applied { version: 1 },
+            "the mutation must bump the shared doc version",
+        );
+
+        // (1) Node B converges within the SLA via its own watcher.
+        let mut converged = false;
+        for _ in 0..60 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if let Some(m) = ctx_b
+                .route_table
+                .resolve("any", "/sec", &http::Method::GET)
+            {
+                if m.route_id == "sec" {
+                    converged = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            converged,
+            "node B must serve the console-added route after convergence \
+             (this is the fleet-convergence guarantee the bug broke)",
+        );
+        handle.abort();
+
+        // (2) + (3) Restart durability: a fresh node built from the
+        // ACTIVATED DOC (not the boot YAML, which lacks /sec) resolves
+        // the route — proving it's durable, not a transient local swap.
+        let store_c =
+            ConfigStore::new(backend.clone() as Arc<dyn aegis_core::state::StateBackend>);
+        let doc = store_c
+            .load()
+            .await
+            .unwrap()
+            .expect("activated config doc must be present");
+        assert_eq!(doc.version, 1, "shared doc carries the bumped version");
+        let restarted_cfg = aegis_core::load_config_str(&doc.blob).unwrap();
+        let restarted_table = crate::route::RouteTable::build(&restarted_cfg).unwrap();
+        let r = restarted_table
+            .resolve("any", "/sec", &http::Method::GET)
+            .unwrap();
+        assert_eq!(
+            r.route_id, "sec",
+            "route survives restart because it lives in the config doc",
+        );
+    }
+
     #[test]
     fn ca_bundle_apply_flag_default_is_false() {
         assert!(!ca_bundle_apply_flag(None));
