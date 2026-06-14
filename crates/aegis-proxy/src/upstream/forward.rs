@@ -599,42 +599,49 @@ pub async fn forward(
         }
     }
 
-    // NOTE (Phase 2 staging): `forward()` classifies and RETURNS `mode`,
-    // but still buffers the body in both modes for now. Actually
-    // streaming the body (via `streaming::stream_through`) requires the
-    // data-plane collect/filter/cache bypass (Phase 3) to be in place
-    // first — otherwise the data plane would `collect()` a live stream
-    // and block until the idle timeout. The streaming branch lands with
-    // that bypass in the next increment; the classifier + idle-timeout +
-    // stream_through primitives are already built and unit-tested.
-    //
-    // F-HIGH-003 — cap the buffered body; F-HIGH-stateful — wrap the
-    // collect in the read deadline so a slowloris upstream can't pin the
-    // slot. Size cap → ReadBody; deadline → Timeout (the data plane maps
-    // the latter onto v2.3 §3 `timeout`).
-    let max_response = cfg.max_response_body_bytes as usize;
-    let read_deadline = cfg.response_body_read_timeout;
-    let body_bytes = match tokio::time::timeout(
-        read_deadline,
-        http_body_util::Limited::new(resp.into_body(), max_response).collect(),
-    )
-    .await
-    {
-        Ok(Ok(collected)) => collected.to_bytes(),
-        Ok(Err(e)) => {
-            return Err(ForwardError::ReadBody(format!(
-                "response body exceeds cap or read error: {e}",
-            )));
+    match mode {
+        crate::upstream::streaming::ResponseMode::Streaming => {
+            // Header-inspected only: stream the body through frame-by-frame
+            // with an idle (inactivity) timeout — NO size cap and NO whole-
+            // body read deadline (the deadline would kill a live stream).
+            // The data plane bypasses its response-filter/cache collect for
+            // this mode (decision 2a / Phase 3).
+            let body = crate::upstream::streaming::stream_through(
+                resp.into_body(),
+                streaming.idle_timeout,
+            );
+            Ok((filtered.map(|_| body), mode))
         }
-        Err(_) => {
-            return Err(ForwardError::Timeout(format!(
-                "response body read exceeded {:?}",
+        crate::upstream::streaming::ResponseMode::Buffered => {
+            // F-HIGH-003 — cap the buffered body; F-HIGH-stateful — wrap
+            // the collect in the read deadline so a slowloris upstream
+            // can't pin the slot. Size cap → ReadBody; deadline → Timeout
+            // (the data plane maps the latter onto v2.3 §3 `timeout`).
+            let max_response = cfg.max_response_body_bytes as usize;
+            let read_deadline = cfg.response_body_read_timeout;
+            let body_bytes = match tokio::time::timeout(
                 read_deadline,
-            )));
+                http_body_util::Limited::new(resp.into_body(), max_response).collect(),
+            )
+            .await
+            {
+                Ok(Ok(collected)) => collected.to_bytes(),
+                Ok(Err(e)) => {
+                    return Err(ForwardError::ReadBody(format!(
+                        "response body exceeds cap or read error: {e}",
+                    )));
+                }
+                Err(_) => {
+                    return Err(ForwardError::Timeout(format!(
+                        "response body read exceeded {:?}",
+                        read_deadline,
+                    )));
+                }
+            };
+            *filtered.body_mut() = Full::new(body_bytes);
+            Ok((crate::body::boxed(filtered), mode))
         }
-    };
-    *filtered.body_mut() = Full::new(body_bytes);
-    Ok((crate::body::boxed(filtered), mode))
+    }
 }
 
 /// Errors raised by [`forward`].
