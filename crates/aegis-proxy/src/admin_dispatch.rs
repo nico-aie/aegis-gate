@@ -567,10 +567,19 @@ pub(crate) async fn handle_admin_request(
 async fn handle_config_get(
     services: &aegis_control::dashboard_services::DashboardServices,
 ) -> Response<Full<Bytes>> {
+    // A5 — this node's current global mode (enforce / log_only), so the
+    // console drift view can show "applied vN · mode" per node and an
+    // operator can spot a node lagging on either axis. `None` ⇒ interop
+    // not wired (the field is omitted).
+    let mode = services
+        .interop
+        .as_ref()
+        .map(|rt| rt.modes.current().default.as_str());
     let Some(backend) = services.state_backend.as_ref() else {
         return json_body_response(
             200,
-            serde_json::json!({ "version": 0, "applied": [], "backend": false }).to_string(),
+            serde_json::json!({ "version": 0, "applied": [], "backend": false, "mode": mode })
+                .to_string(),
             "private, max-age=2",
         );
     };
@@ -587,6 +596,7 @@ async fn handle_config_get(
         "version": version,
         "applied": applied,
         "backend": true,
+        "mode": mode,
     })
     .to_string();
     json_body_response(200, body, "private, max-age=2")
