@@ -278,6 +278,48 @@ Defaults, validation, and threading into `forward()`.
 | MED | h1 (chunked) vs h2 SSE flush semantics. | Test both transports. |
 | LOW | `stamp_interop_response` generalisation; clippy/rustfmt noise. | Hand-match style; generic-over-body or overload. |
 
+## 11a. Pre-code verification — RESULTS (2026-06-14, branch `feat/sse-streaming`)
+
+Verified every §11 claim against current code before any Phase-1 work.
+All claims hold; the feature is **greenfield** (no existing streaming
+decision in the data path).
+
+- **§11.1 response-filter / cache consumers** — confirmed. The buffered
+  `body_bytes` is consumed in `data_plane.rs` ~2248–2420: the
+  `OutboundAction::{PassThrough,Rewrite,Abort}` pipeline (~2413) and the
+  `cache_pending.store(..)` path (~2248–2277). Both must sit behind the
+  `ResponseMode::Streaming` bypass branch (Phase 3).
+- **§11.2 connection-pool exhaustion** — confirmed. Upstream client is
+  `hyper_util::client::legacy::Client` (`forward.rs:316`) built with
+  `pool_max_idle_per_host` + `pool_idle_timeout` — bounds **idle** conns
+  only. An active stream pins a checked-out conn for its lifetime →
+  unbounded under N concurrent streams. `streaming.max_concurrent`
+  semaphore (decision 5) is required, with the idle timeout as backstop.
+- **§11.3 idle-timeout body wrapper** — no in-repo precedent (`admin_sse`
+  has `StreamBody` but no idle timer). Built first as a standalone,
+  TDD'd primitive: `upstream/idle_timeout.rs` (`IdleTimeoutBody<B>`),
+  decoupled from the `Full`→`DataBody` migration. Resets the deadline on
+  every inner frame; ends the stream (`Poll::Ready(None)`) on silence.
+- **§11.4 `Full<Bytes>` footprint** — 190 refs in `aegis-proxy/src`
+  (plan said 191 — accurate). Top data-plane sites: `data_plane.rs` (41),
+  `responses.rs` (12), `proxy.rs` (11), `cors.rs` (8), `forward.rs` (8).
+  The high-count admin files (`admin_mutate.rs` 52, `admin_dispatch.rs`
+  15, `admin_login/get` 11 each) are the **admin plane** — out of scope;
+  migration is the data path only. `admin_sse::into_boxed` already
+  provides the `Response<Full<Bytes>> -> Response<UnsyncBoxBody<..>>`
+  helper Phase 1 needs.
+- **§11.5 classify-once carrier** — confirmed greenfield: no
+  `event-stream`/`Content-Type` streaming decision exists in `forward.rs`
+  or `data_plane.rs` today (the `forward.rs:16` doc comment notes
+  streaming is future). `forward()` will be the sole classifier, so the
+  decision 2a "classify once, ride the DecisionTag" rule starts clean.
+
+**Phase-1 gate: SATISFIED.** Buffering site (`forward.rs:567` collect,
+`:614` re-emit), `handle_data_request` → `Response<Full<Bytes>>`
+(`data_plane.rs:110`), and `forward_allow_to_upstream` (`:1501`) all
+confirmed. Next: land the idle-timeout primitive, then the outside-in
+body migration.
+
 ## 11. Pre-code verification checklist (do FIRST — highest production-bug odds)
 
 - [ ] **`response_filter` interaction** — map every site that consumes the
