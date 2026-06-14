@@ -377,9 +377,24 @@ function streamingProto(action, ev, f) {
   if (action === 'tcp_tunnel_open') return 'tcp-open';
   if (action === 'tcp_tunnel_close') return 'tcp-close';
   const status = Number(f.status ?? ev.status);
-  if (f.surface === 'websocket' || status === 101) return 'websocket';
+  // A WebSocket connection is identifiable three ways: the successful
+  // `101` upgrade (allow), a blocked frame after upgrade
+  // (`fields.surface === 'websocket'`), OR a WS *upgrade request* that was
+  // blocked at the HTTP layer (risk-score / detector) BEFORE the 101 — those
+  // carry `status 403` + no surface, but the echoed request headers still
+  // show `Upgrade: websocket`. Treat all three as `websocket` so a blocked
+  // handshake reads the same surface as an allowed one (Chrome parity).
+  if (f.surface === 'websocket' || status === 101 || isWsUpgradeReq(f)) return 'websocket';
   if (f.streamed === true) return 'sse';
   return 'http';
+}
+
+// True when the echoed request headers indicate a WebSocket upgrade
+// (`Upgrade: websocket`). Present on block events at the default `Info`
+// verbosity; absent below it (then the row falls back to `http`).
+function isWsUpgradeReq(f) {
+  const up = f.request_headers && f.request_headers.upgrade;
+  return typeof up === 'string' && up.toLowerCase() === 'websocket';
 }
 
 // Lifecycle events that are always `allow` and carry no decision signal —
