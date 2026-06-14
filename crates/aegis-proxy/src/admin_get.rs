@@ -1494,9 +1494,77 @@ pub(crate) async fn handle_copilot_summary(
 /// operator question grounded in the current telemetry snapshot. GET (no
 /// CSRF, mirrors the summary endpoint); the question is operator input so
 /// it's redacted before egress like everything else. 400 on empty `q`.
+/// The dashboard's Ask box uses this GET form.
 pub(crate) async fn handle_copilot_ask(
     req: hyper::Request<hyper::body::Incoming>,
     services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let query = req.uri().query().unwrap_or("").to_string();
+    let question = parse_query_str(&query, "q")
+        .map(percent_decode)
+        .unwrap_or_default();
+    let window_minutes = parse_query_u32(&query, "minutes", 60);
+    copilot_ask_respond(services, &question, window_minutes).await
+}
+
+/// `POST /api/copilot/ask` with JSON body `{ "question": "...",
+/// "minutes": 15 }` — same answer as the GET form, for API/contract
+/// callers (the test plan + any programmatic client POST a body rather
+/// than a query string). `q` is accepted as an alias for `question`.
+/// MED-3 (2026-06-14): the surface previously only wired GET, so a
+/// `POST /api/copilot/ask` fell through to the router and 404'd.
+pub(crate) async fn handle_copilot_ask_post(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    #[derive(serde::Deserialize, Default)]
+    struct AskBody {
+        #[serde(default)]
+        question: Option<String>,
+        /// Alias accepted for symmetry with the GET `?q=` form.
+        #[serde(default)]
+        q: Option<String>,
+        #[serde(default)]
+        minutes: Option<u32>,
+    }
+
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            let body = serde_json::json!({ "error": "body read failed" }).to_string();
+            return json_body_response(400, body, "no-store");
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+    // Tolerate an empty body — fall through to the empty-question 400 in
+    // the shared core so the caller gets a clear "missing question".
+    let parsed: AskBody = if body_str.trim().is_empty() {
+        AskBody::default()
+    } else {
+        match serde_json::from_str(body_str) {
+            Ok(b) => b,
+            Err(e) => {
+                let body =
+                    serde_json::json!({ "error": format!("invalid JSON body: {e}") }).to_string();
+                return json_body_response(400, body, "no-store");
+            }
+        }
+    };
+    let question = parsed.question.or(parsed.q).unwrap_or_default();
+    let window_minutes = parsed.minutes.unwrap_or(60);
+    copilot_ask_respond(services, &question, window_minutes).await
+}
+
+/// Shared core for the GET and POST `ask` handlers: enforce the
+/// enabled/empty/length guards, build the snapshot, and call the LLM.
+/// `503` when copilot is disabled, `400` on an empty question, `200`
+/// with the brief, `502` on a provider error.
+async fn copilot_ask_respond(
+    services: &aegis_control::dashboard_services::DashboardServices,
+    question: &str,
+    window_minutes: u32,
 ) -> Response<Full<Bytes>> {
     let copilot = aegis_control::copilot::service::global();
     if !copilot.enabled() {
@@ -1507,20 +1575,18 @@ pub(crate) async fn handle_copilot_ask(
         .to_string();
         return json_body_response(503, body, "no-store");
     }
-    let query = req.uri().query().unwrap_or("").to_string();
-    let question = parse_query_str(&query, "q")
-        .map(percent_decode)
-        .unwrap_or_default();
     let question = question.trim();
     if question.is_empty() {
-        let body =
-            serde_json::json!({ "error": "missing question; pass ?q=<question>" }).to_string();
+        let body = serde_json::json!({
+            "error": "missing question; pass ?q=<question> (GET) or {\"question\":\"…\"} (POST)"
+        })
+        .to_string();
         return json_body_response(400, body, "no-store");
     }
     // Bound the question so a pasted wall of text can't blow up the prompt
     // / token cost.
     let question: String = question.chars().take(500).collect();
-    let window_minutes = parse_query_u32(&query, "minutes", 60).clamp(1, 1440);
+    let window_minutes = window_minutes.clamp(1, 1440);
     let snapshot = build_copilot_snapshot(services, window_minutes);
     match copilot.ask(snapshot, &question).await {
         Ok(brief) => {
