@@ -11,6 +11,7 @@ pub mod pinned_resolver;
 pub mod probe;
 pub mod registry;
 pub mod rotation;
+pub mod streaming;
 pub mod tls;
 
 use std::net::SocketAddr;
