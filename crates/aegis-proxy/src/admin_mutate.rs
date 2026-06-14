@@ -2603,6 +2603,33 @@ fn patch_routes_set(
     serde_yaml::to_string(&doc).map_err(|e| format!("re-serialize config: {e}"))
 }
 
+/// BUG-fix 2026-06-14 — build the config a route's upstream reference is
+/// validated against. Overlays the **active config doc** upstreams
+/// (authoritative — a pool write commits to the doc the instant it
+/// activates) and this node's live pool shadow onto the boot cfg, so a
+/// route pointing at a just-created pool validates without waiting for
+/// per-node apply lag. Without the doc overlay, creating a pool inline
+/// then immediately saving the route races the pool's per-node apply and
+/// surfaces a spurious "pool not found".
+/// See BUG-create-route-pool-not-found-race.md.
+fn route_validation_cfg(
+    boot: &aegis_core::config::WafConfig,
+    doc: &aegis_core::config::WafConfig,
+    shadow: &std::collections::HashMap<String, aegis_core::config::PoolConfig>,
+) -> aegis_core::config::WafConfig {
+    let mut cfg = boot.clone();
+    // Doc first (authoritative + immediately consistent), then the
+    // per-node shadow (covers anything applied locally but not yet
+    // re-read into the doc snapshot we loaded).
+    for (name, pool) in &doc.upstreams {
+        cfg.upstreams.insert(name.clone(), pool.clone());
+    }
+    for (name, pool) in shadow {
+        cfg.upstreams.insert(name.clone(), pool.clone());
+    }
+    cfg
+}
+
 /// Remove the route with `id` from the `routes:` sequence (idempotent —
 /// a missing id is a no-op). Used by the folded `DELETE` route handler.
 fn patch_route_remove(base: &str, id: &str) -> Result<String, String> {
@@ -5473,25 +5500,6 @@ pub(crate) async fn handle_route_upsert(
     // `handle_pool_upsert` keys off the URL.
     patch.id = route_id.to_string();
 
-    // FIX 2026-05-04 — `validate_route` checks
-    // `cfg.upstreams.contains_key(...)`, but the boot-time
-    // `cfg` doesn't reflect pools added at runtime via
-    // `PUT /api/upstreams/pool/{id}`. Read the live pool map
-    // from the writer's shadow so routes pointing at a freshly-
-    // added pool validate cleanly.
-    let mut effective_cfg = cfg.clone();
-    if let Some(writer) = services.upstream_writer.as_ref() {
-        for (name, pool_cfg) in writer.current_pools() {
-            effective_cfg.upstreams.insert(name, pool_cfg);
-        }
-    }
-
-    if let Err(e) = validate_route(&patch, &effective_cfg) {
-        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
-            e.to_string(),
-        ));
-    }
-
     // BUG-fix 2026-06-14 — route the mutation through the **versioned
     // config plane**, exactly like the pool / rule / tier handlers,
     // instead of a bare local `RouteWriter::apply`. The old local swap
@@ -5502,7 +5510,38 @@ pub(crate) async fn handle_route_upsert(
     // watcher re-derives the route table via `apply_cfg_change_to_routes`
     // and the change is durable + fleet-consistent.
     // See BUG-console-route-mutation-not-fleet-convergent.md.
-    //
+    let (store, base_blob, expected) = match load_active_config_doc(services).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+
+    // Validate the upstream reference against the **active config doc**
+    // (overlaid with this node's live pool shadow), not the boot cfg
+    // alone. A pool created inline ("+ Create new pool") activates into
+    // the doc immediately, but the per-node pool shadow lags by the apply
+    // window — validating against the doc removes the spurious "pool not
+    // found" on the first route save. See BUG-create-route-pool-not-found-race.md.
+    let doc_cfg = match aegis_core::load_config_str(&base_blob) {
+        Ok(c) => c,
+        Err(e) => {
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                format!("active config doc invalid: {e}"),
+            ))
+        }
+    };
+    let shadow = services
+        .upstream_writer
+        .as_ref()
+        .map(|w| w.current_pools())
+        .unwrap_or_default();
+    let effective_cfg = route_validation_cfg(cfg, &doc_cfg, &shadow);
+
+    if let Err(e) = validate_route(&patch, &effective_cfg) {
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            e.to_string(),
+        ));
+    }
+
     // `RouteConfig` is `Deserialize`-only, so we serialize the validated
     // `RouteConfigPatch` (Serialize) and route the authored JSON → YAML
     // into the doc's `routes:` sequence. This carries the same
@@ -5518,10 +5557,6 @@ pub(crate) async fn handle_route_upsert(
         }
     };
 
-    let (store, base_blob, expected) = match load_active_config_doc(services).await {
-        Ok(t) => t,
-        Err(resp) => return resp,
-    };
     let new_blob = match patch_routes_set(&base_blob, route_id, &route_json) {
         Ok(b) => b,
         Err(e) => {
@@ -6457,6 +6492,64 @@ state:
         assert_eq!(seq2.len(), 2, "replace in place, no duplicate");
         assert_eq!(seq2[1]["id"].as_str(), Some("sec"));
         assert_eq!(seq2[1]["strip_prefix"].as_bool(), Some(true), "value updated");
+    }
+
+    #[test]
+    fn route_validation_cfg_resolves_doc_only_pool() {
+        // The operator created `sec-pool` inline: it has activated into
+        // the config doc, but this node's per-pool shadow hasn't caught
+        // up yet (empty). A route pointing at it must validate against
+        // the doc overlay, not race the per-node apply.
+        // See BUG-create-route-pool-not-found-race.md.
+        use aegis_control::api::routes_config::{validate_route, RouteConfigPatch};
+
+        let boot_yaml = concat!(
+            "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\n  admin: { bind: \"127.0.0.1:9090\" }\n",
+            "routes:\n  - { id: catch-all, path: \"/\", match_type: prefix, upstream: api-pool }\n",
+            "upstreams:\n  api-pool: { members: [{ addr: \"127.0.0.1:1111\" }] }\n",
+            "state: { backend: in_memory }\n",
+        );
+        // Doc = boot + the freshly-created pool the operator just saved.
+        let doc_yaml = concat!(
+            "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\n  admin: { bind: \"127.0.0.1:9090\" }\n",
+            "routes:\n  - { id: catch-all, path: \"/\", match_type: prefix, upstream: api-pool }\n",
+            "upstreams:\n",
+            "  api-pool: { members: [{ addr: \"127.0.0.1:1111\" }] }\n",
+            "  sec-pool: { members: [{ addr: \"127.0.0.1:2222\" }] }\n",
+            "state: { backend: in_memory }\n",
+        );
+        let boot = aegis_core::load_config_str(boot_yaml).unwrap();
+        let doc = aegis_core::load_config_str(doc_yaml).unwrap();
+        let shadow = std::collections::HashMap::new();
+
+        let merged = route_validation_cfg(&boot, &doc, &shadow);
+        assert!(
+            merged.upstreams.contains_key("sec-pool"),
+            "doc-only pool must be overlaid for validation",
+        );
+
+        let patch = RouteConfigPatch {
+            id: "sec".into(),
+            host: None,
+            path: "/sec".into(),
+            match_type: "prefix".into(),
+            strip_prefix: true,
+            methods: None,
+            upstream: "sec-pool".into(),
+            tier_override: None,
+            default: false,
+            enabled: true,
+            ws_inspect: None,
+        };
+        assert!(
+            validate_route(&patch, &merged).is_ok(),
+            "route at a doc-committed pool must validate (no race)",
+        );
+        // Regression guard: against the boot cfg alone it would 'not found'.
+        assert!(
+            validate_route(&patch, &boot).is_err(),
+            "boot cfg lacks the new pool — proves the overlay is what fixes it",
+        );
     }
 
     #[test]
