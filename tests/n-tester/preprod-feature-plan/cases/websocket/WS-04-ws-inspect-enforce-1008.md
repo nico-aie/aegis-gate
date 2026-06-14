@@ -44,8 +44,8 @@ benign frame must still pass — confirm enforce isn't blocking everything
 >    Report: did the benign frame echo? did the SQLi frame echo (it should
 >    NOT)? what close code/reason came back?
 >
-> 2. On admin Audit Trail, confirm a `websocket_frame_block` event with
->    `mode: enforce` and `sqli` tag.
+> 2. On admin Audit Trail, confirm a `block` event with `surface: websocket`,
+>    `mode: enforce`, and `sqli` tag.
 >
 > 3. (If a TLS data port is exposed, e.g. wss://…:<tlsport>/ws) repeat
 >    step 1 over `wss://` and report the close code — expect a clean `1008`.
@@ -56,7 +56,7 @@ benign frame must still pass — confirm enforce isn't blocking everything
       everything (if it is and AI is on the WS path, that's **BUG-WS-2**,
       file INFO + confirm the AI-off workaround fixes it; do NOT file HIGH).
 - [ ] SQLi frame is **blocked** (no echo, socket closes).
-- [ ] `websocket_frame_block` audit row with `mode: enforce` + `sqli` tag.
+- [ ] `block` audit row (`surface: websocket`) with `mode: enforce` + `sqli` tag.
 - [ ] Plaintext close is a bare TCP close (no `1008` frame) → confirms
       **BUG-WS-3**, file **INFO** (expected).
 - [ ] TLS path (if available) closes with a clean **`1008`** → INFO/pass.

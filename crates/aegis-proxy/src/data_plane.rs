@@ -2084,7 +2084,18 @@ pub(crate) async fn forward_allow_to_upstream(
                                     class: aegis_core::audit::AuditClass::Access,
                                     tenant_id: None,
                                     tier: Some(ws_tier),
-                                    action: "websocket_frame_block".into(),
+                                    // B2 — consolidate with the WAF rule
+                                    // taxonomy: emit `action: "block"` (not a
+                                    // bespoke `websocket_frame_block`) so the
+                                    // Live Feed renders it via the normal block
+                                    // path and `audit.rs` counts it in the
+                                    // Blocked KPI. The WS-specific signal moves
+                                    // into `fields.surface`; `rule_id` already
+                                    // carries the detector tag and `mode`
+                                    // distinguishes enforce vs would-block. The
+                                    // `aegis_websocket_frame_block_total` metric
+                                    // (above) stays the WS drill-down.
+                                    action: "block".into(),
                                     reason: format!(
                                         "websocket text frame blocked by detectors: {tag} \
                                          (score: {sum})"
@@ -2097,6 +2108,7 @@ pub(crate) async fn forward_allow_to_upstream(
                                     path: None,
                                     mode: Some(mode_str.to_string()),
                                     fields: serde_json::json!({
+                                        "surface": "websocket",
                                         "matched_field": matched_field,
                                         "message_bytes": payload.len(),
                                     }),
@@ -4752,10 +4764,16 @@ state: {{ backend: in_memory }}
             "log_only must forward the frame to the upstream",
         );
 
-        // …and a websocket_frame_block audit with mode log_only fired.
+        // …and a would-block audit fired: B2 consolidated the WS block
+        // onto the WAF rule taxonomy (`action: "block"` +
+        // `fields.surface = "websocket"`) so it counts in the Blocked KPI
+        // and renders via the normal block path; `mode` distinguishes the
+        // would-block from a real enforce.
         let mut found = false;
         while let Ok(ev) = audit_rx.try_recv() {
-            if ev.action.as_str() == "websocket_frame_block" {
+            if ev.action.as_str() == "block"
+                && ev.fields.get("surface").and_then(|s| s.as_str()) == Some("websocket")
+            {
                 found = true;
                 assert_eq!(ev.mode.as_deref(), Some("log_only"));
                 assert_eq!(ev.rule_id.as_deref(), Some("sqli"));
@@ -4763,7 +4781,7 @@ state: {{ backend: in_memory }}
                 break;
             }
         }
-        assert!(found, "log_only must emit a websocket_frame_block audit");
+        assert!(found, "log_only must emit a block audit with surface=websocket");
 
         drop(tx);
         backend_task.abort();
@@ -4897,10 +4915,13 @@ state: {{ backend: in_memory }}
              though the route is pinned to enforce",
         );
 
-        // …and a would-block audit with mode log_only fired.
+        // …and a would-block audit fired (B2 taxonomy: action=block +
+        // surface=websocket, mode=log_only).
         let mut found = false;
         while let Ok(ev) = audit_rx.try_recv() {
-            if ev.action.as_str() == "websocket_frame_block" {
+            if ev.action.as_str() == "block"
+                && ev.fields.get("surface").and_then(|s| s.as_str()) == Some("websocket")
+            {
                 found = true;
                 assert_eq!(ev.mode.as_deref(), Some("log_only"));
                 assert_eq!(ev.rule_id.as_deref(), Some("sqli"));
@@ -4909,7 +4930,7 @@ state: {{ backend: in_memory }}
         }
         assert!(
             found,
-            "global log_only must still emit a would-block audit (mode: log_only)",
+            "global log_only must still emit a block audit (surface=websocket, mode=log_only)",
         );
 
         drop(tx);
