@@ -2,7 +2,7 @@
 
 - **Type:** BUG (observability / audit-event fields) — Live Feed, Request Detail, Investigation
 - **Severity:** 🟡 Medium — cosmetic/observability, not a security miss. Misleads operators triaging WS traffic (a HIGH-tier `/ws/live` socket's close row reads LOW `/`).
-- **Status:** 🟡 Planned — not started
+- **Status:** ✅ Fixed 2026-06-14 (TDD) — `data_plane.rs`: `websocket_close` now emits `tier: Some(ws_tier)` + `method: Some("GET")` + `fields.path` (captured as `ws_path_for_close` before the bridge spawn); `websocket_open` also stamps `method: Some("GET")`. Regression test `websocket_close_audit_carries_tier_method_and_path` (asserts tier=High, method=GET, fields.path=`/ws/live`). No dashboard change needed (renderer already reads `tier` + `fields.path`).
 - **Found:** 2026-06-14 (Nico, console screenshots — Live Feed + Request Detail drawer)
 - **Area:** Data plane → WS bridge lifecycle audit emission (`crates/aegis-proxy/src/data_plane.rs`); dashboard Live Feed / Investigation render the same event.
 

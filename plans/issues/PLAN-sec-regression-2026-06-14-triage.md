@@ -1,87 +1,147 @@
 # PLAN — SEC regression triage (QC r2 run 2026-06-14) → fix/improve
 
 - **Type:** PLAN (triage of a QC security-regression run → prioritized fix/improve backlog)
-- **Status:** 🟡 Planned — not started (analysis done; needs a clean re-baseline before coding most items)
+- **Status:** 🟡 Planned — analysis updated against the known run config; ready to start coding P1/P2
 - **Source:** `tests/n-tester/r2-regression/reports/run-20260614-192320.md` (= `latest.md`); runner `tests/n-tester/r2-regression/run_all.py`
 - **Created:** 2026-06-14 (Nico — "QC give new SEC report, investigate + plan")
+- **Updated:** 2026-06-14 — Nico confirmed run config: **cumulative IP-risk thresholds OFF, all detectors ON incl. AI**. Re-interpreted accordingly (see below).
 - **Headline:** 1159 tests · **detection 60.3%** · **374 FN** (attacks allowed) · **42 FP** (benign blocked) · target `http://localhost:8080`
 
-## ⚠️ Read this first — the 60.3% is confounded; don't fix blind
+## ✅ Config is now known — the 60.3% is a clean per-request baseline
 
-Before treating FN/FP as WAF gaps, account for **test-methodology + config** effects that the run did **not** control for:
+This run was executed with **`risk.thresholds.enabled = false` (cumulative IP-risk gate OFF)** and **every detector enabled, including AI**. That resolves the confounds the first draft of this plan flagged as unknown:
 
-1. **Single source IP, no per-case reset.** The runner sends all 1159 requests from **`127.0.0.1`** and only optionally resets state **once** at the very start (`run_all.py:280` `--reset-state`), never between cases. With no XFF/IP rotation, every request shares one cumulative-risk bucket (`build_risk_key` = `ip+device_fp+session`; one UA, no session ⇒ pure-IP key). Cross-ref [[feedback_dev_xff_single_ip_gates]], [[feedback_two_score_model]], [[feedback_challenge_band_diagnostics]].
-2. **A 429-challenge on a benign request is scored as FP** (`run_all.py:227-233`: `expected==allow` and `actual in (block,challenge)` ⇒ FP). So when the poisoned IP drifts into the **challenge band** (`challenge_at:40 ≤ score < block_at:80`), *benign* requests get `429` and are counted **FP** — even though no detector fired on them. The static-asset / `/deposit` / `/favicon.ico` FPs below are almost certainly this, **not** detector false positives.
-3. **FN = genuine `allow`.** An attack counts as caught if it gets block **or** challenge; FN only if it got `allow`. So the 374 FN are real pass-throughs at the moment the IP was *not* in a gating band — i.e. genuine **per-request** detection misses (good signal), but their *count* is sensitive to when in the run the IP was hot.
-4. **Unknown AI / config state.** The report doesn't record whether the AI detector was enabled, which config the `:8080` server booted, or the tier thresholds in effect. AI on/off swings sqli/xss/cmdi/jwt/ssrf materially (the AI detector is the obfuscated-payload workhorse — see the production-miss analysis).
-5. **Plain `:8080`.** Some surfaces behave differently on the plaintext data port (historical `with_upgrades` WS gap, no TLS fingerprint ⇒ `device_fp` is `None` ⇒ pure-IP keying, amplifying #1).
+1. **Single-IP / cumulative-poisoning (was confound #1/#2): NEUTRALIZED.** With the cumulative gate off, no request is blocked or challenged on accumulated IP risk. Every decision is **per-request detector output**. Confirmed in the log: **all 42 FPs are `actual:"block"` (zero `challenge`)**, and all 374 FN are `actual:"allow"`. There is no challenge band in play, so the earlier "these FPs are cumulative-band collateral that will clear after a reset" hypothesis is **false** — they are real per-request blocks.
+2. **AI / config state (was confound #4): KNOWN.** AI was ON. So SQLi at 65% with 38 FN, XSS 9 FN, CMDi 9 FN are detection misses **that AI did not save**, not "maybe AI was off." This makes them higher-severity than the draft assumed.
 
-### Step 0 (MUST precede coding) — re-baseline cleanly
+Remaining caveats (do **not** over-correct for these):
+- **Plaintext `:8080` surface** — no TLS ⇒ `device_fp` is `None`; irrelevant to per-request detection but keep in mind for any handshake/fingerprint-dependent control. Cross-ref [[feedback_dev_xff_single_ip_gates]].
+- **SSE/WS request-vs-response** — only the *response-side* server-frame SSE injection is a by-design stream-through; everything else tested is request-borne (see SSE/WS sections).
 
-Re-run with the IP/cumulative confound removed so per-request detection is isolated:
-- **either** reset-state **per case** (or per class), **or** send a **distinct client IP / `X-Forwarded-For` per case** (requires the edge to trust XFF in the test profile), **or** run with the **cumulative gate off** (`risk.thresholds.enabled:false`) to measure pure per-request detection.
-- Record **AI enabled?**, the **config file**, and tier thresholds in the report header.
-- Produce two numbers per class: **per-request detection** (gate off) vs **with cumulative** (gate on). The gap between them is the IP-poisoning contribution.
+### Step 0 (now mostly satisfied) — one complementary run to attribute AI vs rules
 
-Only the residual FN/FP after Step 0 are real WAF work. The buckets below pre-classify what to expect.
+The gate-off baseline is done. The single missing experiment is a **gate-off + AI-OFF** run, to split each FN/FP between the rule engine and the AI detector:
+- FNs that flip allow→block with AI on were AI saves; FNs that stay allowed in **both** runs are rule-engine gaps that AI also misses (top priority to fix at the rule layer).
+- FPs that disappear with AI off were **AI over-blocks** (the prime suspect for the benign over-block below); FPs that persist are rule-engine over-fire.
+- Record AI on/off, the config file, and tier thresholds in both report headers.
+
+Only after that split do we know whether the benign over-block (next section) is an AI-tuning problem or a rule problem. Everything else below is actionable now.
 
 ---
 
-## Triage by class
+## 🔴 Top finding — systemic benign over-block (42 FP, all real)
 
-| Class | Detect% | FN | FP | Bucket | Note |
+37 of 99 benign-baseline requests (**~37%**) plus 4 caching + 1 WS were blocked **per-request** with the gate off. The breadth rules out "special-character SQLi/XSS over-fire" as the whole story:
+
+- **Plain alphanumeric names blocked:** `name=Alice` (baseline-0038), `name=user_42` (baseline-0045), `name=Jean-Luc` (hyphen only). No injection characters at all.
+- **No-payload requests blocked:** `/favicon.ico`, `/static/js/app.js` (also caching-0020/21/32/33), `GET /api/profile`, `GET /game/list`, `GET /api/public/stats`.
+- **Benign banking/auth POSTs blocked:** `/deposit` ×6, `/withdrawal` ×2, `/otp` ×3.
+- **Benign bodies blocked:** `/api/feedback` prose ×5, `/api/analytics/events` gzip ×4, `PUT /api/profile` i18n ×4.
+- **Special-character names** (still real FPs, subset of the above): `O'Brien`, `Anaïs`, `李雷`, `Smith & Co`, `5 < 10 fan`.
+
+Because plain `Alice` and static assets are blocked with **no payload and the gate off**, this looks like a **systemic over-block from an aggressive detector** (prime suspect: AI, given it was on and flags prose/i18n/analytics), not character-level SQLi/XSS tuning. **The AI-off run above is the decisive test.** A ~37% benign block rate is the single most user-impacting issue in this report and gates everything else — a WAF that 403s `favicon.ico` and `name=Alice` is unshippable in enforce mode. Cross-ref [[feedback_waf_action_vs_mode]] (confirm these are enforce-mode blocks, not log-only annotations).
+
+### ✅ P0 attribution result — AI-off run `run-20260614-210530` (gate off, **AI OFF**, all rules on)
+
+The decisive AI-off run landed. It settles the top finding and splits FN/FP between AI and the rule engine.
+
+- **FP: 42 → 8.** ~34 of 42 benign blocks were **AI over-blocks** — CONFIRMED. With AI off, `name=Alice`, `/favicon.ico`, `/static/js/app.js`, `/api/feedback` prose, `/api/analytics` gzip, i18n profile **all clear**. The **residual 8 are real rule-engine FPs**: `POST /deposit` ×5, `POST /withdrawal` ×2, `PUT /api/profile` ×1. → **P1 shrinks dramatically and changes owner:** the fix is either (a) tune the **AI** block threshold / whitelist static+benign-shaped traffic (it drove ~80% of the FPs), and/or (b) fix the small rule over-fire on `/deposit`/`/withdrawal`/`/api/profile` (must-fix regardless of AI).
+- **FN: 374 → 488; detection 60.3% → 52.7%.** AI contribution by class (AI-on% − AI-off%): **cors +50, protocol +35, cmdi +21, caching +15, websocket +12, sse +8, jwt +7, ssrf +6, xss +4, sqli +2, nosql +2, path +2** (rate-limit +50 is noise — mostly skipped).
+- **Rule-only gaps (allowed in BOTH runs → AI can't save them → fix at the rule layer, highest priority):** **sqli (AI +2 only — its 38–41 FN are RULE gaps: mixed-case `sElEcT` + hex `0x27…`)**, several **cmdi** arg-style/`%00`, **jwt** route coverage. These are the durable P2 detector work — they don't depend on the AI debate.
+- **AI is the workhorse for cmdi (body-borne: `/api/feedback`, `/api/bet-reports/export`, `/cgi-bin/*`), cors (cross-origin), protocol (methods), caching (cache-deception), sse.** Turning AI off tanks these. So those classes are "keep AI on (and tune its FP)" OR "write new rules" — a product call, not a pure bug.
+
+**Bottom line for P1:** keep AI **on** for detection (it adds real coverage in 5+ classes), but **fix its benign over-block** (threshold/whitelist) so the 8→34 FP class disappears; separately fix the 8 residual rule FPs. P2 rule work (sqli mixed-case+hex, cmdi, jwt) proceeds independently since AI doesn't cover them.
+
+---
+
+## Triage by class (re-interpreted under gate-off + AI-on)
+
+| Class | Detect% | FN | FP | Bucket | Note (updated) |
 |---|--:|--:|--:|---|---|
 | path-traversal | 100 | 0 | 0 | ✅ | clean |
-| injection-nosql | 96 | 2 | 0 | 🟢 minor gap | 2 variants |
-| ssrf | 94 | 2 | 0 | 🟢 minor gap | |
-| xss | 89 | 9 | 0 | 🟡 real gap | obfuscation variants (AI-dependent) |
-| injection-cmdi | 88 | 9 | 0 | 🟡 real gap | encoding variants |
-| cors | 75 | 6 | 0 | 🔵 scope | `GET /admin/users` cross-origin — CORS/Origin is gateway/app scope (cf. WS report RC-4) |
-| caching | 73 | 5 | 4 FP | 🟡 real gap | **cache-deception**: `/admin/users.css`, `/api/transactions/x.js`, `/deposit/.css` — sensitive path + fake static ext; 4 FP are real static assets blocked (poisoning) |
-| injection-sqli | 65 | 38 | 0 | 🔴 real gap | low for SQLi — confirm AI on; obfuscated/encoded variants |
-| auth-jwt | 51 | 30 | 0 | 🟡 real gap | `jwt_inspection` coverage holes (e.g. `jwt-0014 GET /admin/users`) |
+| injection-nosql | 96 | 2 | 0 | 🟢 minor gap | 2 variants (`POST /login` nosql-0041/42) |
+| ssrf | 94 | 2 | 0 | 🟢 minor gap | `POST /game/1/play` (body-borne URL) |
+| xss | 89 | 9 | 0 | 🟡 real gap | mixed-case/backtick variants survive **with AI on** |
+| injection-cmdi | 88 | 9 | 0 | 🟡 real gap | arg-style (`| id`, `& whoami`) + nullbyte-suffix survive AI |
+| cors | 75 | 6 | 0 | 🔵 scope | `GET /admin/users` cross-origin — gateway/app scope (cf. WS report RC-4) |
+| caching | 73 | 5 | 4 FP | 🟡 real gap | cache-deception FN real; **4 FP are real static-asset blocks** (part of the over-block above) |
+| injection-sqli | 65 | 38 | 0 | 🔴 real gap | **AI on and still 65%** — mixed-case (`sElEcT`) + hex (`0x27…`) bypass both rules and AI |
+| auth-jwt | 51 | 30 | 0 | 🟡 real gap | `jwt_inspection` coverage holes on `GET /admin/*`, `/api/profile`, `POST /deposit` |
 | rate-limit | 50 | 3 | 0 | ⚪ mostly skipped (88) | needs the dedicated rate-limit harness |
-| protocol | 43 | 21 | 0 | 🔵 mostly scope | TRACE/TRACK/DEBUG/CONNECT/PROPFIND/PATCH/DELETE/OPTIONS + `/__control/*` — HTTP-method hardening **ruled out-of-WAF-scope** earlier ([[project_docs_overstate_impl]] triage); revisit decision |
-| websocket | 42 | 185 | 1 | 🔴 investigate | all `/ws/live` GET — frame-inspection not catching; AI-over-block (BUG-WS-2) or below-threshold frames or harness counts every frame |
-| sse | 9 | 64 | 0 | 🔴 investigate | all `/api/notifications/stream` — **response-stream**; SSE streams through with **no response-body inspection by design** ⇒ response-borne attacks are invisible. Confirm attack vector (request vs response) before calling it a gap |
-| benign-baseline | 63 | 0 | 37 | 🟠 FP — mixed | see below |
+| protocol | 43 | 21 | 0 | 🔵 mostly scope | method hardening ruled gateway-scope earlier ([[project_docs_overstate_impl]]); revisit |
+| websocket | 42 | 185 | 1 | 🔴 real gap (handshake) | **frame injection 88/88 CAUGHT**; misses are handshake/upgrade controls (see below) |
+| sse | 9 | 64 | 0 | 🔴 real gap (request-side) | only server-frame injection is by-design skipped; auth/hijack/splitting are request-borne misses |
+| benign-baseline | 63 | 0 | 37 | 🔴 FP — all real | systemic over-block (top finding above) |
 
-### benign-baseline FP (37) — split real vs artifact
+---
 
-- **Real per-request detector FP** (would 403 on the *first* request regardless of poisoning): `/game/1?name=O'Brien` (apostrophe → SQLi), `name=5 < 10 fan` (angle → XSS), `name=Smith & Co` (ampersand), `name=Anaïs`/`李雷` (non-ASCII). These are **legitimate special-character names** tripping SQLi/XSS. **This is the highest-value FP fix** — real users have apostrophes in names.
-- **Artifact (cumulative-band collateral)** — re-test after Step 0; expect these to clear: `/favicon.ico`, `/static/js/app.js`, `POST /otp`, `POST /deposit`, `POST /withdrawal`, `POST /api/feedback`, `POST /api/analytics/events`, `GET /api/public/stats`. No payload — blocked because the shared IP was hot.
+## WebSocket (185 FN) — gap is the handshake/upgrade control plane, NOT frame inspection
+
+Per-category breakdown (gate off, so these are pure detection results):
+
+**Caught (frame inspection works):**
+- `ws_message_injection_sqli / xss / cmdi / nosqli` — **22/22 each (88/88)** ✅
+- `ws_dos_large_frame` 22/22 ✅, curated oversized-frame, handshake-tamper (curated bad-version/missing-key/missing-origin/tcp-tunnel-subproto), upgrade on `/admin/users` & `/api/transactions` ✅
+
+**Missed (handshake/upgrade controls):**
+- `cswsh` 22/22 FN + 3 curated CSWSH cross-site Origin → **Origin not validated on WS upgrade** (overlaps cors/RC-4 gateway-scope debate)
+- `ws_ssrf_via_host_header` 22/22 + 1 curated → **Host-header SSRF on upgrade**
+- `ws_tcp_tunnel` 22/22 → subprotocol TCP-tunnel
+- `ws_proxy_smuggle` 22/22 · `ws_protocol_waf_bypass` 22/22 → protocol-level upgrade smuggling/bypass (cross-ref [[project_hyper_normalizes_framing]])
+- `ws_dos_ping_flood` 22/22 → volumetric (likely out of per-request WAF scope; rate-limit harness)
+- `ws_handshake_tamper` 21/22 (curated 1 pass) · `ws_auth_bypass` 15/22 · `ws_upgrade_path_bypass` 12/22 (incl. `/deposit`) → partial coverage
+
+**Action:** this is NOT BUG-WS-2 (AI over-blocking frames) — frames are fully caught. Add upgrade-time controls: Origin allowlist (CSWSH), Host-header validation (SSRF), subprotocol/proxy-smuggle rejection, and complete the auth/path-bypass coverage on `/ws/live`. Decide CSWSH ownership (WAF vs gateway, cf. RC-4). The 1 WS FP is `websocket-0002` "Benign WS subscribe frame" — re-check after the over-block fix.
+
+## SSE (64 FN) — request-side auth/hijack/splitting are real; only server-frame injection is by-design
+
+- `sse_message_injection (server frame)` 22 → **SKIPPED** (response-side stream-through; documented `docs/data-plane/sse-streaming.md` trade-off). Not a gap.
+- `sse_auth_bypass` 22/22 FN → request-side auth not enforced on `/api/notifications/stream` — **real gap**
+- `sse_hijack` 18/22 FN + 2 curated cross-site → Origin not enforced on SSE — **real gap**
+- `sse_response_splitting` 22/22 FN → **CRLF in the request URL** (`/api/notifications/stream%0d%0aX-Injected: evil`, raw `\r\n`, `%0a`, space-injected) — request-borne, must be caught — **real gap**
+
+**Action:** the earlier "SSE bypassed by design" framing was too broad. Add request-side CRLF/path-injection detection and Origin/auth checks on the SSE endpoint. Only the server-frame subset stays a documented trade-off.
 
 ---
 
 ## Prioritized plan
 
-**P0 — methodology (unblocks everything):** Step 0 re-baseline (per-case reset **or** per-case IP/XFF), record AI+config, emit gate-off vs gate-on numbers. Until this lands, treat all class %s as lower bounds with unknown poisoning tax.
+**P0 — attribution run (small, unblocks root-causing):** one **gate-off + AI-OFF** re-run to split FN/FP between AI and the rule engine (see Step 0). Record AI/config/thresholds in the header. This tells us whether the benign over-block is AI tuning vs rules, and which FN are rule-only gaps.
 
-**P1 — real detector FP (user-facing):** SQLi/XSS over-fire on benign special chars (apostrophe / `<` / `&` / non-ASCII) in `name=` query values. Tune `sqli.rs` / `xss.rs` (context-aware: a lone quote/angle in a short value isn't an injection) + add the QC benign-name set as FP regression fixtures. **Verify these 403 pre-poisoning first.**
+**P1 — systemic benign over-block (ship-blocker, user-facing):** ~37% benign block rate, incl. `name=Alice`, `/favicon.ico`, `/static/js/app.js`, `/deposit`, `/otp`, gzip analytics, i18n profile, prose feedback. Triage with the P0 AI-off split:
+- If AI-driven → tune/raise the AI block threshold for benign-shaped traffic; whitelist static/asset paths from semantic scoring.
+- If rule-driven → fix the over-firing rule(s) (context-aware: lone quote/angle/`&` in a short `name=` value, plain alphanumerics, and no-payload static GETs must not block).
+- Add the full QC benign set (special-char names + static + no-payload POSTs) as FP regression fixtures.
 
-**P2 — real detection gaps (confirm AI on, then close per class):**
-- **sqli (38 FN)** + **xss (9)** + **cmdi (9)** — obfuscated/encoded variants; mine the exact FN payloads from `run-20260614-192320.jsonl`, add detector cases or confirm AI covers them.
-- **auth-jwt (30 FN)** — extend `jwt_inspection` for the missed variants.
-- **caching cache-deception (5 FN)** — add a recon/rule for `<sensitive-path>.<static-ext>` (path-confusion), e.g. `/admin/*.css`, `/api/**/*.js` to a non-static handler.
+**P2 — real detection gaps (AI confirmed on; close at the rule layer where AI misses):**
+- **sqli (38 FN)** — mixed-case (`sElEcT`, `Pg_sLeEp`) and hex-literal (`0x27…`) bypass rules **and** AI. Add case-folding/normalization + hex-string decode before SQLi matching; mine exact payloads from the `.jsonl`.
+- **xss (9)** + **cmdi (9)** — mixed-case/backtick XSS, arg-style + nullbyte-suffix CMDi. Add the same normalization (mixed-case fold, `%00` strip) ahead of matching.
+- **auth-jwt (30 FN)** — extend `jwt_inspection` to the missed routes (`GET /admin/*`, `/api/profile`, `POST /deposit`).
+- **caching cache-deception (5 FN)** — rule for `<sensitive-path>.<static-ext>` path-confusion (`/admin/*.css`, `/api/**/*.js`, `/deposit/.css`).
 
-**P3 — investigate-then-decide (don't assume gap):**
-- **sse (9%, 64 FN)** — characterize: is the attack in the request (must be caught) or the streamed response (bypassed by design — `docs/data-plane/sse-streaming.md`)? If request-side and allowed, real gap; if response-side, it's the documented stream-through trade-off → decide whether SSE needs opt-in response inspection.
-- **websocket (42%, 185 FN)** — characterize: handshake attack (should be caught) vs text-frame attack (needs `ws_inspect` enabled + cross threshold) vs harness counting each frame as a case. Cross-ref BUG-WS-2 (AI over-blocks WS frames) and the new global-mode AND (a fleet/route `log_only` forwards). Confirm `ws_inspect` was enabled on `/ws/live` in the test config.
+**P3 — WS handshake controls + SSE request-side (now characterized, real):**
+- **WS upgrade controls** — Origin allowlist (CSWSH), Host-header validation (SSRF), subprotocol/proxy-smuggle rejection, finish auth/path-bypass coverage. Frame inspection already works; don't touch it.
+- **SSE request-side** — CRLF/path-injection detection + Origin/auth on `/api/notifications/stream`. Leave server-frame injection as the documented trade-off.
+- **ping-flood / volumetric WS** — defer to the rate-limit harness.
 
 **P4 — scope calls (confirm intent, likely WONTFIX-as-WAF):**
 - **protocol HTTP methods** (TRACE/TRACK/DEBUG/CONNECT/PROPFIND/…): earlier decision = gateway scope. Re-affirm or add an optional method-allowlist gate.
-- **cors** (`GET /admin/users` cross-origin): CORS/Origin enforcement is gateway/app scope (cf. WS report RC-4). Decide.
-- **`/__control/*`** protocol cases: these probe a *decoy* control path (`/__control/`, not the loopback-only `/__waf_control/`); confirm they 404 to upstream and aren't a real surface. Cross-ref [[project_control_plane_loopback_only]].
+- **cors + CSWSH Origin**: cross-origin enforcement is gateway/app scope (RC-4). Decide once for both HTTP-CORS and WS-CSWSH.
+- **`/__control/*`** protocol/WS cases: decoy path (`/__control/`, not loopback-only `/__waf_control/`); confirm they 404 to upstream and aren't a real surface. Cross-ref [[project_control_plane_loopback_only]].
 
 ## Verification / done criteria
 
-- Step-0 re-baseline report committed with AI+config recorded and gate-off vs gate-on columns.
-- P1 benign-name FPs: 0 FP on the special-char name fixtures (pre-poisoning), no SQLi/XSS regression.
-- P2 classes: FN payloads triaged from the `.jsonl`; each either covered by a new detector/rule case or attributed to AI (with AI confirmed on).
-- P3: SSE + WS each have a written "request-borne vs by-design-bypass" determination before any detector change.
+- P0 AI-off run committed with AI/config/thresholds in the header; FN/FP attributed AI-vs-rule.
+- P1: benign block rate → ~0 on the QC benign set (special-char names, static assets, no-payload POSTs) in enforce mode, with no SQLi/XSS/CMDi regression.
+- P2: each FN payload from the `.jsonl` either covered by a new/normalized rule case or attributed to AI (with AI confirmed on); SQLi back above target with mixed-case + hex variants caught.
+- P3: WS upgrade controls (Origin/Host/subproto/auth/path) and SSE request-side (CRLF/Origin/auth) covered; frame inspection unchanged; server-frame SSE injection documented as a deliberate trade-off.
 
 ## Related
 
 - [[project_docs_overstate_impl]] — verify against code, both directions.
-- Production-miss analysis (`PRODUCTION_MISS_ANALYSIS.md` §8) — same single-IP / composite-key / XFF themes; the "rule vs AI" split applies to P2.
+- [[feedback_two_score_model]], [[feedback_challenge_band_diagnostics]], [[feedback_dev_xff_single_ip_gates]] — gate-off neutralizes these confounds for this run; keep for future gate-on runs.
+- [[project_hyper_normalizes_framing]] — relevant to WS proxy-smuggle / protocol-bypass misses.
+- Production-miss analysis (`PRODUCTION_MISS_ANALYSIS.md` §8) — "rule vs AI" split (P0/P2) is the same theme.
 - WS lifecycle audit bug: [`BUG-ws-lifecycle-audit-missing-tier-path.md`](./BUG-ws-lifecycle-audit-missing-tier-path.md) (separate, observability-only).
+</content>
+</invoke>
