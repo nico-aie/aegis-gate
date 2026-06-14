@@ -38,6 +38,7 @@ mod admin_mutate;
 /// `--features ai`; the trait it implements lives in `aegis-control`.
 #[cfg(feature = "ai")]
 mod ai_reload;
+pub mod body;
 pub mod cache;
 mod data_plane;
 pub mod fleet_events;
