@@ -92,3 +92,30 @@ Release verdict: HOLD pending CRIT-1 + HIGH-2 (both are contract/cluster-correct
 ```
 
 State left clean: recon re-enabled (18/18), response-filter restored, blacklist `cl04-test` deleted, risk cleared.
+
+---
+
+## Re-check — 2026-06-13 (post-fix deploy)
+
+Developer redeployed. `reset_state`/`set_profile` are now loopback-only (SSH
+tunnel required), so they're not callable from a remote browser/API — which
+is itself the intended fix for CRIT-1.
+
+| Finding | Status | Evidence |
+|---|---|---|
+| **CRIT-1** control endpoints proxied to upstream | ✅ **RESOLVED** | `/__waf_control/{capabilities,reset_state,set_profile}` on the VIP now return **404 with no upstream echo** (was 200 + `host:[INTERNAL]:9991`). No longer proxied to the catch-all/upstream; the secret-bypass-via-echo is gone. They're loopback-only now (correct per §2.1 local/admin-only). |
+| **HIGH-2** blacklist doesn't propagate | ✅ **RESOLVED** | Entry added on N1 (201) now appears on **N2 and N3** (count=1, hasRecheck=true on all three) within ~3 s. Operator blacklist is now shared cluster state. |
+| **MED-4** Zero Trust UI upstream-only | ✅ **RESOLVED** | Page now shows **both directions**: new **Downstream (CLIENT → WAF)** section — mTLS mode toggle (disabled/optional/required, CSRF-gated + audit-chained), Allowed-SANs editor, and a working **Test admit** tool (`svc.api.example.com` → **ADMITTED**). Backing APIs `/api/zero-trust/downstream/{ca-summary,connections,failures}` now return 200. |
+| **LOW-5** "CONFIGURED" vs "none is set" | ✅ **IMPROVED** | Identity card now explains: *"File-sourced identity — not yet in the active config plane … will be rejected (upstream_identity … none is set) until the zero_trust section is published to the plane."* The contradiction now has a clear explanation. |
+| **MED-3** `/api/copilot/ask` 404 | ❌ **STILL OPEN** | `POST /api/copilot/ask` still returns **404**. Only `summary` + `suggestions` are wired. Either wire `ask` or drop it from spec/UI. |
+
+### Re-check verdict
+
+```
+4 of 5 findings fixed (1 CRITICAL + 1 HIGH + 1 MEDIUM resolved, 1 LOW improved).
+Still open: MED-3 (/api/copilot/ask 404) — low impact; summary+suggestions cover the surface.
+The two release-blockers (CRIT-1, HIGH-2) are both RESOLVED → release-blocker status cleared.
+```
+
+State left clean (re-check): blacklist `recheck-bl` deleted; no config/mode changes persisted (Test admit is read-only).
+

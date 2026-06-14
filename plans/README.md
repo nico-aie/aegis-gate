@@ -6,8 +6,8 @@ the roadmap + the open backlog; everything closed or parked lives in
 [`archive/`](./archive/). (Updated 2026-06-10: the cluster-sync, unified
 zero-trust/mTLS, and multi-node-consistency plans all shipped/dropped and
 moved to `archive/`; both `issues/` entries resolved → `issues/archived/`.
-`future/` now holds the world-class roadmap + `smart-caching.md`, whose
-Phase 4 is the only forward track still open.)
+`future/` now holds the world-class roadmap, `smart-caching.md` (Phase 4
+open), and `sse-streaming-support.md` (planned, not started).)
 
 ## Layout
 
@@ -43,6 +43,14 @@ plans/
 - **[`smart-caching.md`](./future/smart-caching.md)** — the one feature track
   with work still open: Phases 1–3 shipped (per-upstream L1 + L2/Redis-Cluster
   cache); **Phase 4 remaining** (`stale-if-error`, ETag revalidation).
+- **[`sse-streaming-support.md`](./future/sse-streaming-support.md)** —
+  **PLANNED, not started.** Stream `text/event-stream` through the data plane
+  instead of buffering (the forward path `.collect()`s every response → SSE
+  can't flush + 30 s timeout). Migrates the data-plane body to
+  `UnsyncBoxBody`, branches in `forward()` on media type, swaps the whole-body
+  read deadline for a raw-byte idle timeout, adds a max-concurrent-streams cap,
+  and makes the response-body-inspection bypass an explicit audited policy. See
+  the §11 pre-code verification checklist before starting.
 
 > **Archived 2026-06-12.** [`archive/jwt-and-smuggling-detection.md`](./archive/jwt-and-smuggling-detection.md)
 > shipped and left `future/`: the `jwt_inspection` detector (alg:none, jku/x5u
