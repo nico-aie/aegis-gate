@@ -1829,6 +1829,39 @@ pub(crate) async fn accept_loop(
                         .headers()
                         .get(hyper::header::COOKIE)
                         .is_some();
+                    // BUG-audit-detail Fix A — capture the cumulative-risk
+                    // bucket key (ip + device_fp + session axes) BEFORE
+                    // `handle_data_request` consumes the request, so the allow
+                    // audit below can surface it in the Request Detail drawer.
+                    // Built the same way as the risk gate's key
+                    // (`build_risk_key`), so the rendered bucket matches the
+                    // one traffic actually accumulates under. Cheap (no hash);
+                    // it's only RENDERED (`risk_key_audit_value`, which hashes)
+                    // on the allow emit below — block returns early and the
+                    // data plane already audited its own risk_key.
+                    let risk_key_for_audit = crate::data_plane::build_risk_key(
+                        peer.ip(),
+                        req.headers(),
+                        conn_tls_fp.as_ref().map(|arc| arc.as_ref()),
+                    );
+                    // BUG-audit-detail Fix B — request-header echo for ALL
+                    // requests (incl. `allow`), gated behind an elevated
+                    // verbosity level so it's OFF by default. Detection/block
+                    // paths already echo at `verbosity >= Info`; the allow path
+                    // is noisier + higher-volume to sinks, so it rides the
+                    // stricter `Debug` rung. Captured here (redacted headers,
+                    // no body — the body is consumed by `handle_data_request`)
+                    // and merged into the allow audit `fields` below; it then
+                    // flows to every audit sink unchanged. Reuses
+                    // `request_echo_fields`' auth/cookie/token redaction.
+                    let allow_header_echo = if verbosity
+                        .current()
+                        .is_at_least(aegis_core::VerbosityLevel::Debug)
+                    {
+                        Some(crate::data_plane::request_echo_fields(req.headers(), None))
+                    } else {
+                        None
+                    };
                     let (resp, decision) = handle_data_request(
                         req,
                         peer,
@@ -2072,7 +2105,22 @@ pub(crate) async fn accept_loop(
                                 // toward the bot-mix chart.
                                 "bot_category": bot_category,
                                 "status": resp.status().as_u16(),
+                                // BUG-audit-detail Fix A — cumulative-risk
+                                // bucket axes for the drawer, on EVERY allow
+                                // (not just blocks). Lets operators confirm
+                                // same-IP requests share (or don't) a bucket.
+                                "risk_key": crate::data_plane::risk_key_audit_value(&risk_key_for_audit),
                             });
+                            // BUG-audit-detail Fix B — merge the redacted
+                            // request-header echo on the allow path when the
+                            // verbosity dial is at Debug+ (captured above; None
+                            // at the default Info level ⇒ no change to the hot
+                            // path or sink volume).
+                            if let (serde_json::Value::Object(ref mut map), Some(echo)) =
+                                (&mut f, allow_header_echo)
+                            {
+                                map.extend(echo);
+                            }
                             // 2026-05-21 — per-request detector score for
                             // a detected-but-allowed request (sum of this
                             // request's signals), distinct from the
