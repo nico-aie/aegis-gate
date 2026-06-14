@@ -1897,6 +1897,13 @@ pub(crate) async fn forward_allow_to_upstream(
                 .ws_detector_mask
                 .as_ref()
                 .map(|m| m.resolve(Some(route_ctx.tier)));
+            // B1 — the global `ModeStore` (set by `set_profile` / the
+            // dashboard Dry-Run toggle) is AND-ed with the per-route
+            // `ws_inspect.mode`: a frame blocks only when BOTH resolve to
+            // enforce, so a fleet-wide dry-run shadows the WebSocket
+            // surface exactly like it shadows the HTTP detectors. `None`
+            // (interop off) ⇒ treat global as enforce (no override).
+            let ws_modes = ctx.interop_modes.get().cloned();
             let ws_block_at = ctx
                 .tiers
                 .get()
@@ -1973,12 +1980,23 @@ pub(crate) async fn forward_allow_to_upstream(
                                 ws_cfg.mode,
                                 aegis_core::config::WsInspectMode::Enforce
                             );
+                            // B1 — the oversize gate fires before any frame
+                            // (so no per-frame `tag` exists yet); AND the
+                            // per-route enforce flag with the ambient global
+                            // default so a fleet-wide dry-run forwards +
+                            // meters an oversize message instead of fail-
+                            // closing it (WS 1009).
+                            let global_default_enforce = ws_modes
+                                .as_ref()
+                                .map(|m| m.current().default)
+                                .unwrap_or(aegis_control::interop::headers::Mode::Enforce)
+                                == aegis_control::interop::headers::Mode::Enforce;
                             let bridge_cfg = crate::proto::ws_inspect::WsBridgeConfig {
                                 max_message_bytes: ws_cfg.max_message_bytes,
                                 // 2026-06-12 — fail-closed (WS 1009) over the
                                 // inspection cap in enforce; forward + meter
                                 // the skip in log_only.
-                                over_cap_close: enforce,
+                                over_cap_close: enforce && global_default_enforce,
                             };
                             let inspector = move |payload: &[u8]| {
                                 use crate::proto::ws_inspect::WsVerdict;
@@ -2025,7 +2043,26 @@ pub(crate) async fn forward_allow_to_upstream(
                                     .unwrap_or_else(|| "detectors".to_string());
                                 let matched_field =
                                     top.map(|s| s.field.clone()).unwrap_or_default();
-                                let mode_str = if enforce { "enforce" } else { "log_only" };
+                                // B1 — AND the per-route enforce flag with the
+                                // global mode resolved for THIS detector tag
+                                // (e.g. `sqli` → `rules_engine/sqli`), so a
+                                // global `scope:all` dry-run OR a per-policy
+                                // toggle both downgrade the frame to forward +
+                                // would-block audit.
+                                let global_mode = ws_modes
+                                    .as_ref()
+                                    .map(|m| {
+                                        aegis_control::interop::rule_map::mode_for_rule(
+                                            m,
+                                            Some(&tag),
+                                        )
+                                    })
+                                    .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
+                                let effective_enforce = enforce
+                                    && global_mode
+                                        == aegis_control::interop::headers::Mode::Enforce;
+                                let mode_str =
+                                    if effective_enforce { "enforce" } else { "log_only" };
                                 if let Some(m) = ws_metrics_for_inspect.as_ref() {
                                     m.record_frame_block(&ws_route_id, &tag);
                                 }
@@ -2064,7 +2101,7 @@ pub(crate) async fn forward_allow_to_upstream(
                                         "message_bytes": payload.len(),
                                     }),
                                 });
-                                if enforce {
+                                if effective_enforce {
                                     WsVerdict::Block
                                 } else {
                                     WsVerdict::Allow
@@ -4727,6 +4764,153 @@ state: {{ backend: in_memory }}
             }
         }
         assert!(found, "log_only must emit a websocket_frame_block audit");
+
+        drop(tx);
+        backend_task.abort();
+        waf_task.abort();
+    }
+
+    /// B1 — the per-route `ws_inspect.mode` is AND-ed with the global
+    /// `ModeStore`: a route pinned to `enforce` must still FORWARD a
+    /// malicious frame (and emit a would-block audit with `mode:
+    /// log_only`) when the fleet-wide mode is dry-run. This mirrors the
+    /// HTTP `set_profile log_only` gate so a global Dry-Run shadows the
+    /// WebSocket surface too, instead of the frame inspector enforcing
+    /// in isolation.
+    #[tokio::test]
+    async fn set_profile_log_only_forwards_ws_frame_block() {
+        use aegis_control::interop::headers::Mode;
+        use aegis_control::interop::mode::ModeStore;
+        use futures::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let backend = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let backend_addr = backend.local_addr().unwrap();
+        let got_message = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let got_message_be = got_message.clone();
+        let backend_task = tokio::spawn(async move {
+            let (stream, _) = backend.accept().await.unwrap();
+            let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let (mut tx, mut rx) = futures::StreamExt::split(ws);
+            while let Some(Ok(msg)) = futures::StreamExt::next(&mut rx).await {
+                if msg.is_text() || msg.is_binary() {
+                    got_message_be.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = tx.send(msg).await;
+                }
+            }
+        });
+
+        // Per-route mode is ENFORCE; only the global mode is dry-run.
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: chat, path: "/", upstream: pool, ws_inspect: {{ enabled: true, mode: enforce }} }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend_addr}" }}] }}
+state: {{ backend: in_memory }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let mut ctx_inner = ProxyContext::build(&cfg, pipeline).unwrap();
+        ctx_inner.ws_detectors =
+            Some(Arc::new(aegis_security::detectors::default_detectors()));
+        ctx_inner.ws_detector_mask =
+            Some(aegis_security::detectors::SharedDetectorMask::default());
+        // Fleet-wide dry-run: every policy resolves to log_only.
+        ctx_inner
+            .interop_modes
+            .set(Arc::new(ModeStore::new(Mode::LogOnly)))
+            .ok();
+        let ctx = Arc::new(ctx_inner);
+
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let bus = AuditBus::new(16);
+        let mut audit_rx = bus.subscribe();
+        let ctx_for_listener = ctx.clone();
+        let bus_for_listener = bus.clone();
+        let rh = Arc::new(route_latency());
+        let waf_task = tokio::spawn(async move {
+            let (stream, peer) = waf.accept().await.unwrap();
+            let ctx_for_svc = ctx_for_listener.clone();
+            let bus_for_svc = bus_for_listener.clone();
+            let rh_for_svc = rh.clone();
+            let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                let ctx = ctx_for_svc.clone();
+                let bus = bus_for_svc.clone();
+                let rh = rh_for_svc.clone();
+                async move {
+                    let (parts, body) = req.into_parts();
+                    let body_bytes = body
+                        .collect()
+                        .await
+                        .map(|c| c.to_bytes())
+                        .unwrap_or_default();
+                    let (resp, _tag) = super::forward_allow_to_upstream(
+                        parts,
+                        body_bytes,
+                        &ctx,
+                        &ClientIdentity::Anonymous,
+                        &rh,
+                        &route_activity_w(),
+                        Instant::now(),
+                        peer.ip(),
+                        &bus,
+                    )
+                    .await;
+                    Ok::<_, Infallible>(resp)
+                }
+            });
+            let io = TokioIo::new(stream);
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(io, svc)
+                .with_upgrades()
+                .await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let url = format!("ws://127.0.0.1:{}/", waf_addr.port());
+        let (ws, _resp) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let (mut tx, mut rx) = futures::StreamExt::split(ws);
+
+        tx.send(Message::Text("' OR 1=1--".into())).await.unwrap();
+
+        // Global log_only forwards → the backend echoes it back.
+        let echo = futures::StreamExt::next(&mut rx)
+            .await
+            .expect("global log_only forwards the frame → echo")
+            .expect("echo ok");
+        assert_eq!(echo.into_text().unwrap(), "' OR 1=1--");
+        assert!(
+            got_message.load(std::sync::atomic::Ordering::SeqCst),
+            "global log_only must forward the frame to the upstream even \
+             though the route is pinned to enforce",
+        );
+
+        // …and a would-block audit with mode log_only fired.
+        let mut found = false;
+        while let Ok(ev) = audit_rx.try_recv() {
+            if ev.action.as_str() == "websocket_frame_block" {
+                found = true;
+                assert_eq!(ev.mode.as_deref(), Some("log_only"));
+                assert_eq!(ev.rule_id.as_deref(), Some("sqli"));
+                break;
+            }
+        }
+        assert!(
+            found,
+            "global log_only must still emit a would-block audit (mode: log_only)",
+        );
 
         drop(tx);
         backend_task.abort();
