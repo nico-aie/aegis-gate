@@ -2346,12 +2346,17 @@ pub(crate) async fn forward_allow_to_upstream(
         upstream_uri,
         parts.headers,
         body_bytes,
+        &ctx.streaming,
     )
     .await;
     drop(_inflight_guard);
 
     match result {
-        Ok(resp) => {
+        // Phase 2 staging: `forward()` now returns the classified
+        // ResponseMode, but the body is still buffered here (the
+        // streaming bypass that skips this collect/filter/cache path is
+        // the next increment, once the inner chain carries DataBody).
+        Ok((resp, _mode)) => {
             let status = resp.status();
             if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
                 if status.is_server_error() {

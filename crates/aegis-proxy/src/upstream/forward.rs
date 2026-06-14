@@ -422,7 +422,14 @@ pub async fn forward(
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Response<crate::body::DataBody>, ForwardError> {
+    streaming: &aegis_core::config::StreamingConfig,
+) -> Result<
+    (
+        Response<crate::body::DataBody>,
+        crate::upstream::streaming::ResponseMode,
+    ),
+    ForwardError,
+> {
     // P2 — a failure here is an upstream-mTLS client-config/cert load
     // error; fail the dial closed rather than connecting without the
     // client cert.
@@ -546,47 +553,27 @@ pub async fn forward(
 
     let status = resp.status();
     let resp_headers = resp.headers().clone();
-    // F-HIGH-003 (2026-05-17 s-tester audit): cap the upstream
-    // response body. Pre-fix the WAF buffered the entire response
-    // with no cap, exposing it to OOM under a hostile or runaway
-    // upstream (gzipped XML bomb, infinite-stream bug). Limit via
-    // `cfg.max_response_body_bytes` (default 10 MiB).
-    //
-    // 2026-05-17 F-HIGH-stateful follow-up: wrap the body collect
-    // in a `tokio::time::timeout(cfg.response_body_read_timeout,
-    // ...)` because `Limited<_>` only enforces SIZE — a
-    // slowloris-style upstream that trickles bytes below the cap
-    // could pin the WAF's connection slot indefinitely. The size
-    // cap surfaces as `ReadBody`; the deadline as a distinct
-    // `Timeout` variant the data plane maps onto v2.3 §3 `timeout`
-    // (vs `block` for the size violation).
-    let max_response = cfg.max_response_body_bytes as usize;
-    let read_deadline = cfg.response_body_read_timeout;
-    let body_bytes = match tokio::time::timeout(
-        read_deadline,
-        http_body_util::Limited::new(resp.into_body(), max_response).collect(),
-    )
-    .await
-    {
-        Ok(Ok(collected)) => collected.to_bytes(),
-        Ok(Err(e)) => {
-            return Err(ForwardError::ReadBody(format!(
-                "response body exceeds cap or read error: {e}",
-            )));
-        }
-        Err(_) => {
-            return Err(ForwardError::Timeout(format!(
-                "response body read exceeded {:?}",
-                read_deadline,
-            )));
-        }
+
+    // SSE plan decisions 2 + 2a — classify the response ONCE, here, from
+    // its media type against the streaming allowlist. The mode rides out
+    // on the return value; no later phase re-parses Content-Type.
+    let mode = if streaming.enabled {
+        let content_type = resp_headers
+            .get(http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok());
+        crate::upstream::streaming::classify_response_mode(content_type, &streaming.content_types)
+    } else {
+        crate::upstream::streaming::ResponseMode::Buffered
     };
 
-    // Use replay to filter hop-by-hop on the response side.
+    // Build the filtered response head (hop-by-hop / Connection-listed
+    // headers stripped) from the cloned head — shared by both modes,
+    // touches no body.
     let mut filtered: Response<Full<Bytes>> = replay_response_status_and_headers(
         &Response::builder().status(status).body(()).unwrap(),
     );
-    if let Some(out_headers) = Some(filtered.headers_mut()) {
+    {
+        let out_headers = filtered.headers_mut();
         out_headers.clear();
         let mut connection_listed: Vec<String> = Vec::new();
         if let Some(v) = resp_headers
@@ -611,11 +598,43 @@ pub async fn forward(
             out_headers.append(name.clone(), value.clone());
         }
     }
+
+    // NOTE (Phase 2 staging): `forward()` classifies and RETURNS `mode`,
+    // but still buffers the body in both modes for now. Actually
+    // streaming the body (via `streaming::stream_through`) requires the
+    // data-plane collect/filter/cache bypass (Phase 3) to be in place
+    // first — otherwise the data plane would `collect()` a live stream
+    // and block until the idle timeout. The streaming branch lands with
+    // that bypass in the next increment; the classifier + idle-timeout +
+    // stream_through primitives are already built and unit-tested.
+    //
+    // F-HIGH-003 — cap the buffered body; F-HIGH-stateful — wrap the
+    // collect in the read deadline so a slowloris upstream can't pin the
+    // slot. Size cap → ReadBody; deadline → Timeout (the data plane maps
+    // the latter onto v2.3 §3 `timeout`).
+    let max_response = cfg.max_response_body_bytes as usize;
+    let read_deadline = cfg.response_body_read_timeout;
+    let body_bytes = match tokio::time::timeout(
+        read_deadline,
+        http_body_util::Limited::new(resp.into_body(), max_response).collect(),
+    )
+    .await
+    {
+        Ok(Ok(collected)) => collected.to_bytes(),
+        Ok(Err(e)) => {
+            return Err(ForwardError::ReadBody(format!(
+                "response body exceeds cap or read error: {e}",
+            )));
+        }
+        Err(_) => {
+            return Err(ForwardError::Timeout(format!(
+                "response body read exceeded {:?}",
+                read_deadline,
+            )));
+        }
+    };
     *filtered.body_mut() = Full::new(body_bytes);
-    // Phase 1 (SSE): type-erase the buffered response into the unified
-    // DataBody so the whole data-plane chain is one streamable type.
-    // Phase 2 will branch here to stream `text/event-stream` instead.
-    Ok(crate::body::boxed(filtered))
+    Ok((crate::body::boxed(filtered), mode))
 }
 
 /// Errors raised by [`forward`].
@@ -939,13 +958,14 @@ mod tests {
         };
 
         for _ in 0..5 {
-            let resp = forward(
+            let (resp, _mode) = forward(
                 &member,
                 &cfg,
                 Method::GET,
                 "/healthz".parse().unwrap(),
                 hm(&[("host", "ignored.example.com")]),
                 Bytes::new(),
+                &aegis_core::config::StreamingConfig::default(),
             )
             .await
             .expect("forward must succeed");
@@ -1162,13 +1182,14 @@ mod tests {
         };
 
         for _ in 0..3 {
-            let resp = forward(
+            let (resp, _mode) = forward(
                 &member,
                 &cfg,
                 Method::GET,
                 "/healthz".parse().unwrap(),
                 HeaderMap::new(),
                 Bytes::new(),
+                &aegis_core::config::StreamingConfig::default(),
             )
             .await
             .expect("forward must succeed");

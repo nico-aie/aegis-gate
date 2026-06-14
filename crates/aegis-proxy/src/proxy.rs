@@ -202,6 +202,10 @@ pub struct ProxyContext {
     /// holds a clone that the audit-mutated `PUT /api/gates/bots`
     /// flips, so the toggle hot-applies with no restart.
     pub bots_enabled: Arc<std::sync::atomic::AtomicBool>,
+    /// SSE streaming stream-through config (allowlist, idle timeout,
+    /// kill-switch). Read by `forward()` to classify each upstream
+    /// response's [`ResponseMode`](crate::upstream::streaming::ResponseMode).
+    pub streaming: aegis_core::config::StreamingConfig,
 }
 
 impl ProxyContext {
@@ -274,6 +278,7 @@ impl ProxyContext {
             bots_enabled: Arc::new(std::sync::atomic::AtomicBool::new(
                 cfg.bots.enabled,
             )),
+            streaming: cfg.streaming.clone(),
         })
     }
 
@@ -431,13 +436,16 @@ where
         parts.uri,
         parts.headers,
         body_bytes,
+        &ctx.streaming,
     )
     .await;
     let upstream_elapsed = upstream_start.map(|s| s.elapsed());
     drop(_inflight_guard);
 
     let mut response = match result {
-        Ok(resp) => {
+        // `_mode` unused on this (legacy/test) path — the data plane is
+        // the production response chain that acts on the streaming mode.
+        Ok((resp, _mode)) => {
             if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
                 if resp.status().is_server_error() {
                     cb.record_failure();
