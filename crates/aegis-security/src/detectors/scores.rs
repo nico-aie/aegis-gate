@@ -204,7 +204,14 @@ pub mod ai {
     /// detector matched), a standalone AI verdict is the sole
     /// signal on that request, so it carries the full
     /// Critical-RCE-class weight.
-    pub const AI: u32 = 60;
+    /// 2026-06-16 — demoted 60 → 50 (sec-regression). At 60 a lone AI
+    /// verdict solo-blocked on the catch-all `high` tier (threshold 60),
+    /// which the new model triggered on ~83/99 benign requests. At 50 the
+    /// AI signal no longer single-blocks on `high`/`medium`/`low` — it
+    /// must stack with a rule detector — while still single-blocking on
+    /// the stricter `critical` tier (threshold 50) where over-block is
+    /// the accepted tradeoff. Stays on the documented ladder.
+    pub const AI: u32 = 50;
 }
 
 // Catalog — flat table consumed by the API.
@@ -242,6 +249,12 @@ pub const CATALOG: &[ScoreEntry] = &[
         tag: "xss",
         score: xss::XSS,
         note: "Cross-site scripting payload (script tags, event handlers, javascript: URLs).",
+    },
+    ScoreEntry {
+        class: "xss",
+        tag: "css_injection",
+        score: xss::XSS,
+        note: "CSS injection / data exfil — `@import url(http…)`, resource-property `url(http…)` (content/src/cursor/background), attribute-selector callback, or `<style>` breakout.",
     },
     ScoreEntry {
         class: "path_traversal",

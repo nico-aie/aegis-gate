@@ -71,7 +71,13 @@ The detector decodes common encodings before matching:
 - Double URL encoding
 - HTML entity encoding (`&#39;`)
 - Unicode escapes (`\u0027`)
-- MySQL hex (`0x27`)
+- **MySQL hex-string literals** (`0x27206f7220313d31` → `' or 1=1`), added
+  2026-06-16. The `0x…` run is spliced back to text **only when every
+  decoded byte is printable ASCII** — so a hex SQLi blob trips the existing
+  `OR 1=1` rule, while a GPU id (`0x0000C0DE`) or hash (`0xdeadbeefcafebabe`)
+  decodes to non-printable bytes, is left untouched, and stays clean. This
+  re-enables hex detection without the GPU-id false positives that forced
+  removal of the old `0x[0-9a-f]{8,}` regex.
 
 ## Surfaces inspected
 

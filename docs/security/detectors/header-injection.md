@@ -34,6 +34,12 @@ The detector scans for these byte sequences in request inputs that could end up 
 ## Surfaces
 
 - All query parameters (most common injection point for `Location:` headers)
+- The **request path** (added 2026-06-16) — CRLF smuggled in the path
+  itself, e.g. SSE response-splitting `/api/notifications/stream%0d%0aX-Injected:evil`
+  (no `?`, so the query scan never saw it). The path is scanned with the
+  CRLF-only patterns (not the `Location:`/`Content-Type:` keyword set) so a
+  benign path segment can't false-positive; raw `\r`/`\n` (or `%0d`/`%0a`)
+  in a path has no legitimate use.
 - Request headers **whose values are reflected back by the backend** (e.g., `Referer` ends up in logs; a crafted `Host` header can end up in generated URLs)
 - Cookie values
 - Request body fields that end up in redirects

@@ -5,7 +5,7 @@
 **Bộ test:** `dataset/testing_dataset/css_injection_samples.json` (NovaBet hackathon, 300 mẫu)
 **Detect (live):** ~89.6% (≈249/278 trong lần chạy `attack_analysis.py`)
 **Mục đích:** Cung cấp dữ liệu trực quan để chuyên gia đánh giá có nên thêm rule CSS hay không.
-**Trạng thái:** PHÂN TÍCH — chưa áp dụng bất kỳ thay đổi code nào cho CSS.
+**Trạng thái:** ✅ **RESOLVED (2026-06-16)** — đã thêm detector CSS chuyên biệt vào `xss.rs` (tag `css_injection`, score 70) trên branch `feat/detector-css-sqlihex-pathcrlf`. Cover C1 `@import`, C3 property exfil (`content/src/cursor/background:url(http…)`, gate `https?://`), C4 attribute-selector, C5 `</style>`, C6 deobfuscation (null/CR/LF/tab). Độc lập với ngưỡng AI. 17 fixtures (12 positive + 5 negative) pass; full lib suite 1727/0.
 
 ---
 

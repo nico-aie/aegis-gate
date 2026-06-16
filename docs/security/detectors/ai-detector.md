@@ -145,8 +145,11 @@ Knobs:
 
 ## Actions on detection
 
-- Emit a `Signal` with `tag: "ai"` and `score: 60` — feeds the
-  same scoring path as every other detector class.
+- Emit a `Signal` with `tag: "ai"` and `score: 50` — feeds the
+  same scoring path as every other detector class. (Demoted 60→50 on
+  2026-06-16 so a lone AI verdict can't single-block on the catch-all
+  `high` tier (60); it must stack with a rule detector except on
+  `critical` (50). See [risk-scoring.md](../risk-scoring.md).)
 - The route's tier threshold + composite request score decide
   whether the request is blocked (403) or just risk-scored.
   Same flow as every other detector — there's no AI-specific

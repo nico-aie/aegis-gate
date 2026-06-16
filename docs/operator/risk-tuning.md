@@ -17,8 +17,9 @@
 > the detector ceiling is 80 (canary excepted), so definitive-RCE
 > (Log4Shell, XXE = 80) plus the canary honeypot (100) are the only
 > detectors that block a **lone** request on `low`. At high=60, the
-> score-60 signals (AI, mass_assignment, velocity) also block on a
-> single hit at `high`. Route → tier
+> score-60 signals (mass_assignment, velocity) also block on a
+> single hit at `high`; the AI verdict (50 since 2026-06-16) does not —
+> it single-blocks only on `critical` (50). Route → tier
 > assignment therefore decides how aggressively each route blocks: put
 > sensitive/public-attack-surface routes on `critical`/`high`/`medium`;
 > a route left on `low` only blocks RCE-class single hits (or
@@ -62,9 +63,9 @@ Each detector emits a score from a small, **deliberately calibrated** ladder:
 | Tier | Score | Detectors | Meaning |
 |---|---|---|---|
 | Definitive RCE / CVE (ceiling) | **80** | Log4Shell (`${jndi:…}`), XXE | Direct compromise vector; one hit blocks on EVERY tier incl. `low` (threshold 80). 2026-05-23: capped 90→80 as the max non-canary score |
-| High-confidence exploit | **70** | sqli, xss, cmdi (baseline), ssrf, ssti, nosqli, path_traversal, header_injection (CRLF) | Unambiguous attack; one hit reaches the per-request gate on critical (50), high (60), medium (70) — but NOT `low` (80), where it must stack |
-| Privileged / mass-assignment / AI / velocity | **60** | body mass-assignment, AI verdict, velocity-sequence | Strong signal; one hit blocks on critical (50) + high (60); on medium/low it must stack |
-| Heuristic | **50** | header XFH, prototype pollution, open_redirect, recon_tool UA, brute_force | Context-dependent; blocks on critical only as a single hit, else accumulates |
+| High-confidence exploit | **70** | sqli, xss, css_injection, cmdi (baseline), ssrf, ssti, nosqli, path_traversal, header_injection (CRLF) | Unambiguous attack; one hit reaches the per-request gate on critical (50), high (60), medium (70) — but NOT `low` (80), where it must stack |
+| Privileged / mass-assignment / velocity | **60** | body mass-assignment, velocity-sequence | Strong signal; one hit blocks on critical (50) + high (60); on medium/low it must stack |
+| Heuristic | **50** | header XFH, prototype pollution, open_redirect, recon_tool UA, brute_force, **AI verdict** (demoted 60→50 on 2026-06-16) | Context-dependent; blocks on critical (50) only as a single hit, else accumulates / must stack |
 | Body shape | **30–35** | body_oversize, body_deep_nesting | Weak alone; meaningful in combination |
 | Probe / canary | **25** | recon_path | Single hit is information-only; rate / accumulation matters more than score |
 
