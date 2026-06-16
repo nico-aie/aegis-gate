@@ -95,6 +95,22 @@ impl Detector for NoSqlInjectionDetector {
             check(&decoded_body, "body", &mut signals);
         }
 
+        // Cookie values — NoSQL operators smuggled via session/other
+        // cookies (`Cookie: sid={"$gt":""}`). The operator vocabulary is so
+        // specific (`[$ne]` brackets / `"$where":` JSON-key shape) that a
+        // normal opaque session token (`sid=F1X3IwA8…`) never matches, so
+        // scanning the cookie here is safe FP-wise — unlike the broad
+        // sqli/nosqli-in-cookie scan that lives behind the default-OFF
+        // CookieInjection class.
+        if signals.is_empty() {
+            if let Some(cookie) = req.headers.get("cookie").and_then(|v| v.to_str().ok()) {
+                check(cookie, "cookie", &mut signals);
+                if signals.is_empty() {
+                    check(&super::url_decode(cookie), "cookie", &mut signals);
+                }
+            }
+        }
+
         signals
     }
 }
@@ -228,4 +244,35 @@ mod tests {
     negative!(clean_simple_query,         "/api?q=hello");
     negative!(clean_array_param,          "/api?items[]=a&items[]=b");  // PHP array param, no $
     negative!(clean_legitimate_dollar,    "/api?price=10dollars");
+
+    // --- Cookie surface (2026 — NoSQL operator smuggled via cookie) ---
+    fn view_with_cookie(cookie: &str) -> (http::Method, http::Uri, http::HeaderMap, BodyPeek) {
+        let mut h = http::HeaderMap::new();
+        h.insert("cookie", cookie.parse().unwrap());
+        (http::Method::GET, "/api/transactions".parse().unwrap(), h, BodyPeek::empty())
+    }
+
+    #[test]
+    fn nosql_in_cookie_gt() {
+        let d = NoSqlInjectionDetector;
+        let (m, u, h, b) = view_with_cookie(r#"sid={"$gt":""}"#);
+        let req = make_view(&m, &u, &h, &b);
+        assert!(!d.inspect(&req).is_empty(), "NoSQL operator in cookie must fire");
+    }
+
+    #[test]
+    fn nosql_in_cookie_where() {
+        let d = NoSqlInjectionDetector;
+        let (m, u, h, b) = view_with_cookie(r#"pref={"$where":"1"}; sid=abc"#);
+        let req = make_view(&m, &u, &h, &b);
+        assert!(!d.inspect(&req).is_empty(), "NoSQL $where in cookie must fire");
+    }
+
+    #[test]
+    fn clean_opaque_session_cookie_no_fp() {
+        let d = NoSqlInjectionDetector;
+        let (m, u, h, b) = view_with_cookie("sid=F1X3IwA81DkwXf5iryzMmdCp3gB7mGPt; theme=dark");
+        let req = make_view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).is_empty(), "opaque session cookie must not FP");
+    }
 }
