@@ -244,6 +244,12 @@ pub const CATALOG: &[ScoreEntry] = &[
         note: "Cross-site scripting payload (script tags, event handlers, javascript: URLs).",
     },
     ScoreEntry {
+        class: "xss",
+        tag: "css_injection",
+        score: xss::XSS,
+        note: "CSS injection / data exfil — `@import url(http…)`, resource-property `url(http…)` (content/src/cursor/background), attribute-selector callback, or `<style>` breakout.",
+    },
+    ScoreEntry {
         class: "path_traversal",
         tag: "path_traversal",
         score: path_traversal::PATH_TRAVERSAL,
