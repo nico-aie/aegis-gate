@@ -65,6 +65,11 @@
   --topbar-h: 44px;
   --sidebar-w: 216px;
   --statusbar-h: 24px;
+  /* Body is rendered at `zoom: var(--app-zoom)` for readability (see
+     `body` rule). `zoom` scales every length — including `vh` — so any
+     viewport-height-based size must be divided by this factor to land
+     back at one real viewport. Keep this in sync with the body zoom. */
+  --app-zoom: 1.1;
   --radius: 6px;
   --radius-lg: 8px;
   --radius-pill: 9999px;
@@ -201,7 +206,14 @@ html, body, #root {
    Edge, Safari, Opera, Firefox 126+. The few absolute pixel
    sizes inside cards / pills stay legible because everything
    scales together. */
-body { zoom: 1.1; }
+body { zoom: var(--app-zoom); }
+/* FIX 2026-06-16 — double scrollbar. `body { zoom }` scales the body's
+   own box too, so `height: 100%` (from the html/body/#root rule above)
+   rendered at 1.1× the viewport and pushed a stray outer scrollbar onto
+   the document, on top of the inner `.content` scroll. Let the body size
+   to its content (the .app shell, which is pinned to exactly one viewport
+   below) so it can never overflow the document itself. */
+body { height: auto; }
 
 /* FIX 2026-05-04 — `.modal-backdrop` and `.modal` were used in
    pages.jsx but never defined in CSS, so the route edit form
@@ -227,7 +239,7 @@ body { zoom: 1.1; }
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - 64px);
+  max-height: calc((100vh / var(--app-zoom)) - 64px);
   width: 100%;
   max-width: 560px;
   overflow: hidden;
@@ -336,7 +348,9 @@ button { font-family: inherit; }
   display: grid;
   grid-template-columns: var(--sidebar-w) 1fr;
   grid-template-rows: var(--topbar-h) 1fr var(--statusbar-h);
-  height: 100vh;
+  /* Divided by the body zoom so the shell renders at exactly one
+     viewport — a bare 100vh would render at 110vh and overflow. */
+  height: calc(100vh / var(--app-zoom));
   width: 100%;
   background: var(--canvas);
 }
@@ -922,7 +936,7 @@ textarea.input { height: auto; padding: 8px 10px; resize: vertical; }
 .col-12 { grid-column: span 12; }
 
 .split-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gutter); }
-.split-list { display: grid; grid-template-columns: 280px 1fr; gap: var(--gutter); height: calc(100vh - 130px); }
+.split-list { display: grid; grid-template-columns: 280px 1fr; gap: var(--gutter); height: calc((100vh / var(--app-zoom)) - 130px); }
 .split-list .left { background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--radius-lg); overflow: hidden; display: flex; flex-direction: column; }
 /* P2 (2026-05-11) — pin the right panel via the column's own
    independent scroll. The grid already makes left/right

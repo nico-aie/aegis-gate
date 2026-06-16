@@ -80,10 +80,24 @@ Exit code is **0** only when there are zero false-negatives *and* zero false-pos
 
 ## How a verdict is decided
 
-The runner reads, in order:
+The runner reads the **always-on `X-WAF-*` response headers** (stamped on every WAF
+response — see `crates/aegis-control/src/interop/headers.rs`), in order:
 
-1. **`X-Aegis-Decision`** response header → `allow` / `block` / `challenge` (authoritative).
-2. Fallback by status: `403`/`413` → block, `429` → challenge, `101`/`2xx`/`3xx`/`401`/`404` → allow (passed through), `000` → error.
+1. **`X-WAF-Action`** → `allow` / `block` / `challenge` / `rate_limit` / `timeout` /
+   `circuit_breaker` (authoritative; `rate_limit` collapses into `challenge`,
+   `timeout`/`circuit_breaker` count as not-passed).
+2. **`X-Aegis-Decision`** — the gated diagnostic header, only present with a bench
+   token; used as a fallback if `X-WAF-Action` is somehow absent.
+3. Fallback by status: `403`/`413` → block, `429` → challenge, `101`/`2xx`/`3xx`/`401`/`404`
+   → allow (passed through), `000` → error.
+4. **`400` with no `X-WAF-*` headers → `rejected`** — hyper rejected the request framing
+   *before* the WAF ran (usually a raw space/control byte in the URI). Bucketed
+   separately: not a WAF miss, but it doesn't exercise the WAF either.
+
+Alongside the verdict, every case captures the rest of the `X-WAF-*` set —
+`X-WAF-Rule-Id` (which rule/detector fired), `X-WAF-Risk-Score` (cumulative per-IP
+risk), `X-WAF-Mode` (`enforce`/`log_only`), `X-WAF-Cache`, `X-WAF-Tier`, and
+`X-WAF-Overhead-Latency` — and folds them into the report.
 
 Comparison to the case's `expect.verdict`:
 
@@ -93,22 +107,30 @@ Comparison to the case's `expect.verdict`:
 | `block` | `block` or `challenge` | **false_negative** (attack slipped through) |
 | `challenge` | `challenge` or `block` | **false_negative** |
 
+`skip` (non-executable cases) and `rejected` (pre-WAF 400s) are excluded from pass/fail
+and from the detection-rate denominator.
+
 The summary prints a per-class table and totals, and highlights **false negatives**
 (attacks allowed) and **false positives** (benign blocked) — the two numbers that
-matter for the contest score.
+matter for the contest score — plus an **`X-WAF-*` telemetry** block (mode, decision
+mix, overhead percentiles, per-IP risk saturation).
 
 Each run writes three files to `reports/`:
 
-- **`run-<ts>.md`** + **`latest.md`** — human-readable analysis report: per-class
-  detection-rate table; **every false-negative listed inline** (id, method, path,
-  rule that fired) with a *bypass-by-evasion-technique* breakdown so you can see which
-  obfuscations slipped past; every false-positive listed (so you know which rule to
-  tune down for which benign shape); an errors section; and a "what's working" rollup
-  of the rule IDs that caught attacks. This is the artifact to read after a run.
-- **`run-<ts>.summary.json`** — machine summary (totals, FP/FN, detection_rate) for CI.
+- **`run-<ts>.md`** + **`latest.md`** — human-readable analysis report: a **WAF posture**
+  banner read from the headers (mode, decision mix, WAF overhead p50/p95, risk
+  saturation warning); a **rule-attribution** rollup (`X-WAF-Rule-Id` counts — what
+  actually fired); the per-class detection-rate table; **false-negatives inline**
+  (id, method, path, **status, action, risk, rule**) with a *bypass-by-evasion-technique*
+  breakdown; **false-positives inline** plus a *benign-blocks-by-firing-rule* rollup so
+  you know which rule to tune; an errors section; and a **rejected (malformed framing)**
+  section listing cases to URL-encode. This is the artifact to read after a run.
+- **`run-<ts>.summary.json`** — machine summary (totals, FP/FN, detection_rate,
+  `waf_actions`, `waf_modes`, `rule_fires`, `overhead_ms`, risk saturation) for CI.
 - **`run-<ts>.jsonl`** — one record per case (id, class, method, path, expected, actual,
-  kind, rule_id, tags, severity, source) for ad-hoc `jq` analysis, e.g.
-  `jq 'select(.kind=="false_negative")' reports/run-*.jsonl`.
+  kind, rule_id, tags, severity, source, **plus** `waf_action`, `waf_mode`, `http_status`,
+  `risk_score`, `detector_score`, `tier`, `cache`, `latency_ms`, `request_id`) for ad-hoc
+  `jq` analysis, e.g. `jq 'select(.kind=="false_negative")' reports/run-*.jsonl`.
 
 ---
 
