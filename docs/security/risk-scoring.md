@@ -107,6 +107,7 @@ all signals from the chain.
 |---|---|---:|---|
 | SQL injection | `sqli` | **70** | `scores::sqli::SQLI` |
 | XSS | `xss` | **70** | `scores::xss::XSS` |
+| CSS injection | `css_injection` | **70** | `scores::xss::XSS` (emitted by `xss.rs`) — `@import`/resource-property `url(http…)`/attribute-selector exfil/`<style>` breakout, with control-byte deobfuscation |
 | Path traversal | `path_traversal` | **70** | `scores::path_traversal::PATH_TRAVERSAL` |
 | SSRF | `ssrf` | **70** | `scores::ssrf::SSRF` |
 | Command injection (baseline) | `command_injection` | **70** | `scores::command_injection::BASELINE` |
@@ -125,7 +126,7 @@ all signals from the chain.
 | Recon — probe path | `recon` | **25** | `scores::recon::PATH` |
 | Brute force | `brute_force` | **50** (default) | `scores::brute_force::DEFAULT` (off by default; set per-route) |
 | **Canary honeypot** (path hit) | `canary` | **100** | `detectors::canary` — operator-curated honeypot paths (`risk.canary_paths`); ~0 FP → max confidence, single-hit block at every tier. Default OFF. |
-| **AI classifier** (verdict = attack) | `ai` | **60** | `scores::ai::AI` — runs ONLY when no Base detector matched (short-circuit), so its verdict is the sole signal |
+| **AI classifier** (verdict = attack) | `ai` | **50** | `scores::ai::AI` — runs ONLY when no Base detector matched (short-circuit). 2026-06-16: demoted 60→50 so a lone AI verdict no longer single-blocks on the catch-all `high` tier (60); it must stack with a rule detector except on `critical` (50) |
 
 ### B. Identity / behaviour signals (configurable in YAML)
 
@@ -242,10 +243,10 @@ the AI detector runs **after** the regex detectors as a tiebreaker.
 GET /search?q=<obfuscated SQLi payload that regex misses>
   ─ regex chain: no signal (heuristic miss)
   ─ AI detector runs: model verdict = attack, confidence 0.94
-  ─ AI signal = 60
-  ─ per-request score = 60 → exceeds tier threshold for /api (70)?
-    No (60 < 70) → ALLOW with strike + cumulative bump
-  ─ score after this single request: 60 → past challenge_at (40)
+  ─ AI signal = 50
+  ─ per-request score = 50 → exceeds tier threshold for /api (70)?
+    No (50 < 70) → ALLOW with strike + cumulative bump
+  ─ score after this single request: 50 → past challenge_at (40)
   ─ strikes(IP) = 1
 ```
 

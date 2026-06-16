@@ -4,7 +4,14 @@
 **Phạm vi:** WAF `aegis-gate` — rule engine (`crates/aegis-security/src/detectors`)
 **Bộ test:** `dataset/testing_dataset/{jwt_attack,http_smuggling}_samples.json` (NovaBet hackathon)
 **Mục đích:** Cung cấp dữ liệu trực quan để chuyên gia đánh giá có nên sửa rule engine hay không.
-**Trạng thái:** PHÂN TÍCH — chưa áp dụng bất kỳ thay đổi code nào cho JWT/smuggling.
+**Trạng thái:** ⚠️ **STALE — phần lớn ĐÃ SHIP TỪ TRƯỚC (xác minh 2026-06-16).** Báo cáo này viết trước Phase A2/A3 + smuggling workstream B1. Đối chiếu code:
+> - **J1 `jku`/`x5u`** → ĐÃ CÓ: `jwt_inspection.rs` emit `jwt_jku_external` (score 80, có host-allowlist).
+> - **J2 `kid` absolute-path** → ĐÃ CÓ: match `/etc/ /dev/ /proc/ /sys/` (test `kid_dev_null` pass).
+> - **J3 `exp` forgery** → ĐÃ CÓ: `jwt_time_forged` (score 70, cửa sổ 10 năm).
+> - **Smuggling S1–S4** → ĐÃ CÓ: `header_injection.rs::check_smuggling` emit `smuggling_cl_te/multi_cl/multi_te/h2_forbidden`. `hyper` chuẩn hoá/từ chối framing nhập nhằng TRƯỚC detector nên chỉ `smuggling_h2_forbidden` fire trong vận hành thật (đúng như Tầng-1 đề xuất, do parser layer đảm nhiệm).
+> - **HS256/RS256 alg-confusion** → vẫn NGOÀI tầm WAF không-key (gateway). Không đổi.
+>
+> JWT suite 71/71, smuggling-rules 14/14 pass. **Không cần thêm code cho JWT/smuggling.**
 
 ---
 

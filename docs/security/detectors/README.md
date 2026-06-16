@@ -17,7 +17,7 @@ verbatim.
 | Doc | Tags emitted (`fields.detectors[]`) | Surface |
 |---|---|---|
 | [sqli.md](./sqli.md) | `sqli` | URL, body, headers |
-| [xss.md](./xss.md) | `xss` | URL, body, headers |
+| [xss.md](./xss.md) | `xss`, `css_injection` | URL, body, headers — **CSS injection** (`@import`/resource-property `url(http…)`/attribute-selector exfil/`<style>` breakout, control-byte deobfuscation) added 2026-06-16 |
 | [path-traversal.md](./path-traversal.md) | `path_traversal` | URL, body |
 | [ssrf.md](./ssrf.md) | `ssrf` | URL, body, fetch-style headers — adds **IPv4-mapped IPv6 SSRF** (`[::ffff:<ipv4>]` dotted-decimal + hex-colon forms) added 2026-05-09 (BYPASS-03f) |
 | [header-injection.md](./header-injection.md) | `header_injection`, `url_override_bypass`, `method_override_bypass`, `smuggling_cl_te`, `smuggling_multi_cl`, `smuggling_multi_te`, `smuggling_h2_forbidden` | Headers + query CRLF — adds **URL-override-header bypass** (`X-Original-URL` / `X-Rewrite-URL` carrying admin / recon / traversal paths) added 2026-05-09 (GAP-011, score 40); **request-smuggling hygiene** (CL+TE, dup/obfuscated TE, dup CL, HTTP/2 forbidden headers) added 2026-06-12 (B1, score 70 — mostly defense-in-depth, hyper rejects most h1 shapes first) |
