@@ -59,7 +59,9 @@ _SCANNER = re.compile(
     re.IGNORECASE,
 )
 _PCT = re.compile(r"%[0-9a-fA-F]{2}")
-_CMD = re.compile(r"\||&&|\$\(|`[^`]*`")
+# `\(\s*\)\s*\{` = shellshock function-definition signature "() {"
+# (CVE-2014-6271), delivered via headers like Accept-Language / User-Agent.
+_CMD = re.compile(r"\||&&|\$\(|`[^`]*`|\(\s*\)\s*\{")
 _SSRF = re.compile(
     r"(?:127\.0\.0\.1|localhost|169\.254\.|0\.0\.0\.0|::1|"
     r"file://|dict://|gopher://|ftp://)",

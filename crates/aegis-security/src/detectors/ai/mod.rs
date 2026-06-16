@@ -401,6 +401,19 @@ const HEADER_FOLD: &[(&str, &str)] = &[
     ("content-type", "Content-Type"),
     ("x-forwarded-for", "X-Forwarded-For"),
     ("x-real-ip", "X-Real-IP"),
+    // Classic log4shell / shellshock injection points — fold so the pattern
+    // scans (#15-26) can see payloads delivered via these headers. Order is
+    // irrelevant to the 29 features (header_count, header_entropy, and the
+    // pattern counts are all order-independent); only the set + casing matter.
+    ("accept", "Accept"),
+    ("accept-language", "Accept-Language"),
+    ("accept-encoding", "Accept-Encoding"),
+    ("x-api-version", "X-Api-Version"),
+    ("x-originating-ip", "X-Originating-IP"),
+    ("x-remote-addr", "X-Remote-Addr"),
+    ("x-client-ip", "X-Client-IP"),
+    ("x-wap-profile", "X-Wap-Profile"),
+    ("x-remote-ip", "X-Remote-IP"),
 ];
 
 impl Detector for AiDetector {
@@ -546,8 +559,8 @@ mod tests {
     }
 
     #[test]
-    fn build_request_string_folds_all_seven_headers() {
-        // Every header in _INCLUDE_HEADERS must be folded (not just 3).
+    fn build_request_string_folds_all_include_headers() {
+        // Every header in _INCLUDE_HEADERS / HEADER_FOLD must be folded.
         let m = http::Method::GET;
         let u: http::Uri = "/".parse().unwrap();
         let mut h = http::HeaderMap::new();
@@ -558,6 +571,16 @@ mod tests {
         h.insert("content-type", http::HeaderValue::from_static("application/json"));
         h.insert("x-forwarded-for", http::HeaderValue::from_static("1.2.3.4"));
         h.insert("x-real-ip", http::HeaderValue::from_static("1.2.3.4"));
+        // log4shell / shellshock injection-point headers
+        h.insert("accept", http::HeaderValue::from_static("*/*"));
+        h.insert("accept-language", http::HeaderValue::from_static("en-US"));
+        h.insert("accept-encoding", http::HeaderValue::from_static("gzip"));
+        h.insert("x-api-version", http::HeaderValue::from_static("v1"));
+        h.insert("x-originating-ip", http::HeaderValue::from_static("1.2.3.4"));
+        h.insert("x-remote-addr", http::HeaderValue::from_static("1.2.3.4"));
+        h.insert("x-client-ip", http::HeaderValue::from_static("1.2.3.4"));
+        h.insert("x-wap-profile", http::HeaderValue::from_static("http://x/p.xml"));
+        h.insert("x-remote-ip", http::HeaderValue::from_static("1.2.3.4"));
         let b = BodyPeek::empty();
         let req = view_for(&m, &u, &h, &b);
         let s = AiDetector::build_request_string(&req);
@@ -565,11 +588,14 @@ mod tests {
             "User-Agent: UA", "Cookie: sid=1", "Referer: https://x/",
             "Authorization: Bearer t", "Content-Type: application/json",
             "X-Forwarded-For: 1.2.3.4", "X-Real-IP: 1.2.3.4",
+            "Accept: */*", "Accept-Language: en-US", "Accept-Encoding: gzip",
+            "X-Api-Version: v1", "X-Originating-IP: 1.2.3.4", "X-Remote-Addr: 1.2.3.4",
+            "X-Client-IP: 1.2.3.4", "X-Wap-Profile: http://x/p.xml", "X-Remote-IP: 1.2.3.4",
         ] {
             assert!(s.contains(canon), "missing folded header {canon:?} in {s:?}");
         }
-        // header_count feature == number of folded lines == 7.
-        assert_eq!(features::extract_features(&s)[27], 7.0);
+        // header_count feature == number of folded lines == 16.
+        assert_eq!(features::extract_features(&s)[27], 16.0);
     }
 
     #[test]
