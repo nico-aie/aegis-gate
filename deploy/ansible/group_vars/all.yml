@@ -32,7 +32,7 @@ trusted_proxies:
 # ── AI / geoip runtime assets ─────────────────────────────────────────────────
 ort_version: "1.24.2"                  # MUST match ort 2.0.0-rc.12 (ort-sys dist.txt)
 ai_enabled: true
-ai_confidence_threshold: 0.95
+ai_confidence_threshold: 0.8
 ai_model_src: "{{ builder_repo }}/data/ai_model/waf_model.onnx"   # copied to each node
 geoip_src_dir: "{{ builder_repo }}/data/geoip"                    # GeoLite2-*.mmdb (optional)
 
