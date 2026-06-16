@@ -84,7 +84,11 @@ static LOG4SHELL_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 static CMDI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     // Shell-command alternation, reused by the substitution +
     // separator patterns. Short ambiguous names carry an inline `\b`.
-    const CMD: &str = r"whoami|id|uname|cat|ls|nc\b|ncat|netcat|curl|wget|sh\b|bash|zsh|ksh|dash|cmd\.exe|powershell|python|perl|ruby|php|nslookup|ping|rm\b|mv\b|chmod|chown|nc\.exe|sleep\b|timeout\b";
+    // Unix + Windows commands. Short/ambiguous names carry `\b`. These only
+    // ever match AFTER a shell metacharacter (`;`, `|`, `&&`, `$(`, backtick)
+    // via the patterns below, so adding read/recon commands (type/dir/more/…)
+    // can't FP on bare query values like `?type=user` or `?dir=asc`.
+    const CMD: &str = r"whoami|id|uname|cat|ls|nc\b|ncat|netcat|curl|wget|sh\b|bash|zsh|ksh|dash|cmd\.exe|powershell|python|perl|ruby|php|nslookup|ping|rm\b|mv\b|chmod|chown|nc\.exe|sleep\b|timeout\b|more\b|less\b|head\b|tail\b|tr\b|tee\b|dd\b|env\b|xxd|base64|type\b|dir\b|systeminfo|tasklist|ipconfig|ifconfig|findstr|certutil|netstat|hostname|net\b|reg\b|ver\b";
     // Shell-arg context the command must be followed by (whitespace,
     // path `/`, `$` IFS-evasion, end, or another separator) — NOT `=`
     // (`;cat=…`) or a word char (`category`).
@@ -123,6 +127,14 @@ static CMDI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)bash\s+-i\b",
         r"(?i)nc\s+-e\b",
         r"(?i)mkfifo\s+",
+        // Direct shell-exec invocations — distinctive enough to flag WITHOUT
+        // a metacharacter prefix: a bare `sh -c '…'`, `cmd /c …`, or
+        // `powershell -enc …` value is command execution, not data. The
+        // flag (`-c` / `/c` / `-enc`) is what disambiguates from words like
+        // "cash" or a `?cmd=` param that merely contains the token.
+        r"(?i)\b(?:ba|z|k|da)?sh\s+-c\b",
+        r"(?i)\bcmd(?:\.exe)?\s+/c\b",
+        r"(?i)\bpowershell(?:\.exe)?\s+-(?:e|enc|encodedcommand|c|command|nop|noprofile|w|windowstyle)\b",
         // Wget / curl exfil to attacker hosts when paired with a
         // shell-injection context (semicolon, pipe, backtick, $().
         r"(?i)(?:^|;|\|\|?|&&|`|\$\()\s*(?:wget|curl)\s+[a-z]+://",
@@ -339,6 +351,17 @@ mod tests {
     positive!(cmdi_cat_passwd,           "/run?cmd=cat%20/etc/passwd");
     positive!(cmdi_mkfifo,               "/run?cmd=mkfifo%20/tmp/p");
 
+    // --- 2026 — direct shell-exec (no metacharacter prefix needed) ---
+    positive!(cmdi_sh_dash_c,            "/run?cmd=sh%20-c%20'id'");
+    positive!(cmdi_bash_dash_c,          "/run?cmd=bash%20-c%20id");
+    positive!(cmdi_cmd_slash_c,          "/run?cmd=cmd%20/c%20whoami");
+    positive!(cmdi_powershell_enc,       "/run?cmd=powershell%20-enc%20ZQBjAGgA");
+    // --- 2026 — Windows recon commands after a metacharacter ---
+    positive!(cmdi_semicolon_type_winini, "/run?p=x;type%20C:\\windows\\win.ini");
+    positive!(cmdi_pipe_dir,             "/run?p=x|dir");
+    positive!(cmdi_amp_systeminfo,       "/run?p=x&&systeminfo");
+    positive!(cmdi_pipe_ipconfig,        "/run?p=x|ipconfig");
+
     // --- Body ---
     // (URI must be valid; payload lives in query for these.)
     positive!(cmdi_in_body_via_query,    "/api/run?p=foo;whoami");
@@ -374,6 +397,16 @@ mod tests {
     negative!(clean_paren_in_query,      "/api?expr=(a+b)");             // bare parens, no $ prefix
     negative!(clean_path_query,          "/api/v2/users?id=42");
     negative!(clean_static_asset,        "/static/main.js");
+    // 2026 — newly-added commands must NOT fire as bare param names/values
+    // (no shell metacharacter prefix). `?type=user`, `?dir=asc`, `?env=prod`,
+    // `?head=...` are ubiquitous legit params.
+    negative!(clean_type_param,          "/api?type=user");
+    negative!(clean_dir_param,           "/list?dir=asc");
+    negative!(clean_env_param,           "/config?env=production");
+    negative!(clean_head_param,          "/articles?head=summary");
+    negative!(clean_ver_param,           "/app?ver=2.1.0");
+    negative!(clean_net_word,            "/internet/speed");
+    negative!(clean_register_word,       "/account/register");   // 'reg' inside 'register'
     // GAP-013 negatives — `sleep`/`timeout` without metacharacter
     // prefix must NOT fire. Ordinary `?timeout=300` URL params
     // and prose mentions like "I will sleep tonight" stay green.

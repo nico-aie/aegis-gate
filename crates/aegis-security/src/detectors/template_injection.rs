@@ -76,6 +76,17 @@ static SSTI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // Handlebars / Mustache exec-capable helpers.
         r"(?i)\{\{#with\s|\{\{#each\s",
         r"(?i)\{\{lookup\s+\(",
+
+        // ── XSLT injection (2026) ──────────────────────────────────────
+        // XSL transform abuse: arbitrary file read via `document()`,
+        // RCE via `php:function` / `rt:exec`, SSRF via `document(url)`.
+        // Folded into this detector (same injection tier) instead of a
+        // new DetectorClass. The `xsl:` namespace + W3C XSL transform URI
+        // never appear in legitimate request data → ~0 FP.
+        r"(?i)<xsl:(?:stylesheet|transform|template|value-of|copy-of|copy|variable|param|import|include|output|call-template|apply-templates|for-each|element|attribute|text)\b",
+        r"(?i)\bxsl:version\s*=",
+        r"(?i)\bxsl:use-attribute-sets\s*=",
+        r#"(?i)xmlns:xsl\s*=\s*['"]?\s*http://www\.w3\.org/1999/XSL/Transform"#,
     ]
     .iter()
     .map(|p| Regex::new(p).expect("ssti regex compiles"))
@@ -216,6 +227,30 @@ mod tests {
     // --- Handlebars / Mustache ---
     positive!(ssti_handlebars_with,      "/?q={{%23with+ctx%7D");          // {{#with ctx}
     positive!(ssti_handlebars_lookup,    "/?q={{lookup+%28+a+b+%29}}");
+
+    // --- XSLT injection (2026) — URL-encoded payloads in query ---
+    positive!(xslt_stylesheet,   "/x?p=%3Cxsl:stylesheet%20version=%222.0%22");      // <xsl:stylesheet version="2.0"
+    positive!(xslt_copy_of_doc,  "/x?p=%3Cxsl:copy-of%20select=%22document(%27/etc/passwd%27)%22/%3E");
+    positive!(xslt_value_of,     "/x?p=%3Cxsl:value-of%20select=%22x%22/%3E");
+    positive!(xslt_simplified,   "/x?p=%3Chtml%20xsl:version=%221.0%22%3E");          // simplified stylesheet
+    positive!(xslt_use_attr_sets,"/x?p=%22%20xsl:use-attribute-sets=%22evil");
+    positive!(xslt_xmlns,        "/x?p=xmlns:xsl=%22http://www.w3.org/1999/XSL/Transform%22");
+
+    // XSLT in a request body (the realistic delivery — POST with XML body).
+    #[test]
+    fn xslt_in_body() {
+        let d = TemplateInjectionDetector;
+        let body = r#"</value><xsl:copy-of select="document('/etc/passwd')"/><value>"#;
+        let m = http::Method::POST;
+        let u: http::Uri = "/api/profile".parse().unwrap();
+        let h = http::HeaderMap::new();
+        let b = BodyPeek::new(body.as_bytes().to_vec(), Some(body.len() as u64), false);
+        let req = make_view(&m, &u, &h, &b);
+        assert!(!d.inspect(&req).is_empty(), "XSLT in body must fire");
+    }
+
+    // Negative — plain XML (no xsl: namespace) must NOT trip XSLT.
+    negative!(clean_plain_xml,   "/x?p=%3Cnote%3E%3Cto%3EBob%3C/to%3E%3C/note%3E");
 
     // --- Negatives: brace syntax that's NOT SSTI ---
 
