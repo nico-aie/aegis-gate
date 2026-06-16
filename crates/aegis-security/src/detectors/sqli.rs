@@ -198,6 +198,22 @@ mod tests {
     positive_test!(sqli_html_entity_quote, "/?q=&apos;+OR+1=1--");
     positive_test!(sqli_unicode_escape_quote, "/?q=\\u0027+OR+1=1--");
     positive_test!(sqli_hex_escape_quote, "/?q=\\x27+OR+1=1--");
+    // 2026-06-16 (sec-regression §3a) — hex-string SQLi. The `0x…` blob
+    // decodes to printable SQL that trips an existing rule once
+    // `normalize_for_detection` runs the hex-blob pass. sqli-0096..0099.
+    // `0x27206f7220313d31` = `' or 1=1`.
+    positive_test!(sqli_hex_blob_or, "/?id=0x27206f7220313d31");
+    // `0x27204f5220313d313d3d31` = `' OR 1=1==1` — quote + OR 1=1.
+    positive_test!(sqli_hex_blob_or_upper, "/?id=0x27204f5220313d31");
+    // 2026-06-16 (sec-regression §3a Evidence B) — trace fixtures for the
+    // mixed-case / path-segment FNs. These confirm the DETECTOR fires for
+    // the exact slipped shapes (the `(?i)` patterns + `+`/`%20` decode);
+    // if they pass, any live FN is upstream (route/tier/decode), not here.
+    positive_test!(sqli_mixed_case_or_page, "/api/list?page=1+oR+1=1");
+    positive_test!(sqli_mixed_case_union_limit, "/api/list?limit=1+UnIoN+SeLeCt+1,2,3");
+    positive_test!(sqli_mixed_case_order_by, "/api/list?sort=1+OrDeR+By+8--");
+    positive_test!(sqli_path_segment_union, "/game/1%20uNiOn%20sElEcT%20pwd%20FROM%20users");
+    positive_test!(sqli_mixed_case_waitfor, "/api?id=1;wAiTfOr+dElAy+'0:0:5'");
 
     // === Negative fixtures (should NOT detect) ===
 

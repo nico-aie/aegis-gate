@@ -1,7 +1,13 @@
 # PLAN — SEC regression: AI threshold sweep (0.65–0.85) eval + detector-improvement backlog (2026-06-16)
 
 - **Type:** PLAN (evaluation of an AI-threshold tuning sweep → root-caused fix backlog for AI **and** rule detectors)
-- **Status:** 🔴 The full threshold sweep (0.65 → 0.85) did **not** fix the benign over-block — root cause is the AI scoring mechanism, not the threshold. Confirmed by per-rule attribution (`ai` is the dominant blocker). Rule-detector gaps are code-level root-caused with fixes below.
+- **Status:** 🟡 **PARTIALLY ACTIONED (2026-06-16, branch `feat/detector-css-sqlihex-pathcrlf`).** The full threshold sweep (0.65 → 0.85) did **not** fix the benign over-block — root cause is the AI scoring mechanism, not the threshold. Confirmed by per-rule attribution (`ai` is the dominant blocker). Actions taken on the rule detectors + AI score:
+  - **§3a SQLi hex** → FIXED: ASCII-guarded `0x…` decode added to `normalize_for_detection` (hex SQLi caught; GPU-id/hash negatives stay clean).
+  - **§3a SQLi mixed-case** → NOT a detector bug: detector-level fixtures prove `sqli.rs` fires for the exact shapes; residual live FN is upstream (pre-WAF 400 per §0 note / route-tier). No `(?i)` change.
+  - **§3b header_injection path-CRLF** → FIXED: decoded request path now CRLF-scanned (SSE response-splitting caught).
+  - **§2 AI scoring** → demoted `ai::AI` 60 → **50** (Option 1, milder than the proposed 35): a lone AI verdict no longer single-blocks on the catch-all `high` tier (60); it must stack except on `critical` (50). `scale_score_by_prob` left off; calibration / log-only deferred.
+  - **§3c WS upgrade controls** → DEFERRED (separate proxy workstream — Origin/Host/subprotocol/path-normalize; see PR notes).
+  - Full `aegis-security` lib suite: **1727 passed / 0 failed.**
 - **Supersedes:** `PLAN-sec-regression-2026-06-16-newmodel.md` (model A/B comparison) as the current state-of-play.
 - **Runs compared (all: cumulative IP-risk gate OFF — `X-WAF-Risk-Score` may display 100 but does not enforce; all detectors ON):**
   - **Old model** — `run-20260614-192320.md` (pass 633 · FN 374 · FP 42 · 60.3%)

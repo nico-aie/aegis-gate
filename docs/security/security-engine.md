@@ -311,9 +311,10 @@ against the matched route's tier `risk_threshold` (critical 50 / high
 settable per profile via the `tiers:` config block. A single clear
 exploit at score 70 blocks on critical/high/medium but **not** `low`;
 only definitive-RCE (Log4Shell, XXE = 80) and the canary (100) block a
-lone request at `low`. At high=60, score-60 signals — AI,
-mass_assignment, velocity — block on a single hit at `high`) to decide
-block vs allow.
+lone request at `low`. At high=60, score-60 signals — mass_assignment,
+velocity — block on a single hit at `high`; the AI verdict (50 since
+2026-06-16) does **not** single-block at `high`, only at `critical` 50)
+to decide block vs allow.
 
 **Where to edit:** the dashboard **Detectors page → Edit tier** modal
 (audit-mutated `PUT /api/tiers/{name}`). YAML equivalent in
@@ -416,7 +417,7 @@ safely without touching the calibrated score ladder):
 | Contributor | Where it adds | Default delta | Source |
 |---|---|---:|---|
 | SQL injection | per-request + per-IP | **70** | `detectors/sqli.rs` |
-| XSS | per-request + per-IP | **70** | `detectors/xss.rs` |
+| XSS (incl. `css_injection`) | per-request + per-IP | **70** | `detectors/xss.rs` — adds CSS-injection signatures (`@import`/resource-property `url(http…)`/attr-selector exfil/`<style>`) 2026-06-16 |
 | Path traversal | per-request + per-IP | **70** | `detectors/path_traversal.rs` |
 | SSRF | per-request + per-IP | **70** | `detectors/ssrf.rs` |
 | Header injection — CRLF / smuggling | per-request + per-IP | **70** (XFH poisoning **50**) | `detectors/header_injection.rs` |
@@ -427,7 +428,7 @@ safely without touching the calibrated score ladder):
 | Template injection (SSTI) | per-request + per-IP | **70** | `detectors/template_injection.rs` |
 | NoSQL injection | per-request + per-IP | **70** | `detectors/nosql_injection.rs` |
 | Open redirect | per-request + per-IP | **50** | `detectors/open_redirect.rs` |
-| **AI / ML classifier** | per-request + per-IP | **60** | `detectors/ai/mod.rs` — runs only when no Base detector matched |
+| **AI / ML classifier** | per-request + per-IP | **50** | `detectors/ai/mod.rs` — runs only when no Base detector matched; demoted 60→50 on 2026-06-16 so it can't single-block on `high` |
 
 Identity / behaviour weights (configurable in `cfg.risk.weights`,
 default **10 each**):

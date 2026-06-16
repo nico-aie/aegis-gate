@@ -41,6 +41,27 @@ impl Detector for HeaderInjectionDetector {
             check(&super::url_decode(query), "query", &mut signals);
         }
 
+        // 2026-06-16 (sec-regression §3b) — CRLF smuggled in the PATH
+        // (no `?`), e.g. SSE response-splitting
+        // `/api/notifications/stream%0d%0aX-Injected:evil`. The query-only
+        // scan above never sees it because `uri.query()` is `None`. Use
+        // the CRLF-only patterns (`check_crlf`, not `check`) so a benign
+        // path segment that happens to contain `Location:`/`Content-Type:`
+        // text can't false-positive — raw `\r`/`\n` (or `%0d`/`%0a`) in a
+        // path has no legitimate use. Raw path catches `%0d%0a`; the
+        // decoded path catches the literal `\r\n`. Scan the decoded form
+        // only when the raw scan didn't already flag, to avoid double-
+        // scoring the same injection.
+        let path = req.uri.path();
+        let before = signals.len();
+        check_crlf(path, "path", &mut signals);
+        if signals.len() == before {
+            let decoded_path = super::url_decode(path);
+            if decoded_path != path {
+                check_crlf(&decoded_path, "path", &mut signals);
+            }
+        }
+
         // Check header values (excluding host and standard ones).
         for (name, value) in req.headers.iter() {
             let name_str = name.as_str();
@@ -533,6 +554,11 @@ mod tests {
     positive!(xff_ipv6, "/?q=X-Forwarded-For:+::1");
     positive!(set_cookie_httponly, "/?q=Set-Cookie:+a=b;+HttpOnly");
     positive!(location_encoded, "/?q=Location:+https://evil.com%2Fpath");
+    // 2026-06-16 (sec-regression §3b) — SSE response-splitting: CRLF
+    // smuggled in the PATH (no `?`), which the query-only scan missed.
+    positive!(path_crlf_sse_split, "/api/notifications/stream%0d%0aX-Injected:evil");
+    positive!(path_lf_only, "/api/stream%0aSet-Cookie:x=y");
+    positive!(path_crlf_upper, "/sse/feed%0D%0AContent-Type:text/html");
 
     // Negative cases (≥30).
     negative!(clean_root, "/");

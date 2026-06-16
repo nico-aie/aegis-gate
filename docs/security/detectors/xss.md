@@ -43,6 +43,25 @@ Regex: `on[a-z]+\s*=` — catches `onclick`, `onload`, `onerror`, `onfocus`, `on
 - `innerHTML`
 - `setTimeout("`
 
+### CSS injection (added 2026-06-16) — tag `css_injection`
+
+CSS-injection payloads have a structural fingerprint the markup/script XSS
+regexes never matched (0/300 on the hackathon `css_injection_samples`), so
+CSS detection had been left entirely to the AI model (fragile, threshold-
+sensitive). The detector now emits a distinct `css_injection` signal (same
+score 70) on the decoded URI + body for:
+
+- **`@import` of an external sheet** — `@import url(http…)`, `@import "http…"`
+  (OOB / data exfil).
+- **Resource-property exfil** — `content`/`src`/`cursor`/`background`/
+  `behavior`/`-moz-binding` `: url(http…)`. Gated on `https?://`, so relative
+  (`url(/img.png)`) and `data:` inline assets — normal CSS — never flag.
+- **Attribute-selector exfil** — `[attr^="x"]{ … url( … )}`, which leaks one
+  character per request through a background callback.
+- **`<style>` breakout** — `</style><style>…`.
+- **Obfuscation** — a control-byte deobfuscation pass strips null/CR/LF/tab
+  so `htt\x00p://` and `@im\nport` (WAF-bypass variants) still match.
+
 ### Encoded variants
 
 The detector normalizes input before matching:
