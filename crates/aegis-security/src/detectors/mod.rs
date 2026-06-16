@@ -32,6 +32,8 @@ pub use mask::{
 };
 
 use aegis_core::pipeline::RequestView;
+use regex::Regex;
+use std::sync::LazyLock;
 
 /// A signal emitted by a detector.
 #[derive(Clone, Debug)]
@@ -321,7 +323,68 @@ pub(crate) fn normalize_for_detection(input: &str) -> Vec<String> {
     push(url_decode_repeated(input, 3));
     push(html_entity_decode(input));
     push(unicode_escape_decode(input));
+    if let Some(hx) = hex_blob_decode(input) {
+        push(hx);
+    }
     out
+}
+
+/// `0x…` hex-string literal pattern (`0x` / `0X` + hex digits).
+static HEX_BLOB_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"0[xX]([0-9a-fA-F]+)").unwrap());
+
+/// Splice decoded `0x…` hex-string literals back into `input` so the
+/// content detectors can scan the cleartext. Returns `None` when nothing
+/// was decoded (so `normalize_for_detection` doesn't push a duplicate).
+///
+/// 2026-06-16 (sec-regression §3a) — hex-encoded SQLi
+/// (`0x27206f7220313d31` → `' or 1=1`) slipped because the old
+/// `0x[0-9a-f]{8,}` sqli rule was removed (GPU-id / hash FPs,
+/// `sqli.rs:40`) and no decoder ran. We re-enable detection WITHOUT the
+/// FP by gating on the *decoded* bytes: a run is only spliced when every
+/// byte is **printable ASCII** (`0x20..=0x7e`). `' or 1=1` qualifies and
+/// trips the existing `OR 1=1` rule; a GPU id `0x0000C0DE` /
+/// hash `0xdeadbeefcafebabe` decodes to non-printable bytes, is left
+/// untouched, and stays clean. Shared by sqli / cmdi / path_traversal,
+/// but the printable-ASCII gate keeps the blast radius off binary blobs.
+pub(crate) fn hex_blob_decode(input: &str) -> Option<String> {
+    if !input.contains("0x") && !input.contains("0X") {
+        return None;
+    }
+    let mut decoded_any = false;
+    let result = HEX_BLOB_RE.replace_all(input, |caps: &regex::Captures<'_>| {
+        let hex = &caps[1];
+        // Need an even number of nibbles (≥ 2 bytes) to form bytes.
+        if hex.len() >= 4 && hex.len() % 2 == 0 {
+            if let Some(decoded) = decode_printable_hex(hex) {
+                decoded_any = true;
+                return decoded;
+            }
+        }
+        // Leave non-qualifying runs (odd length, binary bytes) as-is.
+        caps[0].to_string()
+    });
+    decoded_any.then(|| result.into_owned())
+}
+
+/// Decode an even-length hex string to text, but only when every byte is
+/// printable ASCII. Returns `None` otherwise (binary / control bytes) so
+/// the caller leaves the original `0x…` literal in place.
+fn decode_printable_hex(hex: &str) -> Option<String> {
+    let bytes = hex.as_bytes();
+    let mut out = String::with_capacity(bytes.len() / 2);
+    let mut i = 0;
+    while i < bytes.len() {
+        let hi = (bytes[i] as char).to_digit(16)?;
+        let lo = (bytes[i + 1] as char).to_digit(16)?;
+        let byte = ((hi << 4) | lo) as u8;
+        if !(0x20..=0x7e).contains(&byte) {
+            return None;
+        }
+        out.push(byte as char);
+        i += 2;
+    }
+    Some(out)
 }
 
 /// Whether the request body should be regex-scanned by the content
@@ -1051,6 +1114,41 @@ mod tests {
     fn normalize_for_detection_emits_unicode_decoded_variant() {
         let v = normalize_for_detection("\\u002e\\u002e/etc");
         assert!(v.iter().any(|s| s == "../etc"));
+    }
+
+    // 2026-06-16 (sec-regression §3a) — hex-blob decode pass.
+    #[test]
+    fn hex_blob_decode_splices_printable_sqli() {
+        // `0x27206f7220313d31` = `' or 1=1`.
+        assert_eq!(
+            hex_blob_decode("/?id=0x27206f7220313d31").as_deref(),
+            Some("/?id=' or 1=1"),
+        );
+    }
+
+    #[test]
+    fn hex_blob_decode_skips_binary_blobs() {
+        // GPU id / hash decode to non-printable bytes → left untouched,
+        // so no decoded variant is produced (guards the removed-rule FP).
+        assert_eq!(hex_blob_decode("/sync?gpu=0x0000C0DE"), None);
+        assert_eq!(hex_blob_decode("/t?sig=0xdeadbeefcafebabe"), None);
+    }
+
+    #[test]
+    fn hex_blob_decode_returns_none_without_hex() {
+        assert_eq!(hex_blob_decode("/api/users?page=1"), None);
+    }
+
+    #[test]
+    fn hex_blob_decode_ignores_odd_length_runs() {
+        // Odd nibble count can't form whole bytes — leave as-is.
+        assert_eq!(hex_blob_decode("/?x=0x123"), None);
+    }
+
+    #[test]
+    fn normalize_for_detection_emits_hex_decoded_variant() {
+        let v = normalize_for_detection("/?id=0x27206f7220313d31");
+        assert!(v.iter().any(|s| s == "/?id=' or 1=1"));
     }
 
     #[test]
