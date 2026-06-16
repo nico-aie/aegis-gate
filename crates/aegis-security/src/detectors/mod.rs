@@ -355,7 +355,7 @@ pub(crate) fn hex_blob_decode(input: &str) -> Option<String> {
     let result = HEX_BLOB_RE.replace_all(input, |caps: &regex::Captures<'_>| {
         let hex = &caps[1];
         // Need an even number of nibbles (≥ 2 bytes) to form bytes.
-        if hex.len() >= 4 && hex.len() % 2 == 0 {
+        if hex.len() >= 4 && hex.len().is_multiple_of(2) {
             if let Some(decoded) = decode_printable_hex(hex) {
                 decoded_any = true;
                 return decoded;
