@@ -1,11 +1,11 @@
 {
-  "ts": "20260613-131631",
+  "ts": "20260616-203643",
   "base_url": "http://localhost:8080",
   "total": 1159,
-  "pass_": 852,
+  "pass_": 607,
   "fp": 102,
-  "fn": 95,
+  "fn": 340,
   "err": 0,
   "skip": 110,
-  "detection_rate": 81.2
+  "detection_rate": 57.9
 }

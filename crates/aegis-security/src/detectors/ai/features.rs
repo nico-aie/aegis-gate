@@ -155,10 +155,11 @@ static PCT_ENCODED: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"%[0-9a-fA-F]{2}").expect("pct regex"));
 
 // NOTE: matches ml_waf/features.py `_CMD` exactly — `|`, `&&`, `$(`,
-// backtick-pairs. Deliberately NOT `;` (a bare semicolon is too common in
-// benign cookies / matrix params to be a useful feature for the model).
+// backtick-pairs, and `() {` (shellshock CVE-2014-6271, arrives via headers
+// like Accept-Language). Deliberately NOT `;` (a bare semicolon is too common
+// in benign cookies / matrix params to be a useful feature for the model).
 static CMD_INJECTION: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\||&&|\$\(|`[^`]*`").expect("cmd regex"));
+    Lazy::new(|| Regex::new(r"\||&&|\$\(|`[^`]*`|\(\s*\)\s*\{").expect("cmd regex"));
 
 static SSRF_TARGETS: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
@@ -500,6 +501,15 @@ mod tests {
         // training `_CMD` regex deliberately omits ';'.
         let v = extract_features("GET /td/activity;cat=prddtl;ord=1;src=42");
         assert_eq!(v[18], 0.0, "bare ';' must not count, got {}", v[18]);
+    }
+
+    #[test]
+    fn shellshock_in_header_lights_cmd_count() {
+        // CVE-2014-6271: "() {" signature delivered via Accept-Language. With
+        // the header folded in, cmd_injection_count must fire — matches the
+        // shellshock alternation added to the training `_CMD` regex.
+        let v = extract_features("GET /\nAccept-Language: () { :; }; echo vuln");
+        assert!(v[18] >= 1.0, "cmd_injection_count via shellshock header, got {}", v[18]);
     }
 
     #[test]

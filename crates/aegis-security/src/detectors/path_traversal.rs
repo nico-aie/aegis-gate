@@ -62,6 +62,23 @@ static TRAVERSAL_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // the FILESYSTEM path appearing in path-traversal or
         // SSRF param values (`?file=/var/run/docker.sock`).
         r"(?i)/var/run/docker\.sock\b",
+        // 2026 LFI/RFI stream wrappers — `php://filter`, `data://`,
+        // `expect://`, `phar://`, `zip://`, `glob://`. These schemes
+        // never appear in legitimate request targets; their presence in
+        // a path/param IS the attack (PHP wrapper LFI, base64 RFI, RCE
+        // via expect). file/dict/gopher are left to the ssrf detector.
+        r"(?i)\b(?:php|data|expect|phar|zip|glob)://",
+        // Sensitive files reached WITHOUT a `../` prefix (absolute or
+        // app-relative path). Distinctive targets — ~0 FP on real traffic.
+        r"(?i)/\.ssh/(?:id_rsa|id_dsa|id_ecdsa|id_ed25519|authorized_keys)\b",
+        r"(?i)(?:^|[/\\])\.env(?:[./\\]|$)",
+        r"(?i)/web\.config\b|/WEB-INF/web\.xml\b",
+        r"(?i)/etc/(?:nginx/nginx|apache2/apache2|httpd/httpd)\.conf\b",
+        // Fullwidth solidus (U+FF0F) traversal evasion: `..／..／`.
+        // Raw percent-encoded form + the decoded char (the normaliser
+        // feeds a url-decoded variant where %ef%bc%8f becomes U+FF0F).
+        r"(?i)\.\.%ef%bc%8f",
+        "\\.\\.\u{ff0f}",
     ]
     .iter()
     .map(|p| Regex::new(p).unwrap())
@@ -230,6 +247,18 @@ mod tests {
     positive!(unicode_escape_dotdot,     "/?p=\\u002e\\u002e/etc/passwd");
     positive!(hex_escape_dotdot,         "/?p=\\x2e\\x2e/etc/passwd");
     positive!(mixed_url_and_entity,      "/?p=%2e%2e&sol;etc&sol;passwd");
+
+    // 2026 — LFI/RFI stream wrappers + absolute sensitive files + fullwidth.
+    positive!(php_filter_wrapper,   "/load?f=php://filter/convert.base64-encode/resource=/app/.env");
+    positive!(data_wrapper_b64,     "/x?p=data://text/plain;base64,PD9waHA");
+    positive!(expect_wrapper,       "/x?cmd=expect://id");
+    positive!(phar_wrapper,         "/x?f=phar://test.phar/x");
+    positive!(ssh_key_abs,          "/download?f=/root/.ssh/id_rsa");
+    positive!(env_file,             "/static/.env");
+    positive!(web_config,           "/read?f=/web.config");
+    positive!(webinf_xml,           "/read?f=/WEB-INF/web.xml");
+    positive!(nginx_conf,           "/read?f=/etc/nginx/nginx.conf");
+    positive!(fullwidth_slash_enc,  "/assets?p=..%ef%bc%8f..%ef%bc%8fetc/passwd");
 
     negative!(clean_root, "/");
     negative!(clean_api, "/api/users/123");

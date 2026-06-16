@@ -1816,7 +1816,11 @@ function PageAnalytics() {
                       <th style={{ textAlign: 'right' }}>p99 (ms)</th>
                     </tr></thead>
                     <tbody>
-                      {rows.slice(0, 16).map(r => {
+                      {/* Render every active detector class. There is one row per
+                          class (bounded by the detector set, ~18), and the header
+                          counts rows.length — an old slice(0, 16) cap silently
+                          dropped the 17th class (the `ai` detector) from the view. */}
+                      {rows.map(r => {
                         const fmt = v => v >= 1 ? v.toFixed(2) : v.toFixed(3);
                         return (
                           <tr key={r.class}>
