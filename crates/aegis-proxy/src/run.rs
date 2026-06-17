@@ -1458,7 +1458,11 @@ pub async fn run(
         let pow_key = derive_pow_key(&rt.control.secret);
         let pow_issuer = std::sync::Arc::new(aegis_security::challenge::PowIssuer::new(
             pow_key,
-            16,                                 // ~65k hashes to solve
+            // v2.6 §4 Format B counts leading-zero HEX CHARS, so
+            // difficulty 4 = 16 zero bits ≈ 65k SHA-256 hashes to
+            // solve. (Under the old bit-counting semantics this field
+            // was 16; 16 hex chars would be 64 bits — unsolvable.)
+            4,
             std::time::Duration::from_secs(60), // 60s validity window
         ));
         let _ = upstream_ctx.pow_issuer.set(pow_issuer);
@@ -1530,6 +1534,19 @@ pub async fn run(
                 }
                 #[cfg(not(feature = "redis"))]
                 let _ = &purge_urls_for_cb;
+            }));
+        // CTL-NEW-01 (v2.6 §2.4) — `reset_state` MUST clear cache
+        // state too. The flush_callback above only fires for
+        // `POST /__waf_control/flush_cache`; without this, a cached
+        // upstream response from a prior benchmark phase survives a
+        // `reset_state` and can be replayed in the next phase,
+        // bypassing detection and making results phase-order
+        // dependent. Evict this node's L1 (Redis L2 fan-out stays a
+        // flush_cache concern — reset isolation only needs local).
+        let cache_for_reset = upstream_ctx.cache.clone();
+        rt.control
+            .register_reset_callback(std::sync::Arc::new(move || {
+                cache_for_reset.invalidate(None);
             }));
         //   items 2/4/6 (StateBackend half): async ephemeral wipe of
         //   rate-limit windows + nonces + auto-block + backend risk
@@ -2327,17 +2344,34 @@ pub(crate) fn build_interop_runtime(
                 // for `open_redirect` mode would return
                 // "unsupported" while the rule still fired.
                 "open_redirect".into(),
-                // 2026-05-20 (committee interop fix): the three
-                // Phase-F detectors fire AND block but were missing
-                // here, so the BTC could neither audit them via
-                // `capabilities` nor flip them enforce↔log_only via
-                // `set_profile` (they were hard-pinned to Enforce in
-                // `rule_to_feature`). velocity + behavior_signals
-                // emit dynamic per-rule tags but map to these single
-                // policy names via prefix in `rule_to_feature`.
+                // 2026-05-20 (committee interop fix): these Phase-F
+                // detectors fire AND block but were missing here, so
+                // the BTC could neither audit them via `capabilities`
+                // nor flip them enforce↔log_only via `set_profile`
+                // (they were hard-pinned to Enforce in
+                // `rule_to_feature`). canary + velocity emit dynamic
+                // per-rule tags but map to these single policy names
+                // via prefix in `rule_to_feature`.
                 "canary".into(),
                 "velocity".into(),
-                "behavior_signals".into(),
+                // 2026-06-17 (v2.6 audit MED-01): `behavior_signals`
+                // was advertised here, but `BehavioralAnalyzer` is NOT
+                // wired into the live request path (see the NOTE in
+                // `build_interop_runtime` below) — no `behavior_*` rule
+                // ever fires, so flipping its mode had no observable
+                // effect. Advertising an inert toggle is a false
+                // promise to the OC (§2.5), so it is intentionally
+                // omitted until the analyzer lands in `data_plane.rs`.
+                // 2026-06-17 (v2.6 contract audit HIGH-01): both
+                // detectors fire AND block and are mapped in
+                // `rule_to_feature` (`cookie_injection`,
+                // `jwt_*`→`jwt_inspection`), but were missing here —
+                // so `capabilities` hid them and `set_profile
+                // {scope:policies, feature:rules_engine}` could never
+                // flip them enforce↔log_only (they stayed hard-pinned
+                // to Enforce). §2.5 requires hardcoded features appear.
+                "cookie_injection".into(),
+                "jwt_inspection".into(),
             ],
         },
     );
@@ -2417,10 +2451,14 @@ pub(crate) fn build_interop_runtime(
     // `DashboardServices::spawn_with_mask_and_roster` call.
     // NOTE: `aegis_security::behavior::BehavioralAnalyzer` exists
     // and exposes `.clear()`, but it isn't wired into the live
-    // request path yet. When the analyzer lands in the data
-    // plane, register its `.clear()` here too. Today it's a
-    // documented gap — log_only-style false-positive verification
-    // doesn't depend on it, so the v2.5 contract stays satisfied.
+    // request path yet. Because of that, `behavior_signals` is also
+    // intentionally omitted from the `rules_engine` capabilities
+    // policy list above (v2.6 audit MED-01) — we don't advertise an
+    // inert toggle. When the analyzer lands in the data plane,
+    // re-add `behavior_signals` to capabilities AND register its
+    // `.clear()` here too. Today it's a documented gap —
+    // log_only-style false-positive verification doesn't depend on
+    // it, so the contract stays satisfied.
 
     // F-CRITICAL-003 (2026-05-17 s-tester audit): pre-fix this was a
     // `warn!` + `None` swallow that left the gateway running with no
