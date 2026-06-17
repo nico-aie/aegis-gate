@@ -799,6 +799,52 @@ def load_testing_dataset(skip_files: set[str] | None = None) -> list[dict]:
     return rows
 
 
+# ── Per-route rebalancing (openapi-targeted attack flood) ─────────────────────
+#
+# attack_based_malicious + hackathon_attacks place attacks on the EXACT routes
+# the NovaBet benign traffic uses (/api/profile, /api/feedback, /login, /game/N,
+# …). That makes those routes attack-heavy in training while benign coverage is
+# thin, so the model learns "this route + JSON-POST ⇒ Attack" and flags benign
+# requests on the same routes (measured FP cause). Halving the attack flood on
+# exactly those routes rebalances them without dropping the attack class. srbh2020
+# is left untouched (it targets unrelated WordPress routes).
+
+def _novabet_benign_routes() -> set[str]:
+    """Path set that benign NovaBet traffic uses (from benign_samples.json)."""
+    path = os.path.join(DATA_DIR, "testing_dataset", "benign_samples.json")
+    routes: set[str] = set()
+    if not os.path.exists(path):
+        return routes
+    try:
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return routes
+    for e in doc.get("samples", []):
+        ep = e.get("endpoint") or ""
+        if ep:
+            routes.add(_normalize_url(str(ep)).split("?", 1)[0])
+    return routes
+
+
+def halve_attacks_on_routes(rows: list[dict], routes: set[str], label: str) -> list[dict]:
+    """Drop ~50% (seeded-random) of attack rows whose URL path is a NovaBet
+    benign route. Rows on other routes are kept in full."""
+    if not routes:
+        return rows
+    kept: list[dict] = []
+    dropped = 0
+    for r in rows:
+        path = r["url"].split("?", 1)[0]
+        if path in routes and random.random() < 0.5:
+            dropped += 1
+            continue
+        kept.append(r)
+    print(f"  {label}: halved {dropped:,} attack rows on NovaBet benign routes "
+          f"({len(rows):,} -> {len(kept):,})")
+    return kept
+
+
 # ── Global cleaning ────────────────────────────────────────────────────────────
 
 def deduplicate(rows: list[dict]) -> tuple[list[dict], int]:
@@ -979,11 +1025,17 @@ def main() -> None:
     print("\n[ 7/14] PayloadsAllTheThings / SecLists ...")
     modern = load_modern_payloads()
 
+    # Routes where benign NovaBet traffic lives — halve the openapi-targeted
+    # attack flood on these to cut false positives (see halve_attacks_on_routes).
+    nb_routes = _novabet_benign_routes()
+
     print("\n[ 8/14] hackathon_attacks ...")
     hackathon = load_attack_json_dir("hackathon_attacks")
+    hackathon = halve_attacks_on_routes(hackathon, nb_routes, "hackathon_attacks")
 
     print("\n[ 9/14] attack_based_malicious ...")
     attack_based = load_attack_json_dir("attack_based_malicious")
+    attack_based = halve_attacks_on_routes(attack_based, nb_routes, "attack_based_malicious")
 
     print("\n[10/14] normal_api ...")
     normal_api = load_normal_json_dir("normal_api")
