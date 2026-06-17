@@ -27,11 +27,18 @@
 //! || ":" || expires_at_ms_be)`. It binds the difficulty + expiry
 //! to the nonce so a client can't downgrade or extend either.
 //!
-//! **Solving.** The client finds a `counter` (any string) such
-//! that `blake3(nonce || ":" || counter)` has at least
-//! `difficulty` leading zero bits. With difficulty 16 the average
-//! solver iterates ~65k blake3 hashes — milliseconds on a laptop,
-//! but a meaningful tax on a bot at scale.
+//! **Solving (v2.6 §4 Format B).** The client finds a `counter`
+//! (any string) such that `SHA-256(challenge_token || counter)`
+//! has at least `difficulty` leading zero **hex characters** —
+//! exactly the computation the contract's published HTML reference
+//! solver performs (`crypto.subtle.digest("SHA-256", token+nonce)`
+//! then `hex.startsWith("0".repeat(difficulty))`). With difficulty
+//! 4 the average solver iterates ~65k SHA-256 hashes — milliseconds
+//! on a laptop, but a meaningful tax on a bot at scale.
+//!
+//! The `challenge_token` here is the opaque dot-joined string the
+//! client received (`nonce.difficulty.expires_at_ms.mac`); the
+//! benchmarker treats it as opaque and concatenates it verbatim.
 //!
 //! **Verification — single-use via state put_nonce.** When the
 //! client POSTs `{nonce, difficulty, expires_at_ms, mac, counter}`
@@ -40,8 +47,8 @@
 //!
 //! 1. `mac` matches expected → catches downgrade attacks.
 //! 2. `now < expires_at_ms` → catches replay-after-expiry.
-//! 3. `blake3(nonce || ":" || counter)` has `difficulty` leading
-//!    zero bits → confirms solve.
+//! 3. `SHA-256(challenge_token || counter)` has `difficulty`
+//!    leading zero hex chars → confirms solve.
 //! 4. `state.put_nonce(nonce, ttl)` — first verify wins. A second
 //!    verify of the same `(nonce, counter)` finds the nonce
 //!    already inserted and returns `false` → reject as replay.
@@ -49,6 +56,7 @@
 //! Issue is stateless; verify is the single state hop.
 
 use blake3::Hasher;
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 
 /// Stateless PoW challenge issuer + verifier.
@@ -127,8 +135,8 @@ pub enum PowError {
     InvalidMac,
     /// Server clock past `expires_at_ms`.
     Expired,
-    /// `blake3(nonce || ":" || counter)` had fewer than
-    /// `difficulty` leading zero bits.
+    /// `SHA-256(challenge_token || counter)` had fewer than
+    /// `difficulty` leading zero hex chars.
     InsufficientDifficulty,
     /// `put_nonce` returned false — the nonce was already
     /// consumed.
@@ -179,8 +187,12 @@ impl PowIssuer {
         if now >= expires_at_ms {
             return Err(PowError::Expired);
         }
-        // 3. PoW solution check.
-        if !pow_solution_valid(nonce, counter, difficulty) {
+        // 3. PoW solution check. The solver works over the opaque
+        //    `challenge_token` string it received, so reconstruct it
+        //    from the verified parts (pack is the exact inverse of
+        //    `unpack_token`, so this equals the issued token).
+        let challenge_token = format!("{nonce}.{difficulty}.{expires_at_ms}.{mac}");
+        if !pow_solution_valid(&challenge_token, counter, difficulty) {
             return Err(PowError::InsufficientDifficulty);
         }
         // 4. Replay protection — first verify wins. The TTL on
@@ -197,6 +209,41 @@ impl PowIssuer {
         Ok(())
     }
 
+    /// v2.6 §4 — mint a short-lived signed challenge-pass token to
+    /// hand back on a successful `/challenge/verify`. The data-plane
+    /// challenge gate honors a valid (unexpired, correctly-signed)
+    /// token so a client that already solved the PoW can replay the
+    /// original request without being re-challenged for `ttl`. Shape
+    /// is `"<expires_at_ms>.<mac>"`; the MAC binds the expiry to the
+    /// issuer key so the token can't be forged or extended.
+    pub fn issue_pass(&self, ttl: Duration) -> String {
+        let expires_at_ms = now_ms() + ttl.as_millis() as i64;
+        format!("{expires_at_ms}.{}", self.sign_pass(expires_at_ms))
+    }
+
+    /// Verify a challenge-pass token minted by [`Self::issue_pass`].
+    /// Returns `true` only when the token is well-formed, unexpired,
+    /// and carries a MAC matching this issuer's key.
+    pub fn pass_valid(&self, token: &str) -> bool {
+        let Some((exp_str, mac)) = token.split_once('.') else {
+            return false;
+        };
+        let Ok(expires_at_ms) = exp_str.parse::<i64>() else {
+            return false;
+        };
+        if now_ms() >= expires_at_ms {
+            return false;
+        }
+        ct_eq(mac, &self.sign_pass(expires_at_ms))
+    }
+
+    fn sign_pass(&self, expires_at_ms: i64) -> String {
+        let mut hasher = Hasher::new_keyed(&self.key);
+        hasher.update(b"challenge_pass:");
+        hasher.update(&expires_at_ms.to_be_bytes());
+        hasher.finalize().to_hex().as_str().to_string()
+    }
+
     fn sign(&self, nonce: &str, difficulty: u8, expires_at_ms: i64) -> String {
         let mut hasher = Hasher::new_keyed(&self.key);
         hasher.update(nonce.as_bytes());
@@ -208,26 +255,31 @@ impl PowIssuer {
     }
 }
 
-/// Validate a PoW solution. Public so external solvers (test
-/// harnesses, the reference Python script) can re-use the same
-/// rule.
-pub fn pow_solution_valid(nonce: &str, counter: &str, difficulty: u8) -> bool {
-    let mut hasher = Hasher::new();
-    hasher.update(nonce.as_bytes());
-    hasher.update(b":");
+/// Validate a PoW solution per v2.6 §4 Format B. Public so external
+/// solvers (test harnesses, the reference HTML/Python solver) can
+/// re-use the exact same rule: `SHA-256(challenge_token || counter)`
+/// must have at least `difficulty` leading zero hex characters.
+pub fn pow_solution_valid(challenge_token: &str, counter: &str, difficulty: u8) -> bool {
+    let mut hasher = Sha256::new();
+    hasher.update(challenge_token.as_bytes());
     hasher.update(counter.as_bytes());
     let h = hasher.finalize();
-    leading_zero_bits(h.as_bytes()) >= difficulty
+    leading_zero_hex_chars(&h) >= difficulty
 }
 
-fn leading_zero_bits(bytes: &[u8]) -> u8 {
+/// Count leading zero hex characters in a byte slice. A hex char is
+/// `'0'` exactly when its nibble is zero, so this counts leading
+/// zero nibbles (high nibble first) — matching the contract's
+/// `hex.startsWith("0".repeat(difficulty))` check.
+fn leading_zero_hex_chars(bytes: &[u8]) -> u8 {
     let mut count: u32 = 0;
-    for &b in bytes {
-        if b == 0 {
-            count += 8;
-        } else {
-            count += b.leading_zeros();
-            break;
+    'outer: for &b in bytes {
+        for nibble in [b >> 4, b & 0x0f] {
+            if nibble == 0 {
+                count += 1;
+            } else {
+                break 'outer;
+            }
         }
     }
     count.min(u8::MAX as u32) as u8
@@ -301,16 +353,19 @@ mod tests {
     }
 
     fn issuer() -> PowIssuer {
-        PowIssuer::new([7u8; 32], 8, Duration::from_secs(60))
+        // Difficulty 3 hex chars (~4096 hashes avg) keeps the test
+        // solver fast while exercising the real SHA-256 hex-prefix path.
+        PowIssuer::new([7u8; 32], 3, Duration::from_secs(60))
     }
 
     /// Reference solver — iterates counters until pow_solution_valid
-    /// returns true. Used in tests and packaged separately for the
-    /// OC harness.
-    fn solve(nonce: &str, difficulty: u8) -> String {
+    /// returns true. Mirrors the contract's Format B HTML solver:
+    /// SHA-256(challenge_token || counter) with a leading-zero hex
+    /// prefix. Used in tests and packaged separately for the OC harness.
+    fn solve(challenge_token: &str, difficulty: u8) -> String {
         for c in 0u64.. {
             let s = c.to_string();
-            if pow_solution_valid(nonce, &s, difficulty) {
+            if pow_solution_valid(challenge_token, &s, difficulty) {
                 return s;
             }
         }
@@ -331,7 +386,7 @@ mod tests {
     fn issued_challenge_carries_consistent_difficulty() {
         let issuer = issuer();
         let c = issuer.issue();
-        assert_eq!(c.difficulty, 8);
+        assert_eq!(c.difficulty, 3);
         assert_eq!(c.nonce.len(), 32);
         assert_eq!(c.mac.len(), 64); // blake3 keyed digest hex
         assert!(c.expires_at_ms > now_ms());
@@ -366,7 +421,7 @@ mod tests {
         let issuer = issuer();
         let state = MockState::new();
         let challenge = issuer.issue();
-        let counter = solve(&challenge.nonce, challenge.difficulty);
+        let counter = solve(&challenge.challenge_token(), challenge.difficulty);
         let r = issuer.verify(
             &state,
             &challenge.nonce,
@@ -383,7 +438,7 @@ mod tests {
         let issuer = issuer();
         let state = MockState::new();
         let challenge = issuer.issue();
-        let counter = solve(&challenge.nonce, challenge.difficulty);
+        let counter = solve(&challenge.challenge_token(), challenge.difficulty);
         // First verify wins.
         issuer.verify(
             &state,
@@ -410,8 +465,8 @@ mod tests {
         let issuer = issuer();
         let state = MockState::new();
         let challenge = issuer.issue();
-        // Empty counter doesn't satisfy difficulty 8 (1/256
-        // chance of having 8 leading zero bits).
+        // Counter "0" almost never satisfies difficulty 3 (a 1/4096
+        // chance of 3 leading zero hex chars).
         let r = issuer.verify(
             &state,
             &challenge.nonce,
@@ -439,7 +494,7 @@ mod tests {
             challenge.difficulty,
             challenge.expires_at_ms,
         );
-        let counter = solve(&challenge.nonce, challenge.difficulty);
+        let counter = solve(&challenge.challenge_token(), challenge.difficulty);
         let r = issuer.verify(
             &state,
             &challenge.nonce,
@@ -456,7 +511,7 @@ mod tests {
         let issuer = issuer();
         let state = MockState::new();
         let challenge = issuer.issue();
-        let counter = solve(&challenge.nonce, challenge.difficulty);
+        let counter = solve(&challenge.challenge_token(), challenge.difficulty);
         // Flip a bit in the MAC.
         let mut bad_mac = challenge.mac.clone();
         bad_mac.replace_range(0..1, "0");
@@ -482,24 +537,56 @@ mod tests {
         // Solve at difficulty 1 (easy); claim difficulty 1 in the
         // verify call but use the original (high-difficulty) MAC
         // — should fail because MAC binds to original difficulty.
-        let easy_counter = solve(&challenge.nonce, 1);
+        let easy_counter = solve(&challenge.challenge_token(), 1);
         let r = issuer.verify(
             &state,
             &challenge.nonce,
             1, // claimed lower difficulty
             challenge.expires_at_ms,
-            &challenge.mac, // MAC was issued at difficulty 8
+            &challenge.mac, // MAC was issued at difficulty 3
             &easy_counter,
         ).await;
         assert_eq!(r, Err(PowError::InvalidMac));
     }
 
     #[test]
-    fn leading_zero_bits_counts_correctly() {
-        assert_eq!(leading_zero_bits(&[0xff, 0xff]), 0);
-        assert_eq!(leading_zero_bits(&[0x7f, 0xff]), 1);
-        assert_eq!(leading_zero_bits(&[0x00, 0xff]), 8);
-        assert_eq!(leading_zero_bits(&[0x00, 0x7f]), 9);
-        assert_eq!(leading_zero_bits(&[0x00, 0x00, 0x01]), 23);
+    fn leading_zero_hex_chars_counts_correctly() {
+        // 0xff = "ff" → 0 leading zero hex chars.
+        assert_eq!(leading_zero_hex_chars(&[0xff, 0xff]), 0);
+        // 0x0f = "0f" → 1 leading zero hex char.
+        assert_eq!(leading_zero_hex_chars(&[0x0f, 0xff]), 1);
+        // 0x00 0xff = "00ff" → 2 leading zero hex chars.
+        assert_eq!(leading_zero_hex_chars(&[0x00, 0xff]), 2);
+        // 0x00 0x0f = "000f" → 3 leading zero hex chars.
+        assert_eq!(leading_zero_hex_chars(&[0x00, 0x0f]), 3);
+        // 0x00 0x00 0x10 = "000010" → 4 leading zero hex chars.
+        assert_eq!(leading_zero_hex_chars(&[0x00, 0x00, 0x10]), 4);
+    }
+
+    #[test]
+    fn challenge_pass_token_roundtrips_and_rejects_tampering() {
+        let issuer = issuer();
+        let pass = issuer.issue_pass(Duration::from_secs(300));
+        assert!(issuer.pass_valid(&pass), "fresh pass must validate");
+        // Tampered MAC → rejected.
+        let mut bad = pass.clone();
+        bad.replace_range(bad.len() - 1.., "0");
+        if bad == pass {
+            bad.replace_range(bad.len() - 1.., "1");
+        }
+        assert!(!issuer.pass_valid(&bad), "tampered pass must be rejected");
+        // Malformed (no dot) → rejected.
+        assert!(!issuer.pass_valid("garbage"));
+        // A different issuer key → rejected.
+        let other = PowIssuer::new([9u8; 32], 3, Duration::from_secs(60));
+        assert!(!other.pass_valid(&pass), "cross-key pass must be rejected");
+    }
+
+    #[test]
+    fn expired_challenge_pass_is_rejected() {
+        let issuer = issuer();
+        // Zero TTL → expires_at_ms == now; pass_valid requires now < exp.
+        let pass = issuer.issue_pass(Duration::from_millis(0));
+        assert!(!issuer.pass_valid(&pass), "expired pass must be rejected");
     }
 }

@@ -34,6 +34,7 @@ async-trait.workspace = true
 # username extraction in `brute_force::extract_username`.
 base64.workspace = true
 blake3.workspace = true
+sha2.workspace = true
 bytes = { workspace = true }
 chrono.workspace = true
 dashmap.workspace = true

@@ -276,15 +276,57 @@ impl Decision {
     /// downstream layers can't smuggle a different value.
     pub fn stamp(&self, headers: &mut HeaderMap) {
         insert(headers, REQUEST_ID, &self.request_id);
-        insert(headers, RISK_SCORE, &self.risk_score.to_string());
+        // §5.1 — `X-WAF-Risk-Score` is an integer 0–100. Clamp here as
+        // a backstop so a cumulative score raised past 100 by a
+        // non-default operator `risk.max` can never leak out (the audit
+        // value is clamped at its own stamp site). See F-V26-003.
+        insert(headers, RISK_SCORE, &self.risk_score.min(100).to_string());
         insert(headers, ACTION, self.action.as_str());
-        insert(
-            headers,
-            RULE_ID,
-            self.rule_id.as_deref().unwrap_or("none"),
-        );
+        // §5.1 — `X-WAF-Rule-Id` must be alphanumeric + hyphens (or
+        // `none`). Internal tags are snake_case / comma-joined, so
+        // normalize on emit. See [`sanitize_rule_id`] (F-V26-001).
+        let rule_id = self
+            .rule_id
+            .as_deref()
+            .map(sanitize_rule_id)
+            .unwrap_or_else(|| "none".to_string());
+        insert(headers, RULE_ID, &rule_id);
         insert(headers, CACHE, self.cache.as_str());
         insert(headers, MODE, self.mode.as_str());
+    }
+}
+
+/// v2.6 §5.1 — `X-WAF-Rule-Id` must match `^([A-Za-z0-9-]+|none)$`
+/// ("Alphanumeric + hyphens, e.g. `rule-001`, `policy-default`, or
+/// `none`"). Internal rule tags are snake_case (`command_injection`)
+/// and multi-detector decisions are comma-joined (`sqli,xss`), neither
+/// of which is wire-legal. Normalize: map `_`, `,`, and whitespace to
+/// `-`, drop any other non-conforming char, collapse runs of `-`, and
+/// trim leading/trailing `-`. An empty result (tag was all
+/// punctuation) becomes `none`.
+///
+/// Applied to BOTH the emitted `X-WAF-Rule-Id` header and the audit
+/// `rule_id` field so the two stay byte-identical. Internal
+/// `rule_to_feature` / `mode_for_rule` lookups operate on the RAW tag
+/// (before stamping), so mode mapping is unaffected.
+pub fn sanitize_rule_id(id: &str) -> String {
+    let mut out = String::with_capacity(id.len());
+    for c in id.chars() {
+        match c {
+            c if c.is_ascii_alphanumeric() => out.push(c),
+            '_' | ',' | '-' | ' ' | '\t' => {
+                if !out.ends_with('-') {
+                    out.push('-');
+                }
+            }
+            _ => {} // drop anything else (e.g. ':', '/', '.')
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    if trimmed.is_empty() {
+        "none".to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -423,6 +465,52 @@ mod tests {
         Decision::block("rid".into(), 90, "rule-sqli-001", Mode::Enforce).stamp(&mut h);
         assert_eq!(h.get(ACTION).unwrap(), "block");
         assert_eq!(h.get(RULE_ID).unwrap(), "rule-sqli-001");
+    }
+
+    // ----- F-V26-001: X-WAF-Rule-Id §5.1 format -----
+
+    fn is_wire_legal_rule_id(s: &str) -> bool {
+        s == "none" || (!s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+    }
+
+    #[test]
+    fn sanitize_rule_id_normalizes_underscores_commas_and_junk() {
+        assert_eq!(sanitize_rule_id("command_injection"), "command-injection");
+        assert_eq!(sanitize_rule_id("sqli,xss"), "sqli-xss");
+        assert_eq!(sanitize_rule_id("sqli,brute_force"), "sqli-brute-force");
+        assert_eq!(sanitize_rule_id("jwt_alg_none"), "jwt-alg-none");
+        // already-legal ids are untouched
+        assert_eq!(sanitize_rule_id("risk-challenge"), "risk-challenge");
+        assert_eq!(sanitize_rule_id("none"), "none");
+        // collapse + trim
+        assert_eq!(sanitize_rule_id("a__b,,c"), "a-b-c");
+        assert_eq!(sanitize_rule_id("_lead_trail_"), "lead-trail");
+        // all-punctuation degrades to none
+        assert_eq!(sanitize_rule_id(",,,"), "none");
+        // drop other chars (':' '/' '.')
+        assert_eq!(sanitize_rule_id("ns:rule/v1.2"), "nsrulev12");
+    }
+
+    #[test]
+    fn stamp_emits_wire_legal_rule_id_for_snakecase_and_lists() {
+        for raw in ["command_injection", "sqli,xss", "websocket_no_upstream_pool"] {
+            let mut h = HeaderMap::new();
+            Decision::block("rid".into(), 80, raw, Mode::Enforce).stamp(&mut h);
+            let got = h.get(RULE_ID).unwrap().to_str().unwrap();
+            assert!(
+                is_wire_legal_rule_id(got),
+                "X-WAF-Rule-Id {got:?} (from {raw:?}) must match ^([A-Za-z0-9-]+|none)$",
+            );
+        }
+    }
+
+    // ----- F-V26-003: X-WAF-Risk-Score clamp to 0-100 -----
+
+    #[test]
+    fn stamp_clamps_risk_score_over_100_to_100() {
+        let mut h = HeaderMap::new();
+        Decision::block("rid".into(), 145, "sqli", Mode::Enforce).stamp(&mut h);
+        assert_eq!(h.get(RISK_SCORE).unwrap(), "100");
     }
 
     #[test]

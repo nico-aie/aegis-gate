@@ -1091,7 +1091,12 @@ pub(crate) async fn handle_interop_control_with_rt(
 
 /// 2026-05-08 NEW-2 / 2026-05-19 v2.5 — verify a PoW solution
 /// submitted by the benchmarker. Mounted at the PUBLIC path
-/// `/challenge/verify` on the data plane (per v2.5 contract §4).
+/// How long a solved-challenge pass is honoured before the client
+/// must solve again. Short enough to bound replay of a leaked token,
+/// long enough for the benchmarker to replay the original request.
+const CHALLENGE_PASS_TTL_SECS: u64 = 300;
+
+/// `/challenge/verify` on the data plane (per v2.6 contract §4).
 /// Body shape: `{"challenge_token":"<echo>","nonce":"<work>"}`.
 pub(crate) async fn handle_challenge_verify(
     req: hyper::Request<hyper::body::Incoming>,
@@ -1181,18 +1186,35 @@ pub(crate) async fn handle_challenge_verify(
 
     use aegis_security::challenge::PowError;
     match result {
-        // v2.5 contract §4: "WAF should return 200 with a session
-        // cookie or token that allows the original request to
-        // proceed." We honour the 200 + JSON body shape; the
-        // session-token cookie path is wired by the data-plane
-        // risk-bucket clear (separate concern).
-        Ok(()) => json_response(
-            200,
-            &serde_json::json!({
+        // v2.6 contract §4: "On success, the WAF returns 200 with a
+        // session cookie or token that allows the original request to
+        // proceed." We mint a short-lived signed `waf_challenge_pass`
+        // cookie; the data-plane challenge gate honours it so the
+        // replayed original request is forwarded instead of
+        // re-challenged (enables the `allowed_after_challenge`
+        // outcome). The token is also returned in the body for
+        // header-less clients.
+        Ok(()) => {
+            let pass = issuer.issue_pass(std::time::Duration::from_secs(
+                CHALLENGE_PASS_TTL_SECS,
+            ));
+            let cookie = format!(
+                "waf_challenge_pass={pass}; Path=/; Max-Age={CHALLENGE_PASS_TTL_SECS}; \
+                 HttpOnly; SameSite=Strict"
+            );
+            let body = serde_json::to_string(&serde_json::json!({
                 "ok": true,
                 "action": "challenge_verified",
-            }),
-        ),
+                "pass_token": pass,
+            }))
+            .unwrap_or_else(|_| "{}".into());
+            Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .header("set-cookie", cookie)
+                .body(Full::new(Bytes::from(body)))
+                .unwrap()
+        }
         Err(PowError::InvalidMac) => json_response(
             403,
             &serde_json::json!({"ok": false, "error": "invalid_mac"}),
@@ -1319,7 +1341,12 @@ pub(crate) fn stamp_interop_response<B>(
     // clients; behind a trusted proxy or with operator-injected
     // X-Forwarded-For, the keys differ and the snapshot returns
     // None → 0.
-    let effective_risk_score = decision_tag.risk_score.unwrap_or(risk_score);
+    // §5.1 / §6 — risk_score is an integer 0–100. The per-request sum
+    // is already clamped, but the cumulative tracker clamps to the
+    // operator-configurable `risk.max` (default 100, but can be set
+    // higher), so clamp here at the shared stamp site to bound BOTH the
+    // X-WAF-Risk-Score header and the audit `risk_score`. See F-V26-003.
+    let effective_risk_score = decision_tag.risk_score.unwrap_or(risk_score).min(100);
     let decision = Decision {
         request_id: request_id.clone(),
         risk_score: effective_risk_score,
@@ -1354,7 +1381,12 @@ pub(crate) fn stamp_interop_response<B>(
             // and headers agree.
             risk_score: effective_risk_score,
             mode: mode.as_str().to_string(),
-            rule_id: decision_tag.rule_id,
+            // §5.1 — keep the audit `rule_id` byte-identical to the
+            // sanitized X-WAF-Rule-Id header (F-V26-001).
+            rule_id: decision_tag
+                .rule_id
+                .as_deref()
+                .map(aegis_control::interop::headers::sanitize_rule_id),
             // 2026-05-05 — surface the resolved tier so the
             // dashboard's Live Feed shows the route's real tier
             // instead of a risk-score bucket. snake_case form

@@ -229,9 +229,14 @@ run-dev: $(WAF_BIN) cert redis-up upstream-up ## Boot dev profile (auto-starts R
 #   export LLM_ENABLED=true LLM_BASE_URL=https://host/v1 \
 #          LLM_API_KEY=sk-... LLM_MODEL=<model>
 #   [optional] export LLM_BRIEFING_INTERVAL_SECS=900   # scheduled briefings
-# Bring the trace backend up first: `make signoz-up` (stop the dev-stack
-# Jaeger first — both want :4317). Traces land in the SigNoz UI (:3301);
-# the copilot is at the dashboard's Security Ops → Copilot.
+# Traces are OPTIONAL: if SigNoz is reachable on :4317 we point OTLP at
+# it, otherwise we boot WITHOUT the exporter (no connection-error spam) —
+# so `make run-copilot` works the same whether or not anyone ran
+# `make signoz-up`. To get traces, bring the backend up first with
+# `make signoz-up` (stop the dev-stack Jaeger first — both want :4317);
+# they land in the SigNoz UI (:3301). Set WAF_OBSERVABILITY__OTEL__ENDPOINT
+# to force a specific (e.g. remote) collector and skip the local probe.
+# The copilot is at the dashboard's Security Ops → Copilot.
 run-copilot: dashboard cert redis-up upstream-up ## Boot dev + AI copilot + OTLP→SigNoz (put LLM_* in .env; run 'make signoz-up')
 	@echo "==> building with features: $(FEATURES) otel llm"
 	@$(CARGO) build -p aegis-bin --release --features "$(FEATURES) otel llm"
@@ -240,11 +245,20 @@ run-copilot: dashboard cert redis-up upstream-up ## Boot dev + AI copilot + OTLP
 	@[ -f .env ] && echo "==> sourcing .env" || echo "  ! no .env — copy .env.example to .env and fill LLM_API_KEY (else copilot is 'disabled')."
 	@set -a; [ -f .env ] && . ./.env; set +a; \
 	 [ -n "$$LLM_API_KEY" ] && [ "$$LLM_API_KEY" != "sk-REPLACE_ME" ] || echo "  ! LLM_API_KEY unset/placeholder — copilot will report 'disabled'."; \
-	 echo "==> OTLP endpoint: $${WAF_OBSERVABILITY__OTEL__ENDPOINT:-http://127.0.0.1:4317}  (SigNoz :4317)"; \
-	 AEGIS_INSECURE_COOKIES=1 \
-	 WAF_OBSERVABILITY__OTEL__ENDPOINT=$${WAF_OBSERVABILITY__OTEL__ENDPOINT:-http://127.0.0.1:4317} \
-	 WAF_OBSERVABILITY__OTEL__SAMPLE_RATIO=$${WAF_OBSERVABILITY__OTEL__SAMPLE_RATIO:-1.0} \
-	 $(WAF_BIN) run --config $(CONFIG_DEV)
+	 OTEL_ENDPOINT="$$WAF_OBSERVABILITY__OTEL__ENDPOINT"; \
+	 if [ -n "$$OTEL_ENDPOINT" ]; then \
+	   echo "==> OTLP endpoint: $$OTEL_ENDPOINT  (override)"; \
+	 elif command -v nc >/dev/null 2>&1 && nc -z -w1 127.0.0.1 4317 >/dev/null 2>&1 \
+	      || lsof -nP -iTCP:4317 -sTCP:LISTEN >/dev/null 2>&1; then \
+	   OTEL_ENDPOINT="http://127.0.0.1:4317"; \
+	   echo "==> OTLP endpoint: $$OTEL_ENDPOINT  (SigNoz :4317)"; \
+	 else \
+	   echo "  ! SigNoz not reachable on :4317 — starting WITHOUT OTLP traces."; \
+	   echo "    (everything else works; run 'make signoz-up' first if you want traces.)"; \
+	 fi; \
+	 OTEL_ENV=""; \
+	 [ -n "$$OTEL_ENDPOINT" ] && OTEL_ENV="WAF_OBSERVABILITY__OTEL__ENDPOINT=$$OTEL_ENDPOINT WAF_OBSERVABILITY__OTEL__SAMPLE_RATIO=$${WAF_OBSERVABILITY__OTEL__SAMPLE_RATIO:-1.0}"; \
+	 env AEGIS_INSECURE_COOKIES=1 $$OTEL_ENV $(WAF_BIN) run --config $(CONFIG_DEV)
 
 restart-copilot: ## Stop any running WAF, then rebuild (dashboard+binary) + reboot via run-copilot
 	@PID=$$(lsof -nP -iTCP:9443 -sTCP:LISTEN -t 2>/dev/null | head -1); \

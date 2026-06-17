@@ -708,7 +708,9 @@ pub(crate) async fn handle_data_request_inner(
                 .header("retry-after", rate_decision.retry_after_seconds.to_string())
                 .body(crate::body::full(Bytes::from(
                     serde_json::json!({
-                        "error": "rate_limited",
+                        // v2.6 §4 contract example string (LOW-01).
+                        "error": "rate_limit_exceeded",
+                        "message": "Too many requests. Please slow down.",
                         "reason": reason,
                         "retry_after_seconds": rate_decision.retry_after_seconds,
                         "strikes": post_state.strikes,
@@ -1365,6 +1367,19 @@ pub(crate) async fn handle_data_request_inner(
                 // `{"challenge_token":"<echo>","nonce":"<work>"}`.
                 // The token packs (nonce, difficulty, expires_at_ms,
                 // mac) so the server can verify statelessly.
+                //
+                // HIGH-03 (v2.6 §4): a client that already solved the
+                // PoW and POSTed /challenge/verify carries a signed
+                // `waf_challenge_pass` cookie. Honour a valid one —
+                // forward the replayed request upstream instead of
+                // re-challenging — for the remainder of the pass TTL.
+                // This is what lets the benchmarker's
+                // `allowed_after_challenge` flow complete.
+                let has_valid_pass = upstream_ctx
+                    .pow_issuer
+                    .get()
+                    .zip(extract_challenge_pass(&parts.headers))
+                    .is_some_and(|(issuer, tok)| issuer.pass_valid(&tok));
                 let body = match upstream_ctx.pow_issuer.get() {
                     Some(issuer) => {
                         let challenge = issuer.issue();
@@ -1414,7 +1429,7 @@ pub(crate) async fn handle_data_request_inner(
                 // `log_only` (the response stamper still marks `X-WAF-Mode`).
                 // Honors the same load-shed `allow_block_emit` gate as the
                 // detector-block audit.
-                if allow_block_emit {
+                if allow_block_emit && !has_valid_pass {
                     let echo = if !load_mode.is_critical() && allow_verbose_fields {
                         Some(request_echo_fields(&parts.headers, Some(&body_bytes)))
                     } else {
@@ -1444,7 +1459,22 @@ pub(crate) async fn handle_data_request_inner(
                 let rc_mode = interop_modes
                     .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("risk-challenge")))
                     .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
-                if rc_mode == aegis_control::interop::headers::Mode::LogOnly {
+                if has_valid_pass {
+                    // Solved + verified within the pass TTL — allow
+                    // through cleanly (no log_only intent stamping).
+                    forward_allow_to_upstream(
+                        parts,
+                        body_bytes,
+                        upstream_ctx,
+                        identity,
+                        route_latency_hist,
+                        route_activity,
+                        request_start,
+                        peer_ip,
+                        bus,
+                    )
+                    .await
+                } else if rc_mode == aegis_control::interop::headers::Mode::LogOnly {
                     log_only_intent = Some(tag);
                     forward_allow_to_upstream(
                         parts,
@@ -2932,7 +2962,9 @@ mod proxy_via_tests {
 
 #[cfg(test)]
 mod session_extraction_tests {
-    use super::{build_risk_key, extract_session_id, risk_key_audit_value};
+    use super::{
+        build_risk_key, extract_challenge_pass, extract_session_id, risk_key_audit_value,
+    };
     use http::HeaderMap;
 
     fn headers_with(cookie: &str) -> HeaderMap {
@@ -2998,6 +3030,29 @@ mod session_extraction_tests {
     fn handles_whitespace_around_cookie_pairs() {
         let h = headers_with("foo=bar ;  session=trimmed  ; baz=qux");
         assert_eq!(extract_session_id(&h).as_deref(), Some("trimmed"));
+    }
+
+    // ----- extract_challenge_pass (HIGH-03 challenge-pass cookie) -----
+
+    #[test]
+    fn extracts_challenge_pass_cookie() {
+        let h = headers_with("waf_challenge_pass=1715049600000.deadbeef");
+        assert_eq!(
+            extract_challenge_pass(&h).as_deref(),
+            Some("1715049600000.deadbeef")
+        );
+    }
+
+    #[test]
+    fn extract_challenge_pass_none_when_absent() {
+        let h = headers_with("session=x; user_pref=dark");
+        assert!(extract_challenge_pass(&h).is_none());
+    }
+
+    #[test]
+    fn extract_challenge_pass_ignores_empty_value() {
+        let h = headers_with("waf_challenge_pass=");
+        assert!(extract_challenge_pass(&h).is_none());
     }
 
     // ----- risk_key_audit_value (BUG-audit-detail Fix A) -----
@@ -3449,6 +3504,27 @@ pub(crate) fn extract_session_id(headers: &http::HeaderMap) -> Option<String> {
                 let v = v.trim();
                 // URL-encoded prefix like `s%3A…` is fine — we
                 // treat the raw value as the opaque key.
+                if !v.is_empty() && v.len() < 256 {
+                    return Some(v.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract the `waf_challenge_pass` cookie value, if present. This
+/// is the signed pass minted by `/challenge/verify` on a successful
+/// PoW solve (v2.6 §4); the challenge gate honours a valid one to
+/// forward the replayed request instead of re-challenging.
+pub(crate) fn extract_challenge_pass(headers: &http::HeaderMap) -> Option<String> {
+    let cookie_hdr = headers
+        .get(http::header::COOKIE)
+        .and_then(|v| v.to_str().ok())?;
+    for pair in cookie_hdr.split(';') {
+        if let Some((k, v)) = pair.trim().split_once('=') {
+            if k.trim() == "waf_challenge_pass" {
+                let v = v.trim();
                 if !v.is_empty() && v.len() < 256 {
                     return Some(v.to_string());
                 }

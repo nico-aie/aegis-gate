@@ -87,10 +87,16 @@ pub struct ResetResponse {
 // ---------------------------------------------------------------------------
 
 /// JSON body shape accepted by `POST /__waf_control/set_profile`.
-/// The contract enumerates exactly these field combinations
-/// (§2.5); anything else returns `400 Bad Request`.
+/// The contract enumerates these field combinations (§2.5).
+///
+/// 2026-06-17 (v2.6 audit MED-02): we are a *tolerant reader* of
+/// unknown JSON fields — `deny_unknown_fields` is intentionally NOT
+/// set. The contract authorizes 400/422 only for malformed
+/// scope/mode combinations; a stray diagnostic or versioning field
+/// from the benchmarker (or operator tooling) must not 400, since a
+/// 400 here can trip the §2.5 punitive run-abort path. Field
+/// *values* are still validated explicitly in `validate_and_apply`.
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SetProfileRequest {
     pub scope: SetProfileScope,
     pub mode: ModeRepr,
@@ -593,9 +599,18 @@ impl ControlContext {
                         "policies list must not be empty".into(),
                     ));
                 }
-                let known = self.features.get(feature).ok_or_else(|| {
-                    ControlError::Unsupported(format!("feature {feature}"))
-                })?;
+                // v2.6 §2.5 — an unknown feature name must be reported
+                // as an unsupported item with `200 OK`, NOT a punitive
+                // 422 (which aborts the benchmark run). Mirror the
+                // `scope=features` branch: list every requested policy
+                // under the unknown feature as unsupported and return
+                // Ok. Only known features get their policies applied.
+                let Some(known) = self.features.get(feature) else {
+                    for p in policies {
+                        unsupported.push(format!("{feature}.{p}"));
+                    }
+                    return Ok(unsupported);
+                };
                 for p in policies {
                     if !known.policies.contains(p) {
                         unsupported.push(format!("{feature}.{p}"));
@@ -1072,18 +1087,22 @@ mod tests {
     }
 
     #[test]
-    fn set_profile_unknown_feature_in_policies_scope_returns_422() {
+    fn set_profile_unknown_feature_in_policies_scope_is_listed_unsupported() {
+        // v2.6 §2.5 — an unknown feature under scope=policies must be
+        // reported as an unsupported item with 200 OK (benchmark-safe),
+        // not a punitive 422 that aborts the run. Every requested
+        // policy is namespaced under the unknown feature.
         let c = ctx();
         let req = SetProfileRequest {
             scope: SetProfileScope::Policies,
             mode: ModeRepr::LogOnly,
             features: None,
             feature: Some("nope".into()),
-            policies: Some(vec!["x".into()]),
+            policies: Some(vec!["x".into(), "y".into()]),
             cluster: true,
         };
-        let err = c.set_profile(&req).unwrap_err();
-        assert_eq!(err.status(), 422);
+        let r = c.set_profile(&req).unwrap();
+        assert_eq!(r.unsupported, vec!["nope.x", "nope.y"]);
     }
 
     #[test]
@@ -1146,16 +1165,19 @@ mod tests {
     }
 
     #[test]
-    fn json_unknown_field_is_rejected() {
-        // `deny_unknown_fields` keeps the contract strict —
-        // typos in field names must surface as bad request.
+    fn json_unknown_field_is_tolerated() {
+        // v2.6 MED-02 — tolerant reader: an extra field must be
+        // ignored, not rejected, so a 400 can't trip the §2.5
+        // punitive run-abort path. The known fields still parse.
         let json = r#"{
             "scope": "all",
             "mode": "enforce",
+            "comment": "baseline",
             "extra": "x"
         }"#;
-        let r: Result<SetProfileRequest, _> = serde_json::from_str(json);
-        assert!(r.is_err());
+        let req: SetProfileRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.scope, SetProfileScope::All);
+        assert_eq!(req.mode, ModeRepr::Enforce);
     }
 
     // ---- Phase 5 — pub/sub state nudge --------------------------------
