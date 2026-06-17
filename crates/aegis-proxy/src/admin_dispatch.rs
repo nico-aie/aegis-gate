@@ -1382,11 +1382,13 @@ pub(crate) fn stamp_interop_response<B>(
             risk_score: effective_risk_score,
             mode: mode.as_str().to_string(),
             // §5.1 — keep the audit `rule_id` byte-identical to the
-            // sanitized X-WAF-Rule-Id header (F-V26-001).
+            // sanitized, singular X-WAF-Rule-Id header (F-V26-001): the
+            // primary detector only. The full multi-detector list lives
+            // on the X-WAF-Detectors header + the forensic AuditEvent.
             rule_id: decision_tag
                 .rule_id
                 .as_deref()
-                .map(aegis_control::interop::headers::sanitize_rule_id),
+                .map(aegis_control::interop::headers::sanitize_primary_rule_id),
             // 2026-05-05 — surface the resolved tier so the
             // dashboard's Live Feed shows the route's real tier
             // instead of a risk-score bucket. snake_case form

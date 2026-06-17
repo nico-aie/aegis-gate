@@ -19,6 +19,13 @@ pub const RULE_ID: &str = "x-waf-rule-id";
 pub const CACHE: &str = "x-waf-cache";
 pub const MODE: &str = "x-waf-mode";
 
+/// Bonus header (§5.2) — the full set of detectors that fired on a
+/// multi-detector decision, comma-joined (e.g. `sqli,xss,path-traversal`).
+/// `X-WAF-Rule-Id` (§5.1) carries only the single primary detector to
+/// stay singular + wire-legal; this preserves the complete attribution
+/// machine-readably. Only emitted when more than one detector fired.
+pub const DETECTORS: &str = "x-waf-detectors";
+
 /// 2026-05-08 — bonus telemetry header. Reports the per-request
 /// WAF processing time (received → response stamped) in
 /// milliseconds with microsecond precision (e.g. `1.234`).
@@ -282,18 +289,46 @@ impl Decision {
         // value is clamped at its own stamp site). See F-V26-003.
         insert(headers, RISK_SCORE, &self.risk_score.min(100).to_string());
         insert(headers, ACTION, self.action.as_str());
-        // §5.1 — `X-WAF-Rule-Id` must be alphanumeric + hyphens (or
-        // `none`). Internal tags are snake_case / comma-joined, so
-        // normalize on emit. See [`sanitize_rule_id`] (F-V26-001).
+        // §5.1 — `X-WAF-Rule-Id` is SINGULAR ("the rule … that most
+        // directly caused the decision") and must be alphanumeric +
+        // hyphens or `none`. Internal tags are snake_case and
+        // multi-detector decisions are comma-joined (most-suspicious
+        // first), so emit only the primary detector, sanitized. The
+        // full set goes to the bonus `X-WAF-Detectors` header below.
+        // The raw (joined) `rule_id` is preserved on the tag for mode
+        // re-resolution upstream — only the rendered value collapses.
         let rule_id = self
             .rule_id
             .as_deref()
-            .map(sanitize_rule_id)
+            .map(sanitize_primary_rule_id)
             .unwrap_or_else(|| "none".to_string());
         insert(headers, RULE_ID, &rule_id);
+        // §5.2 bonus — full detector list when more than one fired.
+        if let Some(raw) = self.rule_id.as_deref() {
+            if raw.contains(',') {
+                let all: Vec<String> = raw
+                    .split(',')
+                    .map(sanitize_rule_id)
+                    .filter(|s| s != "none")
+                    .collect();
+                if !all.is_empty() {
+                    insert(headers, DETECTORS, &all.join(","));
+                }
+            }
+        }
         insert(headers, CACHE, self.cache.as_str());
         insert(headers, MODE, self.mode.as_str());
     }
+}
+
+/// v2.6 §5.1 — `X-WAF-Rule-Id` is singular. For a multi-detector tag
+/// (`sqli,xss`, most-suspicious first) take the primary (first
+/// segment) and sanitize it; for a single tag this is just
+/// [`sanitize_rule_id`]. The complete list is carried separately on
+/// `X-WAF-Detectors`.
+pub fn sanitize_primary_rule_id(id: &str) -> String {
+    let primary = id.split(',').next().unwrap_or(id);
+    sanitize_rule_id(primary)
 }
 
 /// v2.6 §5.1 — `X-WAF-Rule-Id` must match `^([A-Za-z0-9-]+|none)$`
@@ -502,6 +537,26 @@ mod tests {
                 "X-WAF-Rule-Id {got:?} (from {raw:?}) must match ^([A-Za-z0-9-]+|none)$",
             );
         }
+    }
+
+    #[test]
+    fn stamp_rule_id_is_primary_only_with_full_list_in_detectors() {
+        let mut h = HeaderMap::new();
+        // most-suspicious-first joined tag set, with a snake_case member
+        Decision::block("rid".into(), 90, "sqli,xss,path_traversal", Mode::Enforce)
+            .stamp(&mut h);
+        // X-WAF-Rule-Id collapses to the single primary detector
+        assert_eq!(h.get(RULE_ID).unwrap(), "sqli");
+        // X-WAF-Detectors carries the full, per-token-sanitized list
+        assert_eq!(h.get(DETECTORS).unwrap(), "sqli,xss,path-traversal");
+    }
+
+    #[test]
+    fn stamp_single_detector_emits_no_detectors_header() {
+        let mut h = HeaderMap::new();
+        Decision::block("rid".into(), 90, "command_injection", Mode::Enforce).stamp(&mut h);
+        assert_eq!(h.get(RULE_ID).unwrap(), "command-injection");
+        assert!(h.get(DETECTORS).is_none(), "single detector → no bonus header");
     }
 
     // ----- F-V26-003: X-WAF-Risk-Score clamp to 0-100 -----
