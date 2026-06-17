@@ -1341,7 +1341,12 @@ pub(crate) fn stamp_interop_response<B>(
     // clients; behind a trusted proxy or with operator-injected
     // X-Forwarded-For, the keys differ and the snapshot returns
     // None → 0.
-    let effective_risk_score = decision_tag.risk_score.unwrap_or(risk_score);
+    // §5.1 / §6 — risk_score is an integer 0–100. The per-request sum
+    // is already clamped, but the cumulative tracker clamps to the
+    // operator-configurable `risk.max` (default 100, but can be set
+    // higher), so clamp here at the shared stamp site to bound BOTH the
+    // X-WAF-Risk-Score header and the audit `risk_score`. See F-V26-003.
+    let effective_risk_score = decision_tag.risk_score.unwrap_or(risk_score).min(100);
     let decision = Decision {
         request_id: request_id.clone(),
         risk_score: effective_risk_score,
@@ -1376,7 +1381,12 @@ pub(crate) fn stamp_interop_response<B>(
             // and headers agree.
             risk_score: effective_risk_score,
             mode: mode.as_str().to_string(),
-            rule_id: decision_tag.rule_id,
+            // §5.1 — keep the audit `rule_id` byte-identical to the
+            // sanitized X-WAF-Rule-Id header (F-V26-001).
+            rule_id: decision_tag
+                .rule_id
+                .as_deref()
+                .map(aegis_control::interop::headers::sanitize_rule_id),
             // 2026-05-05 — surface the resolved tier so the
             // dashboard's Live Feed shows the route's real tier
             // instead of a risk-score bucket. snake_case form
