@@ -268,6 +268,43 @@ mod tests {
     negative_test!(clean_hex_blob, "/sync?gpu=0x0000C0DE");
     negative_test!(clean_hash_param, "/t?sig=0xdeadbeefcafebabe");
 
+    // 2026-06-17 — the detector inspects an ORIGIN-FORM target (path+query);
+    // the WAF strips the reconstructed `scheme://host` before detectors run.
+    // The `sys.objects` label is a valid hostname token (dots only) AND a SQLi
+    // pattern, so it proves the surface boundary: scanning the absolute URI
+    // would flag the HOST (wrong surface / noise), but the origin-form target
+    // the WAF hands the detector carries no host, so a clean host adds no
+    // signal. A real payload in the path is still caught.
+    #[test]
+    fn host_is_not_part_of_the_inspected_target() {
+        let d = SqliDetector;
+
+        // The bug we prevent: the host token leaks into `uri.to_string()` when
+        // the absolute URI is scanned.
+        let (m, abs, h, b) =
+            view_with_uri("https://sys.objects.evil.example/clean/path");
+        assert!(
+            !d.inspect(&make_view(&m, &abs, &h, &b)).is_empty(),
+            "host token trips sqli when the absolute URI is scanned (the leak)",
+        );
+
+        // What the WAF actually hands the detector: origin-form, host stripped.
+        let origin: http::Uri = abs
+            .path_and_query()
+            .map(|pq| pq.as_str())
+            .unwrap_or("/")
+            .parse()
+            .unwrap();
+        assert!(
+            !origin.to_string().contains("://"),
+            "inspected target must carry no scheme://host prefix",
+        );
+        assert!(
+            d.inspect(&make_view(&m, &origin, &h, &b)).is_empty(),
+            "clean host adds no signal once stripped to origin-form",
+        );
+    }
+
     // 2026-05-24 (FP fix) — content-type gated body scanning.
     fn body_view(ct: Option<&str>, body: &str) -> (http::Method, http::Uri, http::HeaderMap, BodyPeek) {
         let mut h = http::HeaderMap::new();

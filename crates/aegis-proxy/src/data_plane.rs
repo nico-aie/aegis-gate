@@ -515,7 +515,7 @@ pub(crate) async fn handle_data_request_inner(
                         mode: None,
                         fields: with_proxy_via(
                             serde_json::json!({
-                                "path": req.uri().to_string(),
+                                "path": origin_form_target(req.uri()),
                                 "method": req.method().to_string(),
                                 "ddos_observe_only": outcome.observe_only,
                                 "ddos_spike_active": outcome.spike_active,
@@ -679,7 +679,7 @@ pub(crate) async fn handle_data_request_inner(
                 } else {
                     with_proxy_via(
                         serde_json::json!({
-                            "path": req.uri().to_string(),
+                            "path": origin_form_target(req.uri()),
                             "method": req.method().to_string(),
                             "rate_count": rate_decision.count,
                             "rate_limit": rate_decision.limit,
@@ -762,9 +762,13 @@ pub(crate) async fn handle_data_request_inner(
         Some(body_bytes.len() as u64),
         false,
     );
+    // Detectors scan the origin-form target only — never the
+    // reconstructed `scheme://host` prefix. `parts.uri` (absolute) stays
+    // intact for routing + upstream forwarding below.
+    let detector_uri = origin_form_uri(&parts.uri);
     let view = RequestView {
         method: &parts.method,
-        uri: &parts.uri,
+        uri: &detector_uri,
         version: parts.version,
         headers: &parts.headers,
         peer,
@@ -977,7 +981,7 @@ pub(crate) async fn handle_data_request_inner(
         let reason = format!("blocked by detectors: {} (score: {})", tags.join(", "), post_state.score);
         tracing::warn!(
             peer = %peer,
-            path = %parts.uri,
+            path = %origin_form_target(&parts.uri),
             score = post_state.score,
             strikes = post_state.strikes,
             detectors = ?tags,
@@ -996,7 +1000,7 @@ pub(crate) async fn handle_data_request_inner(
             serde_json::Value::Null
         } else {
             let mut f = serde_json::json!({
-                "path": parts.uri.to_string(),
+                "path": origin_form_target(&parts.uri),
                 "method": parts.method.to_string(),
                 "detectors": tags,
                 // 2026-05-21 — per-request detector score: the sum of
@@ -1680,6 +1684,11 @@ pub(crate) async fn forward_allow_to_upstream(
                 Some(body_bytes.len() as u64),
                 false,
             );
+            // Operator rules match on URI *components* (`.path()`,
+            // `.query()`, `.host()`) — never the full `.to_string()` — so no
+            // scheme+host leaks into a content match. `HostMatches`
+            // intentionally falls back to `req.uri.host()` when there's no
+            // Host header, so this view keeps the absolute `parts.uri`.
             let view = aegis_core::pipeline::RequestView {
                 method: &parts.method,
                 uri: &parts.uri,
@@ -1953,7 +1962,9 @@ pub(crate) async fn forward_allow_to_upstream(
                 .map(|t| t.risk_threshold)
                 .unwrap_or(50);
             let ws_method = parts.method.clone();
-            let ws_uri = parts.uri.clone();
+            // Origin-form target — feeds both the synthetic detector view
+            // (host-stripped) and the frame-block audit `fields.path`.
+            let ws_uri = origin_form_uri(&parts.uri);
             // A WS text frame is UTF-8 text by RFC 6455; stamp a
             // `text/plain` Content-Type onto the synthetic view so the
             // body-class detectors (which gate on a scannable
@@ -1974,7 +1985,7 @@ pub(crate) async fn forward_allow_to_upstream(
             // capture the request path here (full path incl. query, matching
             // the `websocket_open` event's `fields.path`). Without this the
             // close event had no path and rendered as the bare `/`.
-            let ws_path_for_close = parts.uri.to_string();
+            let ws_path_for_close = origin_form_target(&parts.uri).to_string();
             let ws_metrics_for_inspect = ctx.websocket_metrics.clone();
             // WS-T6 — record bridge open before spawning the task.
             // The matching close is recorded inside the task after
@@ -2300,10 +2311,11 @@ pub(crate) async fn forward_allow_to_upstream(
                 fields: serde_json::json!({
                     "upstream_addr": member.addr.to_string(),
                     "host": host,
-                    // v2.3 §6 — audit `path` includes query string.
-                    // `parts.uri.to_string()` preserves it; the bare
-                    // `path` variable captured earlier strips it.
-                    "path": parts.uri.to_string(),
+                    // v2.3 §6 — audit `path` includes query string but NOT
+                    // the scheme+host: origin-form target preserves the
+                    // query; the bare `path` variable captured earlier
+                    // strips the query.
+                    "path": origin_form_target(&parts.uri),
                 }),
             });
 
@@ -2878,6 +2890,34 @@ async fn forward_connect_tunnel(
     (resp, DecisionTag::allow())
 }
 
+/// 2026-06-17 — origin-form request target (`path?query`) for the
+/// audit / live-feed / log surfaces.  The inbound URI is reconstructed
+/// to ABSOLUTE form (`scheme://host/path?query`) for routing + upstream
+/// forwarding, but the displayed/logged path must NOT leak the
+/// scheme+host — operators want the live-feed PATH column to read
+/// `/game/1?name=x`, not `https://host/game/1?name=x`.  Falls back to
+/// `/` for the (degenerate) authority-only / empty-path URI.
+fn origin_form_target(uri: &http::Uri) -> &str {
+    uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
+}
+
+/// 2026-06-17 — host-stripped target as an owned `http::Uri` for the
+/// detector-facing `RequestView`.  Detectors (sqli/xss/cmdi/nosql/
+/// path_traversal/ssrf/header_injection) must scan only the origin-form
+/// request target, never the reconstructed `scheme://host` prefix —
+/// the host is noise and the wrong attack surface.  Routing + upstream
+/// forwarding keep the real (absolute) `parts.uri`; this is a separate
+/// owned value the view borrows.
+fn origin_form_uri(uri: &http::Uri) -> http::Uri {
+    match uri.path_and_query() {
+        Some(pq) => http::Uri::builder()
+            .path_and_query(pq.as_str())
+            .build()
+            .unwrap_or_else(|_| http::Uri::from_static("/")),
+        None => http::Uri::from_static("/"),
+    }
+}
+
 /// TCP-T3c — render a CONNECT-deny response + emit the audit
 /// 2026-05-12 — rewrite the request URI to drop a literal path
 /// prefix.  Used by routes that opt into `strip_prefix: true`
@@ -3272,6 +3312,52 @@ mod strip_uri_prefix_tests {
     #[test]
     fn missing_prefix_passes_through_unchanged() {
         assert_eq!(rewrite("/something/else", "/news"), "/something/else");
+    }
+}
+
+// 2026-06-17 — the audit/UI path + the detector-facing target must be
+// ORIGIN-FORM (path+query), never the reconstructed `scheme://host/...`
+// that routing + upstream forwarding use.
+#[cfg(test)]
+mod origin_form_tests {
+    use super::{origin_form_target, origin_form_uri};
+    use http::Uri;
+
+    #[test]
+    fn target_strips_scheme_and_host_keeping_path_and_query() {
+        let abs: Uri = "https://aiagent.waf-exams.info/game/1?name=O%27Brien"
+            .parse()
+            .unwrap();
+        assert_eq!(origin_form_target(&abs), "/game/1?name=O%27Brien");
+    }
+
+    #[test]
+    fn target_passthrough_for_already_origin_form() {
+        let origin: Uri = "/game/1?name=x".parse().unwrap();
+        assert_eq!(origin_form_target(&origin), "/game/1?name=x");
+    }
+
+    #[test]
+    fn target_falls_back_to_root_for_authority_only() {
+        // CONNECT-style authority-form has no path_and_query.
+        let authority: Uri = "example.com:443".parse().unwrap();
+        assert_eq!(origin_form_target(&authority), "/");
+    }
+
+    #[test]
+    fn uri_drops_authority_and_scheme() {
+        let abs: Uri = "https://host.example/game/1?name=x".parse().unwrap();
+        let stripped = origin_form_uri(&abs);
+        assert_eq!(stripped.to_string(), "/game/1?name=x");
+        assert!(stripped.host().is_none(), "detector target must carry no host");
+        assert!(
+            stripped.authority().is_none(),
+            "detector target must carry no authority",
+        );
+        assert!(
+            !stripped.to_string().contains("://"),
+            "detector target must carry no scheme://host prefix",
+        );
     }
 }
 
@@ -3805,11 +3891,11 @@ fn emit_challenge_audit(
         rule_id: Some("risk-challenge".to_string()),
         risk_score,
         method: Some(method.to_string()),
-        path: Some(uri.to_string()),
+        path: Some(origin_form_target(uri).to_string()),
         mode: None,
         fields: {
             let mut f = serde_json::Map::new();
-            f.insert("path".to_string(), serde_json::Value::String(uri.to_string()));
+            f.insert("path".to_string(), serde_json::Value::String(origin_form_target(uri).to_string()));
             f.insert("method".to_string(), serde_json::Value::String(method.to_string()));
             // The challenge response is always 429 (PoW). Stamp it so the
             // feed's Status column matches blocks/allows (the listener emit
@@ -3883,11 +3969,11 @@ fn blocked_response(
         rule_id,
         risk_score,
         method: Some(method.to_string()),
-        path: Some(uri.to_string()),
+        path: Some(origin_form_target(uri).to_string()),
         mode: None,
         fields: {
             let mut f = serde_json::Map::new();
-            f.insert("path".to_string(), serde_json::Value::String(uri.to_string()));
+            f.insert("path".to_string(), serde_json::Value::String(origin_form_target(uri).to_string()));
             f.insert("method".to_string(), serde_json::Value::String(method.to_string()));
             if let Some(echo) = echo {
                 f.extend(echo);
@@ -5560,6 +5646,64 @@ state: {{ backend: in_memory }}
             Some(aegis_core::tier::Tier::High),
             "risk-score block on a HIGH route must audit as High, not Low",
         );
+    }
+
+    // 2026-06-17 — a block audit must record the ORIGIN-FORM path
+    // (`/game/1?name=x`), never the reconstructed `scheme://host/...` the
+    // router/forwarder uses. Guards the dashboard Live Feed PATH column +
+    // the `waf_audit.log` against leaking the host.
+    #[tokio::test]
+    async fn blocked_response_audits_origin_form_path_not_absolute() {
+        let bus = AuditBus::new(16);
+        let mut rx = bus.subscribe();
+        // Absolute form, as hyper hands it for HTTP/2 / absolute-form.
+        let uri: hyper::Uri = "https://aiagent.waf-exams.info/game/1?name=O%27Brien"
+            .parse()
+            .unwrap();
+        let _ = super::blocked_response(
+            "1.2.3.4:5".parse().unwrap(),
+            "blocked by detectors",
+            Some("sqli".into()),
+            Some(100),
+            aegis_core::tier::Tier::High,
+            &uri,
+            &hyper::Method::GET,
+            &bus,
+            None,
+        );
+        let ev = rx.try_recv().expect("audit event emitted");
+        assert_eq!(
+            ev.path.as_deref(),
+            Some("/game/1?name=O%27Brien"),
+            "top-level audit path must be origin-form (no scheme+host)",
+        );
+        assert_eq!(
+            ev.fields.get("path").and_then(|p| p.as_str()),
+            Some("/game/1?name=O%27Brien"),
+            "fields.path must be origin-form (no scheme+host)",
+        );
+        assert!(
+            !ev.path.as_deref().unwrap_or("").contains("://"),
+            "audit path must not leak the scheme://host prefix",
+        );
+    }
+
+    // 2026-06-17 — the ALLOW audit path is built in `accept.rs` via
+    // `uri().path_and_query()`, which already strips scheme+host. This guards
+    // that invariant at the same `http::Uri` API the proxy relies on, so an
+    // allow event for `GET https://host/game/1?name=x` logs `/game/1?name=x`.
+    #[test]
+    fn allow_path_is_origin_form_via_path_and_query() {
+        let abs: hyper::Uri = "https://aiagent.waf-exams.info/game/1?name=x"
+            .parse()
+            .unwrap();
+        let allow_path = abs
+            .path_and_query()
+            .map(|p| p.as_str())
+            .unwrap_or_else(|| abs.path())
+            .to_string();
+        assert_eq!(allow_path, "/game/1?name=x");
+        assert!(!allow_path.contains("://"));
     }
 
     /// 2026-05-25 — the cumulative-gate CHALLENGE rung must emit an audit
