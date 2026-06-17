@@ -6,12 +6,12 @@
 | Date                   | 2026-06-17                                                                             |
 | Approach               | Static cross-audit — UI bundle (`app.js`, 573 KB minified) vs backend Rust handlers   |
 | Scope                  | `crates/aegis-control/assets/dashboard/app.js` ↔ `crates/aegis-proxy/src/admin_get.rs`, `admin_dispatch.rs`, `admin_mutate.rs`, `crates/aegis-control/src/api/zero_trust/`, `crates/aegis-control/src/interop/cluster_sync.rs`, `crates/aegis-proxy/src/cluster_control.rs` |
-| Total UI/backend bugs  | **5**                                                                                  |
-| High                   | **2**                                                                                  |
+| Total UI/backend bugs  | **5** (2 won't fix — intentional; 3 actionable)                                        |
+| High                   | **2** (both won't fix — downstream mTLS intentionally disabled)                        |
 | Medium                 | **2**                                                                                  |
 | Low                    | **1**                                                                                  |
 | Feature suggestions    | **7** (Zero Trust page: 4 · Cluster sync: 3)                                          |
-| Status                 | 🟡 OPEN — 2 High findings cause operator-visible feature breakage                     |
+| Status                 | 🟡 PARTIAL — UI-HIGH-01 & UI-HIGH-02 closed (won't fix); UI-MED-01, UI-MED-02, UI-LOW-01 still open |
 
 ---
 
@@ -33,13 +33,13 @@ The most impactful bug is **UI-HIGH-01**: a hardcoded constant `SHOW_DOWNSTREAM_
 
 ## Finding Index
 
-| ID          | Severity   | Category          | Short Description                                                                              |
-|-------------|------------|-------------------|------------------------------------------------------------------------------------------------|
-| UI-HIGH-01  | **High**   | Dead UI Code      | `SHOW_DOWNSTREAM_MTLS = false` hardcoded — entire downstream mTLS section never renders        |
-| UI-HIGH-02  | **High**   | Logic Conflict    | `MtlsConfigView.active` always `false` — downstream mTLS appears "not enforced" even when it is |
-| UI-MED-01   | **Medium** | Wiring Gap        | Upstream identity/pool upload gates on downstream capability endpoint — wrong coupling         |
-| UI-MED-02   | **Medium** | Not Implemented   | No cluster-sync admin API — no force-sync, no per-node status, no manual nudge                 |
-| UI-LOW-01   | **Low**    | Logic Conflict    | `FleetNodeBanner` shows "THIS node only" in Redis cluster when `fleet_view` is not enabled     |
+| ID          | Severity   | Category          | Short Description                                                                              | Status |
+|-------------|------------|-------------------|------------------------------------------------------------------------------------------------|--------|
+| UI-HIGH-01  | **High**   | Dead UI Code      | `SHOW_DOWNSTREAM_MTLS = false` hardcoded — entire downstream mTLS section never renders        | ✅ Won't Fix — downstream mTLS intentionally disabled |
+| UI-HIGH-02  | **High**   | Logic Conflict    | `MtlsConfigView.active` always `false` — downstream mTLS appears "not enforced" even when it is | ✅ Won't Fix — downstream mTLS intentionally disabled |
+| UI-MED-01   | **Medium** | Wiring Gap        | Upstream identity/pool upload gates on downstream capability endpoint — wrong coupling         | 🟡 Open |
+| UI-MED-02   | **Medium** | Not Implemented   | No cluster-sync admin API — no force-sync, no per-node status, no manual nudge                 | 🟡 Open |
+| UI-LOW-01   | **Low**    | Logic Conflict    | `FleetNodeBanner` shows "THIS node only" in Redis cluster when `fleet_view` is not enabled     | 🟡 Open |
 
 ---
 
@@ -47,9 +47,10 @@ The most impactful bug is **UI-HIGH-01**: a hardcoded constant `SHOW_DOWNSTREAM_
 
 ---
 
-### UI-HIGH-01 — `SHOW_DOWNSTREAM_MTLS = false` Hides Entire Downstream mTLS Section
+### UI-HIGH-01 — `SHOW_DOWNSTREAM_MTLS = false` Hides Entire Downstream mTLS Section ✅ Won't Fix
 
-**Severity:** High  
+**Severity:** High → **Closed (Won't Fix)**  
+**Decision:** Downstream mTLS feature intentionally disabled. `SHOW_DOWNSTREAM_MTLS = false` is the desired state.  
 **Category:** Dead UI Code  
 **File:** `crates/aegis-control/assets/dashboard/app.js` (constant near start of bundle)
 
@@ -94,9 +95,10 @@ function PageZeroTrust() {
 
 ---
 
-### UI-HIGH-02 — `MtlsConfigView.active` Always `false` — Downstream mTLS Appears Unforced
+### UI-HIGH-02 — `MtlsConfigView.active` Always `false` — Downstream mTLS Appears Unforced ✅ Won't Fix
 
-**Severity:** High  
+**Severity:** High → **Closed (Won't Fix)**  
+**Decision:** Downstream mTLS intentionally disabled; `active: false` is the correct state for this configuration. No fix needed.  
 **Category:** Logic Conflict (documentation vs implementation)  
 **File:** `crates/aegis-control/src/api/zero_trust/downstream.rs:56–59`
 
@@ -325,8 +327,8 @@ The backend emits audit events for every zero-trust mutation (mode change, CA bu
 
 ## Recommended Fix Priority
 
-1. **UI-HIGH-01** — Set `SHOW_DOWNSTREAM_MTLS = true`, rebuild bundle. One-line change that unlocks the fully implemented downstream mTLS surface. Do this first.
-2. **UI-HIGH-02** — Thread `active` bool from TLS acceptor state into `DashboardServices`. Without this, operators enabling downstream mTLS will see a misleading "not enforced" badge.
+1. ~~**UI-HIGH-01**~~ — ✅ Won't Fix (downstream mTLS intentionally disabled).
+2. ~~**UI-HIGH-02**~~ — ✅ Won't Fix (downstream mTLS intentionally disabled).
 3. **UI-MED-01** — Add `GET /api/zero-trust/upstream/capability` and update `ZtIdentityCard` + `ZtUpstreamPoolsCard` to use it. Low-risk refactor that prevents future capability-gate drift.
 4. **UI-MED-02** — Implement `POST /api/cluster/sync` + `GET /api/cluster/convergence` + `ClusterSyncCard`. The `CONTROL_BUMP_CHANNEL` infrastructure is already in `cluster_sync.rs`; only the HTTP surface and dashboard card are new work.
 5. **FEAT-5 (cert expiry warning)** — Two-line UI addition, high operator value during cert rotation ceremonies.
