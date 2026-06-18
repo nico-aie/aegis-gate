@@ -10189,7 +10189,12 @@ function DeletePoolModal({ name, refs, onCancel, onConfirm, busy }) {
 //
 // Three-layer scaling visibility, stacked top-to-bottom:
 //   L1 — In-node tokio runtime (workers, blocking threads, affinity)
-//   L2 — Cross-node cluster (peers, leader, drain)
+//   L2 — Cross-node cluster. Two facets, both carrying an `L2` pill:
+//          • Cluster peers   (membership, heartbeat, drain)
+//          • Config plane    (shared config version, fleet convergence)
+//        Previously both facets were titled "Layer 2 · …", which read as
+//        two competing layer-2s; the config-plane card is now titled
+//        "Config plane" so the layer numbering stays unambiguous.
 //   L3 — Shared-state backend (Redis / in_memory health)
 //
 // Read-only except for the L2 "Drain this node" button which
@@ -10500,41 +10505,56 @@ function ConfigVersionCard({ config }) {
   const applied = (data && Array.isArray(data.applied)) ? data.applied : [];
   const hasBackend = data ? data.backend !== false : true;
   return (
-    <div className="card">
-      <div className="card-title">Layer 2 · Shared config version</div>
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">Config plane</div>
+          <div className="card-sub">shared config version · fleet-wide convergence</div>
+        </div>
+        <span className="pill neutral">L2</span>
+      </div>
       {!hasBackend ? (
-        <div className="muted">
+        <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
           Single-node (in-memory) — config is process-local; no shared
           version. Run with a Redis state backend for fleet-wide config.
         </div>
       ) : (active === 0 && applied.length === 0) ? (
-        <div className="muted">
-          No config version activated yet. A <code>PUT /api/config</code>
-          publishes version 1; every node then converges on it.
+        <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+          No config version activated yet. A <code>PUT /api/config</code> publishes
+          version 1; every node then converges on it.
         </div>
       ) : (
         <>
-          <div style={{ margin: '4px 0 12px' }}>
-            Active version: <strong>v{active}</strong>
-            <span className="muted"> · {applied.length} node(s) reporting</span>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 10 }}>
+            <span style={{ fontSize: 12, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              Active version
+            </span>
+            <span className="num" style={{ fontSize: 18, fontWeight: 600 }}>v{active}</span>
+            <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+              · {applied.length} node(s) reporting
+            </span>
           </div>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <table className="data-table" style={{ width: '100%', fontSize: 12 }}>
             <thead>
-              <tr style={{ textAlign: 'left', opacity: 0.7 }}>
-                <th>Node</th><th>Applied</th><th>Status</th>
+              <tr>
+                <th style={{ textAlign: 'left' }}>Node</th>
+                <th style={{ textAlign: 'left' }}>Applied</th>
+                <th style={{ textAlign: 'left' }}>Status</th>
               </tr>
             </thead>
             <tbody>
               {applied.length === 0 ? (
-                <tr><td colSpan="3" className="muted">No nodes have reported yet.</td></tr>
+                <tr><td colSpan="3" style={{ color: 'var(--ink-dim)' }}>No nodes have reported yet.</td></tr>
               ) : applied.map((n) => {
                 const drift = n.version !== active;
                 return (
                   <tr key={n.node}>
                     <td><code>{n.node}</code></td>
-                    <td>v{n.version}</td>
-                    <td style={{ color: drift ? '#d9822b' : '#3aa757', fontWeight: 600 }}>
-                      {drift ? `behind (active v${active})` : 'in sync'}
+                    <td className="num">v{n.version}</td>
+                    <td>
+                      <span className={`pill ${drift ? 'warn' : 'up'}`}>
+                        {drift ? `behind · active v${active}` : 'in sync'}
+                      </span>
                     </td>
                   </tr>
                 );
