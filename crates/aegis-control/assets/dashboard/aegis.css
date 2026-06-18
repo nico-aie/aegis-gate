@@ -11,6 +11,16 @@
   --brand-yellow-soft: rgba(252, 213, 53, 0.12);
   --brand-yellow-line: rgba(252, 213, 53, 0.32);
 
+  /* Component aliases. Several JSX inline styles reference `--accent` and
+     `--border` (links, outlines, the load-mode pills, the FleetView rail).
+     These tokens were never defined, so every `var(--accent)` / `var(--border)`
+     silently fell back to an invalid value — accent links rendered as plain
+     ink and the load-mode segmented control lost its borders/fill. Define them
+     as `var()` references so they track the active theme: `--border` follows
+     the themed `--hairline`; `--accent` is the brand. */
+  --accent: var(--brand-yellow);
+  --border: var(--hairline);
+
   /* Canvas */
   --canvas: #0B0E11;
   --canvas-2: #0F1418;

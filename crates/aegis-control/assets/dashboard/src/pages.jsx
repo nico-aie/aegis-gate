@@ -10661,17 +10661,27 @@ function LoadModeCard({ loadmode }) {
     applyMode(mode);
   }
 
-  const pillStyle = (mode) => ({
-    padding: '6px 14px',
-    border: '1px solid var(--border)',
-    borderRadius: 999,
-    cursor: busy ? 'not-allowed' : 'pointer',
-    fontSize: 12,
-    fontWeight: 500,
-    background: effective === mode ? 'var(--accent)' : 'transparent',
-    color: effective === mode ? 'var(--canvas)' : 'var(--ink)',
-    opacity: busy ? 0.6 : 1,
-  });
+  // A real segmented control: each mode is a clearly-bordered pill with a
+  // surface fill; the active mode is filled brand-yellow with dark on-yellow
+  // text. (Was written against undefined `--border`/`--accent` tokens and used
+  // `var(--canvas)` for the selected label — i.e. dark text on a failed-
+  // transparent background, so the active mode was invisible.)
+  const pillStyle = (mode) => {
+    const selected = effective === mode;
+    return {
+      padding: '6px 16px',
+      border: `1px solid ${selected ? 'var(--brand-yellow)' : 'var(--hairline-strong)'}`,
+      borderRadius: 999,
+      cursor: busy ? 'not-allowed' : 'pointer',
+      fontSize: 12,
+      fontWeight: 600,
+      textTransform: 'capitalize',
+      background: selected ? 'var(--brand-yellow)' : 'var(--surface-2)',
+      color: selected ? 'var(--on-yellow)' : 'var(--ink)',
+      opacity: busy ? 0.6 : 1,
+      transition: 'all 120ms',
+    };
+  };
 
   return (
     <div className="card" style={{ marginBottom: 12 }}>
