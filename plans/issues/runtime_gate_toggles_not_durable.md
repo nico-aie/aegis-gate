@@ -214,3 +214,26 @@ publish a durable doc version" model (mirrors `handle_ai_confidence_put`):
 Tests: 8 new `patch_*` unit tests (each round-trips through `load_config_str`
 to prove the published blob boots); full `admin_mutate` suite green (43).
 Implementation in `crates/aegis-proxy/src/admin_mutate.rs`.
+
+### Follow-up — the read-back half (2026-06-18, QC re-review)
+
+The publish side above was necessary but **not sufficient**. QC re-review
+found that `apply_and_swap` (`redis_source.rs`) — which applies the converged
+`config:waf:doc` on each node — had **no read-back helper** for ddos / risk
+thresholds / strikes / bots / canary, and `ApplyTargets` carried no handle for
+them. So on restart the runtimes were rebuilt from `waf.yaml` (`run.rs:187`
+boot snapshot) and the published change was never re-installed into the live
+`DdosRuntime` / `RiskTracker` / bots toggle. The dashboard and data plane read
+those runtime handles → the operator's change appeared lost despite being in
+the doc. (`rate_limit` was the lone exception — already wired via
+`apply_cfg_change_to_rate_limit` + the `ip_rate_limiter` target.)
+
+Fix (read-back side): added `apply_cfg_change_to_ddos` / `_risk` / `_bots`
+helpers + a shared `derive_ddos_runtime_cfg` (also used by boot so the two
+can't drift), wired into **both** `apply_and_swap` (`ApplyTargets`) and
+`apply_folded_stores` (`FoldedReloadTargets`, file/etcd parity). The existing
+`apply_and_swap_invokes_every_reload_helper` structural guard now
+automatically enforces the new helpers are wired. 4 read-back unit tests prove
+a converged doc re-installs into each live runtime. Implementation in
+`crates/aegis-proxy/src/config_source/{reload.rs,redis_source.rs}` +
+`run.rs`. **This is the change that makes the toggles actually durable.**
