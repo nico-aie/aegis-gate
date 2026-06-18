@@ -350,8 +350,12 @@ impl AiDetector {
             .unwrap_or("/");
         // Body: up to 8 KiB (matches `_MAX_BODY_LEN`; features.rs then
         // truncates to MAX_BODY_BYTES). Trim + collapse CR/LF to spaces
-        // exactly as the training renderer does.
-        let body_raw = String::from_utf8_lossy(req.body.peek(8192));
+        // exactly as the training renderer does. A gzip/deflate body is first
+        // inflated (bounded) so the model inspects the real content instead of
+        // a high-entropy compressed blob — see `decode_body`.
+        let decoded = decode_body(req);
+        let body_bytes: &[u8] = decoded.as_deref().unwrap_or_else(|| req.body.peek(8192));
+        let body_raw = String::from_utf8_lossy(body_bytes);
         let body = body_raw
             .trim()
             .replace("\r\n", "\n")
@@ -385,6 +389,49 @@ impl AiDetector {
         }
 
         out
+    }
+}
+
+/// Inflate a gzip/deflate request body so feature extraction sees the real
+/// content rather than a high-entropy compressed blob. A compressed body both
+/// masks attacks (the pattern scans can't read it) and triggers benign false
+/// positives (legitimate gzipped analytics looked like obfuscated payload).
+///
+/// Bounded against decompression bombs: at most `DECODE_OUT_CAP` bytes are
+/// produced regardless of input size or compression ratio, and only the first
+/// `COMPRESSED_PEEK` bytes of the body are read. Returns `None` when there is no
+/// supported `Content-Encoding` or decoding yields nothing — the caller then
+/// falls back to the raw bytes (current behavior), so this can never make a
+/// request fail to be inspected.
+fn decode_body(req: &RequestView<'_>) -> Option<Vec<u8>> {
+    use std::io::Read;
+    // Read at most 32 KiB of compressed input and emit at most 8 KiB inflated
+    // (= `_MAX_BODY_LEN`; the body is truncated to 8 KiB downstream anyway).
+    const COMPRESSED_PEEK: usize = 32 * 1024;
+    const DECODE_OUT_CAP: u64 = 8192;
+
+    let enc = req.headers.get("content-encoding")?.to_str().ok()?;
+    let enc = enc.trim().to_ascii_lowercase();
+    let compressed = req.body.peek(COMPRESSED_PEEK);
+    if compressed.is_empty() {
+        return None;
+    }
+
+    let mut out = Vec::new();
+    if enc.contains("gzip") {
+        let mut d = flate2::read::GzDecoder::new(compressed).take(DECODE_OUT_CAP);
+        let _ = d.read_to_end(&mut out); // partial inflate still useful; bounded by take()
+    } else if enc.contains("deflate") {
+        let mut d = flate2::read::ZlibDecoder::new(compressed).take(DECODE_OUT_CAP);
+        let _ = d.read_to_end(&mut out);
+    } else {
+        return None;
+    }
+
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
     }
 }
 
@@ -500,6 +547,67 @@ mod tests {
             tls: None,
             body: b,
         }
+    }
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(data).unwrap();
+        e.finish().unwrap()
+    }
+
+    fn headers_with(name: &'static str, val: &str) -> http::HeaderMap {
+        let mut h = http::HeaderMap::new();
+        h.insert(name, val.parse().unwrap());
+        h
+    }
+
+    #[test]
+    fn build_request_string_inflates_gzip_body() {
+        let plain = br#"{"events":[{"e":"page_view","ts":1742}]}"#;
+        let m = http::Method::POST;
+        let u: http::Uri = "/api/analytics/events".parse().unwrap();
+        let h = headers_with("content-encoding", "gzip");
+        let b = make_body(&gzip(plain));
+        let req = view_for(&m, &u, &h, &b);
+        let s = AiDetector::build_request_string(&req);
+        assert!(s.contains("page_view"), "gzip body was not inflated: {s:?}");
+    }
+
+    #[test]
+    fn decode_body_is_bounded_against_zip_bombs() {
+        // 1 MiB of zeros compresses to ~1 KiB but must inflate to ≤ 8 KiB.
+        let bomb = gzip(&vec![0u8; 1024 * 1024]);
+        let m = http::Method::POST;
+        let u: http::Uri = "/x".parse().unwrap();
+        let h = headers_with("content-encoding", "gzip");
+        let b = make_body(&bomb);
+        let req = view_for(&m, &u, &h, &b);
+        let out = decode_body(&req).expect("some output");
+        assert!(out.len() <= 8192, "decompression not capped: {}", out.len());
+    }
+
+    #[test]
+    fn decode_body_none_without_content_encoding() {
+        let m = http::Method::POST;
+        let u: http::Uri = "/x".parse().unwrap();
+        let h = http::HeaderMap::new();
+        let b = make_body(&gzip(b"hello"));
+        let req = view_for(&m, &u, &h, &b);
+        assert!(decode_body(&req).is_none());
+    }
+
+    #[test]
+    fn decode_body_falls_back_on_invalid_gzip() {
+        // Content-Encoding says gzip but the bytes are not — must not panic, and
+        // build_request_string still renders (using the raw bytes).
+        let m = http::Method::POST;
+        let u: http::Uri = "/x".parse().unwrap();
+        let h = headers_with("content-encoding", "gzip");
+        let b = make_body(b"not actually gzip data");
+        let req = view_for(&m, &u, &h, &b);
+        assert!(decode_body(&req).is_none());
+        let _ = AiDetector::build_request_string(&req); // must not panic
     }
 
     #[test]
