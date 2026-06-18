@@ -3209,6 +3209,28 @@ pub(crate) async fn handle_risk_thresholds_put(
         "block_at":     next.block_at,
         "max":          next.max,
     });
+    // Durability (2026-06-18): persist `risk.thresholds` so the cumulative
+    // IP-risk gate state survives restart (the reported regression — see
+    // plans/issues/runtime_gate_toggles_not_durable.md).
+    let (store, base_blob, expected) = match load_active_config_doc(services).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let new_blob =
+        match patch_risk_thresholds(&base_blob, next.enabled, next.challenge_at, next.block_at, next.max) {
+            Ok(b) => b,
+            Err(e) => {
+                return mutation_error_response(
+                    aegis_control::api::mutation::MutationError::Validation(e),
+                )
+            }
+        };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
+    }
+
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "PUT",
         csrf_cookie: pre.csrf_cookie.as_deref(),
@@ -3219,31 +3241,47 @@ pub(crate) async fn handle_risk_thresholds_put(
         action: "risk_thresholds_set",
         reason: "operator updated risk thresholds",
     };
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
     let tracker = services.risk.clone();
     let next_for_apply = next.clone();
     let outcome = services
         .mutate
-        .apply::<_, (), aegis_control::api::mutation::MutationError>(
-            &req_ctx,
-            before,
-            after,
-            || {
-                tracker.set_thresholds(next_for_apply.clone());
-                Ok(())
-            },
-        );
+        .apply_async(&req_ctx, before, after, move || async move {
+            let res = store_for_apply
+                .activate(expected, blob, &actor, "update risk thresholds")
+                .await;
+            if let Ok(crate::config_source::config_store::Activate::Applied { .. }) = &res {
+                tracker.set_thresholds(next_for_apply);
+            }
+            res
+        })
+        .await;
     match outcome {
-        Ok(_) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "enabled":      next.enabled,
-                "challenge_at": next.challenge_at,
-                "block_at":     next.block_at,
-                "max":          next.max,
-                "request_id":   pre.request_id,
-            }),
-        ),
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "enabled":      next.enabled,
+                    "challenge_at": next.challenge_at,
+                    "block_at":     next.block_at,
+                    "max":          next.max,
+                    "version":      version,
+                    "request_id":   pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
         Err(e) => mutation_error_response(e),
     }
 }
@@ -3336,6 +3374,26 @@ pub(crate) async fn handle_risk_canary_paths_put(
     let current = services.canary_paths.raw();
     let before = serde_json::json!({ "paths": current });
     let after = serde_json::json!({ "paths": normalized });
+    // Durability (2026-06-18): persist `risk.canary_paths` so the honeypot
+    // set survives restart (see runtime_gate_toggles_not_durable.md).
+    let (store, base_blob, expected) = match load_active_config_doc(services).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let new_blob = match patch_canary_paths(&base_blob, &normalized) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
+    };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
+    }
+
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "PUT",
         csrf_cookie: pre.csrf_cookie.as_deref(),
@@ -3346,29 +3404,45 @@ pub(crate) async fn handle_risk_canary_paths_put(
         action: "risk_canary_paths_set",
         reason: "operator updated canary honeypot paths",
     };
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
     let handle = services.canary_paths.clone();
     let to_apply = normalized.clone();
     let outcome = services
         .mutate
-        .apply::<_, (), aegis_control::api::mutation::MutationError>(
-            &req_ctx,
-            before,
-            after,
-            || {
+        .apply_async(&req_ctx, before, after, move || async move {
+            let res = store_for_apply
+                .activate(expected, blob, &actor, "update canary honeypot paths")
+                .await;
+            if let Ok(crate::config_source::config_store::Activate::Applied { .. }) = &res {
                 handle.set(&to_apply);
-                Ok(())
-            },
-        );
+            }
+            res
+        })
+        .await;
     match outcome {
-        Ok(_) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "paths": normalized,
-                "count": normalized.len(),
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "paths": normalized,
+                    "count": normalized.len(),
+                    "version": version,
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
         Err(e) => mutation_error_response(e),
     }
 }
@@ -3416,6 +3490,26 @@ pub(crate) async fn handle_bots_put(
     let next = parsed.enabled;
     let before = serde_json::json!({ "enabled": current });
     let after = serde_json::json!({ "enabled": next });
+    // Durability (2026-06-18): persist `bots.enabled` so the gate survives
+    // restart (see runtime_gate_toggles_not_durable.md).
+    let (store, base_blob, expected) = match load_active_config_doc(services).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let new_blob = match patch_bots(&base_blob, next) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
+    };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
+    }
+
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "PUT",
         csrf_cookie: pre.csrf_cookie.as_deref(),
@@ -3426,27 +3520,43 @@ pub(crate) async fn handle_bots_put(
         action: "bots_gate_set",
         reason: "operator toggled the bot classifier gate",
     };
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
     let toggle = services.bots_enabled.clone();
     let outcome = services
         .mutate
-        .apply::<_, (), aegis_control::api::mutation::MutationError>(
-            &req_ctx,
-            before,
-            after,
-            || {
+        .apply_async(&req_ctx, before, after, move || async move {
+            let res = store_for_apply
+                .activate(expected, blob, &actor, "toggle bot classifier gate")
+                .await;
+            if let Ok(crate::config_source::config_store::Activate::Applied { .. }) = &res {
                 toggle.store(next, Ordering::Relaxed);
-                Ok(())
-            },
-        );
+            }
+            res
+        })
+        .await;
     match outcome {
-        Ok(_) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "enabled": next,
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "enabled": next,
+                    "version": version,
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
         Err(e) => mutation_error_response(e),
     }
 }
@@ -5892,6 +6002,30 @@ pub(crate) async fn handle_ddos_put(
     let before_view = aegis_control::api::gates::DdosConfigView::from(before_cfg);
     let after_view = aegis_control::api::gates::DdosConfigView::from(new_cfg.clone());
 
+    // Durability (2026-06-18): the in-memory swap below is not enough —
+    // boot rehydrate rebuilds the DDoS runtime from the shared config doc,
+    // so without a new published version the change reverts on restart
+    // (plans/issues/runtime_gate_toggles_not_durable.md). Patch the `ddos`
+    // block + activate; apply locally only after the activation succeeds so
+    // audit, config plane and live runtime stay consistent.
+    let (store, base_blob, expected) = match load_active_config_doc(services).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let new_blob = match patch_ddos(&base_blob, &after_view) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
+    };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
+    }
+
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "PUT",
         csrf_cookie: pre.csrf_cookie.as_deref(),
@@ -5902,28 +6036,49 @@ pub(crate) async fn handle_ddos_put(
         action: "ddos_set",
         reason: "operator updated DDoS gate thresholds",
     };
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
     let runtime_for_apply = runtime.clone();
     let new_cfg_for_apply = new_cfg.clone();
     let outcome = services
         .mutate
-        .apply::<_, (), aegis_control::api::mutation::MutationError>(
+        .apply_async(
             &req_ctx,
             serde_json::to_value(&before_view).unwrap_or(serde_json::Value::Null),
             serde_json::to_value(&after_view).unwrap_or(serde_json::Value::Null),
-            move || {
-                runtime_for_apply.set_config(new_cfg_for_apply);
-                Ok(())
+            move || async move {
+                let res = store_for_apply
+                    .activate(expected, blob, &actor, "update DDoS gate thresholds")
+                    .await;
+                if let Ok(crate::config_source::config_store::Activate::Applied { .. }) = &res {
+                    runtime_for_apply.set_config(new_cfg_for_apply);
+                }
+                res
             },
-        );
+        )
+        .await;
     match outcome {
-        Ok(_) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "applied": after_view,
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "applied": after_view,
+                    "version": version,
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
         Err(e) => mutation_error_response(e),
     }
 }
@@ -5974,6 +6129,27 @@ pub(crate) async fn handle_rate_limit_put(
         "window_seconds": new_cfg.window.as_secs(),
     });
 
+    // Durability (2026-06-18): persist into the `rate_limit.buckets`
+    // global/ip entry that `derive_ip_rate_cfg` reads at boot, so the
+    // change survives restart (see runtime_gate_toggles_not_durable.md).
+    let (store, base_blob, expected) = match load_active_config_doc(services).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let new_blob = match patch_rate_limit(&base_blob, new_cfg.limit, new_cfg.window.as_secs()) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
+    };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
+    }
+
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "PUT",
         csrf_cookie: pre.csrf_cookie.as_deref(),
@@ -5984,27 +6160,43 @@ pub(crate) async fn handle_rate_limit_put(
         action: "rate_limit_set",
         reason: "operator updated per-IP rate-limit config",
     };
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
     let limiter = services.ip_rate_limiter.clone();
     let outcome = services
         .mutate
-        .apply::<_, (), aegis_control::api::mutation::MutationError>(
-            &req_ctx,
-            before_json,
-            after_json.clone(),
-            move || {
+        .apply_async(&req_ctx, before_json, after_json.clone(), move || async move {
+            let res = store_for_apply
+                .activate(expected, blob, &actor, "update per-IP rate-limit")
+                .await;
+            if let Ok(crate::config_source::config_store::Activate::Applied { .. }) = &res {
                 limiter.set_config(new_cfg);
-                Ok(())
-            },
-        );
+            }
+            res
+        })
+        .await;
     match outcome {
-        Ok(_) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "applied": after_json,
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "applied": after_json,
+                    "version": version,
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
         Err(e) => mutation_error_response(e),
     }
 }
@@ -6057,6 +6249,26 @@ pub(crate) async fn handle_strikes_put(
         "block_at": new_cfg.block_at,
     });
 
+    // Durability (2026-06-18): persist `risk.strikes` so the gate state
+    // survives restart (see runtime_gate_toggles_not_durable.md).
+    let (store, base_blob, expected) = match load_active_config_doc(services).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let new_blob = match patch_strikes(&base_blob, new_cfg.enabled, new_cfg.block_at) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
+    };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
+    }
+
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "PUT",
         csrf_cookie: pre.csrf_cookie.as_deref(),
@@ -6067,29 +6279,322 @@ pub(crate) async fn handle_strikes_put(
         action: "strikes_set",
         reason: "operator updated Strike-Block gate config",
     };
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
     let risk = services.risk.clone();
     let new_cfg_apply = new_cfg.clone();
     let outcome = services
         .mutate
-        .apply::<_, (), aegis_control::api::mutation::MutationError>(
-            &req_ctx,
-            before_json,
-            after_json.clone(),
-            move || {
+        .apply_async(&req_ctx, before_json, after_json.clone(), move || async move {
+            let res = store_for_apply
+                .activate(expected, blob, &actor, "update Strike-Block gate")
+                .await;
+            if let Ok(crate::config_source::config_store::Activate::Applied { .. }) = &res {
                 risk.set_strike_config(new_cfg_apply);
-                Ok(())
-            },
-        );
+            }
+            res
+        })
+        .await;
     match outcome {
-        Ok(_) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "applied": after_json,
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "applied": after_json,
+                    "version": version,
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
         Err(e) => mutation_error_response(e),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 2026-06-18 — restart-durable gate toggles
+// ---------------------------------------------------------------------------
+//
+// The traffic-gate / risk toggles (ddos, risk thresholds, strikes, bots,
+// rate-limit, canary paths) hot-flip the in-memory runtime but historically
+// never published a new shared-config version, so the boot rehydrate (which
+// rebuilds every runtime from `config:waf:doc`) silently reverted them on
+// restart (plans/issues/runtime_gate_toggles_not_durable.md). These
+// `patch_*` helpers mirror `patch_ai_enabled` / `patch_ai_confidence`: they
+// edit only the relevant section of the YAML blob via `serde_yaml::Value`
+// (`WafConfig` isn't `Serialize`) so the handlers can patch + `activate` a
+// new version while leaving every untouched field byte-stable.
+
+/// Get-or-create a nested mapping under `key`. Errors when an existing value
+/// at `key` is present but is not a mapping.
+fn yaml_submap<'a>(
+    map: &'a mut serde_yaml::Mapping,
+    key: &str,
+) -> Result<&'a mut serde_yaml::Mapping, String> {
+    let entry = map
+        .entry(serde_yaml::Value::String(key.into()))
+        .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+    match entry {
+        serde_yaml::Value::Mapping(m) => Ok(m),
+        _ => Err(format!("`{key}` config is not a mapping")),
+    }
+}
+
+/// Parse `base` into the top-level YAML mapping, returning a clear error for
+/// non-mapping documents (so a malformed blob fails the PUT, never silently
+/// drops the operator's change).
+fn yaml_root(base: &str) -> Result<serde_yaml::Mapping, String> {
+    match serde_yaml::from_str::<serde_yaml::Value>(base)
+        .map_err(|e| format!("base config not YAML: {e}"))?
+    {
+        serde_yaml::Value::Mapping(m) => Ok(m),
+        _ => Err("base config is not a YAML mapping".into()),
+    }
+}
+
+fn yaml_bool(b: bool) -> serde_yaml::Value {
+    serde_yaml::Value::Bool(b)
+}
+fn yaml_u64(n: u64) -> serde_yaml::Value {
+    serde_yaml::Value::Number(serde_yaml::Number::from(n))
+}
+fn yaml_f64(n: f64) -> serde_yaml::Value {
+    serde_yaml::Value::Number(serde_yaml::Number::from(n))
+}
+fn yaml_str(s: &str) -> serde_yaml::Value {
+    serde_yaml::Value::String(s.into())
+}
+
+/// Patch the top-level `ddos` block. Only the seven operator-editable scalar
+/// knobs are written; `tier_overrides` / `failure_mode` (YAML-only) are left
+/// exactly as they were so a dashboard edit can't clear per-tier policy.
+fn patch_ddos(
+    base: &str,
+    v: &aegis_control::api::gates::DdosConfigView,
+) -> Result<String, String> {
+    let mut root = yaml_root(base)?;
+    let ddos = yaml_submap(&mut root, "ddos")?;
+    ddos.insert(yaml_str("enabled"), yaml_bool(v.enabled));
+    ddos.insert(yaml_str("observe_only"), yaml_bool(v.observe_only));
+    ddos.insert(yaml_str("per_ip_limit"), yaml_u64(v.per_ip_limit));
+    ddos.insert(yaml_str("per_ip_window_s"), yaml_u64(v.per_ip_window_s as u64));
+    ddos.insert(yaml_str("block_ttl_s"), yaml_u64(v.block_ttl_s));
+    ddos.insert(yaml_str("spike_multiplier"), yaml_f64(v.spike_multiplier));
+    ddos.insert(yaml_str("tightened_per_ip_rps"), yaml_u64(v.tightened_per_ip_rps));
+    serde_yaml::to_string(&serde_yaml::Value::Mapping(root))
+        .map_err(|e| format!("re-serialize config: {e}"))
+}
+
+/// Patch `risk.thresholds.{enabled,challenge_at,block_at,max}`.
+fn patch_risk_thresholds(
+    base: &str,
+    enabled: bool,
+    challenge_at: u32,
+    block_at: u32,
+    max: u32,
+) -> Result<String, String> {
+    let mut root = yaml_root(base)?;
+    let risk = yaml_submap(&mut root, "risk")?;
+    let th = yaml_submap(risk, "thresholds")?;
+    th.insert(yaml_str("enabled"), yaml_bool(enabled));
+    th.insert(yaml_str("challenge_at"), yaml_u64(challenge_at as u64));
+    th.insert(yaml_str("block_at"), yaml_u64(block_at as u64));
+    th.insert(yaml_str("max"), yaml_u64(max as u64));
+    serde_yaml::to_string(&serde_yaml::Value::Mapping(root))
+        .map_err(|e| format!("re-serialize config: {e}"))
+}
+
+/// Patch `risk.strikes.{enabled,block_at}` (the Strike-Block gate).
+fn patch_strikes(base: &str, enabled: bool, block_at: u32) -> Result<String, String> {
+    let mut root = yaml_root(base)?;
+    let risk = yaml_submap(&mut root, "risk")?;
+    let strikes = yaml_submap(risk, "strikes")?;
+    strikes.insert(yaml_str("enabled"), yaml_bool(enabled));
+    strikes.insert(yaml_str("block_at"), yaml_u64(block_at as u64));
+    serde_yaml::to_string(&serde_yaml::Value::Mapping(root))
+        .map_err(|e| format!("re-serialize config: {e}"))
+}
+
+/// Patch the `bots.enabled` master toggle for the bot classifier.
+fn patch_bots(base: &str, enabled: bool) -> Result<String, String> {
+    let mut root = yaml_root(base)?;
+    let bots = yaml_submap(&mut root, "bots")?;
+    bots.insert(yaml_str("enabled"), yaml_bool(enabled));
+    serde_yaml::to_string(&serde_yaml::Value::Mapping(root))
+        .map_err(|e| format!("re-serialize config: {e}"))
+}
+
+/// Patch `risk.canary_paths` to the supplied (already-normalized) set.
+fn patch_canary_paths(base: &str, paths: &[String]) -> Result<String, String> {
+    let mut root = yaml_root(base)?;
+    let risk = yaml_submap(&mut root, "risk")?;
+    let seq = paths.iter().map(|p| yaml_str(p)).collect();
+    risk.insert(
+        yaml_str("canary_paths"),
+        serde_yaml::Value::Sequence(seq),
+    );
+    serde_yaml::to_string(&serde_yaml::Value::Mapping(root))
+        .map_err(|e| format!("re-serialize config: {e}"))
+}
+
+/// Patch the per-IP rate-limit. The live limiter is built by
+/// `derive_ip_rate_cfg`, which selects the `rate_limit.buckets` entry with
+/// `scope: global, key: ip`; so we update that bucket's `limit` + `window`
+/// in place, appending a `global-ip` sliding-window bucket when none exists.
+fn patch_rate_limit(base: &str, limit: u32, window_secs: u64) -> Result<String, String> {
+    let mut root = yaml_root(base)?;
+    let rl = yaml_submap(&mut root, "rate_limit")?;
+    let buckets = match rl
+        .entry(yaml_str("buckets"))
+        .or_insert_with(|| serde_yaml::Value::Sequence(Vec::new()))
+    {
+        serde_yaml::Value::Sequence(s) => s,
+        _ => return Err("`rate_limit.buckets` is not a sequence".into()),
+    };
+    let window = yaml_str(&format!("{window_secs}s"));
+    let is_global_ip = |b: &serde_yaml::Value| -> bool {
+        b.get("scope").and_then(|v| v.as_str()).map(|s| s.eq_ignore_ascii_case("global")) == Some(true)
+            && b.get("key").and_then(|v| v.as_str()).map(|s| s.eq_ignore_ascii_case("ip")) == Some(true)
+    };
+    if let Some(serde_yaml::Value::Mapping(b)) =
+        buckets.iter_mut().find(|b| is_global_ip(b))
+    {
+        b.insert(yaml_str("limit"), yaml_u64(limit as u64));
+        b.insert(yaml_str("window"), window);
+    } else {
+        let mut b = serde_yaml::Mapping::new();
+        b.insert(yaml_str("id"), yaml_str("global-ip"));
+        b.insert(yaml_str("scope"), yaml_str("global"));
+        b.insert(yaml_str("key"), yaml_str("ip"));
+        b.insert(yaml_str("algo"), yaml_str("sliding_window"));
+        b.insert(yaml_str("limit"), yaml_u64(limit as u64));
+        b.insert(yaml_str("window"), window);
+        buckets.push(serde_yaml::Value::Mapping(b));
+    }
+    serde_yaml::to_string(&serde_yaml::Value::Mapping(root))
+        .map_err(|e| format!("re-serialize config: {e}"))
+}
+
+#[cfg(test)]
+mod gate_toggle_patch_tests {
+    use super::*;
+
+    fn ddos_view(enabled: bool) -> aegis_control::api::gates::DdosConfigView {
+        aegis_control::api::gates::DdosConfigView {
+            enabled,
+            observe_only: false,
+            per_ip_limit: 100,
+            per_ip_window_s: 10,
+            block_ttl_s: 60,
+            spike_multiplier: 3.0,
+            tightened_per_ip_rps: 20,
+        }
+    }
+
+    // Every patch must (a) write its field and (b) leave the result a valid
+    // WafConfig — `load_config_str` is the same boundary the handler runs, so
+    // a round-trip here proves the published blob will boot.
+    fn assert_loads(blob: &str) {
+        aegis_core::load_config_str(blob).expect("patched config must parse");
+    }
+
+    const BASE: &str = "listeners:\n  data: [{ bind: \"0.0.0.0:443\" }]\n  admin: { bind: \"127.0.0.1:9443\" }\nroutes:\n  - { id: catch-all, path: \"/\", upstream: api }\nupstreams:\n  api:\n    members: [{ addr: \"127.0.0.1:8443\" }]\nstate: { backend: in_memory }\n";
+
+    #[test]
+    fn ddos_patch_disables_and_preserves_tier_overrides() {
+        let base = format!(
+            "{BASE}ddos:\n  enabled: true\n  per_ip_limit: 500\n  tier_overrides:\n    high: {{ per_ip_limit: 5 }}\n"
+        );
+        let out = patch_ddos(&base, &ddos_view(false)).unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(parsed["ddos"]["enabled"].as_bool(), Some(false));
+        assert_eq!(parsed["ddos"]["per_ip_limit"].as_u64(), Some(100));
+        // YAML-only per-tier override is untouched by the dashboard edit.
+        assert_eq!(parsed["ddos"]["tier_overrides"]["high"]["per_ip_limit"].as_u64(), Some(5));
+        assert_loads(&out);
+    }
+
+    #[test]
+    fn risk_thresholds_patch_writes_all_four() {
+        let base = format!("{BASE}risk:\n  thresholds: {{ enabled: true, challenge_at: 50, block_at: 80, max: 100 }}\n");
+        let out = patch_risk_thresholds(&base, false, 40, 70, 100).unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(parsed["risk"]["thresholds"]["enabled"].as_bool(), Some(false));
+        assert_eq!(parsed["risk"]["thresholds"]["challenge_at"].as_u64(), Some(40));
+        assert_loads(&out);
+    }
+
+    #[test]
+    fn strikes_patch_creates_block_when_absent() {
+        let out = patch_strikes(BASE, true, 25).unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(parsed["risk"]["strikes"]["enabled"].as_bool(), Some(true));
+        assert_eq!(parsed["risk"]["strikes"]["block_at"].as_u64(), Some(25));
+        assert_loads(&out);
+    }
+
+    #[test]
+    fn bots_patch_toggles_enabled() {
+        let out = patch_bots(BASE, false).unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(parsed["bots"]["enabled"].as_bool(), Some(false));
+        assert_loads(&out);
+    }
+
+    #[test]
+    fn canary_paths_patch_replaces_set() {
+        let base = format!("{BASE}risk:\n  canary_paths: [\"/old\"]\n");
+        let paths = vec!["/wp-admin".to_string(), "/.env".to_string()];
+        let out = patch_canary_paths(&base, &paths).unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        let got: Vec<String> = parsed["risk"]["canary_paths"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(got, paths);
+        assert_loads(&out);
+    }
+
+    #[test]
+    fn rate_limit_patch_updates_existing_global_ip_bucket() {
+        let base = format!(
+            "{BASE}rate_limit:\n  buckets:\n    - {{ id: global-ip, scope: global, key: ip, algo: sliding_window, limit: 1000, window: \"1m\" }}\n"
+        );
+        let out = patch_rate_limit(&base, 250, 30).unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        let b = &parsed["rate_limit"]["buckets"][0];
+        assert_eq!(b["limit"].as_u64(), Some(250));
+        assert_eq!(b["window"].as_str(), Some("30s"));
+        assert_loads(&out);
+    }
+
+    #[test]
+    fn rate_limit_patch_appends_bucket_when_absent() {
+        let out = patch_rate_limit(BASE, 500, 60).unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        let buckets = parsed["rate_limit"]["buckets"].as_sequence().unwrap();
+        assert_eq!(buckets.len(), 1);
+        assert_eq!(buckets[0]["scope"].as_str(), Some("global"));
+        assert_eq!(buckets[0]["key"].as_str(), Some("ip"));
+        assert_eq!(buckets[0]["limit"].as_u64(), Some(500));
+        assert_loads(&out);
+    }
+
+    #[test]
+    fn rejects_non_mapping_base() {
+        assert!(patch_bots("- not a map\n", true).unwrap_err().contains("not a YAML mapping"));
     }
 }
 

