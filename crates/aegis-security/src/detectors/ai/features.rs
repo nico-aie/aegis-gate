@@ -137,6 +137,19 @@ static SQL_KEYWORDS: Lazy<Regex> = Lazy::new(|| {
     .expect("sql keyword regex compiles")
 });
 
+// Context gate for sql_keyword_count (feature 15) — parity with
+// ml_waf/features.py `_SQL_CTX`. A lone SQL keyword is natural language
+// ("select a table and drop my bet"); we only count keywords when SQL *syntax*
+// co-occurs (multi-token clause, comment marker, stacked query, tautology).
+// Lookahead-free (the `regex` crate has no look-around) so the boolean match is
+// identical to the Python engine. `(?is)` = case-insensitive + dot-matches-\n.
+static SQL_CTX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)union\s+(?:all\s+)?select|\bselect\b[^a-zA-Z]*?(?:\*|@@|count\s*\(|distinct\b|top\s+\d|[\w`\[\]]+\s*,)|\bselect\s+(?:version|substring|substr|concat|char|count|current_user|current_database|current_setting|session_user|user|database|group_concat|load_file)\b|@@\w+|\bfrom\s+(?:information_schema|mysql\.|pg_|sys\.|sysobjects)|\binsert\s+into\b|\bdelete\s+from\b|\bupdate\b[^;]{0,80}?\bset\b|\bdrop\s+(?:table|database|schema)\b|\balter\s+table\b|\bcreate\s+(?:table|database)\b|\b(?:order|group)\s+by\s+\d|\bhaving\s+\d|\binto\s+(?:outfile|dumpfile)\b|\bwaitfor\s+delay\b|\b(?:information_schema|load_file|extractvalue|updatexml|benchmark|sleep|pg_sleep)\s*\(|\b(?:xp_|sp_)\w+|(?:--|\#)\s*$|/\*.*?\*/|;\s*(?:select|insert|update|delete|drop|union|create|alter)\b|['"]\s*(?:or|and)\s|\b(?:or|and)\b\s*['"\d][^=<>]{0,12}?[=<>]\s*['"\d\w(]"#,
+    )
+    .expect("sql context regex compiles")
+});
+
 static XSS_MARKERS: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r"(?i)(<script|javascript:|vbscript:|onload=|onerror=|onclick=|onfocus=|alert\(|confirm\(|prompt\(|document\.cookie|document\.write|eval\(|<iframe|<img\s|<svg|srcdoc=)",
@@ -351,7 +364,11 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
         (full_for_chars.matches('<').count() + full_for_chars.matches('>').count()) as f32, // 12 angle_bracket_count
         full_for_chars.matches(';').count() as f32,              // 13 semicolon_count
         PCT_ENCODED.find_iter(&full_for_chars).count() as f32,   // 14 pct_encoded_count    (raw, url+body)
-        SQL_KEYWORDS.find_iter(&full_dec_for_patterns).count() as f32, // 15 sql_keyword_count (decoded)
+        if SQL_CTX.is_match(&full_dec_for_patterns) {            // 15 sql_keyword_count (decoded, context-gated)
+            SQL_KEYWORDS.find_iter(&full_dec_for_patterns).count() as f32
+        } else {
+            0.0
+        },
         XSS_MARKERS.find_iter(&full_dec_for_patterns).count() as f32,  // 16 xss_pattern_count (decoded)
         path_traversal_count,                                    // 17 path_traversal_count (decoded)
         CMD_INJECTION.find_iter(&full_dec_for_patterns).count() as f32, // 18 cmd_injection_count (decoded)
@@ -618,6 +635,36 @@ mod tests {
             for (i, x) in v.iter().enumerate() {
                 assert!(x.is_finite(), "feature {} is non-finite for {:?}", i, s);
             }
+        }
+    }
+
+    // ─── Context-gated sql_keyword_count (parity with features.py) ───────────
+
+    #[test]
+    fn sql_keywords_in_prose_score_zero() {
+        // Natural-language /api/feedback comments with SQL homographs — these
+        // were the #1 false positive. Feature 15 must be 0.
+        let prose = [
+            "POST /api/feedback {\"comment\": \"select a different table and drop my old bet\"}",
+            "POST /api/feedback {\"comment\": \"add a UNION of poker and blackjack rooms\"}",
+            "POST /api/feedback {\"comment\": \"please select from the menu and update my order\"}",
+            "POST /api/feedback {\"comment\": \"order by phone or join us at the table\"}",
+        ];
+        for s in prose {
+            assert_eq!(extract_features(s)[15], 0.0, "prose flagged as SQL: {s:?}");
+        }
+    }
+
+    #[test]
+    fn real_sqli_with_keywords_still_counts() {
+        let attacks = [
+            "GET /p?id=1 UNION SELECT username,password FROM users",
+            "GET /p?q=1; DROP TABLE users; --",
+            "GET /p?q=1) ORDER BY 3-- -",
+            "GET /p?id=1 UNION ALL SELECT NULL,@@version,NULL",
+        ];
+        for s in attacks {
+            assert!(extract_features(s)[15] > 0.0, "keyword SQLi not flagged: {s:?}");
         }
     }
 }

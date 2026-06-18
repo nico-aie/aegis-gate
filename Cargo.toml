@@ -167,6 +167,9 @@ maxminddb = "0.24"
 # validated their model against.
 ort = { version = "=2.0.0-rc.12", features = ["download-binaries", "ndarray"] }
 ndarray = "0.17"
+# Inbound request-body decompression for the AI detector (gzip/deflate). Pulled
+# only via the aegis-security `ai` feature so non-AI builds stay slim.
+flate2 = "1"
 
 # HTTP/3 stack (B5-T1 — Phase B). Pulled only via the
 # `aegis-proxy/http3` feature so the QUIC dep tree (quinn + h3)
