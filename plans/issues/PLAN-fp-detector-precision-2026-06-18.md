@@ -1,9 +1,11 @@
 # PLAN — Benign over-block triage: detector precision on the 200k atk/normal run (2026-06-18)
 
 - **Type:** PLAN (report double-check → root-caused FP-fix backlog, per-rule fix specs)
-- **Status:** 🟡 **IN PROGRESS** (2026-06-18) — detector-fixture loop landed for **S1, S4, S5, S2 (body gate)**
-  on `develop`; full `aegis-security` lib suite green (1774 tests). Remaining: **S2-2** (URI opaque-segment
-  guard), **S3** (jwt), **S6** (header/ssrf — blocked on **S0** harness instrumentation), **S7** (minor).
+- **Status:** 🟡 **IN PROGRESS** (2026-06-18) — detector-fixture loop landed for **S1, S4, S5, S2 (body gate),
+  S3 (jku)** on `develop`; full `aegis-security` lib suite green (1774 tests). ~1,760 of 2,434 benign blocks
+  (≈72%) addressed. Remaining all gated on **S0** harness instrumentation (per §1/§6 — do NOT guess from
+  URL-only logs): **S2-2** (URI opaque-segment guard), **S3 cookie-down-rank** (alg-none/time-forged),
+  **S6** (header-injection 199 / ssrf 247), **S7** (minor ≤35).
   - ✅ **S1** §2c — `MASS_ASSIGN_QUERY_KEYS` split: query scan restricted to privilege-escalation keys;
     credential/token/scope/financial/verified keys dropped from the query surface (body keeps full 27-key set).
   - ✅ **S4** §2b — xss `on<event>=` now requires HTML tag context (`<tag … onX=`); bare `?onload=`
@@ -13,7 +15,12 @@
   - ✅ **S2 (body)** §2a-1 — `form_body_is_opaque_beacon` gate wired into sqli/cmdi/template: skips
     form-urlencoded/text-plain single-dominant high-entropy sensor beacons. **Threshold (256 len / 4.5 bits /
     0.9 dominance) is conservative and flagged for corpus re-validation once S0 lands.**
-  - ⏳ **S2-2** §2a-2 (URI opaque-segment guard), **S3, S6, S7** — deferred (S6 blocked on S0).
+  - ✅ **S3 (jku)** §2d-1 — `jwt_jku_external` now requires a configured `jku_allowed_domains`; empty allowlist
+    = enforcement OFF (kills the 389 first-party-cookie-JWT FP). Posture change documented in
+    config/scores/dashboard. alg-none/x5c/kid unchanged.
+  - ⏳ **S2-2, S3 cookie-down-rank, S6, S7** — deferred; all want the **S0** FP-harness field/substring/decoded
+    attribution before tuning (the plan's §1 + §6 explicitly warn against guessing header/ssrf fixes from
+    URL-only logs).
 - **Source run:** `tests/n-tester/reports/2026-06-18-detectors/20260618_122533_atknorm_report.md`
   (detail: `…/20260618_122533_fp_logs/`). 200k records (100k normal / 100k attack), target `18.140.47.62:443`.
 - **Decision inputs (2026-06-18):** tune each detector (keep enforcing — do **not** blanket-disable the
