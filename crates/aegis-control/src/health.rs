@@ -64,17 +64,35 @@ pub fn check_live(signal: &ReadinessSignal) -> (u16, &'static str) {
     }
 }
 
-/// Readiness check: 200 only when all signals pass.
+/// Readiness check.
+///
+/// 2026-06-18 (healthz-ready-misreports-redis-down report):
+/// `checks.state_backend_up` now reflects **live** backend connectivity
+/// (`ReadinessSignal::state_backend_connected`, refreshed by the proxy's
+/// health poller) instead of the boot warm-up gate — so a real Redis
+/// outage is visible on the wire. The overall status is three-valued:
+/// - `503 not_ready` — a readiness gate is unsatisfied (warm-up not done,
+///   config/certs/pool missing, or draining). Pull from rotation.
+/// - `200 degraded` — warm and serving, but the state backend is currently
+///   unreachable. The data plane runs on in-memory fallback, so the node
+///   stays in rotation; the field flags the degradation for monitors.
+/// - `200 ok` — everything healthy.
 pub fn check_ready(signal: &ReadinessSignal) -> (u16, HealthResponse) {
+    let backend_connected = signal.state_backend_connected.load(Ordering::Relaxed);
     let checks = HealthChecks {
         config_loaded: signal.config_loaded.load(Ordering::Relaxed),
-        state_backend_up: signal.state_backend_up.load(Ordering::Relaxed),
+        state_backend_up: backend_connected,
         certs_loaded: signal.certs_loaded.load(Ordering::Relaxed),
         pool_has_healthy: signal.pool_has_healthy.load(Ordering::Relaxed),
         draining: signal.draining.load(Ordering::Relaxed),
     };
-    let status = if signal.is_ready() { 200 } else { 503 };
-    let label = if status == 200 { "ok" } else { "not_ready" };
+    let (status, label) = if !signal.is_ready() {
+        (503, "not_ready")
+    } else if !backend_connected {
+        (200, "degraded")
+    } else {
+        (200, "ok")
+    };
     (
         status,
         HealthResponse {
@@ -129,7 +147,8 @@ mod tests {
     fn all_ready() -> ReadinessSignal {
         let s = ReadinessSignal::default();
         s.config_loaded.store(true, Ordering::Relaxed);
-        s.state_backend_up.store(true, Ordering::Relaxed);
+        s.state_warmup_done.store(true, Ordering::Relaxed);
+        s.state_backend_connected.store(true, Ordering::Relaxed);
         s.certs_loaded.store(true, Ordering::Relaxed);
         s.pool_has_healthy.store(true, Ordering::Relaxed);
         s
@@ -169,11 +188,42 @@ mod tests {
     }
 
     #[test]
-    fn ready_503_when_state_backend_down() {
+    fn ready_503_until_warmup_done() {
+        // The boot warm-up gate (not live connectivity) gates readiness.
         let s = all_ready();
-        s.state_backend_up.store(false, Ordering::Relaxed);
-        let (code, _) = check_ready(&s);
+        s.state_warmup_done.store(false, Ordering::Relaxed);
+        let (code, resp) = check_ready(&s);
         assert_eq!(code, 503);
+        assert_eq!(resp.status, "not_ready");
+    }
+
+    // 2026-06-18 (healthz-ready-misreports-redis-down report) — when the
+    // node is warm + serving but the state backend is unreachable, the
+    // readiness probe must report the outage truthfully (state_backend_up
+    // false, status "degraded") WITHOUT 503-ing the node out of rotation,
+    // and /healthz/live must stay 200.
+    #[test]
+    fn degraded_200_when_warm_but_backend_disconnected() {
+        let s = all_ready();
+        s.state_backend_connected.store(false, Ordering::Relaxed);
+        let (code, resp) = check_ready(&s);
+        assert_eq!(code, 200);
+        assert_eq!(resp.status, "degraded");
+        assert!(
+            !resp.checks.state_backend_up,
+            "state_backend_up must reflect the live outage"
+        );
+        // Liveness is unaffected — the process is alive and not draining.
+        assert_eq!(check_live(&s).0, 200);
+    }
+
+    #[test]
+    fn ok_200_when_backend_connected() {
+        let s = all_ready();
+        let (code, resp) = check_ready(&s);
+        assert_eq!(code, 200);
+        assert_eq!(resp.status, "ok");
+        assert!(resp.checks.state_backend_up);
     }
 
     #[test]
@@ -264,7 +314,8 @@ mod tests {
         let s = ReadinessSignal::default();
         assert_eq!(check_ready(&s).0, 503);
         s.config_loaded.store(true, Ordering::Relaxed);
-        s.state_backend_up.store(true, Ordering::Relaxed);
+        s.state_warmup_done.store(true, Ordering::Relaxed);
+        s.state_backend_connected.store(true, Ordering::Relaxed);
         s.certs_loaded.store(true, Ordering::Relaxed);
         s.pool_has_healthy.store(true, Ordering::Relaxed);
         assert_eq!(check_ready(&s).0, 200);

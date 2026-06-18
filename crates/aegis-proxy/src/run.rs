@@ -2112,8 +2112,8 @@ pub async fn run(
         );
     }
 
-    // B1-T5 — readiness gate. Hold `state_backend_up` at false
-    // until the rehydrate probe round-trips through the
+    // B1-T5 — readiness warm-up gate. Hold `state_warmup_done` at
+    // false until the rehydrate probe round-trips through the
     // `StateBackend`. While that flag is false, the existing
     // `ReadinessSignal::is_ready()` returns false, so
     // `/healthz/ready` continues to return 503 — exactly the
@@ -2122,10 +2122,16 @@ pub async fn run(
     // `cfg.state.reconcile.readiness_warm_ms` (default 5 s).
     //
     // Even if rehydrate fails (e.g. unreachable Redis, bad
-    // password) we flip readiness to true at the deadline — a
-    // mis-configured backend must never permanently 503 the
+    // password) we flip the warm-up gate to true at the deadline —
+    // a mis-configured backend must never permanently 503 the
     // node; the operator gets a `tracing::warn` line + a
     // detailed error in the result.
+    //
+    // 2026-06-18 (healthz-ready-misreports-redis-down report): seed
+    // `state_backend_connected` from the rehydrate result so the very
+    // first `/healthz/ready` poll reports the truthful connectivity
+    // (avoids a spurious `degraded` flicker before the poller's first
+    // tick). The poller below keeps it current thereafter.
     {
         let store = std::sync::Arc::clone(&state);
         let readiness_for_warmup = readiness.clone();
@@ -2146,8 +2152,35 @@ pub async fn run(
                 );
             }
             readiness_for_warmup
-                .state_backend_up
+                .state_backend_connected
+                .store(result.completed, Ordering::Relaxed);
+            readiness_for_warmup
+                .state_warmup_done
                 .store(true, Ordering::Relaxed);
+        });
+    }
+
+    // 2026-06-18 (healthz-ready-misreports-redis-down report): keep
+    // `state_backend_connected` live so `/healthz/ready` reports a real
+    // backend outage (status `degraded`, HTTP 200) instead of the stale
+    // boot value. `StateBackend::health()` caches aggressively (≈5 s on
+    // the Redis impl), so a short poll never hammers the backend. This is
+    // a *reported* signal only — it does NOT gate `is_ready()`, so a Redis
+    // blip never pulls the node from the LB while the data plane serves on
+    // in-memory fallback.
+    {
+        let store = std::sync::Arc::clone(&state);
+        let readiness_for_health = readiness.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(3));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                let connected = store.health().await.connected;
+                readiness_for_health
+                    .state_backend_connected
+                    .store(connected, Ordering::Relaxed);
+            }
         });
     }
 
