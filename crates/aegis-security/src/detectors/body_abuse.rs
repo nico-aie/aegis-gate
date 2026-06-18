@@ -59,6 +59,25 @@ const MASS_ASSIGN_KEY_NAMES: &str = concat!(
     "email_verified|emailVerified|verified",
 );
 
+/// Query-surface subset (S1, 2026-06-18). On the **query string** the
+/// full 27-key set is dominated by false positives: `access_token`,
+/// `apiKey`, `scope`, `credit`, `verified`, `balance` are ubiquitous
+/// benign URL params (OAuth-token-in-URL, mapbox `access_token=pk…`,
+/// billing filters). Credential/token/scope/financial/verified keys in
+/// a *query* are an authz/gateway concern, not WAF mass-assignment.
+///
+/// The query scan is therefore restricted to the **unambiguous
+/// privilege-escalation** keys — a `?role=admin` / `?is_admin=true` /
+/// `?access_level=root` query has no legitimate first-party use. The
+/// JSON / form-body / multipart surfaces keep the full key set above,
+/// because a credential/token *field* in a write body is the real
+/// mass-assignment shape. Plan: `plans/issues/PLAN-fp-detector-precision-2026-06-18.md` §2c.
+const MASS_ASSIGN_QUERY_KEYS: &str = concat!(
+    "role|is_admin|isAdmin|is_superuser|isSuperuser|superuser|admin",
+    "|",
+    "privileges|grants|access_level|accessLevel",
+);
+
 /// JSON shape: `"key"\s*:` — keyed on property name so nested
 /// wrappers still match (e.g. `{"settings":{"role":"admin"}}`).
 static MASS_ASSIGN_KEYS_JSON: LazyLock<Regex> = LazyLock::new(|| {
@@ -77,6 +96,16 @@ static MASS_ASSIGN_KEYS_FORM: LazyLock<Regex> = LazyLock::new(|| {
         r#"(?i)(?:^|&)(?:{MASS_ASSIGN_KEY_NAMES})="#
     ))
     .expect("mass-assign form regex compiles")
+});
+
+/// Query-surface form shape over the privilege-escalation subset.
+/// Same `(?:^|&)key=` anchoring as `MASS_ASSIGN_KEYS_FORM` so
+/// substring keys (e.g. `user_role=`) don't false-positive.
+static MASS_ASSIGN_QUERY_KEYS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r#"(?i)(?:^|&)(?:{MASS_ASSIGN_QUERY_KEYS})="#
+    ))
+    .expect("mass-assign query regex compiles")
 });
 
 /// Multipart shape: `Content-Disposition: form-data; name="role"`.
@@ -123,10 +152,13 @@ impl Detector for BodyAbuseDetector {
         // Independent of method/body: `GET /profile?role=admin` and
         // `POST /signup?isAdmin=true` both hit. Decoded once so
         // `%72ole=` and entity-encoded variants don't slip past.
+        // S1 (2026-06-18): query scan uses the privilege-escalation
+        // subset only — credential/token/scope/financial keys are
+        // benign in URLs and belong to the gateway's authz layer.
         if let Some(query) = req.uri.query() {
             let decoded = super::url_decode(query);
-            if MASS_ASSIGN_KEYS_FORM.is_match(&decoded)
-                || MASS_ASSIGN_KEYS_FORM.is_match(query)
+            if MASS_ASSIGN_QUERY_KEYS_RE.is_match(&decoded)
+                || MASS_ASSIGN_QUERY_KEYS_RE.is_match(query)
             {
                 signals.push(Signal {
                     score: super::scores::body_abuse::MASS_ASSIGNMENT,
@@ -753,11 +785,13 @@ mod tests {
     }
 
     #[test]
-    fn s2_query_camelcase_synonym_flagged() {
+    fn s2_query_privilege_escalation_synonym_flagged() {
+        // `accessLevel` is an unambiguous privilege-escalation key —
+        // stays in the query key set after the S1 split.
         let d = BodyAbuseDetector::default();
         let (m, u, h, b) = build_view(
             http::Method::GET,
-            "/profile?accountBalance=99999",
+            "/profile?accessLevel=root",
             None,
             b"",
         );
@@ -821,6 +855,96 @@ mod tests {
         );
         let req = view(&m, &u, &h, &b);
         assert!(d.inspect(&req).is_empty());
+    }
+
+    // ---- S1 (2026-06-18) query key-set split ----
+    //
+    // §2c FP fix: credential/token/scope/financial/verified keys are
+    // ubiquitous *benign* query params (OAuth-token-in-URL, mapbox
+    // `access_token=pk…`). Privilege escalation via query string is an
+    // authz/gateway concern — the query scan must restrict to the
+    // unambiguous privilege-escalation keys only. The body surfaces
+    // keep the full 27-key set.
+
+    /// Query keys that MUST still fire (privilege escalation).
+    macro_rules! s1_query_blocks {
+        ($name:ident, $uri:expr) => {
+            #[test]
+            fn $name() {
+                let d = BodyAbuseDetector::default();
+                let (m, u, h, b) = build_view(http::Method::GET, $uri, None, b"");
+                let req = view(&m, &u, &h, &b);
+                assert_mass_assign(&d.inspect(&req), "query");
+            }
+        };
+    }
+    s1_query_blocks!(s1_query_role_admin,     "/p?role=admin");
+    s1_query_blocks!(s1_query_is_admin,       "/p?is_admin=true");
+    s1_query_blocks!(s1_query_isadmin_camel,  "/p?isAdmin=true");
+    s1_query_blocks!(s1_query_superuser,      "/p?superuser=1");
+    s1_query_blocks!(s1_query_privileges,     "/p?privileges=root");
+    s1_query_blocks!(s1_query_grants,         "/p?grants=all");
+    s1_query_blocks!(s1_query_access_level,   "/p?access_level=root");
+    s1_query_blocks!(s1_query_access_level_c, "/p?accessLevel=root");
+
+    /// Credential/token/scope/financial/verified keys that MUST NOT
+    /// fire on the *query* surface (legit benign URL params).
+    macro_rules! s1_query_clean {
+        ($name:ident, $uri:expr) => {
+            #[test]
+            fn $name() {
+                let d = BodyAbuseDetector::default();
+                let (m, u, h, b) = build_view(http::Method::GET, $uri, None, b"");
+                let req = view(&m, &u, &h, &b);
+                assert!(
+                    !d.inspect(&req).iter().any(|s| s.tag == "mass_assignment"),
+                    "false-positive mass_assignment on benign query param: {}",
+                    $uri,
+                );
+            }
+        };
+    }
+    s1_query_clean!(s1_query_access_token,   "/tiles?access_token=pk.eyJ1Ijoiba");
+    s1_query_clean!(s1_query_access_token_c, "/tiles?accessToken=pk.eyJ1Ijoiba");
+    s1_query_clean!(s1_query_api_key,        "/v1/data?apiKey=AIzaSyAbCdEf");
+    s1_query_clean!(s1_query_api_key_snake,  "/v1/data?api_key=AIzaSyAbCdEf");
+    s1_query_clean!(s1_query_refresh_token,  "/oauth?refresh_token=def502");
+    s1_query_clean!(s1_query_refresh_camel,  "/oauth?refreshToken=def502");
+    s1_query_clean!(s1_query_scope,          "/oauth?scope=read+write");
+    s1_query_clean!(s1_query_credit,         "/billing?credit=500");
+    s1_query_clean!(s1_query_balance,        "/wallet?balance=1000");
+    s1_query_clean!(s1_query_account_bal,    "/wallet?accountBalance=99999");
+    s1_query_clean!(s1_query_verified,       "/profile?verified=true");
+    s1_query_clean!(s1_query_email_verified, "/profile?email_verified=true");
+
+    /// The body surfaces keep the FULL key set — a credential/token
+    /// *field* in a write body is still the real mass-assignment shape.
+    #[test]
+    fn s1_body_access_token_still_flagged() {
+        let d = BodyAbuseDetector::default();
+        let body = br#"{"name":"alice","access_token":"stolen"}"#;
+        let (m, u, h, b) = build_view(
+            http::Method::POST,
+            "/api/users",
+            Some("application/json"),
+            body,
+        );
+        let req = view(&m, &u, &h, &b);
+        assert_mass_assign(&d.inspect(&req), "body");
+    }
+
+    #[test]
+    fn s1_form_body_api_key_still_flagged() {
+        let d = BodyAbuseDetector::default();
+        let body = b"username=bob&api_key=sk_live_abcd";
+        let (m, u, h, b) = build_view(
+            http::Method::POST,
+            "/api/users",
+            Some("application/x-www-form-urlencoded"),
+            body,
+        );
+        let req = view(&m, &u, &h, &b);
+        assert_mass_assign(&d.inspect(&req), "body");
     }
 
     // ---- Form-encoded body surface ----

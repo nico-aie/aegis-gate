@@ -81,7 +81,10 @@ impl Detector for SqliDetector {
         // were the source of ~all captured body false positives.
         if signals.is_empty() && super::body_is_scannable(req.headers) {
             let body = std::str::from_utf8(req.body.peek(8192)).unwrap_or("");
-            if !body.is_empty() {
+            // S2 (2026-06-18) — skip bot-management sensor beacons posted
+            // as form-urlencoded/text-plain (single huge high-entropy
+            // value); they coincidentally match injection shapes.
+            if !body.is_empty() && !super::form_body_is_opaque_beacon(req.headers, body) {
                 for variant in super::normalize_for_detection(body) {
                     check_patterns(&variant, "body", &mut signals);
                     if !signals.is_empty() {
@@ -341,5 +344,38 @@ mod tests {
         let (m, u, h, b) = body_view(None, "1 UNION SELECT * FROM users");
         let req = make_view(&m, &u, &h, &b);
         assert!(d.inspect(&req).is_empty(), "missing content-type body must be skipped");
+    }
+
+    // ---- S2 (2026-06-18) form-body opaque-beacon gate ----
+
+    fn blob() -> String {
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+            .chars()
+            .cycle()
+            .take(320)
+            .collect()
+    }
+
+    #[test]
+    fn form_beacon_with_coincidental_sqli_is_skipped() {
+        // A single huge opaque form value that coincidentally trips the
+        // `'…--` string-breakout-comment rule — a bot sensor beacon, not
+        // injection surface.
+        let d = SqliDetector;
+        let body = format!("sensor_data={}'z--", blob());
+        let (m, u, h, b) = body_view(Some("application/x-www-form-urlencoded"), &body);
+        let req = make_view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).is_empty(), "opaque form beacon must be skipped");
+    }
+
+    #[test]
+    fn real_sqli_in_normal_form_still_fires() {
+        // Same trigger in a short, multi-field form → NOT a beacon →
+        // still scanned and blocked.
+        let d = SqliDetector;
+        let (m, u, h, b) =
+            body_view(Some("application/x-www-form-urlencoded"), "name=alice&q='z--");
+        let req = make_view(&m, &u, &h, &b);
+        assert!(!d.inspect(&req).is_empty(), "real sqli in normal form must fire");
     }
 }

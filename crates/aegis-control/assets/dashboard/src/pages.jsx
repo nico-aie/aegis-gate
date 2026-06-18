@@ -3302,7 +3302,7 @@ const CLASS_DESCRIPTIONS = {
   template_injection: 'Server-side template injection (Jinja2, Twig, Mako, Freemarker, Velocity, SpEL, Handlebars).',
   nosql_injection: 'MongoDB-flavour operator injection (`?param[$ne]=foo`, `{$where:…}`).',
   open_redirect: 'Suspicious external URLs in `?next=` / `?redirect_uri=`. Allowlist via `cfg.detectors.open_redirect.allowed_domains`.',
-  jwt_inspection: 'JWT attack shapes in `Authorization: Bearer` / `Cookie` — alg:none, inline key material (x5c/jwk), kid traversal/SQLi, external jku/x5u, forged time claims. Detection-only (no signature check). Allowlist jku/x5u hosts via `cfg.detectors.jwt_inspection.jku_allowed_domains`.',
+  jwt_inspection: 'JWT attack shapes in `Authorization: Bearer` / `Cookie` — alg:none, inline key material (x5c/jwk), kid traversal/SQLi, external jku/x5u, forged time claims. Detection-only (no signature check). jku/x5u enforcement is OFF until you configure `cfg.detectors.jwt_inspection.jku_allowed_domains` (empty allowlist can\'t tell a first-party JWKS host from an attacker\'s); alg:none / x5c / kid fire regardless.',
   cookie_injection: 'SQLi / NoSQLi in SESSION cookie values (`sid`, `session`, `auth`, `token`, …). Tight patterns, scoped to session cookie names. DEFAULT OFF — cookie scanning is FP-prone (adtech cookies); opt in + observe before relying on it.',
   behavior_signals: 'Stateful per-IP signals — missing UA, missing Referer on mutations, zero-depth first-touch. DEFAULT OFF — designed to stack with OWASP detectors on bot-shaped traffic; turn on once you have real-IP traffic.',
   velocity: 'Cross-endpoint sequence engine — flags chains like login→deposit < 5 s, login→withdrawal < 5 s. DEFAULT ON; zero cost when the upstream has no matching routes.',
@@ -13316,24 +13316,36 @@ function PageTopAttackers() {
 // ---------------------------------------------------------------------------
 // routing-upstream #1 (2026-06-04) — live member health helpers. The
 // /api/upstreams summary carries per-pool { healthy, total,
-// members:[{addr,healthy}], circuit } (api/upstreams.rs). These render
-// that as dots / chips / a circuit badge.
-const HEALTH_COLOR = { ok: 'var(--up)', warn: '#d6a700', down: 'var(--down)' };
+// members:[{addr,healthy,status}], circuit } (api/upstreams.rs). These
+// render that as dots / chips / a circuit badge.
+//
+// 2026-06-18 (upstream "up" badge report) — members now carry a tri-state
+// `status` (up/down/unknown). `unknown` = no health signal yet (a pool with
+// no `health:` block before its TCP probe runs), shown grey as "unverified"
+// rather than a false green "up". A member with an active health check or a
+// completed TCP probe shows the verified up/down.
+const HEALTH_COLOR = { ok: 'var(--up)', warn: '#d6a700', down: 'var(--down)', unknown: 'var(--ink-dim)' };
 
-function healthTone(healthy, total) {
-  if (!total || healthy === 0) return 'down';
-  if (healthy < total) return 'warn';
-  return 'ok';
+// Normalise a member entry to a tri-state status string, tolerating older
+// snapshots that only carried the `healthy` boolean.
+function memberStatus(m) {
+  if (m && (m.status === 'up' || m.status === 'down' || m.status === 'unknown')) return m.status;
+  if (m && typeof m.healthy === 'boolean') return m.healthy ? 'up' : 'down';
+  return 'unknown';
 }
 
-function MemberDot({ healthy }) {
+function MemberDot({ status }) {
+  const s = status || 'unknown';
+  const color = s === 'up' ? HEALTH_COLOR.ok : s === 'down' ? HEALTH_COLOR.down : HEALTH_COLOR.unknown;
+  const title = s === 'up' ? 'reachable (passing active health check or TCP probe)'
+    : s === 'down' ? 'unreachable / failing'
+    : 'not health-checked yet — status unverified';
   return (
     <span
-      title={healthy ? 'healthy (passing health checks)' : 'unhealthy / down'}
+      title={title}
       style={{
         display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
-        background: healthy ? HEALTH_COLOR.ok : HEALTH_COLOR.down,
-        marginRight: 6, verticalAlign: 'middle',
+        background: color, marginRight: 6, verticalAlign: 'middle',
       }}
     />
   );
@@ -13341,10 +13353,29 @@ function MemberDot({ healthy }) {
 
 function PoolHealthChip({ h }) {
   if (!h || typeof h.total !== 'number') return null;
-  const tone = healthTone(h.healthy, h.total);
+  // Prefer per-member tri-state when the snapshot carries it; fall back to
+  // the legacy healthy/total counts for older payloads.
+  const members = Array.isArray(h.members) && h.members.length ? h.members : null;
+  let up, down, unknown;
+  if (members) {
+    const statuses = members.map(memberStatus);
+    up = statuses.filter(s => s === 'up').length;
+    down = statuses.filter(s => s === 'down').length;
+    unknown = statuses.filter(s => s === 'unknown').length;
+  } else {
+    up = h.healthy; down = Math.max(h.total - h.healthy, 0); unknown = 0;
+  }
+  // Tone: any down -> warn (some up) or down (none up); else all-unknown
+  // -> unknown; else ok.
+  const tone = down > 0 ? (up > 0 ? 'warn' : 'down')
+    : (unknown > 0 && up === 0) ? 'unknown'
+    : 'ok';
+  const label = (unknown > 0 && up === 0 && down === 0)
+    ? `${h.total} unverified`
+    : `${up}/${h.total} up${unknown > 0 ? ` · ${unknown} unverified` : ''}`;
   return (
     <span
-      title="live healthy / total members (from active health checks)"
+      title='live member health — verified by an active health check or TCP probe; "unverified" means no health signal yet (e.g. a pool with no health: block before its first probe)'
       style={{
         display: 'inline-flex', alignItems: 'center', fontSize: 10,
         padding: '1px 6px', borderRadius: 10, marginLeft: 6,
@@ -13355,7 +13386,7 @@ function PoolHealthChip({ h }) {
         display: 'inline-block', width: 7, height: 7, borderRadius: '50%',
         background: HEALTH_COLOR[tone], marginRight: 5,
       }} />
-      {h.healthy}/{h.total} up
+      {label}
     </span>
   );
 }
@@ -13376,13 +13407,14 @@ function CircuitBadge({ state }) {
   );
 }
 
-// Look up a member's live health within a pool summary entry (matched by
-// addr). Returns undefined when the summary has no per-member detail
-// (e.g. the static fallback provider) — the UI then shows no dot.
+// Look up a member's live status within a pool summary entry (matched by
+// addr). Returns a tri-state 'up' | 'down' | 'unknown', or undefined when
+// the summary has no per-member detail (e.g. the static fallback provider)
+// — the UI then shows no dot.
 function memberHealth(h, addr) {
   if (!h || !Array.isArray(h.members)) return undefined;
   const m = h.members.find(x => x.addr === addr);
-  return m ? m.healthy : undefined;
+  return m ? memberStatus(m) : undefined;
 }
 
 // routing-upstream #3 — route priority + shadow detection. Compare the
@@ -13870,9 +13902,11 @@ function RoutesTable({ poolNames, routesApi, pools, health, onEditPool, onDelete
                                     <td style={{ fontSize: 11 }}>
                                       {mh === undefined
                                         ? <span style={{ color: 'var(--ink-dim)' }}>—</span>
-                                        : <><MemberDot healthy={mh} />{mh
+                                        : <><MemberDot status={mh} />{mh === 'up'
                                             ? <span style={{ color: 'var(--up)' }}>up</span>
-                                            : <span style={{ color: 'var(--down)' }}>down</span>}</>}
+                                            : mh === 'down'
+                                              ? <span style={{ color: 'var(--down)' }}>down</span>
+                                              : <span style={{ color: 'var(--ink-dim)' }}>unverified</span>}</>}
                                     </td>
                                     <td className="mono" style={{ fontSize: 12 }}>{m.addr}</td>
                                     <td className="mono" style={{ fontSize: 11, color: m.host_header ? 'inherit' : 'var(--ink-dim)' }}>

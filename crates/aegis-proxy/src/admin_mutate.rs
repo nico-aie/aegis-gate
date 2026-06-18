@@ -6706,6 +6706,8 @@ state:
             targets_b,
             Duration::from_millis(50),
             None,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            None,
         );
 
         // Before convergence: node B falls through to catch-all on /sec.

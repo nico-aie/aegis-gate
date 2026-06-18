@@ -49,11 +49,17 @@ const SESSION_COOKIE_NAMES: &[&str] = &[
 /// opaque token (base64/hex/UUID) — none of these appear in one
 /// legitimately. Base64 chars (`+`, `/`, `=`, `-`, `_`) are deliberately
 /// NOT triggers.
+///
+/// S5 (2026-06-18, §2e): the three context-free single-token triggers
+/// (`'`, `--`, `/*`) were dropped — base64**url** tokens use `-`/`_` and
+/// frequently contain a `--` run, and opaque OAuth tokens occasionally
+/// carry a bare `'`/`/`, so the standalone triggers false-positived.
+/// SQL/NoSQL **context** is now required: a quote leading into a
+/// keyword/comment, or a standalone high-confidence keyword/operator.
 static COOKIE_INJECTION_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
-        r"'",                                  // single quote
-        r"--",                                 // SQL line comment
-        r"/\*",                                // SQL block comment
+        r"(?i)'\s*(?:or|and|union|select)\b",  // quote → SQL keyword
+        r"(?i)'\s*(?:;|--|#|/\*)",             // quote → terminator/comment
         r"(?i)\bunion\b.*\bselect\b",          // UNION … SELECT
         r"(?i)\bor\b\s+['\d]",                 // OR '1' / OR 1
         r"(?i)\bwaitfor\s+delay\b",            // time-based MSSQL
@@ -173,7 +179,11 @@ mod tests {
 
     #[test]
     fn flags_on_jsessionid() {
-        assert!(flags("JSESSIONID='; DROP TABLE sessions--"));
+        // NB: `;` is the cookie delimiter, so a real cookie-smuggled
+        // payload can't use it — the quote→keyword/comment shapes are
+        // what survive parsing.
+        assert!(flags("JSESSIONID=1' UNION SELECT password FROM users--"));
+        assert!(flags("JSESSIONID=admin'--"));
     }
 
     #[test]
@@ -238,5 +248,48 @@ mod tests {
         assert!(value_is_injection(r#"{"$ne":null}"#));
         assert!(!value_is_injection("plainopaquetoken123"));
         assert!(!value_is_injection("base64+with/slashes=="));
+    }
+
+    // ---- S5 (2026-06-18): context-free `'`/`--`/`/*` triggers dropped ----
+    //
+    // §2e FP fix: base64url tokens use `-`/`_` and frequently contain a
+    // `--` run; opaque OAuth tokens occasionally carry `'`/`/`. The bare
+    // single-token triggers blocked these. Require SQL/NoSQL context.
+
+    #[test]
+    fn base64url_token_with_double_dash_is_clean() {
+        for c in [
+            "access_token=ab--cd_ef-gh",
+            "refresh_token=v1.Mq--Lr_9xZ-abc",
+            "sid=aGVsbG8--d29ybGQ_w",
+            "token=eyJ--header_-payload",
+        ] {
+            assert!(!flags(c), "false positive on base64url `--` token: {c}");
+        }
+    }
+
+    #[test]
+    fn bare_quote_without_sql_keyword_is_clean() {
+        // a `'` not leading into a SQL keyword/comment is not an attack.
+        for c in [
+            "auth=O'Brien-session",
+            "token=abc'def123",
+        ] {
+            assert!(!flags(c), "false positive on bare quote token: {c}");
+        }
+    }
+
+    #[test]
+    fn bare_block_comment_without_quote_is_clean() {
+        // standalone `/*` (rare in tokens, but not an injection on its own)
+        assert!(!flags("sid=a/*b_c-d"));
+    }
+
+    #[test]
+    fn quote_into_keyword_still_fires() {
+        assert!(flags("sid=admin'--"));
+        assert!(flags("sid=x' UNION SELECT 1"));
+        assert!(flags("session=1' OR '1'='1"));
+        assert!(flags("token=x'/*comment*/"));
     }
 }

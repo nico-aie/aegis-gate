@@ -107,9 +107,12 @@ impl Detector for TemplateInjectionDetector {
         check(&raw_uri, "uri", &mut signals);
         check(&decoded_uri, "uri", &mut signals);
 
-        // Body — first 8 KiB, decoded.
+        // Body — first 8 KiB, decoded. S2 (2026-06-18) — skip bot-
+        // management sensor beacons (form-urlencoded/text-plain single
+        // huge high-entropy value) that coincidentally match template
+        // directives; they drove the template benign blocks.
         let body = std::str::from_utf8(req.body.peek(8192)).unwrap_or("");
-        if !body.is_empty() {
+        if !body.is_empty() && !super::form_body_is_opaque_beacon(req.headers, body) {
             let decoded_body = super::url_decode(body);
             check(body, "body", &mut signals);
             check(&decoded_body, "body", &mut signals);
@@ -247,6 +250,50 @@ mod tests {
         let b = BodyPeek::new(body.as_bytes().to_vec(), Some(body.len() as u64), false);
         let req = make_view(&m, &u, &h, &b);
         assert!(!d.inspect(&req).is_empty(), "XSLT in body must fire");
+    }
+
+    // ---- S2 (2026-06-18) form-body opaque-beacon gate ----
+
+    fn body_view(
+        ct: &str,
+        body: &str,
+    ) -> (http::Method, http::Uri, http::HeaderMap, BodyPeek) {
+        let mut h = http::HeaderMap::new();
+        h.insert("content-type", ct.parse().unwrap());
+        (
+            http::Method::POST,
+            "/api/x".parse().unwrap(),
+            h,
+            BodyPeek::new(body.as_bytes().to_vec(), Some(body.len() as u64), false),
+        )
+    }
+
+    fn blob() -> String {
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+            .chars()
+            .cycle()
+            .take(320)
+            .collect()
+    }
+
+    #[test]
+    fn form_beacon_with_coincidental_ssti_is_skipped() {
+        // Opaque sensor blob that coincidentally trips the Velocity
+        // `#set(` directive — a beacon, not a template payload.
+        let d = TemplateInjectionDetector;
+        let body = format!("sensor_data={}#set(x=1)", blob());
+        let (m, u, h, b) = body_view("application/x-www-form-urlencoded", &body);
+        let req = make_view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).is_empty(), "opaque form beacon must be skipped");
+    }
+
+    #[test]
+    fn real_ssti_in_normal_form_still_fires() {
+        let d = TemplateInjectionDetector;
+        let (m, u, h, b) =
+            body_view("application/x-www-form-urlencoded", "name=alice&tpl=#set(x=1)");
+        let req = make_view(&m, &u, &h, &b);
+        assert!(!d.inspect(&req).is_empty(), "real SSTI in normal form must fire");
     }
 
     // Negative — plain XML (no xsl: namespace) must NOT trip XSLT.

@@ -55,6 +55,7 @@ Decide your topology:
 ## 1 · Shared state backend (multi-node only)
 
 ```sh
+# Dev / throwaway ONLY — persistence OFF (see the durability note below).
 docker run -d --name aegis-redis -p 6379:6379 redis:7-alpine \
   redis-server --save "" --appendonly no
 ```
@@ -65,8 +66,29 @@ docker run -d --name aegis-redis -p 6379:6379 redis:7-alpine \
 docker exec aegis-redis redis-cli PING        # → PONG
 ```
 
-> Production: enable TLS + AUTH on Redis and point `state.redis.urls` at the
-> TLS endpoint. See [`./GUIDE.md`](./GUIDE.md) production checklist.
+> ⚠️ **Durability — enable AOF persistence in production.** The shared config
+> document (`config:waf:doc`) — every runtime-added pool, route, rule, and
+> toggle — lives in this Redis. With persistence **off** (the dev command
+> above), a Redis restart comes back **empty** and each node silently reverts
+> to its on-disk boot config (`*.yaml`), **dropping all runtime-added
+> pools/routes** — a protected backend's route can vanish with no outage on
+> the surviving routes. Run production Redis with AOF:
+>
+> ```sh
+> redis-server --appendonly yes --appendfsync everysec
+> ```
+>
+> The WAF defends in depth regardless: it persists a local last-known-good
+> version marker next to each node's boot config and, when it detects the
+> store came back empty after a version had been applied, emits a
+> `config_store_reverted_to_baseline` audit event and flips
+> `/healthz/ready` → `checks.config_store_degraded: true` (status `degraded`,
+> still HTTP 200 — the node keeps serving the baseline). Treat that flag as a
+> page: re-apply config from a `waf` snapshot or the dashboard. But AOF is the
+> primary fix — keep it on.
+
+> Production: also enable TLS + AUTH on Redis and point `state.redis.urls` at
+> the TLS endpoint. See [`./GUIDE.md`](./GUIDE.md) production checklist.
 
 ---
 

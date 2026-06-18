@@ -310,6 +310,13 @@ impl ProxyContext {
         cfg: &WafConfig,
         bus: &aegis_core::audit::AuditBus,
     ) -> Vec<tokio::task::JoinHandle<()>> {
+        // 2026-06-18 (upstream "up" badge report) — defaults for the
+        // display-only TCP observer spawned for pools with no `health:`
+        // block. Conservative cadence: this only drives the dashboard
+        // badge, never load-balancer selection.
+        const TCP_OBSERVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+        const TCP_OBSERVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
         let mut handles = Vec::new();
         let pools = self.pools.snapshot();
         for (name, pool) in pools.iter() {
@@ -317,24 +324,40 @@ impl ProxyContext {
                 Some(c) => c,
                 None => continue,
             };
-            let health = match &pool_cfg.health {
-                Some(h) => h,
-                None => continue,
-            };
-            let h = crate::upstream::health::spawn_health_checker(
-                name.clone(),
-                pool.members.clone(),
-                health.path.clone(),
-                health.interval,
-                health.timeout,
-                bus.clone(),
-            );
-            tracing::info!(
-                pool = %name,
-                interval_ms = health.interval.as_millis() as u64,
-                "upstream health-check task spawned"
-            );
-            handles.push(h);
+            match &pool_cfg.health {
+                Some(health) => {
+                    let h = crate::upstream::health::spawn_health_checker(
+                        name.clone(),
+                        pool.members.clone(),
+                        health.path.clone(),
+                        health.interval,
+                        health.timeout,
+                        bus.clone(),
+                    );
+                    tracing::info!(
+                        pool = %name,
+                        interval_ms = health.interval.as_millis() as u64,
+                        "upstream health-check task spawned"
+                    );
+                    handles.push(h);
+                }
+                // No active health check configured — spawn a display-only
+                // TCP observer so the dashboard reports verified liveness
+                // instead of an optimistic, never-checked "up".
+                None => {
+                    let h = crate::upstream::health::spawn_tcp_observer(
+                        name.clone(),
+                        pool.members.clone(),
+                        TCP_OBSERVE_INTERVAL,
+                        TCP_OBSERVE_TIMEOUT,
+                    );
+                    tracing::info!(
+                        pool = %name,
+                        "upstream TCP liveness observer spawned (no health block)"
+                    );
+                    handles.push(h);
+                }
+            }
         }
         handles
     }

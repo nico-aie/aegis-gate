@@ -44,6 +44,14 @@ plans/
 - **[`smart-caching.md`](./future/smart-caching.md)** — the one feature track
   with work still open: Phases 1–3 shipped (per-upstream L1 + L2/Redis-Cluster
   cache); **Phase 4 remaining** (`stale-if-error`, ETag revalidation).
+- **[`config-auto-restore.md`](./future/config-auto-restore.md)** — deferred
+  follow-up to the shipped config-loss *detect+alert* fix: auto re-publish the
+  last-known-good config after a Redis wipe. Blocked on a fleet split-brain
+  decision (single-writer election). Not started.
+- **[`passive-upstream-health.md`](./future/passive-upstream-health.md)** —
+  deferred follow-up (3.2a) to the shipped *honest upstream badge* fix: derive
+  member health from real traffic and feed the LB. Must ship with a fail-open
+  LB change first (`LbStrategy::pick` currently fails closed). Not started.
 - **SSE / streaming support** — ✅ **SHIPPED 2026-06-14**, archived to
   [`archive/sse-streaming-support.md`](./archive/sse-streaming-support.md).
   Streams `text/event-stream` through the data plane instead of buffering

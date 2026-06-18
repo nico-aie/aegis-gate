@@ -26,12 +26,40 @@ use serde::{Deserialize, Serialize};
 /// tracking-snapshot family.
 const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(2);
 
+/// Observed liveness of a single upstream member.
+///
+/// 2026-06-18 (upstream "up" badge report): members are born optimistically
+/// `healthy = true` and only an *active* health check ever flips them. Pools
+/// without a `health:` block were therefore reported `up` unconditionally —
+/// the badge meant "configured", not "verified reachable". `Unknown`
+/// distinguishes "no health signal yet" (grey) from a verified `Up`/`Down`,
+/// so the dashboard never claims a backend is up that nothing ever checked.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MemberStatus {
+    /// No health signal yet (no probe has run, or none is configured).
+    #[default]
+    Unknown,
+    /// Verified reachable by an active HTTP health check or a TCP probe.
+    Up,
+    /// Verified unreachable / failing.
+    Down,
+}
+
 /// Per-member health line. Additive detail for the Routing & Upstreams
 /// page so operators see *which* backend is down, not just a count.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MemberHealth {
     pub addr: String,
+    /// Legacy boolean retained for the rollup counts + older clients. For a
+    /// member with a real signal it equals `status == Up`; before any probe
+    /// runs it falls back to the optimistic routing flag so counts don't
+    /// regress at boot. Prefer [`Self::status`] for display.
     pub healthy: bool,
+    /// Tri-state observed liveness. `#[serde(default)]` ⇒ `Unknown` so older
+    /// snapshots (no `status` key) still deserialize.
+    #[serde(default)]
+    pub status: MemberStatus,
 }
 
 /// Snapshot of one upstream pool. Cheap value type so the `aegis-proxy`
@@ -203,8 +231,8 @@ mod tests {
             healthy: 1,
             total: 2,
             members: vec![
-                MemberHealth { addr: "10.0.0.1:80".into(), healthy: true },
-                MemberHealth { addr: "10.0.0.2:80".into(), healthy: false },
+                MemberHealth { addr: "10.0.0.1:80".into(), healthy: true, status: MemberStatus::Up },
+                MemberHealth { addr: "10.0.0.2:80".into(), healthy: false, status: MemberStatus::Down },
             ],
             circuit: Some("open".into()),
         };
@@ -217,6 +245,39 @@ mod tests {
         // The fields serialize for the dashboard.
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"10.0.0.2:80\"") && json.contains("\"circuit\":\"open\""));
+    }
+
+    #[test]
+    fn member_status_serializes_lowercase() {
+        // The dashboard matches on these exact strings.
+        assert_eq!(serde_json::to_string(&MemberStatus::Up).unwrap(), "\"up\"");
+        assert_eq!(serde_json::to_string(&MemberStatus::Down).unwrap(), "\"down\"");
+        assert_eq!(
+            serde_json::to_string(&MemberStatus::Unknown).unwrap(),
+            "\"unknown\""
+        );
+    }
+
+    #[test]
+    fn member_health_defaults_status_to_unknown_when_absent() {
+        // 2026-06-18 — a snapshot from before the tri-state landed (no
+        // `status` key) deserializes as Unknown, not a false "up".
+        let m: MemberHealth =
+            serde_json::from_str(r#"{"addr":"10.0.0.1:80","healthy":true}"#).unwrap();
+        assert_eq!(m.status, MemberStatus::Unknown);
+        assert!(m.healthy);
+    }
+
+    #[test]
+    fn member_health_status_round_trips() {
+        let m = MemberHealth {
+            addr: "1.2.3.4:80".into(),
+            healthy: false,
+            status: MemberStatus::Down,
+        };
+        let back: MemberHealth =
+            serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(back.status, MemberStatus::Down);
     }
 
     #[test]

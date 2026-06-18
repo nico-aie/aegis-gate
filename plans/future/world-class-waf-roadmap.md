@@ -195,6 +195,13 @@ tiers:
   opt-in response cache; serves repeats without an upstream round-trip, never
   caches CRITICAL tier, with Cache-Deception-Armor + poisoning-safe keys
   (2026-06-06 redesign; supersedes the archived per-tier draft).
+- [`config-auto-restore.md`](./config-auto-restore.md) — durability: auto
+  re-publish last-known-good config after a Redis data-loss wipe (the
+  detect+alert half shipped 2026-06-18; auto-restore blocked on a fleet
+  split-brain decision).
+- [`passive-upstream-health.md`](./passive-upstream-health.md) — correctness:
+  mark members down from real forward failures (not just active probes), feed
+  the LB. Requires a fail-open `LbStrategy::pick` change first.
 - Wire-up backlog (`unwired-stubs-catalog.md`): ICAP content scanning,
   per-route quota enforcement, traffic mirroring, `dr.rs` runtime
   snapshot, JWT validator, OPA client, vendor CAPTCHA, threat-intel

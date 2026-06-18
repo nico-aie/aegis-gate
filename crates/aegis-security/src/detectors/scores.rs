@@ -179,8 +179,11 @@ pub mod jwt_inspection {
     /// key forgery primitive.
     pub const KID_INJECTION: u32 = 80;
     /// 2026-06-12 (Phase A2) — `jku` / `x5u` header points at a host
-    /// outside `jku_allowed_domains` (empty allowlist = any external
-    /// URL) — SSRF + attacker-controlled-JWKS signature bypass.
+    /// outside `jku_allowed_domains` — SSRF + attacker-controlled-JWKS
+    /// signature bypass. 2026-06-18 (S3 FP fix): only fires when the
+    /// allowlist is non-empty; an empty allowlist disables this rule
+    /// (the WAF can't distinguish a first-party JWKS host from an
+    /// attacker's, and it flagged every first-party cookie session JWT).
     pub const JKU_EXTERNAL: u32 = 80;
     /// 2026-06-12 (Phase A2) — forged time claims: `exp` > 10y out,
     /// `iat` > 10y old, or `iat==0 && nbf==0` (epoch-forged). Scored
@@ -472,7 +475,7 @@ pub const CATALOG: &[ScoreEntry] = &[
         class: "jwt_inspection",
         tag: "jwt_jku_external",
         score: jwt_inspection::JKU_EXTERNAL,
-        note: "JWT header `jku`/`x5u` references a host outside `jwt_inspection.jku_allowed_domains` (empty = any external) — SSRF + attacker-JWKS bypass.",
+        note: "JWT header `jku`/`x5u` references a host outside `jwt_inspection.jku_allowed_domains` (empty allowlist = rule OFF; configure hosts to enable) — SSRF + attacker-JWKS bypass.",
     },
     ScoreEntry {
         class: "jwt_inspection",
