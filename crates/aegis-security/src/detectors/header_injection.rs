@@ -526,8 +526,13 @@ mod tests {
     // Positive cases (≥30).
     positive!(crlf_encoded, "/?q=%0d%0aSet-Cookie:+evil=1");
     positive!(crlf_upper, "/?q=%0D%0ALocation:+http://evil.com");
-    positive!(cr_only, "/?q=%0dInjected");
-    positive!(lf_only, "/?q=%0aInjected");
+    // S-E (2026-06-18 round-2) — bare CRLF with NO header-name token after it
+    // is now benign (was the dominant FP). A header injection needs a
+    // `name:` shape after the newline; `%0dInjected` / `%0aInjected` /
+    // `%0d%0a%0d%0aBody` carry no header token. (Moved from positive!)
+    negative!(cr_only_no_token, "/?q=%0dInjected");
+    negative!(lf_only_no_token, "/?q=%0aInjected");
+    negative!(double_crlf_no_token, "/?q=%0d%0a%0d%0aBody");
     positive!(set_cookie_inject, "/?q=Set-Cookie:+session=hijacked");
     positive!(location_inject, "/?q=Location:+https://evil.com");
     positive!(content_type_inject, "/?q=Content-Type:+text/html");
@@ -539,7 +544,6 @@ mod tests {
     positive!(crlf_in_name_param, "/?name=%0d%0aHTTP/1.1+200");
     positive!(lf_location, "/?url=%0aLocation:+https://bad.com");
     positive!(cr_set_cookie, "/?data=%0dSet-Cookie:+x=y");
-    positive!(double_crlf, "/?q=%0d%0a%0d%0aBody");
     positive!(http_10_response, "/?q=HTTP/1.0+302+Found");
     positive!(http_20_response, "/?q=HTTP/2.0+200+OK");
     positive!(location_with_crlf, "/?q=%0D%0ALocation:+http://x.com/y");
@@ -592,6 +596,50 @@ mod tests {
     negative!(clean_callback, "/api?callback=handleResponse");
     negative!(clean_token, "/api?token=abc123def456");
     negative!(clean_timestamp, "/api?ts=1706000000");
+
+    // S-E (2026-06-18 round-2) — a bare encoded newline in a benign query
+    // value (analytics button text, JSON-in-query) is NOT header injection:
+    // there is no header-name token after the CRLF. These are the captured
+    // Facebook/pixel FP shapes.
+    negative!(clean_lf_then_space,  "/pixel?cd[buttonText]=%0A%20%20%20%20&cd[n]=1");
+    negative!(clean_lf_then_amp,    "/t?dl=foo%0A&rl=bar");
+    negative!(clean_crlf_then_text, "/track?note=line1%0d%0aline2%0d%0aline3");
+    negative!(clean_double_lf_text, "/c?msg=para1%0a%0apara2");
+
+    // S-E (2026-06-18 round-2) — header-VALUE encoded CRLF. A cookie/referer
+    // value carrying a base64 `%0D%0A` substring (no header token after) is
+    // benign data, not injection. A value with `%0d%0aSet-Cookie:` still fires.
+    fn hdr_view(name: &'static str, value: &str) -> Vec<Signal> {
+        let mut h = http::HeaderMap::new();
+        h.insert("host", "x.com".parse().unwrap());
+        h.insert(name, value.parse().unwrap());
+        let m = http::Method::GET;
+        let u: http::Uri = "/".parse().unwrap();
+        let b = BodyPeek::empty();
+        HeaderInjectionDetector.inspect(&make_view(&m, &u, &h, &b))
+    }
+
+    #[test]
+    fn clean_cookie_with_encoded_crlf_base64() {
+        // boatpartssuperstore shape — base64 cookie value with `%0D%0A`.
+        let signals = hdr_view(
+            "cookie",
+            "sid=4fLKYVYZ%2BFbGU9QnzrezqLaI%0D%0Ax%2FM4vMKd6Q%3D%3D; promo=9C1E",
+        );
+        assert!(
+            !signals.iter().any(|s| s.tag == "header_injection"),
+            "benign base64 cookie with encoded CRLF must not fire",
+        );
+    }
+
+    #[test]
+    fn header_value_crlf_set_cookie_still_fires() {
+        let signals = hdr_view("x-custom", "foo%0d%0aSet-Cookie:+evil=1");
+        assert!(
+            signals.iter().any(|s| s.tag == "header_injection"),
+            "real CRLF+Set-Cookie in a header value must still fire",
+        );
+    }
 
     // SEC-L002 (2026-05-08) — X-Forwarded-Host poisoning.
 
