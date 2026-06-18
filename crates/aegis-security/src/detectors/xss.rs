@@ -250,7 +250,16 @@ mod tests {
     positive!(xss_script_tag, "/?q=%3Cscript%3Ealert(1)%3C/script%3E");
     positive!(xss_script_src, "/?q=%3Cscript+src=evil.js%3E%3C/script%3E");
     positive!(xss_onerror, "/?q=%3Cimg+onerror=alert(1)+src=x%3E");
-    positive!(xss_javascript_proto, "/?q=javascript:void(0)");
+    // S-G (2026-06-18 round-2) — `javascript:` now requires a JS-execution
+    // sink. `javascript:alert(1)` fires; the inert href placeholders
+    // `javascript:void(0)` / `javascript:;` (ubiquitous in captured DOM /
+    // analytics payloads) no longer do.
+    positive!(xss_javascript_alert, "/?q=javascript:alert(1)");
+    positive!(xss_javascript_eval,  "/?q=javascript:eval(atob('x'))");
+    positive!(xss_javascript_docref, "/?u=javascript:document.cookie");
+    negative!(xss_javascript_void_inert, "/?q=javascript:void(0)");
+    negative!(xss_javascript_semicolon,  "/?q=javascript:;");
+    negative!(xss_javascript_void_space, "/?q=javascript:void 0");
     positive!(xss_eval, "/?q=eval%28%27malicious%27%29");
     positive!(xss_document_cookie, "/?q=document.cookie");
     positive!(xss_window_location, "/?q=window.location");
