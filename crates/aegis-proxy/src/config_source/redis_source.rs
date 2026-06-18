@@ -94,6 +94,18 @@ pub struct ApplyTargets {
     /// path (`supervisor.rs`) which already calls
     /// `apply_cfg_change_to_client_auth`.
     pub client_auth: Option<crate::listener::client_trust::ClientTrustStore>,
+    /// 2026-06-18 (runtime_gate_toggles_not_durable) — gate runtimes whose
+    /// PUT handlers publish to `config:waf:doc` but had no read-back helper,
+    /// so a restart reverted them to the waf.yaml value. Re-derived from the
+    /// converged doc on each swap, matching the boot install in `run()`.
+    /// `None` ⇒ not wired (e.g. a test bundle without the proxy).
+    pub ddos: Option<Arc<aegis_security::ddos::DdosRuntime>>,
+    /// Live risk tracker — re-derives cumulative thresholds + Strike-Block.
+    pub risk: Option<aegis_security::risk::RiskTracker>,
+    /// Canary honeypot path set.
+    pub canary_paths: Option<aegis_security::detectors::canary::CanaryPaths>,
+    /// Bot-classifier gate toggle (shared `AtomicBool`).
+    pub bots_enabled: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// Spawn the shared-store config watcher. Exits when the last strong
@@ -375,6 +387,21 @@ async fn apply_and_swap(
     // was missing it (caught by the structural guard test). Per-node key
     // resolution happens inside the helper.
     let _ = reload::apply_cfg_change_to_copilot(new_cfg).await;
+
+    // 2026-06-18 (runtime_gate_toggles_not_durable) — re-derive the gate
+    // runtimes from the converged doc. Their PUT handlers publish a new
+    // `config:waf:doc` version (the write side), but without these calls a
+    // restart rebuilt `DdosRuntime` / `RiskTracker` / the bots toggle from
+    // waf.yaml and nothing re-installed the operator's change (the read-back
+    // side). rate-limit was already covered above via the ip_rate_limiter
+    // target; these close the remaining gates.
+    let _ = reload::apply_cfg_change_to_ddos(new_cfg, targets.ddos.as_ref());
+    let _ = reload::apply_cfg_change_to_risk(
+        new_cfg,
+        targets.risk.as_ref(),
+        targets.canary_paths.as_ref(),
+    );
+    let _ = reload::apply_cfg_change_to_bots(new_cfg, targets.bots_enabled.as_ref());
 
     cfg.store(Arc::new(new_cfg.clone()));
 }
@@ -712,6 +739,10 @@ mod tests {
             receiver_writer: None,
             // The one target under test.
             client_auth: Some(trust),
+            ddos: None,
+            risk: None,
+            canary_paths: None,
+            bots_enabled: None,
         };
 
         let store_w = ConfigStore::new(backend.clone());

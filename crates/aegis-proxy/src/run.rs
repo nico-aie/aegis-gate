@@ -1037,18 +1037,10 @@ pub async fn run(
     // already encodes that, so an empty map preserves the
     // mandate; the per-tier YAML override lets operators
     // tune posture per-deployment.
-    let mut ddos_runtime_cfg: aegis_security::ddos::DdosConfig = cfg.ddos.clone().into();
-    for (tier, mode) in &cfg.fail_mode_by_tier {
-        let runtime_mode = match mode {
-            aegis_core::config::FailureModeConfig::FailClose => {
-                aegis_core::tier::FailureMode::FailClose
-            }
-            aegis_core::config::FailureModeConfig::FailOpen => {
-                aegis_core::tier::FailureMode::FailOpen
-            }
-        };
-        ddos_runtime_cfg.failure_mode.insert(*tier, runtime_mode);
-    }
+    // Shared with the hot-reload helper (`apply_cfg_change_to_ddos`) so the
+    // boot install and a config-plane re-derive produce identical runtime
+    // config (2026-06-18, runtime_gate_toggles_not_durable).
+    let ddos_runtime_cfg = crate::config_source::reload::derive_ddos_runtime_cfg(&cfg);
     let runtime = Arc::new(aegis_security::ddos::DdosRuntime::new(
         ddos_runtime_cfg,
         state.clone(),
@@ -1252,6 +1244,13 @@ pub async fn run(
         active_ruleset: Some(pipeline.rules_arc()),
         upstream_writer: Some(Arc::new(upstream_ctx.pools.clone())
             as Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>),
+        // 2026-06-18 (runtime_gate_toggles_not_durable) — gate runtimes so a
+        // file/etcd reload re-derives them too (parity with the shared-store
+        // watcher's ApplyTargets below).
+        ddos: upstream_ctx.ddos.get().cloned(),
+        risk: Some(risk.clone()),
+        canary_paths: Some(canary_paths.clone()),
+        bots_enabled: Some(upstream_ctx.bots_enabled.clone()),
     };
     match reload_source {
         ConfigReloadSource::None => {
@@ -1378,6 +1377,15 @@ pub async fn run(
             // Zero Trust CA rotation converges fleet-wide (was file-watcher
             // only).
             client_auth: client_trust.clone(),
+            // 2026-06-18 (runtime_gate_toggles_not_durable) — re-derive the
+            // gate runtimes from the converged doc so an operator's ddos /
+            // risk-threshold / strike / bots / canary PUT survives restart
+            // (the PUT publishes the doc; this re-installs it into the live
+            // runtime). rate-limit already converges via ip_rate_limiter.
+            ddos: upstream_ctx.ddos.get().cloned(),
+            risk: Some(risk.clone()),
+            canary_paths: Some(canary_paths.clone()),
+            bots_enabled: Some(upstream_ctx.bots_enabled.clone()),
         };
         tracing::info!(
             node_id = %node_id,

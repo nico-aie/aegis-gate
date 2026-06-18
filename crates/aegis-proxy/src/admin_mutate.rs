@@ -7200,6 +7200,10 @@ state:
             upstream_writer: None,
             receiver_writer: None,
             client_auth: None,
+            ddos: None,
+            risk: None,
+            canary_paths: None,
+            bots_enabled: None,
         };
         let store_b =
             ConfigStore::new(backend.clone() as Arc<dyn aegis_core::state::StateBackend>);
