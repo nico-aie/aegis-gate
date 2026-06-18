@@ -1043,7 +1043,7 @@ mod tests {
                 serde_json::Value::Null,
                 serde_json::json!({"id": "sqli-1", "enabled": true}),
                 || {
-                    let v = rules.upsert("sqli-1", "rule sqli-1 { allow }", true);
+                    let v = rules.upsert("sqli-1", "- id: sqli-1\n  when: true\n  then: allow\n", true);
                     if v.ok {
                         Ok::<(), String>(())
                     } else {
@@ -1094,7 +1094,7 @@ mod tests {
             serde_json::Value::Null,
             serde_json::Value::Null,
             || {
-                rules.upsert("x", "rule x { allow }", true);
+                rules.upsert("x", "- id: x\n  when: true\n  then: allow\n", true);
                 Ok::<(), String>(())
             },
         );

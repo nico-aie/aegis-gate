@@ -105,11 +105,26 @@ pub fn validate_rule_id(id: &str) -> Option<ValidateMessage> {
     None
 }
 
-/// Toy validator. Real grammar lives in `aegis-security`; we
-/// surface the same shape so the page can be wired now.
+/// Validate a candidate rule body against the *real* rule DSL the
+/// engine consumes — not just non-empty/size. The body is the same
+/// YAML-list grammar `aegis_security::rules::parse` accepts; we parse
+/// it (capturing line/col on failure) and then run the same linter
+/// `RuleSet::load` runs, so the validator and the engine agree on
+/// exactly which bodies are acceptable.
+///
+/// 2026-06-18 (rule-body-validation-gap report): previously this only
+/// checked empty/size, so a syntactically-broken body returned `ok`
+/// and the POST/PUT path activated an inert rule with a misleading
+/// 201 "config activated". Folding the parse + lint errors here closes
+/// that gap with no new wiring — `handle_rules_post`/`put` already
+/// gate on `!ok → 400`.
 pub fn validate_rule_body(body: &str) -> ValidateResponse {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
+
+    // Cheap, friendly guards before we hand anything to the parser:
+    // an empty body or an over-cap body gets a clear message rather
+    // than a cryptic YAML "EOF"/huge-input parse error.
     if body.trim().is_empty() {
         errors.push(ValidateMessage {
             line: 1,
@@ -124,6 +139,34 @@ pub fn validate_rule_body(body: &str) -> ValidateResponse {
             message: format!("body exceeds {MAX_BODY_BYTES} bytes"),
         });
     }
+
+    // Real DSL parse + lint — only when the cheap guards passed (no
+    // point parsing an empty or oversized body).
+    if errors.is_empty() {
+        match serde_yaml::from_str::<Vec<aegis_security::rules::ast::Rule>>(body) {
+            Ok(rules) => {
+                for lint_err in aegis_security::rules::linter::lint(&rules) {
+                    errors.push(ValidateMessage {
+                        line: 1,
+                        col: 1,
+                        message: format!("rule lint error: {lint_err}"),
+                    });
+                }
+            }
+            Err(e) => {
+                let (line, col) = e
+                    .location()
+                    .map(|l| (l.line() as u32, l.column() as u32))
+                    .unwrap_or((1, 1));
+                errors.push(ValidateMessage {
+                    line,
+                    col,
+                    message: format!("rule body parse error: {e}"),
+                });
+            }
+        }
+    }
+
     for (i, line) in body.lines().enumerate() {
         if line.trim_start().starts_with("# todo")
             || line.trim_start().starts_with("# TODO")
@@ -421,11 +464,61 @@ mod tests {
         }
     }
 
+    /// Minimal valid rule DSL (a one-element YAML list) for tests that
+    /// just need a body the engine actually parses.
+    fn valid_body(id: &str) -> String {
+        format!("- id: {id}\n  when: true\n  then: allow\n")
+    }
+
     #[test]
     fn validator_flags_empty_body() {
         let v = validate_rule_body("");
         assert!(!v.ok);
         assert_eq!(v.errors.len(), 1);
+    }
+
+    // 2026-06-18 (rule-body-validation-gap report) — the validator must
+    // parse the real rule DSL, not just check non-empty/size. A body
+    // that is not valid rule YAML has to be rejected up front so the
+    // POST/PUT path returns 400 instead of a misleading 201.
+
+    #[test]
+    fn validator_rejects_invalid_yaml_dsl() {
+        // Same string the engine uses as its `invalid_rules_yaml()` fixture.
+        let v = validate_rule_body("not: [valid: yaml: for: rules");
+        assert!(!v.ok, "broken DSL must be rejected");
+        assert!(
+            v.errors.iter().any(|e| e.message.contains("parse")),
+            "expected a parse error, got: {:?}",
+            v.errors
+        );
+    }
+
+    #[test]
+    fn validator_rejects_lint_failure() {
+        // Parses fine, but priority is out of the linter's allowed range.
+        let body = "- id: bad\n  priority: 99999\n  when: true\n  then: allow\n";
+        let v = validate_rule_body(body);
+        assert!(!v.ok, "lint failure must be rejected");
+        assert!(
+            v.errors.iter().any(|e| e.message.contains("priority")),
+            "expected a priority lint error, got: {:?}",
+            v.errors
+        );
+    }
+
+    #[test]
+    fn validator_accepts_valid_dsl() {
+        let v = validate_rule_body(&valid_body("ok-1"));
+        assert!(v.ok, "valid DSL should pass, got: {:?}", v.errors);
+    }
+
+    #[test]
+    fn upsert_does_not_store_unparseable_body() {
+        let store = RuleStore::new();
+        let v = store.upsert("qa-rule-bad", "not: [valid: yaml: for: rules", true);
+        assert!(!v.ok);
+        assert!(store.list().is_empty(), "invalid body must not be stored");
     }
 
     // ----- HU-T1 — id collision guard ---------------------------------
@@ -469,7 +562,7 @@ mod tests {
     #[test]
     fn upsert_rejects_reserved_detector_name_as_id() {
         let store = RuleStore::new();
-        let v = store.upsert("sqli", "rule sqli { allow }", true);
+        let v = store.upsert("sqli", &valid_body("sqli"), true);
         assert!(!v.ok);
         assert!(v.errors.iter().any(|e| e.message.contains("reserved")));
         // Store remains empty — failed validation skips the insert.
@@ -479,7 +572,7 @@ mod tests {
     #[test]
     fn upsert_accepts_normal_id_with_valid_body() {
         let store = RuleStore::new();
-        let v = store.upsert("custom-1", "rule custom-1 { allow }", true);
+        let v = store.upsert("custom-1", &valid_body("custom-1"), true);
         assert!(v.ok, "got errors: {:?}", v.errors);
         assert_eq!(store.list().len(), 1);
     }
@@ -520,8 +613,10 @@ mod tests {
 
     #[test]
     fn validator_warns_on_todo_marker() {
-        let v = validate_rule_body("rule x {\n# TODO finish me\n}");
-        assert!(v.ok);
+        // Valid DSL with a YAML comment carrying a TODO marker — the
+        // body parses + lints clean, so only the warning surfaces.
+        let v = validate_rule_body("- id: x\n  # TODO finish me\n  when: true\n  then: allow\n");
+        assert!(v.ok, "got errors: {:?}", v.errors);
         assert_eq!(v.warnings.len(), 1);
     }
 
@@ -535,7 +630,7 @@ mod tests {
     #[test]
     fn store_upsert_get_delete_roundtrip() {
         let s = RuleStore::new();
-        let v = s.upsert("r1", "rule r1 { allow }", true);
+        let v = s.upsert("r1", &valid_body("r1"), true);
         assert!(v.ok);
         let r = s.get("r1").unwrap();
         assert_eq!(r.id, "r1");
@@ -559,11 +654,11 @@ mod tests {
     fn replace_all_replaces_whole_set_and_drops_absent() {
         use aegis_core::config::RuleDef;
         let s = RuleStore::new();
-        s.upsert("stale", "rule stale { allow }", true);
+        s.upsert("stale", &valid_body("stale"), true);
 
         let inline = vec![
-            RuleDef { id: "r1".into(), body: "rule r1 { allow }".into(), enabled: true },
-            RuleDef { id: "r2".into(), body: "rule r2 { allow }".into(), enabled: false },
+            RuleDef { id: "r1".into(), body: valid_body("r1"), enabled: true },
+            RuleDef { id: "r2".into(), body: valid_body("r2"), enabled: false },
         ];
         let rejected = s.replace_all(&inline);
         assert!(rejected.is_empty(), "all valid");
@@ -578,8 +673,8 @@ mod tests {
         use aegis_core::config::RuleDef;
         let s = RuleStore::new();
         let inline = vec![
-            RuleDef { id: "ok".into(), body: "rule ok { allow }".into(), enabled: true },
-            RuleDef { id: "sqli".into(), body: "rule sqli { allow }".into(), enabled: true }, // reserved id
+            RuleDef { id: "ok".into(), body: valid_body("ok"), enabled: true },
+            RuleDef { id: "sqli".into(), body: valid_body("sqli"), enabled: true }, // reserved id
             RuleDef { id: "empty".into(), body: "".into(), enabled: true }, // empty body
         ];
         let rejected = s.replace_all(&inline);
