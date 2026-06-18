@@ -611,6 +611,20 @@ mod tests {
     ma_clean!(ma_clean_role_substr,    r#"{"description":"accessory rolepoint"}"#);
     ma_clean!(ma_clean_color,          r#"{"color":"admin","preference":"dark"}"#);
     ma_clean!(ma_clean_orderitems,     r#"{"items":[{"sku":"x","qty":1}]}"#);
+    // S-C (2026-06-18 round-2) — value-context: a privileged KEY with a
+    // non-escalating VALUE is benign telemetry, not mass-assignment. These
+    // are the exact captured FP shapes (Instacart/Semrush/UberEats etc.).
+    ma_clean!(ma_clean_is_admin_false, r#"{"is_admin":false}"#);
+    ma_clean!(ma_clean_admin_false,    r#"{"admin":false}"#);
+    ma_clean!(ma_clean_isadmin_false,  r#"{"isAdmin":false}"#);
+    ma_clean!(ma_clean_superuser_false, r#"{"superuser":false}"#);
+    ma_clean!(ma_clean_verified_false, r#"{"verified":false}"#);
+    ma_clean!(ma_clean_role_creator,   r#"{"role":"CREATOR"}"#);
+    ma_clean!(ma_clean_role_viewer,    r#"{"role":"viewer","name":"x"}"#);
+    ma_clean!(ma_clean_role_region,    r#"{"role":"westus2"}"#);
+    ma_clean!(ma_clean_scope_openid,   r#"{"scope":"openid profile email"}"#);
+    ma_clean!(ma_clean_scope_read,     r#"{"scope":"read"}"#);
+    ma_clean!(ma_clean_access_level_user, r#"{"access_level":"user"}"#);
 
     // ---- Positive: XXE external-entity decls ----
     macro_rules! xxe {
