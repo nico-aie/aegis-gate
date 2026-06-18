@@ -13,7 +13,13 @@ static XSS_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)</script>",
         r"(?i)javascript\s*:",
         r"(?i)vbscript\s*:",
-        r"(?i)on(?:load|error|click|mouse|focus|blur|submit|change|key|drag|touch|animat|transitionend)\s*=",
+        // S4 (2026-06-18): event handlers fire only inside a tag
+        // (`<tag … onX=`). Bare `?onload=` query params (Cloudflare
+        // Turnstile / reCAPTCHA JS callbacks) are legit and must not
+        // trip. The `<[a-z!/]` prefix requires a tag-open before the
+        // handler; `[^>]*` keeps us inside that tag. Reflected XSS
+        // (`"><svg/onload=`, `<img onerror=`) still matches.
+        r"(?i)<[a-z!/][^>]*\bon(?:load|error|click|mouse|focus|blur|submit|change|key|drag|touch|animat|transitionend)\s*=",
         r"(?i)<iframe[\s>]",
         r"(?i)<object[\s>]",
         r"(?i)<embed[\s>]",
@@ -263,6 +269,24 @@ mod tests {
     positive!(xss_applet, "/?q=%3Capplet+code=x%3E");
     positive!(xss_onmouseover, "/?q=%3Cdiv+onmouseover=alert(1)%3E");
     positive!(xss_html_entity, "/?q=%26%23x3c;script%26%23x3e;");
+
+    // ---- S4 (2026-06-18) onX= requires HTML context ----
+    //
+    // §2b FP fix: bare `on<event>=` matched anywhere — Cloudflare
+    // Turnstile (`api.js?onload=KHGO2`) and JS callback params are
+    // legit. The handler now fires only inside a tag (`<tag … onX=`).
+
+    // Tag-context handler that the svg/img-specific patterns MISS
+    // (`<svg/onload` — `/` is neither `\s` nor `>`) and that carries
+    // no `alert(` — so it exercises the onX pattern alone.
+    positive!(s4_svg_slash_onload, "/?q=%22%3E%3Csvg/onload=foo()%3E");
+    positive!(s4_input_onfocus_tag, "/?q=%3Cinput+onfocus=bar()+autofocus%3E");
+
+    negative!(s4_turnstile_onload, "/api.js?onload=KHGO2");
+    negative!(s4_onload_callback, "/t?onload=false&render=explicit");
+    negative!(s4_onclick_param, "/widget?onclick=trackEvent");
+    negative!(s4_onerror_param, "/img?onerror=fallback");
+    negative!(s4_onload_recaptcha, "/recaptcha/api.js?onload=onloadCallback&render=explicit");
 
     negative!(clean_root, "/");
     negative!(clean_api, "/api/users?page=1");
