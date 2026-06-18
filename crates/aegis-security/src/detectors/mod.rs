@@ -419,6 +419,103 @@ pub(crate) fn body_is_scannable(headers: &http::HeaderMap) -> bool {
         || ct == "application/x-www-form-urlencoded"
 }
 
+/// Shannon entropy in bits/char over a string's chars. Empty → 0.
+/// Used to discriminate opaque high-entropy sensor beacons (base64-ish,
+/// ~5.5–6.0 bits/char) from structured/readable form data (~4.0–4.4).
+fn shannon_entropy(s: &str) -> f32 {
+    if s.is_empty() {
+        return 0.0;
+    }
+    let mut counts = std::collections::HashMap::<char, u32>::new();
+    let mut total = 0u32;
+    for c in s.chars() {
+        *counts.entry(c).or_insert(0) += 1;
+        total += 1;
+    }
+    let total = total as f32;
+    counts
+        .values()
+        .map(|&n| {
+            let p = n as f32 / total;
+            -p * p.log2()
+        })
+        .sum()
+}
+
+/// High-specificity injection shapes that MUST stay on the scan path
+/// even inside a high-entropy form body (S2 risk mitigation, §5): an
+/// attacker who pads a real payload to look opaque is still scanned.
+/// Deliberately high-specificity (multi-char, low benign-collision) —
+/// NOT bare command words like `cat`/`id`, which collide with random
+/// blobs and would defeat the gate. Erring toward `true` (keep
+/// scanning) only risks an FP, never a miss, so the bias is safe.
+fn has_high_signal_injection_shape(body: &str) -> bool {
+    const LITERAL_SHAPES: &[&str] = &[
+        "$(", "${", "{{", "<%", "`", "/bin/", "/etc/passwd",
+    ];
+    if LITERAL_SHAPES.iter().any(|s| body.contains(s)) {
+        return true;
+    }
+    let lower = body.to_ascii_lowercase();
+    const CI_SHAPES: &[&str] = &[
+        "sh -c", "cmd /c", "powershell", "union", "select", "wget", "curl", "nslookup",
+    ];
+    CI_SHAPES.iter().any(|s| lower.contains(s))
+}
+
+/// True when a `application/x-www-form-urlencoded` (or `text/plain`)
+/// body is a bot-management **sensor beacon** rather than parseable
+/// injection surface (S2, 2026-06-18, §2a). Akamai `sensor_data=…`,
+/// PerimeterX, and F5 sensors POST a single very long, high-entropy
+/// value that coincidentally matches shell/SQL/template regexes (esp.
+/// after `hex_blob_decode`), producing the cmdi/template/sqli benign
+/// blocks. The content scanners skip such bodies.
+///
+/// Conservative by design — targets the genuine single-dominant-blob
+/// shape so a normal multi-field form (even one carrying a long CSRF
+/// token) is NOT skipped and stays fully scanned:
+///   - content-type form-urlencoded or text/plain, AND
+///   - the longest single value is ≥ [`BEACON_MIN_VALUE_LEN`] chars and
+///     comprises ≥ 90 % of the body (one dominant blob), AND
+///   - that value's Shannon entropy ≥ [`BEACON_MIN_ENTROPY_BITS`], AND
+///   - no high-signal injection shape is present (keyword fast-path).
+///
+/// NB: thresholds are tuned for the documented sensor shape; the
+/// precise cutoffs should be re-validated against the captured beacon
+/// corpus once the FP harness (§1/S0) attributes per-field hits.
+pub(crate) fn form_body_is_opaque_beacon(headers: &http::HeaderMap, body: &str) -> bool {
+    const BEACON_MIN_VALUE_LEN: usize = 256;
+    const BEACON_MIN_ENTROPY_BITS: f32 = 4.5;
+    const BEACON_DOMINANCE: f32 = 0.9;
+
+    let Some(ct) = headers
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    let ct = ct.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    if ct != "application/x-www-form-urlencoded" && ct != "text/plain" {
+        return false;
+    }
+    if body.len() < BEACON_MIN_VALUE_LEN {
+        return false;
+    }
+    if has_high_signal_injection_shape(body) {
+        return false;
+    }
+    // Longest single value among `&`-separated pairs (text/plain has no
+    // `&`/`=`, so the whole body is the value).
+    let longest = body
+        .split('&')
+        .map(|pair| pair.split_once('=').map(|(_, v)| v).unwrap_or(pair))
+        .max_by_key(|v| v.len())
+        .unwrap_or("");
+    longest.len() >= BEACON_MIN_VALUE_LEN
+        && (longest.len() as f32) >= BEACON_DOMINANCE * (body.len() as f32)
+        && shannon_entropy(longest) >= BEACON_MIN_ENTROPY_BITS
+}
+
 /// Detector trait — each OWASP detector implements this.
 pub trait Detector: Send + Sync {
     fn id(&self) -> &'static str;
@@ -690,6 +787,83 @@ mod tests {
             tls: None,
             body: b,
         }
+    }
+
+    // ---- S2 (2026-06-18) form-body opaque-beacon gate ----
+
+    /// 320-char uniform base64url string → entropy ≈ 6.0 bits/char,
+    /// well above the beacon threshold; contains no injection shape.
+    fn high_entropy_blob() -> String {
+        let cs: Vec<char> =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+                .chars()
+                .collect();
+        (0..320).map(|i| cs[i % cs.len()]).collect()
+    }
+
+    fn headers_ct(ct: &str) -> http::HeaderMap {
+        let mut h = http::HeaderMap::new();
+        h.insert(http::header::CONTENT_TYPE, ct.parse().unwrap());
+        h
+    }
+
+    #[test]
+    fn beacon_single_form_value_is_opaque() {
+        let body = format!("sensor_data={}", high_entropy_blob());
+        let h = headers_ct("application/x-www-form-urlencoded");
+        assert!(form_body_is_opaque_beacon(&h, &body));
+    }
+
+    #[test]
+    fn beacon_text_plain_blob_is_opaque() {
+        let body = high_entropy_blob();
+        let h = headers_ct("text/plain; charset=utf-8");
+        assert!(form_body_is_opaque_beacon(&h, &body));
+    }
+
+    #[test]
+    fn beacon_short_form_is_not_opaque() {
+        let h = headers_ct("application/x-www-form-urlencoded");
+        assert!(!form_body_is_opaque_beacon(&h, "role=admin&page=2"));
+    }
+
+    #[test]
+    fn beacon_json_content_type_never_opaque() {
+        // Only form-urlencoded / text-plain are gated here; JSON keeps
+        // its own structured-text handling.
+        let body = format!("{{\"x\":\"{}\"}}", high_entropy_blob());
+        let h = headers_ct("application/json");
+        assert!(!form_body_is_opaque_beacon(&h, &body));
+    }
+
+    #[test]
+    fn beacon_multi_field_form_not_dominated_is_scanned() {
+        // Two large fields → no single dominant blob → NOT a beacon, so
+        // a real injection in either field still gets scanned.
+        let body = format!("a={}&b={}", high_entropy_blob(), high_entropy_blob());
+        let h = headers_ct("application/x-www-form-urlencoded");
+        assert!(!form_body_is_opaque_beacon(&h, &body));
+    }
+
+    #[test]
+    fn beacon_with_injection_shape_is_scanned() {
+        // Padded-to-look-opaque payloads keep the keyword fast-path.
+        let h = headers_ct("application/x-www-form-urlencoded");
+        for shape in ["$(id)", "{{7*7}}", "${7*7}", "UNION SELECT", "wget http://x/"] {
+            let body = format!("d={}{}", high_entropy_blob(), shape);
+            assert!(
+                !form_body_is_opaque_beacon(&h, &body),
+                "high-signal shape must stay scannable: {shape}"
+            );
+        }
+    }
+
+    #[test]
+    fn beacon_low_entropy_long_value_is_scanned() {
+        // A long but low-entropy value (repeated char) is not opaque.
+        let body = format!("notes={}", "a".repeat(320));
+        let h = headers_ct("application/x-www-form-urlencoded");
+        assert!(!form_body_is_opaque_beacon(&h, &body));
     }
 
     #[test]

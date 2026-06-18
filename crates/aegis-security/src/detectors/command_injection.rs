@@ -173,7 +173,11 @@ impl Detector for CommandInjectionDetector {
         // the shell-command shapes and produced ~all body false positives.
         if signals.is_empty() && super::body_is_scannable(req.headers) {
             let body = std::str::from_utf8(req.body.peek(8192)).unwrap_or("");
-            if !body.is_empty() {
+            // S2 (2026-06-18) — skip bot-management sensor beacons posted
+            // as form-urlencoded/text-plain (single huge high-entropy
+            // value); after hex/URL decode they coincidentally match the
+            // shell-command shapes and drove the cmdi benign blocks.
+            if !body.is_empty() && !super::form_body_is_opaque_beacon(req.headers, body) {
                 for variant in super::normalize_for_detection(body) {
                     check(&variant, "body", &mut signals);
                     if !signals.is_empty() {
