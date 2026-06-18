@@ -37,7 +37,29 @@ static SSRF_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // as userinfo, not host). HTTP basic-auth in URL form is
         // RFC 3986-deprecated and rare in modern apps; flagging
         // URL-userinfo matches Chrome / major-WAF behaviour.
-        r"(?i)https?://[^@/\s]+@",
+        // 2026-06-18 (round-2 FP fix): the old `[^@/\s]+@` was far too
+        // broad. It (a) crossed JSON string boundaries — `…"https://
+        // schema.org","@type":…` matched at the `@type` of JSON-LD
+        // microdata — and (b) fired on Sentry DSNs
+        // (`https://<key>@oNNN.ingest.sentry.io`). Now the userinfo is a
+        // tight RFC-3986 userinfo charclass (no quote/comma/backslash/
+        // brace/angle — none valid in real userinfo), AND the host AFTER
+        // the `@` must be internal-looking: an internal/private/metadata
+        // IP, a single-label host (`internal`, `internal-svc`), or an
+        // internal TLD (`.internal`/`.local`/`.svc`/`.cluster.local`). A
+        // bare `user@public.example.com` is NOT SSRF.
+        concat!(
+            r"(?i)https?://[A-Za-z0-9._~%:!$&'()*+;=-]+@(?:",
+            r"127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1?\]|169\.254\.169\.254",
+            r"|metadata\.google\.internal|100\.100\.100\.200",
+            r"|10\.\d{1,3}\.\d{1,3}\.\d{1,3}",
+            r"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}",
+            r"|192\.168\.\d{1,3}\.\d{1,3}",
+            r"|0x[0-9a-f]+|\d{8,10}|0[0-7]+\.",
+            r"|[a-z0-9-]+\.(?:internal|local|svc|cluster\.local)\b",
+            r"|[a-z0-9-]+(?:[:/?#]|$)",
+            r")",
+        ),
         // BYPASS-03f (Run-6 l-tester cross-check, 2026-05-09) —
         // IPv4-mapped IPv6 (`[::ffff:<ipv4>]`). Browsers and many
         // HTTP clients resolve `[::ffff:127.0.0.1]` natively as
@@ -209,6 +231,48 @@ mod tests {
         "/proxy?url=https://evil.example.com:80@internal-svc/path");
     positive!(ssrf_userinfo_at_127, "/proxy?u=http://x@127.0.0.1");
     positive!(ssrf_userinfo_no_pass, "/proxy?url=http://admin@internal/admin");
+
+    // S-D (2026-06-18 round-2) — userinfo SSRF FPs. The old `[^@/\s]+@`
+    // shape crossed JSON string boundaries and fired on Sentry DSNs. It now
+    // requires (a) a tight RFC-3986 userinfo charclass and (b) an
+    // internal-looking host AFTER the `@`. Bare userinfo to a public host is
+    // not SSRF.
+    fn ssrf_body_json(body: &str) -> Vec<Signal> {
+        let mut h = http::HeaderMap::new();
+        h.insert("content-type", "application/json".parse().unwrap());
+        let m = http::Method::POST;
+        let u: http::Uri = "/ingest".parse().unwrap();
+        let b = BodyPeek::new(body.as_bytes().to_vec(), Some(body.len() as u64), false);
+        SsrfDetector.inspect(&make_view(&m, &u, &h, &b))
+    }
+
+    #[test]
+    fn ssrf_clean_jsonld_at_context() {
+        // JSON-LD microdata: `schema.org","@type` must NOT trip userinfo.
+        let body = r#"{"@context":"https://schema.org","@type":"Product","name":"x"}"#;
+        assert!(ssrf_body_json(body).is_empty(), "JSON-LD @context must not SSRF");
+    }
+
+    #[test]
+    fn ssrf_clean_sentry_dsn() {
+        // Sentry DSN `https://<key>@oNNN.ingest.sentry.io` is benign config.
+        let body = r#"{"dsn":"https://abc123def4567890abcdef@o212024.ingest.sentry.io/42"}"#;
+        assert!(ssrf_body_json(body).is_empty(), "Sentry DSN must not SSRF");
+    }
+
+    #[test]
+    fn ssrf_clean_userinfo_public_host() {
+        // Bare basic-auth URL to a PUBLIC host is not SSRF.
+        let body = r#"{"u":"https://user:pass@api.public-example.com/v1"}"#;
+        assert!(ssrf_body_json(body).is_empty(), "userinfo to public host must not SSRF");
+    }
+
+    #[test]
+    fn ssrf_userinfo_internal_target_still_fires_via_body() {
+        // The parser-confusion attack must still fire: real host is internal.
+        let body = r#"{"u":"http://evil.com@169.254.169.254/latest/meta-data/"}"#;
+        assert!(!ssrf_body_json(body).is_empty(), "userinfo to metadata IP must SSRF");
+    }
     // BYPASS-03f (Run-6 l-tester cross-check, 2026-05-09) —
     // IPv4-mapped IPv6 SSRF. Browsers resolve `[::ffff:127.0.0.1]`
     // natively as `127.0.0.1`, so attackers use this form to
