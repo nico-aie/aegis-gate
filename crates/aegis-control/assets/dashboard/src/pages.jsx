@@ -10227,7 +10227,7 @@ function ScalingL1Card({ runtime }) {
   }[affinityState];
 
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <div className="card" style={{ marginBottom: 12, borderLeft: '3px solid var(--info)' }}>
       <div className="card-head">
         <div>
           <div className="card-title">Layer 1 · In-node workers</div>
@@ -10317,7 +10317,7 @@ function ScalingL2Card({ cluster, onDrain, draining }) {
     : `${peersDecorated.length} ${peersDecorated.length === 1 ? 'node' : 'nodes'}`;
 
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <div className="card" style={{ marginBottom: 12, borderLeft: '3px solid var(--violet)' }}>
       <div className="card-head">
         <div>
           <div className="card-title">Layer 2 · Cluster peers</div>
@@ -10414,7 +10414,7 @@ function ScalingL3Card({ state }) {
   const circuitTone = circuit === 'closed' ? 'up' : circuit === 'half_open' ? 'warn' : 'down';
 
   return (
-    <div className="card">
+    <div className="card" style={{ borderLeft: '3px solid var(--teal)' }}>
       <div className="card-head">
         <div>
           <div className="card-title">Layer 3 · Shared state</div>
@@ -10505,7 +10505,7 @@ function ConfigVersionCard({ config }) {
   const applied = (data && Array.isArray(data.applied)) ? data.applied : [];
   const hasBackend = data ? data.backend !== false : true;
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <div className="card" style={{ marginBottom: 12, borderLeft: '3px solid var(--violet)' }}>
       <div className="card-head">
         <div>
           <div className="card-title">Config plane</div>

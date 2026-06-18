@@ -24,12 +24,18 @@
   --hairline: #20262D;
   --hairline-strong: #2B3139;
 
-  /* Text */
-  --ink: #EAECEF;
+  /* Text.
+     2026-06-18 — the muted end of the ramp (dim/faint/mute) was too dark
+     against Midnight's near-black canvas: card subtitles, stat labels and
+     helper copy read as muddy (QC: "hard to see content/data"). Lift them to
+     the same values the "Dim" theme already proved legible (see the
+     `data-theme="dim"` block) — Midnight's canvas is darker than Dim's, so
+     these are at least as contrasty here. Primary `--ink` stays bright. */
+  --ink: #ECEEF1;
   --ink-strong: #FFFFFF;
-  --ink-mute: #B7BDC6;
-  --ink-dim: #707A8A;
-  --ink-faint: #5E6673;
+  --ink-mute: #C5CBD4;
+  --ink-dim: #949CA9;
+  --ink-faint: #7B8492;
   --on-yellow: #181A20;
 
   /* Trading semantics */
@@ -622,15 +628,21 @@ button { font-family: inherit; }
   display: inline-flex; align-items: center; gap: 6px;
   height: 28px; padding: 0 12px;
   border-radius: var(--radius);
-  border: 1px solid var(--hairline);
-  background: transparent;
-  color: var(--ink-mute);
+  /* 2026-06-18 — was a faint `--hairline` outline + `--ink-mute` label on a
+     transparent fill, so default buttons (Refresh / Drain this node) barely
+     read as clickable on the dark canvas (QC: "hard to see button"). Use a
+     subtle surface fill + stronger border + full-strength label so a button
+     looks like a button at rest. `.ghost` (transparent) / `.primary` (yellow)
+     / `.danger` still override their own fill + colour below. */
+  border: 1px solid var(--hairline-strong);
+  background: var(--surface-2);
+  color: var(--ink);
   font-size: 12px; font-weight: 600;
   cursor: pointer;
   transition: all 120ms;
   white-space: nowrap;
 }
-.btn:hover { background: var(--surface-2); color: var(--ink); border-color: var(--hairline-strong); }
+.btn:hover { background: var(--surface-3); color: var(--ink-strong); border-color: var(--hairline-strong); }
 .btn.primary {
   background: var(--brand-yellow);
   color: var(--on-yellow);
@@ -641,8 +653,8 @@ button { font-family: inherit; }
   border-color: var(--brand-yellow-active);
   color: var(--on-yellow);
 }
-.btn.ghost { border-color: transparent; }
-.btn.ghost:hover { border-color: var(--hairline); }
+.btn.ghost { border-color: transparent; background: transparent; }
+.btn.ghost:hover { border-color: var(--hairline); background: var(--surface-2); }
 .btn.danger { color: #FF8896; border-color: rgba(246,70,93,0.32); }
 .btn.danger:hover { background: rgba(246,70,93,0.08); }
 .btn.sm { height: 24px; padding: 0 8px; font-size: 11px; }
