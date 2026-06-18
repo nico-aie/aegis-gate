@@ -1833,11 +1833,12 @@ mod tests {
         let ring = Arc::new(AuditRing::new());
         let store = crate::api::rules::RuleStore::new();
         // Simulate the live state after a rule_create.
-        store.upsert("custom-1", "match path == \"/admin\"", true);
+        let body = "- id: custom-1\n  when: true\n  then: allow\n";
+        store.upsert("custom-1", body, true);
         let seq = ring.record(rule_event(
             "rule_create",
             serde_json::Value::Null,
-            serde_json::json!({"id": "custom-1", "body": "match path == \"/admin\"", "enabled": true}),
+            serde_json::json!({"id": "custom-1", "body": body, "enabled": true}),
         ));
         let mode = ModeStore::new(Mode::Enforce);
         let targets = RollbackTargets {
@@ -1855,9 +1856,10 @@ mod tests {
         let ring = Arc::new(AuditRing::new());
         let store = crate::api::rules::RuleStore::new();
         // Simulate live state after rule_delete: rule is gone.
+        let body = "- id: deleted-1\n  when: true\n  then: allow\n";
         let seq = ring.record(rule_event(
             "rule_delete",
-            serde_json::json!({"id": "deleted-1", "body": "match path == \"/x\"", "enabled": true}),
+            serde_json::json!({"id": "deleted-1", "body": body, "enabled": true}),
             serde_json::Value::Null,
         ));
         let mode = ModeStore::new(Mode::Enforce);
@@ -1869,7 +1871,7 @@ mod tests {
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert_eq!(outcome.action, "rule_delete");
         let restored = store.get("deleted-1").expect("rule should be restored");
-        assert_eq!(restored.body, "match path == \"/x\"");
+        assert_eq!(restored.body, body);
         assert!(restored.enabled);
     }
 
@@ -1877,11 +1879,13 @@ mod tests {
     fn rule_update_rollback_reapplies_prior_body() {
         let ring = Arc::new(AuditRing::new());
         let store = crate::api::rules::RuleStore::new();
-        store.upsert("r1", "match path == \"/new\"", false);
+        let old_body = "- id: r1\n  priority: 1\n  when: true\n  then: allow\n";
+        let new_body = "- id: r1\n  priority: 2\n  when: true\n  then: allow\n";
+        store.upsert("r1", new_body, false);
         let seq = ring.record(rule_event(
             "rule_update",
-            serde_json::json!({"id": "r1", "body": "match path == \"/old\"", "enabled": true}),
-            serde_json::json!({"id": "r1", "body": "match path == \"/new\"", "enabled": false}),
+            serde_json::json!({"id": "r1", "body": old_body, "enabled": true}),
+            serde_json::json!({"id": "r1", "body": new_body, "enabled": false}),
         ));
         let mode = ModeStore::new(Mode::Enforce);
         let targets = RollbackTargets {
@@ -1892,7 +1896,7 @@ mod tests {
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert_eq!(outcome.action, "rule_update");
         let now = store.get("r1").unwrap();
-        assert_eq!(now.body, "match path == \"/old\"");
+        assert_eq!(now.body, old_body);
         assert!(now.enabled);
     }
 
@@ -1901,7 +1905,7 @@ mod tests {
         let ring = Arc::new(AuditRing::new());
         let store = crate::api::rules::RuleStore::new();
         // Live state after a toggle: enabled=true (was false).
-        store.upsert("r1", "match path == \"/login\"", true);
+        store.upsert("r1", "- id: r1\n  when: true\n  then: allow\n", true);
         let seq = ring.record(rule_event(
             "rule_toggle",
             serde_json::json!({"id": "r1", "enabled": false}),
@@ -1919,7 +1923,7 @@ mod tests {
         assert!(!now.enabled);
         // Body must be preserved — the toggle audit event didn't
         // capture body, so the rollback reads it from live.
-        assert_eq!(now.body, "match path == \"/login\"");
+        assert_eq!(now.body, "- id: r1\n  when: true\n  then: allow\n");
     }
 
     #[test]
