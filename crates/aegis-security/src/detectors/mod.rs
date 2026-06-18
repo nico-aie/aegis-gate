@@ -445,20 +445,29 @@ fn shannon_entropy(s: &str) -> f32 {
 /// High-specificity injection shapes that MUST stay on the scan path
 /// even inside a high-entropy form body (S2 risk mitigation, §5): an
 /// attacker who pads a real payload to look opaque is still scanned.
-/// Deliberately high-specificity (multi-char, low benign-collision) —
-/// NOT bare command words like `cat`/`id`, which collide with random
-/// blobs and would defeat the gate. Erring toward `true` (keep
-/// scanning) only risks an FP, never a miss, so the bias is safe.
+///
+/// Deliberately **multi-char, low benign-collision** tokens only.
+/// 2026-06-18 (round-2 FP fix): the bare 1–2 char metacharacters
+/// `` ` `` / `$(` / `${` / `{{` / `<%` were REMOVED. A real Akamai/F5
+/// `sensor_data` beacon is ~5 KB of high-entropy printable ASCII and
+/// contains those bytes by chance with probability ≈ 1, so they
+/// re-admitted the exact bodies this gate exists to skip — driving the
+/// command-injection / sqli benign blocks. Log4Shell's `${jndi…}` is
+/// preserved explicitly (`${jndi`), and `/bin/` / `/etc/passwd` /
+/// `sh -c` / `cmd /c` / `powershell` / `union`+`select` / `wget` /
+/// `curl` / `nslookup` are long enough that random collision in a blob
+/// is negligible. A genuine `$(id)` / `` `id` `` / `{{7*7}}` payload
+/// *padded into a single-dominant high-entropy form value* is the
+/// documented, accepted trade-off — real injection in parseable form
+/// data is multi-field / low-entropy and never reaches this gate.
 fn has_high_signal_injection_shape(body: &str) -> bool {
-    const LITERAL_SHAPES: &[&str] = &[
-        "$(", "${", "{{", "<%", "`", "/bin/", "/etc/passwd",
-    ];
+    const LITERAL_SHAPES: &[&str] = &["/bin/", "/etc/passwd"];
     if LITERAL_SHAPES.iter().any(|s| body.contains(s)) {
         return true;
     }
     let lower = body.to_ascii_lowercase();
     const CI_SHAPES: &[&str] = &[
-        "sh -c", "cmd /c", "powershell", "union", "select", "wget", "curl", "nslookup",
+        "${jndi", "sh -c", "cmd /c", "powershell", "union", "select", "wget", "curl", "nslookup",
     ];
     CI_SHAPES.iter().any(|s| lower.contains(s))
 }
