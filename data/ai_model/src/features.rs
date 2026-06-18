@@ -63,6 +63,11 @@ static SQL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)\b(select|union|insert|update|delete|drop|create|alter|exec|execute|where|from|having|order|group|join|table|database|schema|char|nchar|varchar|cast|convert|declare|waitfor|xp_|sp_|0x)\b").unwrap()
 });
 
+// Context gate for sql_keyword_count (parity with ml_waf/features.py `_SQL_CTX`).
+static SQL_CTX_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)union\s+(?:all\s+)?select|\bselect\b[^a-zA-Z]*?(?:\*|@@|count\s*\(|distinct\b|top\s+\d|[\w`\[\]]+\s*,)|\bselect\s+(?:version|substring|substr|concat|char|count|current_user|current_database|current_setting|session_user|user|database|group_concat|load_file)\b|@@\w+|\bfrom\s+(?:information_schema|mysql\.|pg_|sys\.|sysobjects)|\binsert\s+into\b|\bdelete\s+from\b|\bupdate\b[^;]{0,80}?\bset\b|\bdrop\s+(?:table|database|schema)\b|\balter\s+table\b|\bcreate\s+(?:table|database)\b|\b(?:order|group)\s+by\s+\d|\bhaving\s+\d|\binto\s+(?:outfile|dumpfile)\b|\bwaitfor\s+delay\b|\b(?:information_schema|load_file|extractvalue|updatexml|benchmark|sleep|pg_sleep)\s*\(|\b(?:xp_|sp_)\w+|(?:--|\#)\s*$|/\*.*?\*/|;\s*(?:select|insert|update|delete|drop|union|create|alter)\b|['"]\s*(?:or|and)\s|\b(?:or|and)\b\s*['"\d][^=<>]{0,12}?[=<>]\s*['"\d\w(]"#).unwrap()
+});
+
 static XSS_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)(<script|javascript:|vbscript:|onload=|onerror=|onclick=|onfocus=|alert\(|confirm\(|prompt\(|document\.cookie|document\.write|eval\(|<iframe|<img\s|<svg|srcdoc=)").unwrap()
 });
@@ -248,7 +253,11 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
         (full_for_chars.matches('<').count() + full_for_chars.matches('>').count()) as f32,    // 12
         full_for_chars.matches(';').count() as f32,                        // 13
         PCT_RE.find_iter(&full_for_chars).count() as f32,                  // 14 raw
-        SQL_RE.find_iter(&full_dec_for_patterns).count() as f32,           // 15 decoded
+        if SQL_CTX_RE.is_match(&full_dec_for_patterns) {                   // 15 decoded, context-gated
+            SQL_RE.find_iter(&full_dec_for_patterns).count() as f32
+        } else {
+            0.0
+        },
         XSS_RE.find_iter(&full_dec_for_patterns).count() as f32,           // 16 decoded
         path_traversal,                                                    // 17 decoded
         CMD_RE.find_iter(&full_dec_for_patterns).count() as f32,           // 18 decoded
