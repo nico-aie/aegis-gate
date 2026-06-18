@@ -29,6 +29,11 @@ pub struct HealthChecks {
     pub certs_loaded: bool,
     pub pool_has_healthy: bool,
     pub draining: bool,
+    /// 2026-06-18 (runtime-config-lost-on-redis-data-loss report): `true`
+    /// when the shared config store was detected empty after a version had
+    /// been applied and the node fell back to the file baseline (runtime
+    /// pools/routes silently dropped). Reported, not gating.
+    pub config_store_degraded: bool,
 }
 
 /// Startup probe tracker.
@@ -79,16 +84,18 @@ pub fn check_live(signal: &ReadinessSignal) -> (u16, &'static str) {
 /// - `200 ok` — everything healthy.
 pub fn check_ready(signal: &ReadinessSignal) -> (u16, HealthResponse) {
     let backend_connected = signal.state_backend_connected.load(Ordering::Relaxed);
+    let config_store_degraded = signal.config_store_degraded.load(Ordering::Relaxed);
     let checks = HealthChecks {
         config_loaded: signal.config_loaded.load(Ordering::Relaxed),
         state_backend_up: backend_connected,
         certs_loaded: signal.certs_loaded.load(Ordering::Relaxed),
         pool_has_healthy: signal.pool_has_healthy.load(Ordering::Relaxed),
         draining: signal.draining.load(Ordering::Relaxed),
+        config_store_degraded,
     };
     let (status, label) = if !signal.is_ready() {
         (503, "not_ready")
-    } else if !backend_connected {
+    } else if !backend_connected || config_store_degraded {
         (200, "degraded")
     } else {
         (200, "ok")
@@ -224,6 +231,23 @@ mod tests {
         assert_eq!(code, 200);
         assert_eq!(resp.status, "ok");
         assert!(resp.checks.state_backend_up);
+        assert!(!resp.checks.config_store_degraded);
+    }
+
+    // 2026-06-18 (runtime-config-lost-on-redis-data-loss report) — when the
+    // shared config store reverted to the file baseline, the node stays in
+    // rotation (HTTP 200) but reports degraded so monitors see the drop.
+    #[test]
+    fn degraded_200_when_config_store_reverted() {
+        let s = all_ready();
+        s.config_store_degraded.store(true, Ordering::Relaxed);
+        let (code, resp) = check_ready(&s);
+        assert_eq!(code, 200);
+        assert_eq!(resp.status, "degraded");
+        assert!(resp.checks.config_store_degraded);
+        // Still live + still backend-connected; only config provenance degraded.
+        assert!(resp.checks.state_backend_up);
+        assert_eq!(check_live(&s).0, 200);
     }
 
     #[test]

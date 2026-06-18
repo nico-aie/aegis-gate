@@ -19,6 +19,8 @@
 //! - **Fail-static**: when the store is unreachable the node keeps
 //!   serving its current config and retries on the next tick.
 
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -111,9 +113,22 @@ pub fn spawn_watcher(
     targets: ApplyTargets,
     poll_interval: Duration,
     nudge: Option<Arc<dyn FleetBus>>,
+    config_store_degraded: Arc<AtomicBool>,
+    marker_path: Option<PathBuf>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        watch_loop(store, node_id, cfg, bus, targets, poll_interval, nudge).await;
+        watch_loop(
+            store,
+            node_id,
+            cfg,
+            bus,
+            targets,
+            poll_interval,
+            nudge,
+            config_store_degraded,
+            marker_path,
+        )
+        .await;
     })
 }
 
@@ -126,10 +141,23 @@ async fn watch_loop(
     targets: ApplyTargets,
     poll_interval: Duration,
     nudge: Option<Arc<dyn FleetBus>>,
+    // 2026-06-18 (runtime-config-lost-on-redis-data-loss report) — set true
+    // when the store comes back empty after we'd applied a version (Redis
+    // data loss → silent revert to file baseline). Reported on /healthz/ready.
+    config_store_degraded: Arc<AtomicBool>,
+    // Optional local last-known-good marker path; lets a *cold* boot after a
+    // Redis bounce distinguish data loss from a legitimate first run.
+    marker_path: Option<PathBuf>,
 ) {
     // The version this node currently has applied. 0 = boot config (from
     // file/etcd) still in force; the store's first version is 1.
     let mut applied_version: u64 = 0;
+
+    // Highest version ever applied by this node, including across process
+    // restarts via the persisted marker. Drives empty-store detection.
+    let mut highest_seen = read_marker_version(marker_path.as_ref());
+    // Emit the revert alert once per episode, not every poll tick.
+    let mut revert_alerted = false;
 
     // N2 — subscribe to the config bump channel so an activate anywhere in
     // the fleet (incl. our own writes) wakes this loop immediately. The
@@ -148,6 +176,10 @@ async fn watch_loop(
     loop {
         match store.load().await {
             Ok(Some(doc)) => {
+                // The shared store has a doc — config provenance is healthy
+                // again. Clear any prior empty-store revert flag.
+                config_store_degraded.store(false, Ordering::Relaxed);
+                revert_alerted = false;
                 if doc.version == applied_version {
                     // No change — re-stamp our ACK so the roster stays fresh.
                     let _ = store.record_applied(&node_id, applied_version).await;
@@ -156,6 +188,8 @@ async fn watch_loop(
                         Ok(new_cfg) => {
                             apply_and_swap(&new_cfg, &cfg, &bus, &targets, doc.version).await;
                             applied_version = doc.version;
+                            highest_seen = highest_seen.max(doc.version);
+                            write_marker_version(marker_path.as_ref(), doc.version);
                             // ACK the version we just applied.
                             let _ = store.record_applied(&node_id, applied_version).await;
                             bus.emit(reload_event(
@@ -191,7 +225,37 @@ async fn watch_loop(
                 }
             }
             Ok(None) => {
-                // No config activated yet — boot config stays in force.
+                // The store is reachable but holds no config doc. Two cases:
+                //  - genuine first boot (nothing ever activated) → silent;
+                //  - the store LOST a doc we'd applied (Redis restarted
+                //    without persistence) → the node silently reverted to the
+                //    on-disk file baseline, dropping runtime-added pools/
+                //    routes. Surface that loudly. (2026-06-18 report.)
+                if is_store_revert(applied_version, highest_seen) {
+                    config_store_degraded.store(true, Ordering::Relaxed);
+                    if !revert_alerted {
+                        revert_alerted = true;
+                        let lost = highest_seen.max(applied_version);
+                        tracing::error!(
+                            node_id = %node_id,
+                            last_version = lost,
+                            "shared config store empty after applying a version — \
+                             reverted to file baseline; runtime pools/routes may be lost. \
+                             Check Redis persistence (AOF/RDB).",
+                        );
+                        bus.emit(reload_event(
+                            "config_store_reverted_to_baseline",
+                            format!(
+                                "shared config store returned empty after applying version \
+                                 {lost}; node fell back to the on-disk file baseline \
+                                 (runtime-added pools/routes dropped). Check Redis \
+                                 persistence (AOF/RDB)."
+                            ),
+                            &node_id,
+                            lost,
+                        ));
+                    }
+                }
             }
             Err(e) => {
                 // Fail-static: the store is unreachable. Keep serving the
@@ -373,6 +437,51 @@ fn apply_client_auth_and_audit(
     }
 }
 
+/// Local last-known-good marker — the highest shared-config version this node
+/// has ever applied. Persisted next to the boot config so a *cold* boot after
+/// a Redis data-loss can still distinguish "the store legitimately has no
+/// config yet" (first run) from "the store lost a config we'd applied" (alert).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ConfigMarker {
+    version: u64,
+    ts: String,
+}
+
+/// Read the persisted last-applied version. Returns 0 when the marker is
+/// absent or unreadable (treated as "never applied" — first boot).
+fn read_marker_version(path: Option<&PathBuf>) -> u64 {
+    let Some(p) = path else { return 0 };
+    match std::fs::read_to_string(p) {
+        Ok(s) => serde_json::from_str::<ConfigMarker>(&s)
+            .map(|m| m.version)
+            .unwrap_or(0),
+        Err(_) => 0,
+    }
+}
+
+/// Persist the last-applied version (best-effort; a write failure is logged
+/// and ignored — the in-memory `applied_version` still drives detection while
+/// the process stays up).
+fn write_marker_version(path: Option<&PathBuf>, version: u64) {
+    let Some(p) = path else { return };
+    let marker = ConfigMarker {
+        version,
+        ts: chrono::Utc::now().to_rfc3339(),
+    };
+    if let Ok(json) = serde_json::to_string(&marker) {
+        if let Err(e) = std::fs::write(p, json) {
+            tracing::warn!(path = %p.display(), error = %e, "failed to persist config marker");
+        }
+    }
+}
+
+/// Pure decision: given the highest version we've ever applied (in-memory or
+/// from the marker), is an *empty* shared store a data-loss revert (`true`) or
+/// a legitimate fresh boot with no config yet (`false`)?
+fn is_store_revert(applied_version: u64, highest_seen: u64) -> bool {
+    applied_version > 0 || highest_seen > 0
+}
+
 fn reload_event(action: &str, reason: String, node_id: &str, version: u64) -> AuditEvent {
     AuditEvent {
         schema_version: 1,
@@ -403,6 +512,40 @@ mod tests {
     use super::*;
     use std::time::Instant;
     use tokio::sync::mpsc;
+
+    // 2026-06-18 (runtime-config-lost-on-redis-data-loss report) — empty-store
+    // revert detection + the local marker.
+
+    #[test]
+    fn empty_store_is_revert_only_after_a_version_applied() {
+        // Fresh boot: never applied, no marker → empty store is legitimate.
+        assert!(!is_store_revert(0, 0));
+        // Applied a version this run, store now empty → data loss.
+        assert!(is_store_revert(3, 0));
+        // Cold boot: in-memory reset to 0 but marker remembers a version.
+        assert!(is_store_revert(0, 5));
+    }
+
+    #[test]
+    fn marker_round_trips_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("last_applied.json");
+        assert_eq!(read_marker_version(Some(&path)), 0, "absent → 0");
+        write_marker_version(Some(&path), 7);
+        assert_eq!(read_marker_version(Some(&path)), 7);
+        // Overwrite with a newer version.
+        write_marker_version(Some(&path), 9);
+        assert_eq!(read_marker_version(Some(&path)), 9);
+    }
+
+    #[test]
+    fn marker_absent_or_garbage_reads_as_zero() {
+        assert_eq!(read_marker_version(None), 0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("garbage.json");
+        std::fs::write(&path, "not json").unwrap();
+        assert_eq!(read_marker_version(Some(&path)), 0);
+    }
 
     // N2 — the watcher's wait point: bump wakes immediately, the timer is
     // the backstop, and a closed channel must never hot-loop.
@@ -579,6 +722,8 @@ mod tests {
             bus.clone(),
             targets,
             Duration::from_millis(50),
+            None,
+            Arc::new(AtomicBool::new(false)),
             None,
         );
 

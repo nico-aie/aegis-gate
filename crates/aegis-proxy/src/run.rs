@@ -1383,6 +1383,14 @@ pub async fn run(
             node_id = %node_id,
             "config reload watcher: shared-store (config:waf:doc)",
         );
+        // 2026-06-18 (runtime-config-lost-on-redis-data-loss report) —
+        // persist the last-applied shared-config version next to the boot
+        // config so a cold boot after a Redis data-loss can still detect the
+        // revert. `None` when there's no on-disk config path (marker disabled;
+        // in-memory detection still covers a live Redis bounce).
+        let config_marker_path = config_yaml_path
+            .as_ref()
+            .map(|p| p.with_file_name(".aegis_last_applied_config.json"));
         std::mem::drop(crate::config_source::redis_source::spawn_watcher(
             store,
             node_id,
@@ -1391,6 +1399,8 @@ pub async fn run(
             targets,
             crate::config_source::redis_source::DEFAULT_POLL,
             config_nudge_bus.clone(),
+            readiness.config_store_degraded.clone(),
+            config_marker_path,
         ));
     }
 

@@ -28,6 +28,15 @@ pub struct ReadinessSignal {
     pub certs_loaded: Arc<AtomicBool>,
     pub pool_has_healthy: Arc<AtomicBool>,
     pub draining: Arc<AtomicBool>,
+    /// 2026-06-18 (runtime-config-lost-on-redis-data-loss report): set by the
+    /// shared-store config watcher when it detects the store came back empty
+    /// after a version had been applied (e.g. Redis restarted without
+    /// persistence) and the node fell back to the on-disk file baseline —
+    /// silently dropping operator-authored pools/routes. Reported on
+    /// `/healthz/ready` (surfaces as `degraded`, HTTP 200) but, like
+    /// [`Self::state_backend_connected`], NOT a gate: the node keeps serving
+    /// the baseline. Cleared when a shared config doc is present again.
+    pub config_store_degraded: Arc<AtomicBool>,
 }
 
 impl Default for ReadinessSignal {
@@ -39,6 +48,7 @@ impl Default for ReadinessSignal {
             certs_loaded: Arc::new(AtomicBool::new(false)),
             pool_has_healthy: Arc::new(AtomicBool::new(false)),
             draining: Arc::new(AtomicBool::new(false)),
+            config_store_degraded: Arc::new(AtomicBool::new(false)),
         }
     }
 }
