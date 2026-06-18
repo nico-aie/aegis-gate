@@ -393,6 +393,20 @@ mod tests {
     path_negative!(fp_console_dashboard,  "/console-dashboard");
     path_negative!(fp_my_adminer_helper,  "/myadminer-helper");
     path_negative!(fp_wp_admin_guide,     "/blog/wp-administration-tips");
+    // S-F (2026-06-18 round-2) — standard browser/CMS/SDK paths that collide
+    // with generic recon patterns but are NOT probes.
+    // Chrome Privacy Sandbox Attribution Reporting (W3C standard) vs `/debug/`.
+    path_negative!(fp_attribution_debug_verbose,
+        "/.well-known/attribution-reporting/debug/verbose");
+    path_negative!(fp_attribution_debug_report,
+        "/.well-known/attribution-reporting/debug/report-event-attribution");
+    // WordPress front-end AJAX endpoint vs the `wp-admin` panel probe.
+    path_negative!(fp_wp_admin_ajax,  "/wp-admin/admin-ajax.php");
+    path_negative!(fp_wp_admin_post,  "/wp-admin/admin-post.php");
+    // Facebook Graph SDK plugin URLs vs the Docker `v1.NN/...plugins` probe.
+    path_negative!(fp_fb_plugins_page,    "/v6.0/plugins/page.php");
+    path_negative!(fp_fb_plugins_chat,    "/v5.0/plugins/customerchat.php");
+    path_negative!(fp_fb_plugins_v22,     "/v2.2/plugins/page.php");
 
     // UA-based positive tests.
     macro_rules! ua_positive {
