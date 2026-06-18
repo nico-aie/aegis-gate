@@ -15,8 +15,15 @@ pub mod streaming;
 pub mod tls;
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
+
+use aegis_control::api::upstreams::MemberStatus;
+
+/// `observed` tri-state encoding (display-only liveness — see `Member`).
+const OBSERVED_UNKNOWN: u8 = 0;
+const OBSERVED_UP: u8 = 1;
+const OBSERVED_DOWN: u8 = 2;
 
 /// Runtime representation of an upstream member.
 #[derive(Debug)]
@@ -26,6 +33,17 @@ pub struct Member {
     pub zone: Option<String>,
     pub healthy: AtomicBool,
     pub inflight: AtomicU64,
+    /// 2026-06-18 (upstream "up" badge report): display-only observed
+    /// liveness, distinct from [`Self::healthy`]. `healthy` drives
+    /// load-balancer member selection and is left optimistically `true`
+    /// until an *active* HTTP health check flips it (unchanged routing).
+    /// `observed` is what the dashboard renders: an active HTTP check OR a
+    /// lightweight TCP probe (for pools without a `health:` block) writes
+    /// the verified `Up`/`Down` here. It NEVER feeds the LB, so a probe
+    /// result can never pull the last member out of rotation. Starts
+    /// `Unknown` so the badge shows "unverified" rather than a false "up"
+    /// before the first probe.
+    observed: AtomicU8,
     /// FIX 2026-05-03 — explicit Host-header override mirroring
     /// `MemberConfig.host_header`. When `Some(host)`,
     /// `forward()` sends `Host: <host>` upstream instead of
@@ -42,6 +60,7 @@ impl Member {
             zone,
             healthy: AtomicBool::new(true),
             inflight: AtomicU64::new(0),
+            observed: AtomicU8::new(OBSERVED_UNKNOWN),
             host_override: None,
         }
     }
@@ -58,12 +77,29 @@ impl Member {
             zone,
             healthy: AtomicBool::new(true),
             inflight: AtomicU64::new(0),
+            observed: AtomicU8::new(OBSERVED_UNKNOWN),
             host_override,
         }
     }
 
     pub fn is_healthy(&self) -> bool {
         self.healthy.load(Ordering::Relaxed)
+    }
+
+    /// Record a verified probe result for display (does NOT affect
+    /// [`Self::is_healthy`] / load-balancer selection).
+    pub fn set_observed(&self, up: bool) {
+        let v = if up { OBSERVED_UP } else { OBSERVED_DOWN };
+        self.observed.store(v, Ordering::Relaxed);
+    }
+
+    /// Display-only observed liveness. `Unknown` until the first probe.
+    pub fn observed_status(&self) -> MemberStatus {
+        match self.observed.load(Ordering::Relaxed) {
+            OBSERVED_UP => MemberStatus::Up,
+            OBSERVED_DOWN => MemberStatus::Down,
+            _ => MemberStatus::Unknown,
+        }
     }
 
     /// RAII guard for the per-member `inflight` counter

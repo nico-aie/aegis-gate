@@ -23,6 +23,12 @@ pub fn spawn_health_checker(
                 let was_healthy = member.is_healthy();
                 let now_healthy = probe(member.addr, &health_path, timeout).await;
 
+                // 2026-06-18 (upstream "up" badge report): mirror the verified
+                // result into the display-only `observed` state on every probe
+                // so the dashboard badge matches the LB's view for
+                // health-checked pools.
+                member.set_observed(now_healthy);
+
                 if was_healthy != now_healthy {
                     member.healthy.store(now_healthy, Ordering::Relaxed);
                     let action = if now_healthy {
@@ -61,6 +67,46 @@ pub fn spawn_health_checker(
             tokio::time::sleep(interval).await;
         }
     })
+}
+
+/// 2026-06-18 (upstream "up" badge report) — display-only TCP liveness
+/// observer for pools that have **no** `health:` block configured.
+///
+/// Without this, such pools never get a probe, so every member kept its
+/// optimistic boot-time `healthy = true` and the dashboard reported a
+/// permanent `n/n up` for backends nothing ever checked. This loop opens a
+/// plain TCP connection to each member and records the result in the
+/// member's `observed` state (`Up`/`Down`).
+///
+/// Crucially it does **not** touch `Member::healthy`, so it can never change
+/// load-balancer selection (no risk of evicting the last member and
+/// fail-closing the pool — `LbStrategy::pick` returns `None` when no member
+/// is healthy). It is purely an observability signal for the badge.
+pub fn spawn_tcp_observer(
+    pool_name: String,
+    members: Vec<Arc<Member>>,
+    interval: Duration,
+    timeout: Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            for member in &members {
+                let up = tcp_reachable(member.addr, timeout).await;
+                member.set_observed(up);
+                tracing::trace!(pool = %pool_name, member = %member.addr, up, "tcp liveness observed");
+            }
+            tokio::time::sleep(interval).await;
+        }
+    })
+}
+
+/// Open a TCP connection to `addr`, returning `true` if it connects within
+/// `timeout`. The handshake alone is the liveness signal — no bytes sent.
+async fn tcp_reachable(addr: std::net::SocketAddr, timeout: Duration) -> bool {
+    matches!(
+        tokio::time::timeout(timeout, tokio::net::TcpStream::connect(addr)).await,
+        Ok(Ok(_))
+    )
 }
 
 /// Probe a member by opening a TCP connection and sending a minimal HTTP/1.1
@@ -238,5 +284,79 @@ mod tests {
 
         handle.abort();
         srv.abort();
+    }
+
+    // 2026-06-18 (upstream "up" badge report) — observed state.
+
+    #[tokio::test]
+    async fn http_checker_sets_observed_status() {
+        use aegis_control::api::upstreams::MemberStatus;
+        let (addr, srv) = mock_upstream(200).await;
+        let member = Arc::new(Member::new(addr, 1, None));
+        // Born Unknown — nothing has probed it yet.
+        assert_eq!(member.observed_status(), MemberStatus::Unknown);
+        let bus = AuditBus::new(16);
+        let handle = spawn_health_checker(
+            "test-pool".into(),
+            vec![member.clone()],
+            "/health".into(),
+            Duration::from_millis(100),
+            Duration::from_secs(1),
+            bus,
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(member.observed_status(), MemberStatus::Up);
+        handle.abort();
+        srv.abort();
+    }
+
+    #[tokio::test]
+    async fn tcp_observer_marks_live_member_up() {
+        use aegis_control::api::upstreams::MemberStatus;
+        // A bound listener that accepts connections = reachable.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            loop {
+                if listener.accept().await.is_err() {
+                    break;
+                }
+            }
+        });
+        let member = Arc::new(Member::new(addr, 1, None));
+        let handle = spawn_tcp_observer(
+            "no-health-pool".into(),
+            vec![member.clone()],
+            Duration::from_millis(50),
+            Duration::from_millis(200),
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(member.observed_status(), MemberStatus::Up);
+        // Display-only: it must NOT touch the LB routing flag.
+        assert!(member.is_healthy());
+        handle.abort();
+        srv.abort();
+    }
+
+    #[tokio::test]
+    async fn tcp_observer_marks_dead_member_down() {
+        use aegis_control::api::upstreams::MemberStatus;
+        // Bind then immediately drop the listener so the port is closed —
+        // mirrors the dev `stub-pool -> 127.0.0.1:9999` (nothing listening).
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let member = Arc::new(Member::new(addr, 1, None));
+        let handle = spawn_tcp_observer(
+            "no-health-pool".into(),
+            vec![member.clone()],
+            Duration::from_millis(50),
+            Duration::from_millis(200),
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(member.observed_status(), MemberStatus::Down);
+        // LB routing flag stays optimistic (we never fail-close the pool).
+        assert!(member.is_healthy());
+        handle.abort();
     }
 }

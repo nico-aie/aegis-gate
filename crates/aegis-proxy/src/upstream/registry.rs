@@ -322,13 +322,29 @@ impl aegis_control::api::upstreams_config::UpstreamWriter for PoolRegistry {
         let pools = snap
             .iter()
             .map(|(name, pool)| {
+                use aegis_control::api::upstreams::MemberStatus;
                 let total = pool.members.len() as u32;
                 let members: Vec<_> = pool
                     .members
                     .iter()
-                    .map(|m| aegis_control::api::upstreams::MemberHealth {
-                        addr: m.addr.to_string(),
-                        healthy: m.is_healthy(),
+                    .map(|m| {
+                        // 2026-06-18 (upstream "up" badge report): report the
+                        // *verified* observed status for display. The legacy
+                        // `healthy` bool (used for rollup counts) follows the
+                        // observed result once we have one, and falls back to
+                        // the optimistic LB flag while still `Unknown` so the
+                        // pre-probe boot window doesn't regress the counts.
+                        let status = m.observed_status();
+                        let healthy = match status {
+                            MemberStatus::Up => true,
+                            MemberStatus::Down => false,
+                            MemberStatus::Unknown => m.is_healthy(),
+                        };
+                        aegis_control::api::upstreams::MemberHealth {
+                            addr: m.addr.to_string(),
+                            healthy,
+                            status,
+                        }
                     })
                     .collect();
                 let healthy = members.iter().filter(|m| m.healthy).count() as u32;
@@ -639,6 +655,45 @@ lb: round_robin
         let m = snap.pools.iter().find(|p| p.name == "mixed").unwrap();
         assert_eq!(m.healthy, 1);
         assert_eq!(m.total, 2);
+    }
+
+    // 2026-06-18 (upstream "up" badge report) — the snapshot reports the
+    // verified observed status, and a down observation drops the member
+    // from the displayed `healthy` count without touching the LB flag.
+    #[test]
+    fn live_snapshot_reports_observed_status() {
+        use aegis_control::api::upstreams::MemberStatus;
+        use aegis_control::api::upstreams_config::UpstreamWriter;
+        let cfg = cfg_map(&[("api", pool_cfg("127.0.0.1:3001"))]);
+        let (pools, breakers) = PoolRegistry::build_pools(&cfg, None).unwrap();
+        let registry = PoolRegistry::from_pools(pools, breakers);
+
+        let live = registry.snapshot();
+        let member = &live.get("api").unwrap().members[0];
+
+        // Before any probe: Unknown, but counts fall back to the optimistic
+        // LB flag (no boot regression).
+        let snap = registry.live_snapshot();
+        let api = snap.pools.iter().find(|p| p.name == "api").unwrap();
+        assert_eq!(api.members[0].status, MemberStatus::Unknown);
+        assert_eq!(api.healthy, 1);
+
+        // A verified-down observation: status Down, dropped from the count,
+        // but the LB routing flag is untouched.
+        member.set_observed(false);
+        let snap = registry.live_snapshot();
+        let api = snap.pools.iter().find(|p| p.name == "api").unwrap();
+        assert_eq!(api.members[0].status, MemberStatus::Down);
+        assert!(!api.members[0].healthy);
+        assert_eq!(api.healthy, 0);
+        assert!(member.is_healthy(), "LB flag must stay optimistic");
+
+        // Verified-up.
+        member.set_observed(true);
+        let snap = registry.live_snapshot();
+        let api = snap.pools.iter().find(|p| p.name == "api").unwrap();
+        assert_eq!(api.members[0].status, MemberStatus::Up);
+        assert_eq!(api.healthy, 1);
     }
 
     // Suppress unused-import warning when no test uses `Duration`.
