@@ -52,9 +52,12 @@ const TEN_YEARS_SECS: u64 = 315_360_000;
 /// JWT attack-shape detector. Holds the `jku`/`x5u` host allowlist +
 /// the opt-in role-heuristic flag; otherwise stateless.
 pub struct JwtInspectionDetector {
-    /// Hosts a `jku` / `x5u` URL may reference. Empty = strict mode
-    /// (any external key-set URL flags). Entries are literal hostnames
-    /// or `*.example.com` globs.
+    /// Hosts a `jku` / `x5u` URL may reference. **Empty = jku/x5u
+    /// enforcement OFF** (S3, §2d): without an allowlist the WAF can't
+    /// distinguish a first-party JWKS host from an attacker's, so the
+    /// rule observed every first-party cookie session JWT as an FP. A
+    /// non-empty allowlist enables enforcement; off-list hosts flag.
+    /// Entries are literal hostnames or `*.example.com` globs.
     jku_allowed_domains: Vec<String>,
     /// 2026-06-12 (A3) — opt-in privileged-role heuristic. Default off
     /// (a legit admin carries `role:admin` every request); operators
@@ -213,16 +216,27 @@ impl JwtInspectionDetector {
         }
 
         // RULE jwt_jku_external — `jku` / `x5u` key-set URL pointing at
-        // a host outside the allowlist (empty allowlist = any external
-        // URL). SSRF + attacker-controlled-JWKS signature bypass.
-        for field in ["jku", "x5u"] {
-            if let Some(url) = header.get(field).and_then(|v| v.as_str()) {
-                if !self.jku_host_allowed(url) {
-                    signals.push(Signal {
-                        score: scores::jwt_inspection::JKU_EXTERNAL,
-                        tag: "jwt_jku_external".into(),
-                        field: format!("jwt:{field}"),
-                    });
+        // a host outside the allowlist. SSRF + attacker-controlled-JWKS
+        // signature bypass.
+        //
+        // S3 (2026-06-18, §2d): enforcement REQUIRES a configured
+        // allowlist. With an empty allowlist the WAF can't tell a legit
+        // first-party JWKS host from an attacker's, so "flag every
+        // external jku" flagged every first-party cookie session JWT
+        // (389 benign blocks). Empty allowlist = observe/no-signal; an
+        // operator who wants strict jku enforcement configures the hosts
+        // explicitly. alg-none / x5c-inline / kid-injection stay
+        // context-free and still fire regardless.
+        if !self.jku_allowed_domains.is_empty() {
+            for field in ["jku", "x5u"] {
+                if let Some(url) = header.get(field).and_then(|v| v.as_str()) {
+                    if !self.jku_host_allowed(url) {
+                        signals.push(Signal {
+                            score: scores::jwt_inspection::JKU_EXTERNAL,
+                            tag: "jwt_jku_external".into(),
+                            field: format!("jwt:{field}"),
+                        });
+                    }
                 }
             }
         }
@@ -698,26 +712,34 @@ mod tests {
     // ---- Phase A2: jwt_jku_external ---------------------------------
 
     #[test]
-    fn jku_external_strict_flags_any_url() {
-        // Empty allowlist (strict) → any jku host flags.
+    fn jku_empty_allowlist_does_not_flag() {
+        // S3 (§2d): with no allowlist the WAF can't distinguish a legit
+        // first-party JWKS host from an attacker's, so "flag every
+        // external jku" is pure FP engine — first-party cookie session
+        // JWTs carry a jku to the app's own JWKS. Enforcement is OFF
+        // until an allowlist is configured.
         let t = tok(r#"{"alg":"RS256","jku":"https://attacker.evil.com/jwks.json"}"#);
-        assert!(has_tag(&signals_for_cookie(&t), "jwt_jku_external"));
+        assert!(!has_tag(&signals_for_cookie(&t), "jwt_jku_external"));
     }
 
     #[test]
-    fn x5u_external_strict_flags() {
+    fn x5u_empty_allowlist_does_not_flag() {
         let t = tok(r#"{"alg":"RS256","x5u":"https://attacker.evil.com/chain.pem"}"#);
-        assert!(has_tag(&signals_for_cookie(&t), "jwt_jku_external"));
+        assert!(!has_tag(&signals_for_cookie(&t), "jwt_jku_external"));
     }
 
     #[test]
-    fn jku_real_corpus_header() {
+    fn jku_real_corpus_header_flags_with_allowlist() {
         // Report ID=3 header decodes with jku=https://attacker.evil.com/jwks.json.
+        // With an allowlist configured (the app's own JWKS host), the
+        // off-list attacker host still flags — enforcement is intact
+        // once the operator opts in.
         let t = concat!(
             "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImprdSI6Imh0dHBzOi8vYXR0YWNrZXIu",
             "ZXZpbC5jb20vandrcy5qc29uIn0.eyJ1c2VyIjoiYWRtaW4ifQ.fakersasig"
         );
-        assert!(has_tag(&signals_for_cookie(t), "jwt_jku_external"));
+        let s = signals_for_cookie_with(t, vec!["auth.example.com".into()]);
+        assert!(has_tag(&s, "jwt_jku_external"));
     }
 
     #[test]

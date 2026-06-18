@@ -3710,8 +3710,9 @@ pub struct DetectorsConfig {
     /// `kid` traversal/SQLi, external `jku`/`x5u`, forged time claims).
     /// Detection-only — no signature verification (that stays in the
     /// gateway). `jku_allowed_domains` is the allowlist of hosts a
-    /// `jku`/`x5u` URL may reference; empty = strict (any external URL
-    /// flags). **Default ON.**
+    /// `jku`/`x5u` URL may reference; **empty = jku/x5u enforcement OFF**
+    /// (2026-06-18 S3 FP fix — configure hosts to enable strict
+    /// enforcement). **Default ON.**
     #[serde(default)]
     pub jwt_inspection: JwtInspectionConfig,
     /// 2026-06-12 (WS report P2) — SQLi/NoSQLi scanning of SESSION cookie
@@ -4069,9 +4070,17 @@ impl Default for OpenRedirectConfig {
 /// (default `true`). `jku_allowed_domains` is the operator allowlist
 /// of hosts that a `jku` / `x5u` header URL may reference — each entry
 /// is a literal hostname (`auth.example.com`) or a `*.example.com`
-/// glob. Empty list = strict mode (any external `jku`/`x5u` flags).
-/// The detector never fetches the URL or verifies signatures; the
-/// allowlist only governs the structural "external key-set URL"
+/// glob.
+///
+/// **Empty list = `jku`/`x5u` enforcement OFF** (2026-06-18 S3, FP fix):
+/// without an allowlist the WAF can't distinguish a legit first-party
+/// JWKS host from an attacker's, so flagging every external key-set URL
+/// flagged every first-party cookie session JWT. To enable strict
+/// jku/x5u enforcement, configure the allowed hosts explicitly; off-list
+/// hosts then flag. `alg:none`, inline key material (`x5c`/`jwk`), and
+/// `kid` injection are context-free attack shapes and fire regardless of
+/// this list. The detector never fetches the URL or verifies signatures;
+/// the allowlist only governs the structural "external key-set URL"
 /// signal. YAML shape:
 ///
 /// ```yaml

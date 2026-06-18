@@ -3302,7 +3302,7 @@ const CLASS_DESCRIPTIONS = {
   template_injection: 'Server-side template injection (Jinja2, Twig, Mako, Freemarker, Velocity, SpEL, Handlebars).',
   nosql_injection: 'MongoDB-flavour operator injection (`?param[$ne]=foo`, `{$where:…}`).',
   open_redirect: 'Suspicious external URLs in `?next=` / `?redirect_uri=`. Allowlist via `cfg.detectors.open_redirect.allowed_domains`.',
-  jwt_inspection: 'JWT attack shapes in `Authorization: Bearer` / `Cookie` — alg:none, inline key material (x5c/jwk), kid traversal/SQLi, external jku/x5u, forged time claims. Detection-only (no signature check). Allowlist jku/x5u hosts via `cfg.detectors.jwt_inspection.jku_allowed_domains`.',
+  jwt_inspection: 'JWT attack shapes in `Authorization: Bearer` / `Cookie` — alg:none, inline key material (x5c/jwk), kid traversal/SQLi, external jku/x5u, forged time claims. Detection-only (no signature check). jku/x5u enforcement is OFF until you configure `cfg.detectors.jwt_inspection.jku_allowed_domains` (empty allowlist can\'t tell a first-party JWKS host from an attacker\'s); alg:none / x5c / kid fire regardless.',
   cookie_injection: 'SQLi / NoSQLi in SESSION cookie values (`sid`, `session`, `auth`, `token`, …). Tight patterns, scoped to session cookie names. DEFAULT OFF — cookie scanning is FP-prone (adtech cookies); opt in + observe before relying on it.',
   behavior_signals: 'Stateful per-IP signals — missing UA, missing Referer on mutations, zero-depth first-touch. DEFAULT OFF — designed to stack with OWASP detectors on bot-shaped traffic; turn on once you have real-IP traffic.',
   velocity: 'Cross-endpoint sequence engine — flags chains like login→deposit < 5 s, login→withdrawal < 5 s. DEFAULT ON; zero cost when the upstream has no matching routes.',
