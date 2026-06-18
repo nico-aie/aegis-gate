@@ -106,7 +106,11 @@ impl Detector for XssDetector {
         check_css(&url_decoded_uri, "uri", &mut signals);
 
         let body = std::str::from_utf8(req.body.peek(8192)).unwrap_or("");
-        if !body.is_empty() {
+        // S-B (2026-06-18 round-2) — skip bot-management sensor beacons
+        // (form-urlencoded/text-plain single huge high-entropy value). The
+        // blob coincidentally matches tag/handler/`javascript:` shapes and
+        // drove the xss benign blocks. Mirrors the cmdi/sqli body gate.
+        if !body.is_empty() && !super::form_body_is_opaque_beacon(req.headers, body) {
             let url_decoded_body = super::url_decode(body);
             let entity_decoded_body = super::html_entity_decode(&url_decoded_body);
             check_xss(&url_decoded_body, "body", &mut signals);
@@ -485,4 +489,44 @@ mod tests {
     // A redirect-style param carrying an external https URL is open_redirect's
     // job, not CSS — no `@import`/`url(`/selector structure here.
     negative!(css_clean_redirect_param, "/r?next=https://example.com/welcome");
+
+    // ===== S-B (2026-06-18 round-2) — beacon gate on the body scan =====
+
+    fn body_with_ct(ct: &str, body: &str) -> Vec<Signal> {
+        let m = http::Method::POST;
+        let u: http::Uri = "/submit".parse().unwrap();
+        let mut h = http::HeaderMap::new();
+        h.insert("content-type", ct.parse().unwrap());
+        let b = BodyPeek::new(body.as_bytes().to_vec(), Some(body.len() as u64), false);
+        XssDetector.inspect(&make_view(&m, &u, &h, &b))
+    }
+
+    fn xss_blob() -> String {
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+            .chars()
+            .cycle()
+            .take(320)
+            .collect()
+    }
+
+    #[test]
+    fn text_plain_sensor_beacon_with_coincidental_xss_is_skipped() {
+        // 2026-06-18 r2: a text/plain sensor beacon whose high-entropy blob
+        // coincidentally contains a `<img … onerror=>` shape must be skipped
+        // — bot telemetry, not a reflected-XSS surface.
+        let body = format!("{{\"sensor_data\":\"{}<img src=x onerror=alert(1)>\"}}", xss_blob());
+        assert!(
+            body_with_ct("text/plain;charset=UTF-8", &body).is_empty(),
+            "text/plain sensor beacon must be skipped by xss",
+        );
+    }
+
+    #[test]
+    fn real_xss_in_short_text_body_still_fires() {
+        // Same shape in a short, low-entropy body → NOT a beacon → fires.
+        assert!(
+            !body_with_ct("text/plain", "<img src=x onerror=alert(1)>").is_empty(),
+            "real xss in a normal text body must still fire",
+        );
+    }
 }

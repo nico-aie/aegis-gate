@@ -84,7 +84,11 @@ impl Detector for SsrfDetector {
         }
 
         let body = std::str::from_utf8(req.body.peek(8192)).unwrap_or("");
-        if !body.is_empty() {
+        // S-B (2026-06-18 round-2) — skip bot-management sensor beacons
+        // (form-urlencoded/text-plain single huge high-entropy value). The
+        // blob coincidentally matches internal-host/userinfo URL shapes.
+        // Mirrors the cmdi/sqli body gate.
+        if !body.is_empty() && !super::form_body_is_opaque_beacon(req.headers, body) {
             check_ssrf(&super::url_decode(body), "body", &mut signals);
         }
 
@@ -352,5 +356,46 @@ mod tests {
         let signals = d.inspect(&req);
         assert_eq!(signals.len(), 1, "X-Rewrite-URL with loopback must still SSRF");
         assert_eq!(signals[0].tag, "ssrf");
+    }
+
+    // ===== S-B (2026-06-18 round-2) — beacon gate on the body scan =====
+
+    fn ssrf_blob() -> String {
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+            .chars()
+            .cycle()
+            .take(320)
+            .collect()
+    }
+
+    fn body_view_ct(ct: &str, body: &str) -> (http::Method, http::Uri, http::HeaderMap, BodyPeek) {
+        let mut h = http::HeaderMap::new();
+        h.insert("content-type", ct.parse().unwrap());
+        (
+            http::Method::POST,
+            "/tr/".parse().unwrap(),
+            h,
+            BodyPeek::new(body.as_bytes().to_vec(), Some(body.len() as u64), false),
+        )
+    }
+
+    #[test]
+    fn text_plain_sensor_beacon_with_coincidental_ssrf_is_skipped() {
+        // 2026-06-18 r2: a text/plain sensor beacon whose high-entropy blob
+        // coincidentally contains an internal-host URL must be skipped.
+        let d = SsrfDetector;
+        let body = format!("{{\"sensor_data\":\"{}http://127.0.0.1/x\"}}", ssrf_blob());
+        let (m, u, h, b) = body_view_ct("text/plain;charset=UTF-8", &body);
+        let req = make_view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).is_empty(), "text/plain sensor beacon must be skipped by ssrf");
+    }
+
+    #[test]
+    fn real_ssrf_in_short_body_still_fires() {
+        // Same internal URL in a short body → NOT a beacon → fires.
+        let d = SsrfDetector;
+        let (m, u, h, b) = body_view_ct("text/plain", "url=http://169.254.169.254/latest/meta-data/");
+        let req = make_view(&m, &u, &h, &b);
+        assert!(!d.inspect(&req).is_empty(), "real ssrf in a normal body must still fire");
     }
 }

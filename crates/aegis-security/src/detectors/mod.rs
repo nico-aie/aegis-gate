@@ -513,13 +513,19 @@ pub(crate) fn form_body_is_opaque_beacon(headers: &http::HeaderMap, body: &str) 
     if has_high_signal_injection_shape(body) {
         return false;
     }
-    // Longest single value among `&`-separated pairs (text/plain has no
-    // `&`/`=`, so the whole body is the value).
-    let longest = body
-        .split('&')
-        .map(|pair| pair.split_once('=').map(|(_, v)| v).unwrap_or(pair))
-        .max_by_key(|v| v.len())
-        .unwrap_or("");
+    // Longest single value. For `text/plain` the whole body IS the value —
+    // do NOT split on `=` (real sensor beacons are JSON-ish text containing
+    // `=`, e.g. base64 padding `…Hi8=;…`; splitting would truncate the
+    // candidate value and let the beacon escape the gate). For
+    // form-urlencoded, take the longest value among `&`-separated `k=v` pairs.
+    let longest = if ct == "text/plain" {
+        body
+    } else {
+        body.split('&')
+            .map(|pair| pair.split_once('=').map(|(_, v)| v).unwrap_or(pair))
+            .max_by_key(|v| v.len())
+            .unwrap_or("")
+    };
     longest.len() >= BEACON_MIN_VALUE_LEN
         && (longest.len() as f32) >= BEACON_DOMINANCE * (body.len() as f32)
         && shannon_entropy(longest) >= BEACON_MIN_ENTROPY_BITS
@@ -896,6 +902,19 @@ mod tests {
         assert!(
             form_body_is_opaque_beacon(&h, &body),
             "beacon with only stray bare metachars must stay opaque",
+        );
+    }
+
+    #[test]
+    fn beacon_text_plain_with_embedded_equals_stays_opaque() {
+        // Real Akamai `sensor_data` text/plain bodies are JSON-ish and carry
+        // `=` (base64 padding) — the gate must not split on `=` for
+        // text/plain or the candidate value truncates and the beacon escapes.
+        let body = format!("{{\"sensor_data\":\"{}Hi8=;8,17,0,0\"}}", high_entropy_blob());
+        let h = headers_ct("text/plain;charset=UTF-8");
+        assert!(
+            form_body_is_opaque_beacon(&h, &body),
+            "text/plain beacon with embedded '=' must stay opaque",
         );
     }
 
