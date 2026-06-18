@@ -529,6 +529,16 @@ pub struct FoldedReloadTargets {
     pub active_ruleset: Option<Arc<aegis_security::RuleSet>>,
     pub upstream_writer:
         Option<Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>>,
+    /// 2026-06-18 (runtime_gate_toggles_not_durable) — gate runtimes so a
+    /// file/etcd reload re-derives them too (the shared-store watcher does
+    /// via `ApplyTargets`). The DDoS runtime is `OnceCell`-installed at boot.
+    pub ddos: Option<Arc<aegis_security::ddos::DdosRuntime>>,
+    /// Live risk tracker — re-derives cumulative thresholds + Strike-Block.
+    pub risk: Option<aegis_security::risk::RiskTracker>,
+    /// Canary honeypot path set.
+    pub canary_paths: Option<aegis_security::detectors::canary::CanaryPaths>,
+    /// Bot-classifier gate toggle (shared `AtomicBool`).
+    pub bots_enabled: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// 2026-05-28 (Phase B fold parity) — re-derive the folded stores from
@@ -552,6 +562,11 @@ pub async fn apply_folded_stores(new_cfg: &WafConfig, t: &FoldedReloadTargets) {
     let _ = apply_cfg_change_to_rules(new_cfg, t.rules.as_ref(), t.active_ruleset.as_ref());
     let _ = apply_cfg_change_to_upstreams(new_cfg, t.upstream_writer.as_ref()).await;
     let _ = apply_cfg_change_to_copilot(new_cfg).await;
+    // 2026-06-18 — gate runtimes (ddos / risk thresholds + strikes + canary /
+    // bots). File/etcd reload parity with the shared-store watcher.
+    let _ = apply_cfg_change_to_ddos(new_cfg, t.ddos.as_ref());
+    let _ = apply_cfg_change_to_risk(new_cfg, t.risk.as_ref(), t.canary_paths.as_ref());
+    let _ = apply_cfg_change_to_bots(new_cfg, t.bots_enabled.as_ref());
 }
 
 /// 2026-06-03 (config-plane fold) — rebuild the AI Operator Copilot from
@@ -595,6 +610,94 @@ pub fn derive_ip_rate_cfg(cfg: &WafConfig) -> IpRateLimitConfig {
             window: b.window,
         })
         .unwrap_or_default()
+}
+
+/// Derive the live `DdosRuntime` config from a `WafConfig`, mirroring the
+/// boot path in `run()`: start from `cfg.ddos`, then overlay the per-tier
+/// failure-mode policy from `cfg.fail_mode_by_tier`. Shared between boot and
+/// the hot-reload helper so the two never drift.
+pub fn derive_ddos_runtime_cfg(cfg: &WafConfig) -> aegis_security::ddos::DdosConfig {
+    let mut ddos_cfg: aegis_security::ddos::DdosConfig = cfg.ddos.clone().into();
+    for (tier, mode) in &cfg.fail_mode_by_tier {
+        let runtime_mode = match mode {
+            aegis_core::config::FailureModeConfig::FailClose => {
+                aegis_core::tier::FailureMode::FailClose
+            }
+            aegis_core::config::FailureModeConfig::FailOpen => {
+                aegis_core::tier::FailureMode::FailOpen
+            }
+        };
+        ddos_cfg.failure_mode.insert(*tier, runtime_mode);
+    }
+    ddos_cfg
+}
+
+/// Outcome of a gate-style reload (ddos / risk / bots) — whether a live
+/// runtime handle was wired to receive the re-derived config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateReloadOutcome {
+    NoHandle,
+    Applied,
+}
+
+/// 2026-06-18 (runtime_gate_toggles_not_durable) — re-derive the DDoS gate
+/// runtime from `new_cfg`. Without this the shared-config watcher published
+/// the operator's `ddos` change to `config:waf:doc` but never re-installed
+/// it into the live `DdosRuntime`, so a restart reverted to the waf.yaml
+/// value. The per-IP sliding-window state in the StateBackend is untouched —
+/// `set_config` swaps only the thresholds.
+pub fn apply_cfg_change_to_ddos(
+    new_cfg: &WafConfig,
+    ddos: Option<&Arc<aegis_security::ddos::DdosRuntime>>,
+) -> GateReloadOutcome {
+    let Some(rt) = ddos else {
+        return GateReloadOutcome::NoHandle;
+    };
+    rt.set_config(derive_ddos_runtime_cfg(new_cfg));
+    GateReloadOutcome::Applied
+}
+
+/// 2026-06-18 — re-derive the bot-classifier gate toggle from
+/// `new_cfg.bots.enabled` (shared `AtomicBool` read by the data plane).
+pub fn apply_cfg_change_to_bots(
+    new_cfg: &WafConfig,
+    bots_enabled: Option<&Arc<std::sync::atomic::AtomicBool>>,
+) -> GateReloadOutcome {
+    let Some(toggle) = bots_enabled else {
+        return GateReloadOutcome::NoHandle;
+    };
+    toggle.store(new_cfg.bots.enabled, std::sync::atomic::Ordering::Relaxed);
+    GateReloadOutcome::Applied
+}
+
+/// 2026-06-18 — re-derive the risk-based gates from `new_cfg.risk`:
+/// cumulative-risk thresholds, the Strike-Block gate, and the canary
+/// honeypot path set. Per-IP risk/strike state in the tracker is preserved
+/// (only the config snapshots swap). Each handle is independent; a `None`
+/// handle is skipped, and a `risk.strikes` left unset preserves the live
+/// strike config (the dashboard PUT always writes it once configured).
+pub fn apply_cfg_change_to_risk(
+    new_cfg: &WafConfig,
+    risk: Option<&aegis_security::risk::RiskTracker>,
+    canary: Option<&aegis_security::detectors::canary::CanaryPaths>,
+) -> GateReloadOutcome {
+    let mut applied = false;
+    if let Some(tracker) = risk {
+        tracker.set_thresholds(new_cfg.risk.thresholds.clone());
+        if let Some(sc) = &new_cfg.risk.strikes {
+            tracker.set_strike_config(sc.clone());
+        }
+        applied = true;
+    }
+    if let Some(c) = canary {
+        c.set(&new_cfg.risk.canary_paths);
+        applied = true;
+    }
+    if applied {
+        GateReloadOutcome::Applied
+    } else {
+        GateReloadOutcome::NoHandle
+    }
 }
 
 /// Rebuild the live `ProxyContext.route_table` from
@@ -1367,6 +1470,116 @@ rules:
         assert!(
             !ai.load(std::sync::atomic::Ordering::Relaxed),
             "AI toggle re-derived from cfg.ai.enabled (false here)",
+        );
+    }
+
+    // ---- 2026-06-18 gate-toggle read-back helpers ----
+    // (runtime_gate_toggles_not_durable) — prove a converged config doc
+    // re-installs into the live gate runtimes, the read-back side the PUT
+    // handlers' publish side depends on for restart durability.
+
+    fn gate_yaml(ddos_enabled: bool, risk_enabled: bool, bots_enabled: bool) -> String {
+        format!(
+            r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+ddos:
+  enabled: {ddos_enabled}
+  per_ip_limit: 100
+  per_ip_window_s: 10
+  block_ttl_s: 60
+  spike_multiplier: 3.0
+  tightened_per_ip_rps: 20
+risk:
+  thresholds: {{ enabled: {risk_enabled}, challenge_at: 40, block_at: 70, max: 100 }}
+  strikes: {{ enabled: true, block_at: 25 }}
+  canary_paths: ["/wp-admin", "/.env"]
+bots:
+  enabled: {bots_enabled}
+"#
+        )
+    }
+
+    #[test]
+    fn ddos_readback_reinstalls_runtime_config() {
+        use crate::state::in_memory::InMemoryBackend;
+        // Runtime installed ENABLED at boot; converged doc says disabled.
+        let boot = parse(&gate_yaml(true, true, true));
+        let backend: Arc<dyn aegis_core::state::StateBackend> = Arc::new(InMemoryBackend::new());
+        let rt = Arc::new(aegis_security::ddos::DdosRuntime::new(
+            derive_ddos_runtime_cfg(&boot),
+            backend,
+        ));
+        assert!(rt.config_snapshot().enabled, "precondition: ddos enabled at boot");
+
+        let doc = parse(&gate_yaml(false, true, true));
+        assert_eq!(
+            apply_cfg_change_to_ddos(&doc, Some(&rt)),
+            GateReloadOutcome::Applied,
+        );
+        assert!(
+            !rt.config_snapshot().enabled,
+            "ddos runtime re-derived from doc → disabled (the read-back fix)",
+        );
+    }
+
+    #[test]
+    fn ddos_readback_no_handle_is_noop() {
+        let doc = parse(&gate_yaml(false, true, true));
+        assert_eq!(
+            apply_cfg_change_to_ddos(&doc, None),
+            GateReloadOutcome::NoHandle,
+        );
+    }
+
+    #[test]
+    fn risk_readback_swaps_thresholds_and_canary() {
+        let boot = parse(&gate_yaml(true, true, true));
+        let tracker = aegis_security::risk::RiskTracker::new(&boot.risk);
+        assert!(tracker.thresholds().enabled, "precondition: thresholds enabled");
+        let canary = aegis_security::detectors::canary::CanaryPaths::new(&boot.risk.canary_paths);
+
+        let mut doc = parse(&gate_yaml(true, false, true));
+        doc.risk.canary_paths = vec!["/only-this".to_string()];
+        assert_eq!(
+            apply_cfg_change_to_risk(&doc, Some(&tracker), Some(&canary)),
+            GateReloadOutcome::Applied,
+        );
+        assert!(
+            !tracker.thresholds().enabled,
+            "thresholds re-derived from doc → disabled",
+        );
+        assert_eq!(
+            canary.raw(),
+            vec!["/only-this".to_string()],
+            "canary set re-derived from doc",
+        );
+    }
+
+    #[test]
+    fn bots_readback_flips_toggle() {
+        let doc = parse(&gate_yaml(true, true, false));
+        let toggle = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        assert_eq!(
+            apply_cfg_change_to_bots(&doc, Some(&toggle)),
+            GateReloadOutcome::Applied,
+        );
+        assert!(
+            !toggle.load(std::sync::atomic::Ordering::Relaxed),
+            "bots toggle re-derived from doc → off",
         );
     }
 
