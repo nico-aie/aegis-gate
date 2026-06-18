@@ -35,10 +35,17 @@ impl Detector for HeaderInjectionDetector {
     fn inspect(&self, req: &RequestView<'_>) -> Vec<Signal> {
         let mut signals = Vec::new();
 
-        // Check query string for CRLF injection (both raw and decoded).
+        // Query string — S-E (2026-06-18 r2): a CRLF in a query value is
+        // header injection only when a header-name token follows it. A bare
+        // encoded `%0a`/`%0d` in a benign analytics value (button text,
+        // JSON-in-query) carries no token and is no longer flagged. Bare
+        // dangerous tokens (`Set-Cookie:`, `Location:https://`, …) still fire.
         if let Some(query) = req.uri.query() {
-            check(query, "query", &mut signals);
-            check(&super::url_decode(query), "query", &mut signals);
+            let before = signals.len();
+            check_header_injection(query, "query", &mut signals);
+            if signals.len() == before {
+                check_header_injection(&super::url_decode(query), "query", &mut signals);
+            }
         }
 
         // 2026-06-16 (sec-regression §3b) — CRLF smuggled in the PATH
@@ -69,7 +76,15 @@ impl Detector for HeaderInjectionDetector {
                 continue;
             }
             if let Ok(val) = value.to_str() {
-                check_crlf(val, name_str, &mut signals);
+                // S-E (2026-06-18 r2): header VALUES (cookies/referer/custom)
+                // routinely carry encoded `%0d%0a` inside base64/URL data;
+                // require a header-name token after the CRLF, same as the
+                // query. (Raw `\r`/`\n` can't reach here — hyper rejects it.)
+                let before = signals.len();
+                check_header_injection(val, name_str, &mut signals);
+                if signals.len() == before {
+                    check_header_injection(&super::url_decode(val), name_str, &mut signals);
+                }
             }
         }
 
@@ -445,16 +460,38 @@ fn check_url_override(req: &RequestView<'_>, signals: &mut Vec<Signal>) {
     }
 }
 
-fn check(input: &str, field: &str, signals: &mut Vec<Signal>) {
-    for re in INJECTION_PATTERNS.iter() {
-        if re.is_match(input) {
-            signals.push(Signal {
-                score: super::scores::header_injection::CRLF,
-                tag: "header_injection".into(),
-                field: field.into(),
-            });
-            return;
-        }
+/// S-E (2026-06-18 round-2) — a CRLF (raw or percent-encoded) followed by a
+/// header-name token (`name:`). This is the actual response-splitting shape;
+/// a bare encoded newline without a following token is benign data (analytics
+/// button text, base64 cookie values) and no longer flagged.
+static CRLF_THEN_HEADER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(?:\r\n|\r|\n|%0d%0a|%0d|%0a|\\r\\n)(?:[ \t]|%20)*[A-Za-z][A-Za-z0-9_-]*\s*:",
+    )
+    .expect("crlf-then-header regex compiles")
+});
+
+/// Index in [`INJECTION_PATTERNS`] where the bare dangerous-header tokens
+/// begin (`Set-Cookie:`, `Location:https://`, `Content-Type:`,
+/// `Transfer-Encoding:`, `X-Forwarded-For:`, `HTTP/d.d ddd`). Patterns
+/// before this are the CRLF primitives.
+const DANGEROUS_TOKEN_START: usize = 6;
+
+/// Header-injection scan for the QUERY and HEADER-VALUE surfaces: fire on a
+/// CRLF-then-header-token shape, or on a bare dangerous-header token. Unlike
+/// [`check_crlf`] (path), a lone CRLF does NOT fire here (S-E FP fix).
+fn check_header_injection(input: &str, field: &str, signals: &mut Vec<Signal>) {
+    let hit = CRLF_THEN_HEADER.is_match(input)
+        || INJECTION_PATTERNS
+            .iter()
+            .skip(DANGEROUS_TOKEN_START)
+            .any(|re| re.is_match(input));
+    if hit {
+        signals.push(Signal {
+            score: super::scores::header_injection::CRLF,
+            tag: "header_injection".into(),
+            field: field.into(),
+        });
     }
 }
 
