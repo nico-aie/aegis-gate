@@ -25,6 +25,16 @@ pub struct ReadinessSignal {
     /// [`Self::is_ready`]: a transient backend blip surfaces as `degraded`
     /// (HTTP 200, still serving) rather than 503 (pulled from the LB).
     pub state_backend_connected: Arc<AtomicBool>,
+    /// R-1b (2026-06-19): live state-backend **writability**, refreshed by the
+    /// same proxy poller via a tiny set/del probe. A read-only Redis replica
+    /// (the `REPLICAOF`-hijack scenario) still answers PING — so
+    /// [`Self::state_backend_connected`] stays `true` — but rejects writes,
+    /// which silently broke admin-session persistence. Reported on
+    /// `/healthz/ready` as `checks.state_backend_writable` (surfaces as
+    /// `degraded`, HTTP 200); like the connectivity signal it is NOT a gate —
+    /// the data plane keeps serving on in-memory fallback. Defaults `true` so
+    /// a node isn't falsely degraded before the first probe tick.
+    pub state_backend_writable: Arc<AtomicBool>,
     pub certs_loaded: Arc<AtomicBool>,
     pub pool_has_healthy: Arc<AtomicBool>,
     pub draining: Arc<AtomicBool>,
@@ -45,6 +55,9 @@ impl Default for ReadinessSignal {
             config_loaded: Arc::new(AtomicBool::new(false)),
             state_warmup_done: Arc::new(AtomicBool::new(false)),
             state_backend_connected: Arc::new(AtomicBool::new(false)),
+            // Default true (report-only): avoid a spurious "degraded" before
+            // the first write-probe tick; the poller corrects within ~3 s.
+            state_backend_writable: Arc::new(AtomicBool::new(true)),
             certs_loaded: Arc::new(AtomicBool::new(false)),
             pool_has_healthy: Arc::new(AtomicBool::new(false)),
             draining: Arc::new(AtomicBool::new(false)),

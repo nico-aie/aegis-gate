@@ -47,6 +47,21 @@ const DEFAULT_LIMIT: u32 = 1_000_000;
 const DEFAULT_WINDOW: Duration = Duration::from_secs(60);
 const IDLE_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
+/// PROXY-05 (LT-RUN-11, 2026-06-19) — hard cardinality ceiling, mirroring
+/// `RiskTracker` (PROXY-02). The map is keyed on `RiskKey`
+/// (IP + device_fp + **session cookie**), so a flood of unique session
+/// cookies allocated one `VecDeque` per request and the idle sweep only runs
+/// once/60s → unbounded growth between sweeps. Once at the ceiling we stop
+/// tracking BRAND-NEW keys; a unique-key flood has a window count of 1 per key
+/// anyway, so each is allowed as a single request without persisting, while
+/// existing flooding sources keep their buckets and stay limited.
+#[cfg(not(test))]
+const MAX_TRACKED_KEYS: usize = 1_000_000;
+/// Small in tests (but above the 50-distinct-key sweep test) so the cap is
+/// exercisable without a million inserts.
+#[cfg(test)]
+const MAX_TRACKED_KEYS: usize = 64;
+
 /// Rate-limit decision returned to the hot path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct RateDecision {
@@ -164,50 +179,65 @@ impl IpRateLimiter {
         now: Instant,
     ) -> RateDecision {
         let cfg = **self.inner.cfg.load();
-        let mut entry = self.inner.map.entry(key).or_default();
         let cutoff = now.checked_sub(cfg.window).unwrap_or(now);
 
-        // Drop timestamps older than the window. The deque is
-        // maintained in increasing order so a front-pop loop
-        // is O(k) where k = expired entries this call.
-        while let Some(&t) = entry.front() {
-            if t < cutoff {
-                entry.pop_front();
-            } else {
-                break;
+        // Window prune + accept/deny decision over one bucket. Shared between
+        // the existing-key fast path and a freshly-inserted bucket so the two
+        // can't drift.
+        let decide = |entry: &mut VecDeque<Instant>| -> RateDecision {
+            // Drop timestamps older than the window. The deque is maintained
+            // in increasing order so a front-pop loop is O(k) where k =
+            // expired entries this call.
+            while let Some(&t) = entry.front() {
+                if t < cutoff {
+                    entry.pop_front();
+                } else {
+                    break;
+                }
             }
-        }
-
-        let count_before = entry.len() as u32;
-        if count_before >= cfg.limit {
-            // Don't push when denied — the limiter measures
-            // the "would-have" request rate, not "tried" rate.
-            // This makes recovery deterministic: once N seconds
-            // pass, the oldest entries roll out and traffic
-            // resumes.
-            let oldest = entry.front().copied().unwrap_or(now);
-            let elapsed = now.saturating_duration_since(oldest);
-            let retry = cfg.window.saturating_sub(elapsed);
-            drop(entry);
-            self.maybe_sweep(now);
-            return RateDecision {
-                allowed: false,
-                count: count_before,
+            let count_before = entry.len() as u32;
+            if count_before >= cfg.limit {
+                // Don't push when denied — the limiter measures the
+                // "would-have" request rate, not "tried" rate. Recovery is
+                // deterministic: once N seconds pass the oldest entries roll
+                // out and traffic resumes.
+                let oldest = entry.front().copied().unwrap_or(now);
+                let elapsed = now.saturating_duration_since(oldest);
+                let retry = cfg.window.saturating_sub(elapsed);
+                return RateDecision {
+                    allowed: false,
+                    count: count_before,
+                    limit: cfg.limit,
+                    retry_after_seconds: retry.as_secs().max(1) as u32,
+                };
+            }
+            entry.push_back(now);
+            RateDecision {
+                allowed: true,
+                count: entry.len() as u32,
                 limit: cfg.limit,
-                retry_after_seconds: retry.as_secs().max(1) as u32,
-            };
-        }
+                retry_after_seconds: 0,
+            }
+        };
 
-        entry.push_back(now);
-        let count_after = entry.len() as u32;
-        drop(entry);
+        let decision = if let Some(mut entry) = self.inner.map.get_mut(&key) {
+            decide(&mut entry)
+        } else if self.inner.map.len() >= MAX_TRACKED_KEYS {
+            // PROXY-05 — at the cardinality cap: don't allocate a bucket for a
+            // brand-new key (a unique-key flood is 1 request per key, so this
+            // single request is allowed; nothing is stored).
+            RateDecision {
+                allowed: true,
+                count: 1,
+                limit: cfg.limit,
+                retry_after_seconds: 0,
+            }
+        } else {
+            let mut entry = self.inner.map.entry(key).or_default();
+            decide(&mut entry)
+        };
         self.maybe_sweep(now);
-        RateDecision {
-            allowed: true,
-            count: count_after,
-            limit: cfg.limit,
-            retry_after_seconds: 0,
-        }
+        decision
     }
 
     /// Sweep IPs that have been idle for more than 2× the
@@ -374,6 +404,39 @@ mod tests {
             l.consume(ip(&format!("10.0.0.{i}")));
         }
         assert_eq!(l.tracked(), 50);
+    }
+
+    // PROXY-05 (LT-RUN-11) — a unique-key flood must not grow the map without
+    // bound. At MAX_TRACKED_KEYS (64 in tests) new keys are allowed as a single
+    // request but not tracked; existing flooders stay limited.
+    #[test]
+    fn cardinality_cap_bounds_map_but_keeps_existing_limited() {
+        use aegis_core::risk::RiskKey;
+        let l = limiter(100, 60);
+        let now = Instant::now();
+
+        // Fill to the cap with distinct keys (unique session cookies).
+        for i in 0..MAX_TRACKED_KEYS {
+            let key = RiskKey::from_ip(ip(&format!("10.0.{}.{}", i / 256, i % 256)));
+            assert!(l.consume_at_with_key(key, now).allowed);
+        }
+        assert_eq!(l.tracked(), MAX_TRACKED_KEYS);
+
+        // A brand-new key past the cap is allowed but NOT tracked.
+        let overflow = RiskKey::from_ip(ip("172.16.9.9"));
+        let d = l.consume_at_with_key(overflow, now);
+        assert!(d.allowed && d.count == 1, "overflow request allowed as a singleton");
+        assert_eq!(l.tracked(), MAX_TRACKED_KEYS, "map stays bounded at the cap");
+
+        // An EXISTING key keeps its bucket and is still rate-limited.
+        let existing = RiskKey::from_ip(ip("10.0.0.0"));
+        let tight = limiter(2, 60);
+        tight.consume_at_with_key(existing.clone(), now);
+        tight.consume_at_with_key(existing.clone(), now);
+        assert!(
+            !tight.consume_at_with_key(existing, now).allowed,
+            "an existing source is still limited after the cap logic",
+        );
     }
 
     #[test]

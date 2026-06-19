@@ -34,6 +34,16 @@ use crate::admin_dispatch::{handle_admin_request, read_cert_inventory, stamp_int
 use crate::admin_sse;
 use crate::data_plane::handle_data_request;
 
+/// PROXY-04 (LT-RUN-11, 2026-06-19) — slowloris guard. hyper's builders impose
+/// no header-read deadline by default, so a client that opens a connection and
+/// dribbles request-header bytes pins a tokio task + socket indefinitely (the
+/// `LoadShedder` only gates request *processing*, reached after headers are
+/// read). Bounding the header-read phase closes the classic slow-header
+/// slowloris while leaving long-lived post-request streams (SSE, WebSocket
+/// upgrades) untouched — it caps only the time to finish reading the request
+/// head, not the connection lifetime.
+const HEADER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 #[cfg(feature = "redis")]
 /// Broadcast capacity for the fleet-event bus (cluster Phase 2). Peers'
 /// events fan in here for the SSE merge; a slow dashboard drops the
@@ -1423,13 +1433,23 @@ pub(crate) async fn admin_accept_loop(
             match io {
                 AdminIo::Tls(tls_stream) => {
                     let io = TokioIo::new(tls_stream);
-                    if let Err(e) = http1::Builder::new().serve_connection(io, svc).await {
+                    if let Err(e) = http1::Builder::new()
+                        .timer(hyper_util::rt::TokioTimer::new())
+                        .header_read_timeout(HEADER_READ_TIMEOUT)
+                        .serve_connection(io, svc)
+                        .await
+                    {
                         tracing::debug!("admin TLS connection from {peer} closed: {e}");
                     }
                 }
                 AdminIo::Plain(stream) => {
                     let io = TokioIo::new(stream);
-                    if let Err(e) = http1::Builder::new().serve_connection(io, svc).await {
+                    if let Err(e) = http1::Builder::new()
+                        .timer(hyper_util::rt::TokioTimer::new())
+                        .header_read_timeout(HEADER_READ_TIMEOUT)
+                        .serve_connection(io, svc)
+                        .await
+                    {
                         tracing::debug!("admin connection from {peer} closed: {e}");
                     }
                 }
@@ -2213,9 +2233,14 @@ pub(crate) async fn accept_loop(
             match served {
                 Some(ServedIo::Tls(tls_stream)) => {
                     let io = TokioIo::new(tls_stream);
-                    let builder = hyper_util::server::conn::auto::Builder::new(
+                    let mut builder = hyper_util::server::conn::auto::Builder::new(
                         hyper_util::rt::TokioExecutor::new(),
                     );
+                    // PROXY-04 — bound the header-read phase (h1 path). The h2
+                    // path has its own keep-alive/settings timers. A Timer must
+                    // be configured or header_read_timeout panics at runtime.
+                    builder.http1().timer(hyper_util::rt::TokioTimer::new());
+                    builder.http1().header_read_timeout(HEADER_READ_TIMEOUT);
                     if let Err(e) =
                         builder.serve_connection_with_upgrades(io, svc).await
                     {
@@ -2235,6 +2260,8 @@ pub(crate) async fn accept_loop(
                     // upgrades via `serve_connection_with_upgrades`; the
                     // plain branch must match or WS only works over TLS.
                     if let Err(e) = http1::Builder::new()
+                        .timer(hyper_util::rt::TokioTimer::new())
+                        .header_read_timeout(HEADER_READ_TIMEOUT)
                         .serve_connection(io, svc)
                         .with_upgrades()
                         .await

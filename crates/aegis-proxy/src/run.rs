@@ -1468,12 +1468,20 @@ pub async fn run(
         // v2.3 §3 + NEW-2 (2026-05-08) — install the PoW issuer
         // so the data-plane challenge body carries
         // `{nonce, difficulty, expires_at_ms, mac, submit_to}`
-        // instead of just `challenge_type`. The HMAC key is
-        // derived from the interop control secret so issuers and
-        // verifiers across the same deployment agree on MACs
-        // (relevant once multi-node ships — see
-        // plans/multi-node-deployment/).
-        let pow_key = derive_pow_key(&rt.control.secret);
+        // instead of just `challenge_type`. SEC-01 (2026-06-19):
+        // the HMAC key is derived from `interop.challenge_secret`
+        // (NOT the contract-public control secret); when unset we
+        // use a random per-process key.
+        let challenge_secret = cfg.interop.challenge_secret.as_deref();
+        if challenge_secret.map(str::trim).filter(|s| !s.is_empty()).is_none() {
+            tracing::info!(
+                "challenge/PoW MAC key: using a random per-process key \
+                 (interop.challenge_secret unset). Multi-node clusters MUST set \
+                 a shared interop.challenge_secret so a challenge-pass minted on \
+                 one node verifies on another.",
+            );
+        }
+        let pow_key = resolve_challenge_key(challenge_secret);
         let pow_issuer = std::sync::Arc::new(aegis_security::challenge::PowIssuer::new(
             pow_key,
             // v2.6 §4 Format B counts leading-zero HEX CHARS, so
@@ -2190,6 +2198,14 @@ pub async fn run(
         let store = std::sync::Arc::clone(&state);
         let readiness_for_health = readiness.clone();
         tokio::spawn(async move {
+            // R-1b (2026-06-19): a read-only Redis replica (the REPLICAOF-hijack
+            // scenario) still answers `health()`/PING (`connected: true`) but
+            // rejects WRITES — which silently broke admin-session persistence.
+            // A tiny set-probe surfaces writability so `/healthz/ready` reports
+            // `degraded` instead of looking healthy. Single self-expiring key;
+            // one write per tick is negligible. Reported, never gating.
+            const WRITE_PROBE_KEY: &str = "__waf:health:writeprobe";
+            let probe_ttl = std::time::Duration::from_secs(15);
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(3));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
@@ -2198,6 +2214,10 @@ pub async fn run(
                 readiness_for_health
                     .state_backend_connected
                     .store(connected, Ordering::Relaxed);
+                let writable = store.set(WRITE_PROBE_KEY, b"1", probe_ttl).await.is_ok();
+                readiness_for_health
+                    .state_backend_writable
+                    .store(writable, Ordering::Relaxed);
             }
         });
     }
@@ -2284,14 +2304,95 @@ pub(crate) async fn force_https_loop(
     }
 }
 
-/// 2026-05-08 NEW-2 — derive a 32-byte HMAC key for the PoW
-/// challenge issuer from the interop control secret. The same
-/// derivation runs on every node so a multi-node cluster
-/// produces compatible MACs without coordinating a separate
-/// challenge-key rotation. Domain-separated via the prefix.
-fn derive_pow_key(control_secret: &str) -> [u8; 32] {
-    let h = blake3::hash(format!("aegis-pow-key-v1:{control_secret}").as_bytes());
-    *h.as_bytes()
+/// SEC-01 (LT-RUN-11, 2026-06-19) — resolve the 32-byte HMAC key for the PoW /
+/// `waf_challenge_pass` issuer.
+///
+/// Previously this was derived from `interop.control_secret`. That secret is
+/// **contract-public** (v2.6 mandates a fixed `X-Benchmark-Secret:
+/// waf-hackathon-2026-ctrl`), so anyone could reconstruct the key and mint a
+/// valid challenge-pass, bypassing the entire bot-mitigation ladder on the
+/// public data plane. The key is now decoupled:
+///
+/// - `Some(non-empty)` → derive deterministically from the operator-set
+///   `interop.challenge_secret`, domain-separated. Identical on every node, so
+///   a cluster produces compatible MACs (set a shared `${secret:...}` value).
+/// - `None`/blank → a random per-process key (CSPRNG via `uuid::Uuid::new_v4`,
+///   the same source already used for request IDs). Secure by default and
+///   needs zero config for the common single-node case; not portable across a
+///   restart or across nodes (challenge passes have a 60s validity window, so a
+///   restart merely forces a re-solve).
+fn resolve_challenge_key(challenge_secret: Option<&str>) -> [u8; 32] {
+    match challenge_secret.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(secret) => {
+            let h = blake3::hash(format!("aegis-pow-key-v1:{secret}").as_bytes());
+            *h.as_bytes()
+        }
+        None => {
+            let mut key = [0u8; 32];
+            key[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+            key[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+            key
+        }
+    }
+}
+
+#[cfg(test)]
+mod challenge_key_tests {
+    use super::resolve_challenge_key;
+
+    /// The legacy derivation that SEC-01 flagged: key == fn(control_secret).
+    /// The contract-public control secret. The new key MUST NOT equal this.
+    fn legacy_key_from_public_secret() -> [u8; 32] {
+        *blake3::hash(b"aegis-pow-key-v1:waf-hackathon-2026-ctrl").as_bytes()
+    }
+
+    #[test]
+    fn operator_secret_is_deterministic_and_cluster_shareable() {
+        let a = resolve_challenge_key(Some("a-shared-cluster-secret"));
+        let b = resolve_challenge_key(Some("a-shared-cluster-secret"));
+        assert_eq!(a, b, "same challenge_secret must yield the same key on every node");
+    }
+
+    #[test]
+    fn distinct_secrets_yield_distinct_keys() {
+        assert_ne!(
+            resolve_challenge_key(Some("secret-one")),
+            resolve_challenge_key(Some("secret-two")),
+        );
+    }
+
+    #[test]
+    fn unset_secret_is_not_derived_from_public_control_secret() {
+        // SEC-01: the core bypass was a key derivable from the public secret.
+        // With no challenge_secret we use a random key — never the public one.
+        assert_ne!(resolve_challenge_key(None), legacy_key_from_public_secret());
+    }
+
+    #[test]
+    fn operator_secret_is_independent_of_public_control_secret() {
+        // Even if an operator reuses the control secret value verbatim, the
+        // domain-separated derivation differs from the legacy raw derivation…
+        // and more importantly, operators are told to use a DIFFERENT secret.
+        assert_ne!(
+            resolve_challenge_key(Some("operator-chosen-high-entropy")),
+            legacy_key_from_public_secret(),
+        );
+    }
+
+    #[test]
+    fn unset_secret_generates_fresh_random_keys() {
+        // Random per-process: two resolutions differ with overwhelming prob.
+        assert_ne!(resolve_challenge_key(None), resolve_challenge_key(None));
+    }
+
+    #[test]
+    fn blank_secret_is_treated_as_unset() {
+        // Whitespace/empty must not collapse to a deterministic blank key;
+        // it falls through to the random path (so != a fixed derivation).
+        let blank = resolve_challenge_key(Some("   "));
+        let deterministic_empty = *blake3::hash(b"aegis-pow-key-v1:").as_bytes();
+        assert_ne!(blank, deterministic_empty);
+    }
 }
 
 /// PR-DNS-2 — extract the DNS-managed subset of a pool's currently

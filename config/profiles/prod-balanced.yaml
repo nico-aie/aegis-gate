@@ -89,7 +89,10 @@ upstreams:
 state:
   backend: redis
   redis:
-    urls: ["redis://127.0.0.1:6379"]  # REPLACE
+    # REPLACE. In any multi-node / non-loopback deploy the URL MUST carry the
+    # password (redis://:PASSWORD@host:6379) — see deploy/redis/redis.conf +
+    # HACKATHON-DEPLOY.md §2 (Redis hardening, R-2/R-6, 2026-06-19).
+    urls: ["redis://127.0.0.1:6379"]
     pool_size: 32
     timeout: "100ms"
 
@@ -285,3 +288,11 @@ interop:
   # the documented value for the hackathon stage; rotate via a
   # secret-ref in real prod.
   control_secret: "waf-hackathon-2026-ctrl"
+  # SEC-01 (2026-06-19) — the PoW / waf_challenge_pass MAC key is derived from
+  # `challenge_secret`, NOT the public `control_secret` above (deriving it from
+  # the contract-public value let anyone mint a challenge-pass and skip the
+  # bot-mitigation ladder). When unset, each node uses a random per-process key
+  # (secure, single-node). A MULTI-NODE cluster MUST set a shared high-entropy
+  # value here (via a secret-ref) so a challenge-pass minted on one node is
+  # accepted on another:
+  # challenge_secret: "${secret:env:AEGIS_CHALLENGE_SECRET}"

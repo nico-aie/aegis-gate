@@ -93,18 +93,25 @@ impl SessionStore {
         self.idle_ttl.to_std().unwrap_or(std::time::Duration::from_secs(1800))
     }
 
-    async fn put_record(&self, record: &SessionRecord) {
+    /// Persist a record. R-1 (2026-06-19): the shared-backend write now
+    /// PROPAGATES its error instead of swallowing it (`let _ =`). A read-only
+    /// / down Redis (the hijack scenario) must be visible to the caller so
+    /// `create` can fail the login loudly rather than issue a cookie for a
+    /// session that was never stored (→ silent 401 redirect loop). The
+    /// in-memory fallback is infallible.
+    async fn put_record(&self, record: &SessionRecord) -> aegis_core::Result<()> {
         if let Some(b) = &self.backend {
             let bytes = serde_json::to_vec(record).unwrap_or_default();
             // Idle TTL on the key auto-expires (and reaps) abandoned sessions;
             // absolute TTL is enforced on read from `issued_at`.
-            let _ = b.set(&Self::skey(&record.id), &bytes, self.idle_std()).await;
+            b.set(&Self::skey(&record.id), &bytes, self.idle_std()).await?;
         } else {
             self.local
                 .lock()
                 .unwrap()
                 .insert(record.id.clone(), record.clone());
         }
+        Ok(())
     }
 
     async fn get_record(&self, id: &str) -> Option<SessionRecord> {
@@ -127,7 +134,11 @@ impl SessionStore {
     }
 
     /// Create a new session; returns `(id, signed cookie value)`.
-    pub async fn create(&self, ip: &str, user_agent: &str) -> (String, String) {
+    ///
+    /// R-1 (2026-06-19): returns `Err` when the session record can't be
+    /// persisted to the shared backend (read-only / down Redis) so the caller
+    /// can return a 503 at login instead of a cookie that will never validate.
+    pub async fn create(&self, ip: &str, user_agent: &str) -> aegis_core::Result<(String, String)> {
         let id = generate_id();
         let now = Utc::now();
         let ua_hash = blake3::hash(user_agent.as_bytes()).to_hex().to_string();
@@ -139,9 +150,9 @@ impl SessionStore {
             ua_hash: ua_hash.clone(),
             totp_verified: false,
         };
-        self.put_record(&record).await;
+        self.put_record(&record).await?;
         let cookie = self.sign_cookie(&id, now.timestamp(), ip, &ua_hash);
-        (id, cookie)
+        Ok((id, cookie))
     }
 
     /// Validate a session cookie. Returns the record when the cookie's HMAC is
@@ -167,9 +178,13 @@ impl SessionStore {
             return None;
         }
 
-        // Slide the idle window (re-stores with a fresh idle TTL).
+        // Slide the idle window (re-stores with a fresh idle TTL). Best-effort:
+        // a valid, already-stored session must NOT be rejected just because the
+        // window-slide write failed (R-1 keeps the loud path on `create` only).
         record.last_seen = now;
-        self.put_record(&record).await;
+        if let Err(e) = self.put_record(&record).await {
+            tracing::debug!(error = %e, "session idle-window slide write failed (best-effort)");
+        }
         Some(record)
     }
 
@@ -182,7 +197,9 @@ impl SessionStore {
     pub async fn mark_totp_verified(&self, session_id: &str) -> bool {
         if let Some(mut record) = self.get_record(session_id).await {
             record.totp_verified = true;
-            self.put_record(&record).await;
+            if let Err(e) = self.put_record(&record).await {
+                tracing::warn!(error = %e, "marking session TOTP-verified failed to persist");
+            }
             true
         } else {
             false
@@ -254,7 +271,7 @@ mod tests {
     #[tokio::test]
     async fn create_and_validate_session() {
         let store = SessionStore::new(TEST_KEY);
-        let (id, cookie) = store.create("1.2.3.4", "Mozilla/5.0").await;
+        let (id, cookie) = store.create("1.2.3.4", "Mozilla/5.0").await.unwrap();
         assert!(!id.is_empty());
         assert!(cookie.contains('.'));
         let record = store.validate(&cookie).await.unwrap();
@@ -267,14 +284,14 @@ mod tests {
     async fn rejects_garbage_and_tampered() {
         let store = SessionStore::new(TEST_KEY);
         assert!(store.validate("garbage").await.is_none());
-        let (_, cookie) = store.create("1.2.3.4", "ua").await;
+        let (_, cookie) = store.create("1.2.3.4", "ua").await.unwrap();
         assert!(store.validate(&format!("{cookie}X")).await.is_none());
     }
 
     #[tokio::test]
     async fn revoke_session() {
         let store = SessionStore::new(TEST_KEY);
-        let (id, cookie) = store.create("1.2.3.4", "ua").await;
+        let (id, cookie) = store.create("1.2.3.4", "ua").await.unwrap();
         assert!(store.revoke(&id).await);
         assert!(store.validate(&cookie).await.is_none());
         assert!(!store.revoke("no-such-id").await);
@@ -283,7 +300,7 @@ mod tests {
     #[tokio::test]
     async fn mark_totp_verified() {
         let store = SessionStore::new(TEST_KEY);
-        let (id, cookie) = store.create("1.2.3.4", "ua").await;
+        let (id, cookie) = store.create("1.2.3.4", "ua").await.unwrap();
         assert!(store.mark_totp_verified(&id).await);
         assert!(store.validate(&cookie).await.unwrap().totp_verified);
     }
@@ -291,15 +308,15 @@ mod tests {
     #[tokio::test]
     async fn unique_session_ids() {
         let store = SessionStore::new(TEST_KEY);
-        let (id1, _) = store.create("1.2.3.4", "ua").await;
-        let (id2, _) = store.create("1.2.3.4", "ua").await;
+        let (id1, _) = store.create("1.2.3.4", "ua").await.unwrap();
+        let (id2, _) = store.create("1.2.3.4", "ua").await.unwrap();
         assert_ne!(id1, id2);
     }
 
     #[tokio::test]
     async fn honors_idle_ttl() {
         let store = SessionStore::with_ttls(TEST_KEY, Duration::seconds(1), Duration::hours(1));
-        let (id, cookie) = store.create("1.2.3.4", "ua").await;
+        let (id, cookie) = store.create("1.2.3.4", "ua").await.unwrap();
         {
             let mut g = store.local.lock().unwrap();
             g.get_mut(&id).unwrap().last_seen = Utc::now() - Duration::seconds(5);
@@ -310,7 +327,7 @@ mod tests {
     #[tokio::test]
     async fn honors_absolute_ttl() {
         let store = SessionStore::with_ttls(TEST_KEY, Duration::hours(1), Duration::seconds(1));
-        let (id, cookie) = store.create("1.2.3.4", "ua").await;
+        let (id, cookie) = store.create("1.2.3.4", "ua").await.unwrap();
         {
             let mut g = store.local.lock().unwrap();
             g.get_mut(&id).unwrap().issued_at = Utc::now() - Duration::seconds(5);
@@ -323,7 +340,7 @@ mod tests {
         let store = SessionStore::new(TEST_KEY);
         let mut set = std::collections::HashSet::new();
         for _ in 0..2_000 {
-            let (id, _) = store.create("1.2.3.4", "ua").await;
+            let (id, _) = store.create("1.2.3.4", "ua").await.unwrap();
             assert!(set.insert(id), "session id collision");
         }
     }
@@ -342,5 +359,93 @@ mod tests {
         assert!(constant_time_eq(b"hello", b"hello"));
         assert!(!constant_time_eq(b"hello", b"world"));
         assert!(!constant_time_eq(b"short", b"longer"));
+    }
+
+    // ---- R-1 (2026-06-19) — a failed session WRITE must surface, not be
+    // swallowed. A read-only / down backend (the prod Redis-hijack scenario)
+    // must make `create` return Err so login can 503 instead of issuing a
+    // cookie for a session that was never stored (→ silent 401 loop). ----
+
+    /// Backend whose writes always fail (models a read-only Redis replica).
+    struct FailWritesBackend;
+    #[async_trait::async_trait]
+    impl StateBackend for FailWritesBackend {
+        async fn get(&self, _: &str) -> aegis_core::Result<Option<Vec<u8>>> {
+            Ok(None)
+        }
+        async fn set(
+            &self,
+            _: &str,
+            _: &[u8],
+            _: std::time::Duration,
+        ) -> aegis_core::Result<()> {
+            Err(aegis_core::WafError::State(
+                "READONLY You can't write against a read only replica".into(),
+            ))
+        }
+        async fn del(&self, _: &str) -> aegis_core::Result<()> {
+            Ok(())
+        }
+        async fn incr_window(
+            &self,
+            _: &str,
+            _: std::time::Duration,
+            _: u64,
+        ) -> aegis_core::Result<aegis_core::state::SlidingWindowResult> {
+            Ok(aegis_core::state::SlidingWindowResult { count: 0, allowed: true, retry_after: None })
+        }
+        async fn token_bucket(&self, _: &str, _: u32, _: u32) -> aegis_core::Result<bool> {
+            Ok(true)
+        }
+        async fn get_risk(&self, _: &aegis_core::RiskKey) -> aegis_core::Result<u32> {
+            Ok(0)
+        }
+        async fn add_risk(
+            &self,
+            _: &aegis_core::RiskKey,
+            _: i32,
+            _: u32,
+        ) -> aegis_core::Result<u32> {
+            Ok(0)
+        }
+        async fn auto_block(
+            &self,
+            _: std::net::IpAddr,
+            _: std::time::Duration,
+        ) -> aegis_core::Result<()> {
+            Ok(())
+        }
+        async fn is_auto_blocked(&self, _: std::net::IpAddr) -> aegis_core::Result<bool> {
+            Ok(false)
+        }
+        async fn put_nonce(&self, _: &str, _: std::time::Duration) -> aegis_core::Result<bool> {
+            Ok(true)
+        }
+        async fn consume_nonce(&self, _: &str) -> aegis_core::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    #[tokio::test]
+    async fn create_propagates_backend_write_failure() {
+        let store = SessionStore::with_backend(
+            TEST_KEY,
+            Arc::new(FailWritesBackend),
+            Duration::minutes(30),
+            Duration::hours(8),
+        );
+        let result = store.create("9.9.9.9", "agent").await;
+        assert!(
+            result.is_err(),
+            "create must return Err when the backend write fails (read-only Redis)",
+        );
+    }
+
+    #[tokio::test]
+    async fn create_succeeds_on_in_memory_backend() {
+        // The no-backend (local map) path is infallible — login still works.
+        let store = SessionStore::new(TEST_KEY);
+        let (_, cookie) = store.create("1.2.3.4", "ua").await.expect("in-memory create is Ok");
+        assert!(store.validate(&cookie).await.is_some());
     }
 }

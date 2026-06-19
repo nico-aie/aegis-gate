@@ -144,6 +144,12 @@ pub(crate) async fn process_admin_login(
         LoginOutcome::BadRequest { body } => {
             json_body_response(400, body, "no-store")
         }
+        // R-1 (2026-06-19) — credentials OK but the session store write failed
+        // (read-only / down Redis). 503 so the operator retries instead of
+        // looping on a silently-unstored session.
+        LoginOutcome::StoreUnavailable { body } => {
+            json_body_response(503, body, "no-store")
+        }
     }
 }
 
