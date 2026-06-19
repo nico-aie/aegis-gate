@@ -7107,6 +7107,7 @@ state:
             default: false,
             enabled: true,
             ws_inspect: None,
+            mode: "enforce".into(),
         };
         assert!(
             validate_route(&patch, &merged).is_ok(),

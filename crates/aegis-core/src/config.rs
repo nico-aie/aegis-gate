@@ -1778,6 +1778,31 @@ pub struct ListenerConfig {
 // Route
 // ---------------------------------------------------------------------------
 
+/// Per-route enforcement mode (2026-06-19) — the Cloudflare-style
+/// "proxy-only / monitor" knob. Mirrors the global enforce-vs-log_only
+/// model but scoped to a single route, so an operator can put the WAF
+/// in front of one real backend, observe what it *would* block, and
+/// flip to `enforce` once detection is validated — without changing the
+/// global mode for every other route.
+///
+/// Interaction with the global `set_profile` mode is an **OR**: if
+/// EITHER the global mode OR this route says `log_only`, the route's
+/// would-be-block decisions are downgraded to log-only. Explicit
+/// access-list / blacklist blocks stay **hard** even on a monitored
+/// route (operator deny intent is never softened).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteMode {
+    /// Run the full pipeline and forward to the upstream, but never
+    /// block/challenge on WAF detector/risk decisions — emit the audit
+    /// event + `X-WAF-Action: <intent>` / `X-WAF-Mode: log_only` instead.
+    LogOnly,
+    /// **Default.** Block/challenge per the resolved decision, exactly
+    /// like today. No behaviour change for existing configs.
+    #[default]
+    Enforce,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct RouteConfig {
     pub id: String,
@@ -1866,6 +1891,14 @@ pub struct RouteConfig {
     /// `plans/future/websocket-message-inspection.md`.
     #[serde(default)]
     pub ws_inspect: Option<WsInspectConfig>,
+    /// 2026-06-19 — per-route enforcement mode. `enforce` (default)
+    /// blocks/challenges as resolved; `log_only` forwards every request
+    /// to the upstream and downgrades WAF detector/risk blocks to
+    /// log-only for this route (Cloudflare-style "proxy-only / monitor"
+    /// onboarding). See [`RouteMode`] for the global-mode OR semantics
+    /// and the blacklist-stays-hard carve-out.
+    #[serde(default)]
+    pub mode: RouteMode,
 }
 
 fn default_route_enabled() -> bool {
@@ -1980,6 +2013,41 @@ mod ws_inspect_default_on_tests {
             max_message_bytes: 0,
         };
         assert!(WsInspectConfig::resolve(Some(&on)).is_active());
+    }
+}
+
+#[cfg(test)]
+mod route_mode_tests {
+    use super::*;
+
+    #[test]
+    fn route_mode_defaults_to_enforce() {
+        // 2026-06-19 — a route with no `mode:` must enforce, so existing
+        // configs are unchanged.
+        assert_eq!(RouteMode::default(), RouteMode::Enforce);
+    }
+
+    #[test]
+    fn route_without_mode_field_parses_as_enforce() {
+        let yaml = r#"
+id: api
+path: /api
+upstream: api-pool
+"#;
+        let rc: RouteConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(rc.mode, RouteMode::Enforce);
+    }
+
+    #[test]
+    fn route_mode_log_only_round_trips_via_yaml() {
+        let yaml = r#"
+id: staging
+path: /staging
+upstream: staging-pool
+mode: log_only
+"#;
+        let rc: RouteConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(rc.mode, RouteMode::LogOnly);
     }
 }
 

@@ -13833,6 +13833,7 @@ function RoutesTable({ poolNames, routesApi, pools, health, onEditPool, onDelete
                         {isCatchall && <span className="pill" style={{ marginLeft: 6, fontSize: 9, padding: '1px 6px' }}>catch-all</span>}
                         {r.default && <span className="pill ok" style={{ marginLeft: 6, fontSize: 9, padding: '1px 6px' }} title="Catches unmatched traffic for this host">fallback</span>}
                         {r.enabled === false && <span className="pill warn" style={{ marginLeft: 6, fontSize: 9, padding: '1px 6px' }} title="Skipped from request matching">paused</span>}
+                        {r.mode === 'log_only' && <span className="pill warn" style={{ marginLeft: 6, fontSize: 9, padding: '1px 6px' }} title="Monitor mode: WAF detector/risk blocks are downgraded to log-only on this route (forward + audit). Blacklist still enforces.">monitor</span>}
                         {/* routing-upstream #3 — unreachable: a higher-priority route already matches this traffic. */}
                         {r.enabled !== false && shadowMap[r.id] && (
                           <span
@@ -14066,6 +14067,10 @@ function emptyRouteDraft() {
     // Mirrors the server-side default and the operator-friendly
     // mount-point semantics.
     strip_prefix: true,
+    // 2026-06-19 — per-route enforcement mode. 'enforce' (default)
+    // blocks/challenges as resolved; 'log_only' is monitor mode
+    // (forward to upstream, downgrade WAF blocks to log-only).
+    mode: 'enforce',
   };
 }
 function routeToDraft(r) {
@@ -14084,6 +14089,9 @@ function routeToDraft(r) {
     // serializer emits it explicitly for fresh routes. Reads as
     // `true` when the field is missing.
     strip_prefix: r.strip_prefix !== false,
+    // 2026-06-19 — server emits 'enforce'|'log_only'; older routes
+    // saved before this field read as 'enforce'.
+    mode: r.mode === 'log_only' ? 'log_only' : 'enforce',
   };
 }
 function routeBodyFromDraft(d) {
@@ -14111,6 +14119,8 @@ function routeBodyFromDraft(d) {
   // (defaulting to 'low'), so always send it. Backend accepts
   // critical | high | medium | low (with catch_all kept as alias).
   if (d.tier_override) body.tier_override = d.tier_override;
+  // 2026-06-19 — always send mode so a flip enforce↔log_only round-trips.
+  body.mode = d.mode === 'log_only' ? 'log_only' : 'enforce';
   return body;
 }
 
@@ -14167,7 +14177,8 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
   const [showAdvanced, setShowAdvanced] = useStateP(
     !isAdd && (
       (d.match_type && d.match_type !== 'prefix') ||
-      d.tier_override
+      d.tier_override ||
+      d.mode === 'log_only'
     )
   );
 
@@ -14468,6 +14479,29 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
                       it — config stays, request matching skips it. Handy
                       for staging variants or pulling a misbehaving route
                       fast.
+                    </div>
+                  </span>
+                </label>
+              </div>
+
+              {/* 2026-06-19 — per-route monitor (log-only) mode. */}
+              <div className="form-row" style={{ display: 'flex', gap: 16, alignItems: 'flex-start', marginTop: 8 }}>
+                <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11, cursor: 'pointer', flex: 1 }}>
+                  <input
+                    type="checkbox"
+                    checked={d.mode === 'log_only'}
+                    onChange={e => set('mode', e.target.checked ? 'log_only' : 'enforce')}
+                    style={{ marginTop: 2 }}
+                  />
+                  <span>
+                    <strong>Monitor only (log, don't block)</strong>
+                    <div style={{ color: 'var(--ink-dim)', fontWeight: 400, marginTop: 2, lineHeight: 1.4 }}>
+                      Run the full WAF pipeline and forward every request to
+                      the upstream, but <em>downgrade WAF detector/risk blocks
+                      to log-only</em> on this route — the audit feed shows what
+                      <em> would</em> have been blocked (<code>X-WAF-Mode: log_only</code>).
+                      Ideal for onboarding a real backend before flipping to
+                      enforce. Explicit blacklist blocks still apply.
                     </div>
                   </span>
                 </label>
