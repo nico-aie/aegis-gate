@@ -78,10 +78,20 @@ pub struct RouteConfigPatch {
     /// config plane so a dashboard toggle survives reloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ws_inspect: Option<aegis_core::config::WsInspectConfig>,
+    /// 2026-06-19 — per-route enforcement mode: `"enforce"` (default)
+    /// or `"log_only"` (monitor: forward to upstream, downgrade WAF
+    /// detector/risk blocks to log-only for this route). Round-trips
+    /// through the config plane so a dashboard toggle survives reloads.
+    #[serde(default = "default_route_mode_str")]
+    pub mode: String,
 }
 
 fn default_route_enabled_patch() -> bool {
     true
+}
+
+fn default_route_mode_str() -> String {
+    "enforce".to_string()
 }
 
 fn default_strip_prefix_patch() -> bool {
@@ -109,6 +119,7 @@ impl RouteConfigPatch {
             default: r.default,
             enabled: r.enabled,
             ws_inspect: r.ws_inspect.clone(),
+            mode: route_mode_str(r.mode).to_string(),
         }
     }
 
@@ -124,6 +135,8 @@ impl RouteConfigPatch {
             .map(parse_tier)
             .transpose()
             .map_err(RouteValidationError::BadTier)?;
+        let mode = parse_route_mode(&self.mode)
+            .ok_or_else(|| RouteValidationError::BadMode(self.mode.clone()))?;
         Ok(RouteConfig {
             id: self.id,
             host: self.host,
@@ -142,6 +155,7 @@ impl RouteConfigPatch {
             // WS-MSG5 — carry the dashboard/API `ws_inspect` block onto
             // the live RouteConfig so it threads to the bridge.
             ws_inspect: self.ws_inspect,
+            mode,
         })
     }
 }
@@ -174,6 +188,22 @@ fn tier_str(t: &Tier) -> &'static str {
     }
 }
 
+fn route_mode_str(m: aegis_core::config::RouteMode) -> &'static str {
+    match m {
+        aegis_core::config::RouteMode::Enforce => "enforce",
+        aegis_core::config::RouteMode::LogOnly => "log_only",
+    }
+}
+
+fn parse_route_mode(s: &str) -> Option<aegis_core::config::RouteMode> {
+    match s {
+        "enforce" => Some(aegis_core::config::RouteMode::Enforce),
+        // `monitor` accepted as a friendlier alias for the dashboard.
+        "log_only" | "monitor" => Some(aegis_core::config::RouteMode::LogOnly),
+        _ => None,
+    }
+}
+
 fn parse_tier(s: &str) -> Result<Tier, String> {
     match s {
         "critical" => Ok(Tier::Critical),
@@ -203,6 +233,8 @@ pub enum RouteValidationError {
     BadMatchType(String),
     /// `tier_override` was not one of the five tier names.
     BadTier(String),
+    /// `mode` was not `enforce | log_only | monitor`.
+    BadMode(String),
     /// `upstream` referenced a pool that doesn't exist.
     UnknownUpstream {
         upstream: String,
@@ -217,6 +249,7 @@ impl RouteValidationError {
             Self::EmptyPath => "empty_path",
             Self::BadMatchType(_) => "bad_match_type",
             Self::BadTier(_) => "bad_tier",
+            Self::BadMode(_) => "bad_mode",
             Self::UnknownUpstream { .. } => "unknown_upstream",
         }
     }
@@ -232,6 +265,9 @@ impl std::fmt::Display for RouteValidationError {
             }
             Self::BadTier(s) => {
                 write!(f, "tier_override {s:?} is not a valid tier name")
+            }
+            Self::BadMode(s) => {
+                write!(f, "mode {s:?} is not one of enforce | log_only | monitor")
             }
             Self::UnknownUpstream { upstream, known } => write!(
                 f,
@@ -429,6 +465,7 @@ state:
             default: false,
             enabled: true,
             ws_inspect: None,
+            mode: "enforce".into(),
         }
     }
 
@@ -563,5 +600,45 @@ state:
         assert_eq!(rebuilt.host.as_deref(), Some("api.example.com"));
         assert!(matches!(rebuilt.match_type, MatchType::Exact));
         assert_eq!(rebuilt.methods, Some(vec!["POST".to_string()]));
+        // No `mode:` in the YAML ⇒ defaults to enforce on the round trip.
+        assert_eq!(rebuilt.mode, aegis_core::config::RouteMode::Enforce);
+    }
+
+    #[test]
+    fn mode_log_only_round_trips_through_patch() {
+        // 2026-06-19 — a monitor-mode route survives from_route →
+        // into_route so a dashboard toggle persists across reloads.
+        let mut patch = good_patch();
+        patch.mode = "log_only".into();
+        let rebuilt = patch.into_route().expect("log_only patch is valid");
+        assert_eq!(rebuilt.mode, aegis_core::config::RouteMode::LogOnly);
+
+        // …and from_route renders it back to the wire string.
+        let back = RouteConfigPatch::from_route(&rebuilt);
+        assert_eq!(back.mode, "log_only");
+    }
+
+    #[test]
+    fn mode_monitor_alias_accepted() {
+        let mut patch = good_patch();
+        patch.mode = "monitor".into();
+        let rebuilt = patch.into_route().expect("monitor alias is valid");
+        assert_eq!(rebuilt.mode, aegis_core::config::RouteMode::LogOnly);
+    }
+
+    #[test]
+    fn bad_mode_rejected() {
+        let mut patch = good_patch();
+        patch.mode = "observe".into();
+        let err = patch.into_route().unwrap_err();
+        assert_eq!(err.reason_code(), "bad_mode");
+    }
+
+    #[test]
+    fn omitted_mode_defaults_to_enforce_on_deserialize() {
+        // The wire shape carries no `mode` field for legacy clients.
+        let json = r#"{"id":"r","path":"/","upstream":"pool"}"#;
+        let patch: RouteConfigPatch = serde_json::from_str(json).unwrap();
+        assert_eq!(patch.mode, "enforce");
     }
 }

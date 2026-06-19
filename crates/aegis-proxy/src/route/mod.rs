@@ -56,6 +56,11 @@ struct CompiledRoute {
     /// WS-MSG — per-route WebSocket message-inspection settings,
     /// carried verbatim from `RouteConfig.ws_inspect`.
     ws_inspect: Option<aegis_core::config::WsInspectConfig>,
+    /// 2026-06-19 — per-route monitor mode, resolved at compile time
+    /// from `RouteConfig.mode == RouteMode::LogOnly`. `true` ⇒ the data
+    /// plane downgrades WAF detector/risk blocks on this route to
+    /// log-only (forward + audit). Blacklist stays hard.
+    log_only: bool,
 }
 
 /// Hot-swappable routing table.
@@ -493,6 +498,7 @@ impl CompiledRouteTable {
                     max_concurrent_tunnels_per_ip: rc.max_concurrent_tunnels_per_ip,
                     priority: *prio,
                     ws_inspect: rc.ws_inspect.clone(),
+                    log_only: rc.mode == aegis_core::config::RouteMode::LogOnly,
                 });
 
                 // PR1: same-path merge uses `find_exact`, NOT `find`.
@@ -597,6 +603,7 @@ impl CompiledRoute {
             max_concurrent_tunnels_per_ip: self.max_concurrent_tunnels_per_ip,
             path_strip_prefix: self.path_strip_prefix.clone(),
             ws_inspect: self.ws_inspect.clone(),
+            log_only: self.log_only,
         }
     }
 }
@@ -650,6 +657,7 @@ mod strip_prefix_tests {
             default: false,
             enabled: true,
             ws_inspect: None,
+            mode: aegis_core::config::RouteMode::Enforce,
         }
     }
 
@@ -745,6 +753,47 @@ state:
         let cfg = five_route_config();
         let table = RouteTable::build(&cfg).unwrap();
         assert!(!table.inner.load().groups.is_empty());
+    }
+
+    #[test]
+    fn route_mode_log_only_resolves_to_monitor_ctx() {
+        // 2026-06-19 — a route with `mode: log_only` resolves to a
+        // RouteCtx with `log_only == true`; a route without `mode:`
+        // (the catch-all here) resolves to `false` (enforce).
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: staging
+    path: "/staging/"
+    upstream: pool
+    mode: log_only
+  - id: root
+    path: "/"
+    upstream: pool
+    default: true
+upstreams:
+  pool:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+"#;
+        let cfg: WafConfig = serde_yaml::from_str(yaml).unwrap();
+        let table = RouteTable::build(&cfg).unwrap();
+
+        let monitored = table
+            .resolve("localhost", "/staging/deploy", &http::Method::GET)
+            .expect("monitored route resolves");
+        assert!(monitored.log_only, "mode: log_only ⇒ ctx.log_only == true");
+
+        let enforced = table
+            .resolve("localhost", "/other", &http::Method::GET)
+            .expect("catch-all resolves");
+        assert!(!enforced.log_only, "no mode: ⇒ enforce (log_only == false)");
     }
 
     /// PR2 — a config without any catch-all / default route now

@@ -79,6 +79,14 @@ pub struct RouteCtx {
     /// WS bridge; `Some(.. enabled: true)` ⇒ the inspecting bridge for
     /// client→upstream text frames.
     pub ws_inspect: Option<crate::config::WsInspectConfig>,
+    /// 2026-06-19 — per-route monitor mode. `true` ⇒ this route runs the
+    /// full pipeline and forwards to the upstream, but WAF detector/risk
+    /// block & challenge decisions are downgraded to log-only (the
+    /// request still goes upstream, audit + `X-WAF-Mode: log_only` are
+    /// emitted). Resolved from `RouteConfig.mode == RouteMode::LogOnly`
+    /// at route-compile time so the hot path is a bool read. Explicit
+    /// access-list / blacklist blocks are NOT softened by this flag.
+    pub log_only: bool,
 }
 
 #[cfg(test)]
@@ -130,6 +138,7 @@ mod tests {
             max_concurrent_tunnels_per_ip: 0,
             path_strip_prefix: None,
             ws_inspect: None,
+            log_only: false,
         };
         assert_eq!(rctx.tier, Tier::Critical);
         assert_eq!(rctx.failure_mode, FailureMode::FailClose);

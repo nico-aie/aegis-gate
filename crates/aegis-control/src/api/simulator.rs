@@ -212,6 +212,7 @@ pub fn simulate(
         max_concurrent_tunnels_per_ip: 0,
         path_strip_prefix: None,
         ws_inspect: None,
+        log_only: false,
     };
     let (tier, _fm) = aegis_security::pipeline::classify_tier(
         Some(&route_ctx),
