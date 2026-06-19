@@ -367,6 +367,18 @@ pub struct InteropConfig {
     /// override via secret-ref.
     #[serde(default)]
     pub control_secret: Option<String>,
+    /// SEC-01 (LT-RUN-11, 2026-06-19) — independent signing secret for the
+    /// PoW / `waf_challenge_pass` MAC. Kept SEPARATE from `control_secret`
+    /// because the v2.6 contract mandates a *public*, fixed
+    /// `X-Benchmark-Secret` (`waf-hackathon-2026-ctrl`); deriving the
+    /// data-plane challenge key from that public value let anyone mint a
+    /// valid challenge-pass and skip the bot-mitigation ladder. When unset,
+    /// each node generates a random per-process key (secure, but not portable
+    /// across a cluster — multi-node deployments MUST set this to a shared
+    /// high-entropy `${secret:...}` value so challenge passes verify on any
+    /// node).
+    #[serde(default)]
+    pub challenge_secret: Option<String>,
 }
 
 impl Default for InteropConfig {
@@ -375,6 +387,7 @@ impl Default for InteropConfig {
             enabled: default_interop_enabled(),
             audit_path: default_interop_audit_path(),
             control_secret: None,
+            challenge_secret: None,
         }
     }
 }
@@ -1246,6 +1259,13 @@ impl WafConfig {
                 )));
             }
         }
+        // CTL-02 (LT-RUN-11, 2026-06-19) — refuse to boot when admin login is
+        // enabled but `csrf_secret` is empty. The session-cookie HMAC key is
+        // `blake3(csrf_secret)`, so an empty secret signs every cookie with the
+        // publicly-computable constant `blake3("")` — anyone can forge an admin
+        // session. Previously this was only a `warn!` at the accept loop
+        // (fail-open). Fail closed at config-load instead.
+        validate_admin_csrf_secret(&self.admin.dashboard_auth)?;
         // P7: load_mode thresholds + hysteresis must be coherent.
         self.load_mode.validate()?;
         // Layer-1: runtime sizing constraints (workers >= 2, sane
@@ -1332,6 +1352,65 @@ impl RuntimeConfig {
             )));
         }
         Ok(())
+    }
+}
+
+/// CTL-02 (LT-RUN-11) — admin session cookies are HMAC-signed with
+/// `blake3(csrf_secret)`. An empty secret collapses that to the public
+/// constant `blake3("")`, letting anyone forge a valid admin session. Refuse
+/// to boot when login is reachable (a password hash is configured) and the
+/// secret is empty. A short-but-non-empty secret is not a known constant, so
+/// it stays a runtime `warn!` (see `accept.rs`) rather than a hard fail.
+pub(crate) fn validate_admin_csrf_secret(auth: &DashboardAuthConfig) -> crate::Result<()> {
+    let login_enabled = !auth.password_hash_ref.trim().is_empty();
+    if login_enabled && auth.csrf_secret_ref.trim().is_empty() {
+        return Err(crate::error::WafError::Config(
+            "admin.dashboard_auth.csrf_secret is empty while admin login is enabled \
+             (password_hash set) — session cookies would be signed with the \
+             publicly-computable constant key blake3(\"\"). Set a random ≥32-char \
+             csrf_secret, identical on every node (use a ${secret:...} ref in prod)."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod admin_csrf_secret_tests {
+    use super::*;
+
+    fn auth(password_hash: &str, csrf: &str) -> DashboardAuthConfig {
+        DashboardAuthConfig {
+            password_hash_ref: password_hash.to_string(),
+            csrf_secret_ref: csrf.to_string(),
+            ..DashboardAuthConfig::default()
+        }
+    }
+
+    #[test]
+    fn rejects_empty_csrf_when_login_enabled() {
+        let cfg = auth("$argon2id$v=19$m=19456,t=2,p=1$abc$def", "");
+        assert!(validate_admin_csrf_secret(&cfg).is_err());
+    }
+
+    #[test]
+    fn rejects_whitespace_only_csrf_when_login_enabled() {
+        let cfg = auth("$argon2id$hash", "   ");
+        assert!(validate_admin_csrf_secret(&cfg).is_err());
+    }
+
+    #[test]
+    fn allows_empty_csrf_when_login_disabled() {
+        // No password hash ⇒ login disabled ⇒ no cookies minted ⇒ constant
+        // key is harmless. Keep the dev "login disabled" path bootable.
+        let cfg = auth("", "");
+        assert!(validate_admin_csrf_secret(&cfg).is_ok());
+    }
+
+    #[test]
+    fn allows_real_secret_with_login_enabled() {
+        let cfg = auth("$argon2id$hash", "test-csrf-secret-do-not-use-in-production-32b");
+        assert!(validate_admin_csrf_secret(&cfg).is_ok());
     }
 }
 
