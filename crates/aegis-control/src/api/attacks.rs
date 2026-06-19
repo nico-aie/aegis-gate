@@ -242,14 +242,6 @@ impl AttacksAggregator {
     pub fn record(&self, ev: &AuditEvent) {
         let bot_category = bot_category_from_fields(&ev.fields);
         let is_attack = matches!(ev.class, AuditClass::Detection);
-        // Keep Detection (attack/block) events for the attacker +
-        // detector views. ALSO keep non-Detection events that carry a
-        // bot verdict — the classifier stamps `bot_category` on the
-        // `Access` (allow) event, so without this they'd never reach
-        // `bot_mix()`. Plain allows (no verdict) are still dropped.
-        if !is_attack && bot_category.is_none() {
-            return;
-        }
         let (threat_intel_feed, threat_intel_indicator) = threat_intel_from_fields(&ev.fields);
         // Pull every detector tag from the event's
         // fields.detectors[] array, deduped + filtered to non-
@@ -257,8 +249,8 @@ impl AttacksAggregator {
         // multi-detector event counts toward EVERY class that
         // fired on it.
         let mut detectors_all: Vec<String> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         if let Some(arr) = ev.fields.get("detectors").and_then(|v| v.as_array()) {
-            let mut seen = std::collections::HashSet::new();
             for v in arr {
                 if let Some(s) = v.as_str() {
                     if !s.is_empty() && seen.insert(s.to_string()) {
@@ -266,6 +258,34 @@ impl AttacksAggregator {
                     }
                 }
             }
+        }
+        // 2026-06-19 — detected-but-allowed coverage. The listener's
+        // allow-path doesn't emit a `fields.detectors[]` array, but the
+        // data plane labels an under-threshold detection by joining the
+        // fired detector tags onto `rule_id` (e.g. `"ai"`, `"recon_path,
+        // ssrf"`). For a non-attack (Access) event with no array, explode
+        // that `rule_id` so the Detector breakdown (`by_detector`) counts
+        // these flagged-but-forwarded hits. Blocked events keep their
+        // existing array / `detector_name` bucketing untouched (so the
+        // synthetic labels like `ip-strikes` don't regress).
+        if !is_attack && detectors_all.is_empty() {
+            if let Some(rid) = ev.rule_id.as_deref() {
+                for tag in rid.split(',') {
+                    let tag = tag.trim();
+                    if !tag.is_empty() && seen.insert(tag.to_string()) {
+                        detectors_all.push(tag.to_string());
+                    }
+                }
+            }
+        }
+        // Keep Detection (attack/block) events for the attacker +
+        // detector views. ALSO keep non-Detection events that carry a
+        // bot verdict (`bot_mix`) OR fired detectors (detected-but-
+        // allowed → Detector breakdown). Plain clean allows — no verdict,
+        // no detectors — are still dropped so normal traffic doesn't bloat
+        // the ring buffer.
+        if !is_attack && bot_category.is_none() && detectors_all.is_empty() {
+            return;
         }
         let entry = AttackEntry {
             when: Instant::now(),
@@ -487,9 +507,13 @@ impl AttacksAggregator {
             if now.duration_since(entry.when) > window_dur {
                 break;
             }
-            // Bot-only Access entries aren't attacks — keep the
-            // by-detector breakdown Detection-only.
-            if !entry.is_attack {
+            // 2026-06-19 — the Detector breakdown counts ALL detector
+            // activity: blocked attacks AND detected-but-allowed (under-
+            // threshold) hits such as a lone `ai` verdict. The Attack
+            // distribution (`distribution`) stays blocked-only. A bot-only
+            // Access entry has no detectors and a non-attack class, so it
+            // is naturally excluded here.
+            if !entry.is_attack && entry.detectors.is_empty() {
                 continue;
             }
             if !entry.detectors.is_empty() {
@@ -1732,6 +1756,86 @@ mod tests {
         let agg = AttacksAggregator::new();
         let r = agg.by_detector(900);
         assert!(r.detectors.is_empty());
+    }
+
+    /// Build a detected-but-allowed event: an `Access` (allow) class
+    /// event that still carries fired detector tags on `rule_id` (the
+    /// data plane labels under-threshold detections this way). No
+    /// `fields.detectors[]` array — the listener allow-path doesn't emit
+    /// one — so the aggregator must fall back to splitting `rule_id`.
+    fn detected_but_allowed_event(rule_id: &str) -> AuditEvent {
+        AuditEvent {
+            schema_version: 1,
+            ts: chrono::Utc::now(),
+            request_id: "test".into(),
+            class: AuditClass::Access,
+            tenant_id: None,
+            tier: None,
+            action: "allow".into(),
+            reason: rule_id.into(),
+            client_ip: "1.1.1.1".into(),
+            route_id: None,
+            rule_id: Some(rule_id.into()),
+            risk_score: Some(50),
+            method: None,
+            path: None,
+            mode: None,
+            fields: serde_json::json!({ "request_score": 50 }),
+        }
+    }
+
+    /// 2026-06-19 — the Detector breakdown (`by_detector`) must count ALL
+    /// detector activity, including detected-but-allowed (under-threshold)
+    /// hits like a lone `ai` verdict — while the Attack distribution
+    /// (`distribution`) stays blocked-only. Pre-fix, `record()` dropped
+    /// every non-Detection event so an `ai`-flagged-but-forwarded request
+    /// never reached either view.
+    #[test]
+    fn detected_but_allowed_counts_in_by_detector_not_distribution() {
+        let agg = AttacksAggregator::new();
+        for _ in 0..3 {
+            agg.record(&detected_but_allowed_event("ai"));
+        }
+        // Detector breakdown sees the ai activity.
+        let bd = agg.by_detector(900);
+        let ai = bd.detectors.iter().find(|d| d.name == "ai");
+        assert_eq!(ai.map(|d| d.count), Some(3), "by_detector counts ai hits");
+        // Attack distribution (blocked-only) does NOT.
+        let dist = agg.distribution(900);
+        assert!(
+            !dist.categories.iter().any(|c| c.name == "ai"),
+            "distribution stays blocked-only — no ai",
+        );
+    }
+
+    /// A multi-tag under-threshold allow (`rule_id = "recon_path,ssrf"`)
+    /// explodes into one count per class in the breakdown.
+    #[test]
+    fn detected_but_allowed_multi_tag_explodes_in_by_detector() {
+        let agg = AttacksAggregator::new();
+        agg.record(&detected_but_allowed_event("recon_path,ssrf"));
+        let bd = agg.by_detector(900);
+        assert_eq!(
+            bd.detectors.iter().find(|d| d.name == "recon_path").map(|d| d.count),
+            Some(1),
+        );
+        assert_eq!(
+            bd.detectors.iter().find(|d| d.name == "ssrf").map(|d| d.count),
+            Some(1),
+        );
+    }
+
+    /// A plain clean allow (no detector tags, no bot verdict) is still
+    /// dropped from BOTH views — no buffer bloat from normal traffic.
+    #[test]
+    fn clean_allow_without_detectors_is_still_ignored() {
+        let agg = AttacksAggregator::new();
+        let mut ev = detected_but_allowed_event("ai");
+        ev.rule_id = None;
+        ev.reason = "allow".into();
+        agg.record(&ev);
+        assert!(agg.by_detector(900).detectors.is_empty());
+        assert!(agg.distribution(900).categories.is_empty());
     }
 
     #[test]
