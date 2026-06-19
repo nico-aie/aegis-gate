@@ -26,6 +26,11 @@ pub struct HealthResponse {
 pub struct HealthChecks {
     pub config_loaded: bool,
     pub state_backend_up: bool,
+    /// R-1b (2026-06-19): `false` when the state backend answers reads/PING but
+    /// REJECTS writes (a read-only Redis replica — the hijack scenario). Drives
+    /// `degraded` so monitors catch the silent admin-session-write outage.
+    /// Reported, not gating.
+    pub state_backend_writable: bool,
     pub certs_loaded: bool,
     pub pool_has_healthy: bool,
     pub draining: bool,
@@ -79,15 +84,18 @@ pub fn check_live(signal: &ReadinessSignal) -> (u16, &'static str) {
 /// - `503 not_ready` — a readiness gate is unsatisfied (warm-up not done,
 ///   config/certs/pool missing, or draining). Pull from rotation.
 /// - `200 degraded` — warm and serving, but the state backend is currently
-///   unreachable. The data plane runs on in-memory fallback, so the node
-///   stays in rotation; the field flags the degradation for monitors.
+///   unreachable, **read-only** (`state_backend_writable` false — R-1b), or the
+///   config store reverted. The data plane runs on in-memory fallback, so the
+///   node stays in rotation; the fields flag the degradation for monitors.
 /// - `200 ok` — everything healthy.
 pub fn check_ready(signal: &ReadinessSignal) -> (u16, HealthResponse) {
     let backend_connected = signal.state_backend_connected.load(Ordering::Relaxed);
+    let backend_writable = signal.state_backend_writable.load(Ordering::Relaxed);
     let config_store_degraded = signal.config_store_degraded.load(Ordering::Relaxed);
     let checks = HealthChecks {
         config_loaded: signal.config_loaded.load(Ordering::Relaxed),
         state_backend_up: backend_connected,
+        state_backend_writable: backend_writable,
         certs_loaded: signal.certs_loaded.load(Ordering::Relaxed),
         pool_has_healthy: signal.pool_has_healthy.load(Ordering::Relaxed),
         draining: signal.draining.load(Ordering::Relaxed),
@@ -95,7 +103,7 @@ pub fn check_ready(signal: &ReadinessSignal) -> (u16, HealthResponse) {
     };
     let (status, label) = if !signal.is_ready() {
         (503, "not_ready")
-    } else if !backend_connected || config_store_degraded {
+    } else if !backend_connected || !backend_writable || config_store_degraded {
         (200, "degraded")
     } else {
         (200, "ok")
@@ -231,7 +239,28 @@ mod tests {
         assert_eq!(code, 200);
         assert_eq!(resp.status, "ok");
         assert!(resp.checks.state_backend_up);
+        assert!(resp.checks.state_backend_writable);
         assert!(!resp.checks.config_store_degraded);
+    }
+
+    // R-1b (2026-06-19) — a read-only Redis replica still answers PING
+    // (state_backend_up = true) but REJECTS writes, so the admin session
+    // store can't persist (R-1 503s login). `state_backend_up` alone hid this
+    // during the hijack; a write probe surfaces it as degraded (HTTP 200,
+    // report-only — the data plane keeps serving on in-memory fallback).
+    #[test]
+    fn degraded_200_when_backend_read_only() {
+        let s = all_ready();
+        s.state_backend_writable.store(false, Ordering::Relaxed);
+        let (code, resp) = check_ready(&s);
+        assert_eq!(code, 200);
+        assert_eq!(resp.status, "degraded");
+        assert!(resp.checks.state_backend_up, "PING still works on a replica");
+        assert!(
+            !resp.checks.state_backend_writable,
+            "writes rejected by the read-only replica must show as not writable",
+        );
+        assert_eq!(check_live(&s).0, 200);
     }
 
     // 2026-06-18 (runtime-config-lost-on-redis-data-loss report) — when the

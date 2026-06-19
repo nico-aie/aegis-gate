@@ -2190,6 +2190,14 @@ pub async fn run(
         let store = std::sync::Arc::clone(&state);
         let readiness_for_health = readiness.clone();
         tokio::spawn(async move {
+            // R-1b (2026-06-19): a read-only Redis replica (the REPLICAOF-hijack
+            // scenario) still answers `health()`/PING (`connected: true`) but
+            // rejects WRITES — which silently broke admin-session persistence.
+            // A tiny set-probe surfaces writability so `/healthz/ready` reports
+            // `degraded` instead of looking healthy. Single self-expiring key;
+            // one write per tick is negligible. Reported, never gating.
+            const WRITE_PROBE_KEY: &str = "__waf:health:writeprobe";
+            let probe_ttl = std::time::Duration::from_secs(15);
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(3));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
@@ -2198,6 +2206,10 @@ pub async fn run(
                 readiness_for_health
                     .state_backend_connected
                     .store(connected, Ordering::Relaxed);
+                let writable = store.set(WRITE_PROBE_KEY, b"1", probe_ttl).await.is_ok();
+                readiness_for_health
+                    .state_backend_writable
+                    .store(writable, Ordering::Relaxed);
             }
         });
     }
