@@ -42,7 +42,7 @@
 //!   so the schema is forward-compatible.
 
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -51,6 +51,75 @@ use aegis_core::risk::RiskKey;
 use aegis_core::state::{SlidingWindowResult, StateBackend};
 
 use crate::state::InMemoryBackend;
+
+/// STATE-03 (LT-RUN-11, 2026-06-19) — WHY the primary backend is degraded.
+///
+/// The operator's real incident was an attacker flipping Redis to a read-only
+/// replica via `REPLICAOF`; every write then failed with a `-READONLY` error
+/// which [`ReconcilingBackend`] could not distinguish from "Redis unreachable",
+/// so it logged the generic "partition" line and silently fell through to a
+/// fresh in-memory fallback — hiding the root cause. We still fall through for
+/// availability (the reported-not-gating posture: the data plane keeps
+/// serving), but the cause is now classified and surfaced distinctly so an
+/// operator sees "READ-ONLY (possible compromise)" instead of "unreachable".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DegradedReason {
+    Unreachable,
+    ReadOnly,
+    Auth,
+    Misconfig,
+}
+
+impl DegradedReason {
+    fn as_u8(self) -> u8 {
+        match self {
+            DegradedReason::Unreachable => 1,
+            DegradedReason::ReadOnly => 2,
+            DegradedReason::Auth => 3,
+            DegradedReason::Misconfig => 4,
+        }
+    }
+    fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            1 => Some(DegradedReason::Unreachable),
+            2 => Some(DegradedReason::ReadOnly),
+            3 => Some(DegradedReason::Auth),
+            4 => Some(DegradedReason::Misconfig),
+            _ => None,
+        }
+    }
+    /// Stable wire/label string for logs, metrics, and `/healthz/ready`.
+    pub fn label(self) -> &'static str {
+        match self {
+            DegradedReason::Unreachable => "unreachable",
+            DegradedReason::ReadOnly => "read-only",
+            DegradedReason::Auth => "auth-error",
+            DegradedReason::Misconfig => "misconfigured",
+        }
+    }
+}
+
+/// Classify a primary-backend error. Redis surfaces server-side conditions as
+/// error-string prefixes — `-READONLY`, `-MISCONF`, `-NOAUTH`/`WRONGPASS` —
+/// distinct from connectivity failures (timeouts, refused, pool exhaustion),
+/// which we treat as `Unreachable`. Matching is case-insensitive substring so
+/// it survives the client wrapping the server message.
+fn classify_state_error(err: &WafError) -> DegradedReason {
+    let msg = match err {
+        WafError::State(s) => s.as_str(),
+        _ => "",
+    };
+    let upper = msg.to_ascii_uppercase();
+    if upper.contains("READONLY") {
+        DegradedReason::ReadOnly
+    } else if upper.contains("NOAUTH") || upper.contains("WRONGPASS") {
+        DegradedReason::Auth
+    } else if upper.contains("MISCONF") {
+        DegradedReason::Misconfig
+    } else {
+        DegradedReason::Unreachable
+    }
+}
 
 /// Per-key buffer of writes that occurred while we were
 /// partitioned from primary. Replayed best-effort on heal.
@@ -80,6 +149,9 @@ pub struct ReconcilingBackend {
     primary: Arc<dyn StateBackend>,
     fallback: Arc<InMemoryBackend>,
     partitioned: Arc<AtomicBool>,
+    /// STATE-03 — last classified degradation cause (0 = healthy). Read by
+    /// `degraded_reason()` for observability; set in `enter_partition`.
+    degraded: Arc<AtomicU8>,
     log: Arc<Mutex<PartitionLog>>,
 }
 
@@ -90,6 +162,7 @@ impl ReconcilingBackend {
             primary,
             fallback: Arc::new(InMemoryBackend::new()),
             partitioned: Arc::new(AtomicBool::new(false)),
+            degraded: Arc::new(AtomicU8::new(0)),
             log: Arc::new(Mutex::new(PartitionLog::default())),
         }
     }
@@ -100,16 +173,46 @@ impl ReconcilingBackend {
         self.partitioned.load(Ordering::Relaxed)
     }
 
+    /// STATE-03 — the classified reason the primary is degraded, or `None`
+    /// when healthy. Lets the health/metrics layer report e.g. "read-only"
+    /// (the operator's incident) distinctly from "unreachable" — reported,
+    /// not gating (the data plane keeps serving from the fallback).
+    pub fn degraded_reason(&self) -> Option<DegradedReason> {
+        DegradedReason::from_u8(self.degraded.load(Ordering::Relaxed))
+    }
+
     /// Mark the partition as live. Idempotent + logged exactly
-    /// once per transition into the partitioned state.
+    /// once per transition into the partitioned state, with a
+    /// cause-specific message (STATE-03).
     fn enter_partition(&self, op: &str, err: &WafError) {
+        let reason = classify_state_error(err);
+        self.degraded.store(reason.as_u8(), Ordering::Relaxed);
         let already = self.partitioned.swap(true, Ordering::Relaxed);
-        if !already {
-            tracing::warn!(
-                op,
-                error = %err,
+        if already {
+            return;
+        }
+        match reason {
+            DegradedReason::ReadOnly => tracing::warn!(
+                op, error = %err,
+                "primary state backend is READ-ONLY (e.g. Redis flipped to a replica via \
+                 REPLICAOF — possible compromise). Falling through to LOCAL in-memory \
+                 fallback; shared rate-limit / risk / replay-nonce state will DIVERGE \
+                 across nodes until the primary is writable again.",
+            ),
+            DegradedReason::Auth => tracing::warn!(
+                op, error = %err,
+                "primary state backend rejected AUTH (NOAUTH / WRONGPASS) — check \
+                 requirepass / credentials. Falling through to local in-memory fallback.",
+            ),
+            DegradedReason::Misconfig => tracing::warn!(
+                op, error = %err,
+                "primary state backend MISCONF (e.g. RDB/AOF persistence failing) — \
+                 falling through to local in-memory fallback.",
+            ),
+            DegradedReason::Unreachable => tracing::warn!(
+                op, error = %err,
                 "primary state backend unreachable; falling through to local in-memory backend",
-            );
+            ),
         }
     }
 
@@ -157,6 +260,7 @@ impl ReconcilingBackend {
         // Otherwise we'll retry on the next successful op.
         if failed == 0 {
             self.partitioned.store(false, Ordering::Relaxed);
+            self.degraded.store(0, Ordering::Relaxed); // STATE-03 — back to healthy
             tracing::info!(
                 replayed,
                 skipped_expired,
@@ -507,6 +611,9 @@ mod tests {
         inner: Arc<InMemoryBackend>,
         unreachable: AtomicBool,
         primary_ops: AtomicU64,
+        /// STATE-03 — error string returned while `unreachable`, so a test can
+        /// simulate a READONLY / NOAUTH / MISCONF primary, not just a timeout.
+        err_msg: Mutex<String>,
     }
 
     impl ToggleBackend {
@@ -515,6 +622,7 @@ mod tests {
                 inner: Arc::new(InMemoryBackend::new()),
                 unreachable: AtomicBool::new(false),
                 primary_ops: AtomicU64::new(0),
+                err_msg: Mutex::new("simulated partition".into()),
             })
         }
 
@@ -522,12 +630,16 @@ mod tests {
             self.unreachable.store(v, Ordering::Relaxed);
         }
 
+        fn set_err_msg(&self, msg: &str) {
+            *self.err_msg.lock().unwrap() = msg.to_string();
+        }
+
         fn ops(&self) -> u64 {
             self.primary_ops.load(Ordering::Relaxed)
         }
 
         fn err(&self) -> WafError {
-            WafError::State("simulated partition".into())
+            WafError::State(self.err_msg.lock().unwrap().clone())
         }
     }
 
@@ -836,5 +948,60 @@ mod tests {
 
         // get → 1, set → 1, incr_window → 1 = 3 primary ops.
         assert_eq!(primary.ops(), 3);
+    }
+
+    // STATE-03 (LT-RUN-11) — error classification + distinct degraded reason.
+
+    #[test]
+    fn classify_state_error_distinguishes_redis_conditions() {
+        let ro = WafError::State("READONLY You can't write against a read only replica.".into());
+        assert_eq!(classify_state_error(&ro), DegradedReason::ReadOnly);
+        // Case-insensitive + client-wrapped message.
+        let ro2 = WafError::State("redis error: -readonly".into());
+        assert_eq!(classify_state_error(&ro2), DegradedReason::ReadOnly);
+
+        let auth = WafError::State("NOAUTH Authentication required.".into());
+        assert_eq!(classify_state_error(&auth), DegradedReason::Auth);
+        let wrongpass = WafError::State("WRONGPASS invalid username-password pair".into());
+        assert_eq!(classify_state_error(&wrongpass), DegradedReason::Auth);
+
+        let misconf = WafError::State("MISCONF Redis is configured to save RDB snapshots".into());
+        assert_eq!(classify_state_error(&misconf), DegradedReason::Misconfig);
+
+        // Connectivity-style failures fall back to Unreachable.
+        let timeout = WafError::State("connection timed out".into());
+        assert_eq!(classify_state_error(&timeout), DegradedReason::Unreachable);
+    }
+
+    #[tokio::test]
+    async fn readonly_primary_surfaces_distinct_reason_but_keeps_serving() {
+        // The operator's incident: Redis flipped read-only. Writes fail with
+        // READONLY; the reconciler must (a) keep serving from the fallback
+        // (availability — reported-not-gating) and (b) report the cause as
+        // "read-only", NOT the generic "unreachable".
+        let primary = ToggleBackend::new();
+        let r = ReconcilingBackend::new(primary.clone());
+        assert_eq!(r.degraded_reason(), None, "healthy at start");
+
+        primary.set_err_msg("READONLY You can't write against a read only replica.");
+        primary.set_unreachable(true);
+
+        // A write still succeeds (served by the local fallback).
+        r.set("k", b"v", Duration::from_secs(60)).await.unwrap();
+        assert!(r.is_partitioned());
+        assert_eq!(
+            r.degraded_reason(),
+            Some(DegradedReason::ReadOnly),
+            "cause is classified as read-only, not unreachable",
+        );
+
+        // The fallback mirror is readable while degraded.
+        assert_eq!(r.get("k").await.unwrap(), Some(b"v".to_vec()));
+
+        // On heal the reason clears back to healthy.
+        primary.set_unreachable(false);
+        r.get("k").await.unwrap(); // triggers maybe_exit_partition
+        assert_eq!(r.degraded_reason(), None, "healed → no degraded reason");
+        assert!(!r.is_partitioned());
     }
 }
