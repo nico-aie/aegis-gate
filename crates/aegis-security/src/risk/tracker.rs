@@ -55,6 +55,29 @@ const DEFAULT_TRUST_PER_HOUR: u32 = 30;
 const IDLE_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 const IDLE_TTL: Duration = Duration::from_secs(3600);
 
+/// PROXY-02 (LT-RUN-11, 2026-06-19) — hard cardinality ceiling. The map is
+/// keyed on `RiskKey` (IP + device_fp + **session cookie**), all
+/// attacker-controlled, so a flood of unique session cookies inserted one
+/// `Slot` per request and (under the 1-hour [`IDLE_TTL`]) grew to tens of
+/// millions of live entries → multi-GB heap → OOM, without tripping any
+/// detector. Once the map reaches this ceiling we stop tracking BRAND-NEW
+/// keys (an untracked key behaves exactly as it did before it was ever seen —
+/// `RiskLevel::Allow`); existing keys keep their slots and strike state, so an
+/// actively-offending source is never evicted by a cardinality flood.
+#[cfg(not(test))]
+const MAX_TRACKED_KEYS: usize = 1_000_000;
+/// Small in tests so the cap is exercisable without a million inserts (but
+/// comfortably above the distinct-key count any other test in this module
+/// inserts, so they are unaffected).
+#[cfg(test)]
+const MAX_TRACKED_KEYS: usize = 64;
+
+/// Zero-value slots (score 0 AND no strikes — e.g. the clean-traffic cookie
+/// flood above) carry no security signal, so they are swept on a much shorter
+/// idle horizon than scored/striking slots, which keep the generous
+/// [`IDLE_TTL`] so the strike-block guarantee holds for real offenders.
+const ZERO_VALUE_IDLE_TTL: Duration = Duration::from_secs(120);
+
 /// Snapshot of one client's risk state. Returned from every
 /// mutating call so the caller can act on the post-state without
 /// a follow-up read.
@@ -175,9 +198,22 @@ impl RiskTracker {
         *guard = now;
         drop(guard);
 
-        self.inner
-            .map
-            .retain(|_, slot| now.saturating_duration_since(slot.last_seen) < IDLE_TTL);
+        self.inner.map.retain(|_, slot| {
+            let ttl = if slot.score == 0 && slot.strikes == 0 {
+                ZERO_VALUE_IDLE_TTL
+            } else {
+                IDLE_TTL
+            };
+            now.saturating_duration_since(slot.last_seen) < ttl
+        });
+    }
+
+    /// PROXY-02 — may a brand-new `RiskKey` be inserted? `false` once the map
+    /// hits [`MAX_TRACKED_KEYS`], which bounds memory under a unique-key
+    /// (session-cookie) flood. Approximate by design: a few concurrent inserts
+    /// may race past the ceiling, which is harmless.
+    fn may_insert_new_key(&self) -> bool {
+        self.inner.map.len() < MAX_TRACKED_KEYS
     }
 
     /// 2026-05-10 — atomic Strike-Block config swap. The next
@@ -252,16 +288,22 @@ impl RiskTracker {
         delta: u32,
         now: Instant,
     ) -> RiskState {
-        let mut entry = self.inner.map.entry(key).or_insert(Slot {
-            score: 0,
-            strikes: 0,
-            last_seen: now,
-        });
-        entry.score = (entry.score + delta).min(self.inner.thresholds.load().max);
-        entry.strikes = entry.strikes.saturating_add(1);
-        entry.last_seen = now;
-        let state = slot_to_state(*entry);
-        drop(entry); // release the DashMap shard guard before sweeping
+        let max = self.inner.thresholds.load().max;
+        let state = if let Some(mut entry) = self.inner.map.get_mut(&key) {
+            entry.score = (entry.score + delta).min(max);
+            entry.strikes = entry.strikes.saturating_add(1);
+            entry.last_seen = now;
+            slot_to_state(*entry)
+        } else if self.may_insert_new_key() {
+            let slot = Slot { score: delta.min(max), strikes: 1, last_seen: now };
+            self.inner.map.insert(key, slot);
+            slot_to_state(slot)
+        } else {
+            // PROXY-02 — at the cardinality cap: don't persist this new key.
+            // Return the would-be state so this single request is still scored,
+            // but nothing is stored (no accumulation across a flood).
+            slot_to_state(Slot { score: delta.min(max), strikes: 1, last_seen: now })
+        };
         self.maybe_sweep(now);
         state
     }
@@ -294,17 +336,21 @@ impl RiskTracker {
         key: aegis_core::risk::RiskKey,
         now: Instant,
     ) -> RiskState {
-        let mut entry = self.inner.map.entry(key).or_insert(Slot {
-            score: 0,
-            strikes: 0,
-            last_seen: now,
-        });
-        let elapsed = now.saturating_duration_since(entry.last_seen);
-        let recovery = trust_decay_points(elapsed, self.inner.trust.per_hour);
-        entry.score = entry.score.saturating_sub(recovery);
-        entry.last_seen = now;
-        let state = slot_to_state(*entry);
-        drop(entry); // release the DashMap shard guard before sweeping
+        let state = if let Some(mut entry) = self.inner.map.get_mut(&key) {
+            let elapsed = now.saturating_duration_since(entry.last_seen);
+            let recovery = trust_decay_points(elapsed, self.inner.trust.per_hour);
+            entry.score = entry.score.saturating_sub(recovery);
+            entry.last_seen = now;
+            slot_to_state(*entry)
+        } else if self.may_insert_new_key() {
+            let slot = Slot { score: 0, strikes: 0, last_seen: now };
+            self.inner.map.insert(key, slot);
+            slot_to_state(slot)
+        } else {
+            // PROXY-02 — at the cardinality cap: a clean, never-seen key has
+            // zero security value, so don't persist it. Behaves as Allow.
+            slot_to_state(Slot { score: 0, strikes: 0, last_seen: now })
+        };
         self.maybe_sweep(now);
         state
     }
@@ -636,6 +682,59 @@ mod tests {
         t.record_malicious_at_with_key(key.clone(), 20, late);
         assert_eq!(t.len(), 1);
         assert!(t.snapshot(ip("10.0.0.9")).is_some(), "active offender survives");
+    }
+
+    // PROXY-02 (LT-RUN-11) — a unique-key flood must not grow the map without
+    // bound. Once at MAX_TRACKED_KEYS (4 in tests), new keys are not tracked,
+    // but existing keys keep accumulating.
+    #[test]
+    fn cardinality_cap_rejects_new_keys_but_keeps_existing() {
+        use aegis_core::risk::RiskKey;
+        let t = RiskTracker::new(&cfg());
+        let t0 = Instant::now();
+
+        // Fill to the cap with distinct keys (simulates unique session cookies).
+        for i in 0..MAX_TRACKED_KEYS {
+            let key = RiskKey::from_ip(ip(&format!("10.0.0.{}", i + 1)));
+            t.record_malicious_at_with_key(key, 20, t0);
+        }
+        assert_eq!(t.len(), MAX_TRACKED_KEYS);
+
+        // A brand-new key past the cap is scored for THIS request but not stored.
+        let overflow = RiskKey::from_ip(ip("10.0.9.9"));
+        let st = t.record_malicious_at_with_key(overflow, 20, t0);
+        assert_eq!(st.score, 20, "the request is still scored");
+        assert_eq!(t.len(), MAX_TRACKED_KEYS, "but nothing new is persisted");
+        assert!(t.snapshot(ip("10.0.9.9")).is_none(), "overflow key is not tracked");
+
+        // An EXISTING key still accumulates after the cap is reached.
+        let existing = RiskKey::from_ip(ip("10.0.0.1"));
+        let st = t.record_malicious_at_with_key(existing, 20, t0);
+        assert_eq!(st.score, 40, "existing offender keeps accumulating");
+        assert_eq!(t.len(), MAX_TRACKED_KEYS);
+    }
+
+    // PROXY-02 — zero-value (clean, no-strike) slots are swept on the short
+    // ZERO_VALUE_IDLE_TTL; scored slots keep the generous IDLE_TTL.
+    #[test]
+    fn zero_value_slots_swept_faster_than_scored() {
+        use aegis_core::risk::RiskKey;
+        let t = RiskTracker::new(&cfg());
+        let t0 = Instant::now();
+
+        let scored = RiskKey::from_ip(ip("10.1.0.1"));
+        let clean = RiskKey::from_ip(ip("10.1.0.2"));
+        t.record_malicious_at_with_key(scored, 20, t0); // score 20
+        t.record_clean_at_with_key(clean, t0); // score 0, zero-value
+        assert_eq!(t.len(), 2);
+
+        // Past ZERO_VALUE_IDLE_TTL but well under IDLE_TTL; also past the sweep
+        // throttle. A record on a third key triggers the sweep.
+        let later = t0 + ZERO_VALUE_IDLE_TTL + Duration::from_secs(1);
+        t.record_malicious_at_with_key(RiskKey::from_ip(ip("10.1.0.3")), 20, later);
+
+        assert!(t.snapshot(ip("10.1.0.2")).is_none(), "zero-value slot swept early");
+        assert!(t.snapshot(ip("10.1.0.1")).is_some(), "scored slot survives short TTL");
     }
 
     /// 2026-05-25 — regression guard for the staging `45.45.237.206`

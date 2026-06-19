@@ -58,11 +58,11 @@ Priority follows Run 11's recommended order, adjusted for "what's still open in 
 
 | ID | Sev | Item | Files | Effort |
 |----|-----|------|-------|--------|
-| **A1** | CRIT | Bound request body **before** buffering — H1 | `data_plane.rs` (use `http_body_util::Limited`, pattern at `upstream/forward.rs:660`) | low |
-| **A2** | HIGH | Bound request body — H3 | `listener/http3.rs`, `proxy.rs::handle_request` (enforce `max_body_bytes`) | low |
-| **A3** | CRIT | Cardinality cap + LRU on RiskTracker | `risk/tracker.rs` (hard `len()` ceiling ~1–2M, drop idle-TTL for zero-score slots) | low–med |
-| **A4** | HIGH | Same cap on per-IP limiter + sane default | `rate_limit/ip_limiter.rs` (shared ceiling; move `1_000_000` to bench profile only) | low–med |
-| **A5** | HIGH | Slowloris: header-read timeout + conn-count semaphore | `accept.rs` (plain + admin builders, `auto::Builder`) | low |
+| **A1** ✅ | CRIT | Bound request body **before** buffering — H1 (`Limited` + Content-Length pre-check) | `data_plane.rs` `declared_content_length_over_cap` + `Limited::new` | **DONE 2026-06-19** (4 tests) |
+| **A2** ✅ | HIGH | Bound request body — H3 (Content-Length pre-check + in-loop cap → 413) | `listener/http3.rs` (reuses A1 helper) | **DONE 2026-06-19** |
+| **A3** ✅ | CRIT | Cardinality cap on RiskTracker + short TTL for zero-value slots | `risk/tracker.rs` (`MAX_TRACKED_KEYS`, `ZERO_VALUE_IDLE_TTL`) | **DONE 2026-06-19** (2 tests) |
+| **A4** ✅ | HIGH | Same cardinality cap on per-IP limiter | `rate_limit/ip_limiter.rs` (`MAX_TRACKED_KEYS`) | **DONE 2026-06-19** (1 test). `DEFAULT_LIMIT=1M` left as-is — it is a documented benchmark decision; lowering it risks throttling the OC harness. Set a strict per-IP cap via profile, not the code default. |
+| **A5** ✅ | HIGH | Slowloris: `header_read_timeout` (10s) + `TokioTimer` on all four serve sites | `accept.rs` (admin h1 ×2, data `auto::Builder` + plain h1) | **DONE 2026-06-19**. Conn-count semaphore + slow-**body** read timeout DEFERRED (benchmark-sensitive; needs a config knob; must not break SSE/WS lifetimes). |
 | ~~**B1**~~ | ~~CRIT~~ **ACCEPTED** | Hardcoded control secret — **re-scoped, NOT a code change.** v2.6 §55/§768 *mandate* the public fixed value `X-Benchmark-Secret: waf-hackathon-2026-ctrl`; the OC harness sends exactly it. The control plane is **loopback-gated regardless of bind** (`config.rs:1221-1240`, audit L-9), so the public secret is not externally reachable. Same posture as the accepted public-HTTP admin plane. The genuinely exploitable part (the *public* secret seeding the data-plane challenge key) is fixed by **B2**. | accepted | — |
 | **B2** ✅ | CRIT | Derive PoW/challenge key from an **independent** secret (`interop.challenge_secret`), random per-process when unset — never the contract-public control_secret | `run.rs` `resolve_challenge_key`, `config.rs` InteropConfig, `prod-balanced.yaml` | **DONE 2026-06-19** |
 | **C1** | CRIT | Sign `ConfigDoc` (Ed25519 or HMAC w/ non-Redis boot key); reject unsigned before `apply_and_swap` | `config_store.rs`, `redis_source.rs:189,317` | med |
@@ -94,10 +94,22 @@ Priority follows Run 11's recommended order, adjusted for "what's still open in 
 > challenge_key_tests` (6/6), `cargo test -p aegis-proxy --test admin_session_shared` (1/1); full
 > `aegis-core` suite 310/310.
 
-**P1 — Remote-OOM / DoS: A1 + A2 + A3 + A4 + A5.**
-The "make my WAF die" class. A1/A2 reuse the existing `Limited` pattern; A3/A4 share one LRU ceiling; A5 adds
-timeouts + a connection semaphore. All independently testable (oversized-body → 413; cap eviction; slowloris
-sim).
+**P1 — Remote-OOM / DoS: A1 + A2 + A3 + A4 + A5. ✅ DONE 2026-06-19.**
+The "make my WAF die" class. A1/A2 reuse the existing `Limited` pattern + a Content-Length pre-check; A3/A4
+share one cardinality ceiling (`MAX_TRACKED_KEYS`, `cfg(test)`-overridable) with a short TTL for zero-value
+slots; A5 sets `header_read_timeout` + `TokioTimer` on all four serve sites.
+
+> Test evidence: `aegis-proxy --lib content_length_cap_tests` (4/4), `aegis-security risk::tracker` (+2 new,
+> 37/37), `aegis-security rate_limit::ip_limiter` (+1 new, 18/18), full `aegis-security` lib 1822/1822,
+> `aegis-core` 310/310. Full `aegis-proxy` lib: **914 passed, 9 failed** — the 9 failures are the
+> `supervisor::tests::*` file-watch hot-reload tests, which **fail identically on clean `develop`**
+> (pre-existing, unrelated to this work; the `run_binds_and_serves_200` timer panic was introduced and then
+> fixed by adding `TokioTimer`). See `project_supervisor_tests_filewatch_flake` memory (now stale — they no
+> longer pass even pre-built on this box; tracked separately).
+
+> Deferred from P1 (documented in the register): the connection-count **semaphore** and the slow-**body**
+> read timeout. Both are benchmark-sensitive (need a generous config knob) and must not truncate long-lived
+> SSE / WebSocket streams — `header_read_timeout` already closes the classic slow-header slowloris.
 
 **P2 — Config-from-Redis trust: C1 (+ depends-on B-class key material).**
 Sign config docs with a boot-held key; reject unsigned/invalid before apply. Closes the "Redis attacker

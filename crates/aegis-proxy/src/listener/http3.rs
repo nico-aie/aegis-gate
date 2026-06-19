@@ -297,23 +297,59 @@ mod runtime {
             .await
             .map_err(|e| Http3ConfigError::Internal(format!("h3 resolve: {e}")))?;
 
-        // Drain the request body. h3's `recv_data` returns
-        // chunks until the stream is finished.
+        // PROXY-03 (LT-RUN-11, 2026-06-19) — bound the QUIC body. Previously
+        // the whole body was drained into `BytesMut` with no cap (and
+        // `handle_request` never consulted `max_body_bytes`), so an h3 client
+        // could OOM the worker. Reject an over-cap declared length up front,
+        // and stop draining once the accumulated body exceeds the cap.
+        let max_body = ctx.max_body_bytes;
+        let mut too_large =
+            crate::data_plane::declared_content_length_over_cap(req.headers(), max_body);
         let mut body = bytes::BytesMut::new();
-        loop {
-            match stream.recv_data().await {
-                Ok(Some(mut chunk)) => {
-                    while chunk.has_remaining() {
-                        let len = chunk.chunk().len();
-                        body.extend_from_slice(chunk.chunk());
-                        chunk.advance(len);
+        if !too_large {
+            loop {
+                match stream.recv_data().await {
+                    Ok(Some(mut chunk)) => {
+                        while chunk.has_remaining() {
+                            let len = chunk.chunk().len();
+                            body.extend_from_slice(chunk.chunk());
+                            chunk.advance(len);
+                        }
+                        if body.len() > max_body {
+                            too_large = true;
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        return Err(Http3ConfigError::Internal(format!("h3 recv_data: {e}")));
                     }
                 }
-                Ok(None) => break,
-                Err(e) => {
-                    return Err(Http3ConfigError::Internal(format!("h3 recv_data: {e}")));
-                }
             }
+        }
+        if too_large {
+            let json = Bytes::from(
+                serde_json::json!({ "error": "body_too_large", "max_bytes": max_body })
+                    .to_string(),
+            );
+            let resp = hyper::Response::builder()
+                .status(hyper::StatusCode::PAYLOAD_TOO_LARGE)
+                .header("content-type", "application/json")
+                .body(())
+                .expect("static 413 response builds");
+            stream
+                .send_response(resp)
+                .await
+                .map_err(|e| Http3ConfigError::Internal(format!("h3 send_response: {e}")))?;
+            stream
+                .send_data(json)
+                .await
+                .map_err(|e| Http3ConfigError::Internal(format!("h3 send_data: {e}")))?;
+            stream
+                .finish()
+                .await
+                .map_err(|e| Http3ConfigError::Internal(format!("h3 finish: {e}")))?;
+            return Ok(());
         }
         let body_bytes = Full::new(body.freeze());
 
