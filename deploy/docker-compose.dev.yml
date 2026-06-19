@@ -126,6 +126,9 @@ services:
     container_name: aegis-redis-exporter
     command:
       - --redis.addr=redis://redis:6379
+    # Stays in sync with the optional `REDIS_PASSWORD` (empty in dev).
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
     ports:
       - "9121:9121"
     depends_on:
@@ -140,11 +143,24 @@ services:
   redis:
     image: redis:7-alpine
     container_name: aegis-redis
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # R-2/R-6 (2026-06-19): hardened config — protected-mode, REPLICAOF/CONFIG/
+    # MODULE/DEBUG disabled (anti-hijack), persistence on. `REDIS_PASSWORD`
+    # (optional in dev, REQUIRED in any non-loopback deploy) adds auth; when
+    # unset, `--requirepass ""` is a no-op and loopback-only bind protects dev.
+    command:
+      - "redis-server"
+      - "/etc/redis/redis.conf"
+      - "--requirepass"
+      - "${REDIS_PASSWORD:-}"
+    volumes:
+      - ./redis/redis.conf:/etc/redis/redis.conf:ro
+    # Publish to LOOPBACK ONLY — never 0.0.0.0 (that exposure is what got the
+    # prod Redis hijacked). Cross-host access in the real cluster goes over the
+    # private network + firewall, not a published port.
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"${REDIS_PASSWORD:-}\" ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 5

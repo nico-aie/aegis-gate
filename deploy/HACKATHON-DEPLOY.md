@@ -83,10 +83,20 @@ In the Cloudflare dashboard for `example.com`:
 All on the **private** interface; firewall these off the public NIC.
 
 ```sh
-# Redis — shared cluster state
+# Redis — shared cluster state. HARDENED (2026-06-19, R-2/R-6) after an
+# unauthenticated Redis was hijacked via REPLICAOF and wiped. MUST have:
+#   1. a strong password (REQUIRED — never run an internet-reachable Redis
+#      without auth, even on a "private" IP; the AWS SG admitted the attack),
+#   2. REPLICAOF/SLAVEOF/CONFIG/MODULE/DEBUG renamed off (anti-hijack/backdoor),
+#   3. bind to the private IP only, AND firewall/SG :6379 to the WAF nodes only.
+export REDIS_PASSWORD="$(openssl rand -base64 32)"   # store it; the WAF needs it
 docker run -d --name aegis-redis --restart unless-stopped \
-  -p 10.0.0.10:6379:6379 redis:7-alpine \
-  redis-server --save 60 1 --appendonly yes
+  -p 10.0.0.10:6379:6379 \
+  -v "$PWD/deploy/redis/redis.conf:/etc/redis/redis.conf:ro" \
+  redis:7-alpine \
+  redis-server /etc/redis/redis.conf --requirepass "$REDIS_PASSWORD" --appendonly yes
+#   → both WAF nodes then use  WAF_STATE__REDIS__URLS='["redis://:'"$REDIS_PASSWORD"'@10.0.0.10:6379"]'
+#   → AWS SG ht-hackathon-13-sg: inbound :6379 ONLY from 10.0.0.11/32 + 10.0.0.12/32 (the WAF nodes).
 
 # Multi-protocol mock upstream (§5) — or: make mock-build
 (cd deploy/mock && go build -o /usr/local/bin/aegis-mock .)
@@ -146,7 +156,7 @@ Same binary + profile; per-node values via the `WAF_…__…` env overlay:
 # VM2 (waf-a) — repeat on VM3 with NODE id waf-b
 WAF_NODE__ID=waf-a \
 WAF_STATE__BACKEND=redis \
-WAF_STATE__REDIS__URLS='["redis://10.0.0.10:6379"]' \
+WAF_STATE__REDIS__URLS='["redis://:'"$REDIS_PASSWORD"'@10.0.0.10:6379"]' \
 WAF_OBSERVABILITY__OTEL__ENDPOINT=http://10.0.0.10:4317 \
 LLM_API_KEY="$(cat /etc/aegis/llm.key)"   # only if copilot enabled \
   ./waf run --config config/profiles/prod-balanced.yaml
