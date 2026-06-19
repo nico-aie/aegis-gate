@@ -46,7 +46,12 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // are how the Docker daemon's HTTP API is reachable when
         // the socket is mistakenly exposed via TCP / a sidecar
         // proxy. Probe: `GET /v1.24/containers/json`.
-        r"(?i)(?:^|/)v\d+\.\d+/(?:containers|images|networks|volumes|services|tasks|secrets|configs|swarm|nodes|plugins|info|version|events|system|build|auth)\b",
+        // 2026-06-18 (round-2 FP fix): anchored to major version `1`
+        // (`v1.NN`). The Docker Engine API has only ever been `v1.x`
+        // (1.24…1.45); the previous `v\d+\.\d+` collided with Facebook
+        // Graph SDK plugin URLs (`/v6.0/plugins/page.php`,
+        // `/v5.0/plugins/customerchat.php`).
+        r"(?i)(?:^|/)v1\.\d+/(?:containers|images|networks|volumes|services|tasks|secrets|configs|swarm|nodes|plugins|info|version|events|system|build|auth)\b",
         r"(?i)(?:^|/)_ping\b",
         r"(?i)(?:Makefile$)",
         r"(?i)(?:\.aws/credentials)",
@@ -164,6 +169,19 @@ static RECON_UA: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     .collect()
 });
 
+/// Standard browser/CMS/SDK paths that collide with the generic recon
+/// patterns but are NOT probes (2026-06-18 round-2 FP fix). Suppressing
+/// them up front avoids non-blocking recon noise polluting per-IP risk.
+fn is_benign_recon_path(path: &str) -> bool {
+    // Chrome Privacy Sandbox Attribution Reporting (W3C standard) — the
+    // `/debug/` recon pattern otherwise fires on its debug subpaths.
+    path.starts_with("/.well-known/attribution-reporting/")
+        // WordPress front-end AJAX endpoints — hit by every visitor; the
+        // `wp-admin` panel-probe pattern otherwise fires.
+        || path.ends_with("/admin-ajax.php")
+        || path.ends_with("/admin-post.php")
+}
+
 impl Detector for ReconDetector {
     fn id(&self) -> &'static str {
         "recon"
@@ -171,6 +189,7 @@ impl Detector for ReconDetector {
 
     fn inspect(&self, req: &RequestView<'_>) -> Vec<Signal> {
         let mut signals = Vec::new();
+        // (see is_benign_recon_path below for the benign-collision allowlist)
 
         // Check path-and-query for recon targets. We use the full
         // path-and-query (not just `path()`) so query-shaped probes
@@ -182,14 +201,18 @@ impl Detector for ReconDetector {
             .path_and_query()
             .map(|p| p.as_str())
             .unwrap_or_else(|| req.uri.path());
-        for re in RECON_PATHS.iter() {
-            if re.is_match(path_q) {
-                signals.push(Signal {
-                    score: super::scores::recon::PATH,
-                    tag: "recon_path".into(),
-                    field: "uri".into(),
-                });
-                break;
+        // 2026-06-18 (round-2 FP fix): standard browser/CMS/SDK paths that
+        // collide with the generic recon patterns are suppressed up front.
+        if !is_benign_recon_path(req.uri.path()) {
+            for re in RECON_PATHS.iter() {
+                if re.is_match(path_q) {
+                    signals.push(Signal {
+                        score: super::scores::recon::PATH,
+                        tag: "recon_path".into(),
+                        field: "uri".into(),
+                    });
+                    break;
+                }
             }
         }
 
@@ -393,6 +416,20 @@ mod tests {
     path_negative!(fp_console_dashboard,  "/console-dashboard");
     path_negative!(fp_my_adminer_helper,  "/myadminer-helper");
     path_negative!(fp_wp_admin_guide,     "/blog/wp-administration-tips");
+    // S-F (2026-06-18 round-2) — standard browser/CMS/SDK paths that collide
+    // with generic recon patterns but are NOT probes.
+    // Chrome Privacy Sandbox Attribution Reporting (W3C standard) vs `/debug/`.
+    path_negative!(fp_attribution_debug_verbose,
+        "/.well-known/attribution-reporting/debug/verbose");
+    path_negative!(fp_attribution_debug_report,
+        "/.well-known/attribution-reporting/debug/report-event-attribution");
+    // WordPress front-end AJAX endpoint vs the `wp-admin` panel probe.
+    path_negative!(fp_wp_admin_ajax,  "/wp-admin/admin-ajax.php");
+    path_negative!(fp_wp_admin_post,  "/wp-admin/admin-post.php");
+    // Facebook Graph SDK plugin URLs vs the Docker `v1.NN/...plugins` probe.
+    path_negative!(fp_fb_plugins_page,    "/v6.0/plugins/page.php");
+    path_negative!(fp_fb_plugins_chat,    "/v5.0/plugins/customerchat.php");
+    path_negative!(fp_fb_plugins_v22,     "/v2.2/plugins/page.php");
 
     // UA-based positive tests.
     macro_rules! ua_positive {
