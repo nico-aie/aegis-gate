@@ -40,12 +40,17 @@ impl Default for BodyAbuseDetector {
 /// NB: deliberately excludes generic flags like `active` / `enabled`
 /// — too common in benign bodies. The included keys are
 /// auth/identity/financial — never expected from an end-user PATCH.
+///
+/// Used by the **multipart** name= surface only (value context for
+/// multipart parts is deferred — no observed multipart FPs). `scope` is
+/// dropped here too (S-C, 2026-06-18 r2); the JSON/form surfaces use the
+/// value-context regexes below.
 const MASS_ASSIGN_KEY_NAMES: &str = concat!(
     // Roles / admin flags
     "role|is_admin|isAdmin|is_superuser|isSuperuser|superuser|admin",
     "|",
-    // Authorisation scope
-    "permissions|privileges|grants|scope|access_level|accessLevel|user_level|userLevel",
+    // Authorisation collections / access level
+    "permissions|privileges|grants|access_level|accessLevel|user_level|userLevel",
     "|",
     // Financial fields
     "balance|account_balance|accountBalance|credit",
@@ -78,24 +83,89 @@ const MASS_ASSIGN_QUERY_KEYS: &str = concat!(
     "privileges|grants|access_level|accessLevel",
 );
 
-/// JSON shape: `"key"\s*:` — keyed on property name so nested
-/// wrappers still match (e.g. `{"settings":{"role":"admin"}}`).
-static MASS_ASSIGN_KEYS_JSON: LazyLock<Regex> = LazyLock::new(|| {
+/// S-C (2026-06-18 round-2) — value-context split for the BODY surfaces.
+/// The captured FPs are benign telemetry that *names* a privileged key but
+/// carries a non-escalating value (`"is_admin":false`, `"role":"CREATOR"`,
+/// `"scope":"read"`). Flagging on the key name alone produced the
+/// mass-assignment benign blocks. The body surfaces now require value
+/// context for the privilege keys; only the credential/financial/authz-
+/// collection keys (never benign in a write body) stay name-match.
+///
+/// `scope` is intentionally DROPPED from every body surface — it is an
+/// ubiquitous OAuth/analytics term (`openid`, `read`, `PAGE`).
+///
+/// Privilege FLAG keys — fire only on a TRUTHY value.
+const MASS_ASSIGN_FLAG_KEYS: &str = concat!(
+    "is_admin|isAdmin|is_superuser|isSuperuser|superuser|admin",
+    "|",
+    "email_verified|emailVerified|verified",
+);
+/// Role / access-level keys — fire only on a privilege-ESCALATING value.
+const MASS_ASSIGN_ROLE_KEYS: &str =
+    "role|access_level|accessLevel|user_level|userLevel";
+/// Escalating role values. Longer alternatives first so `administrator`
+/// wins over the `admin` prefix; each is `\b`-bounded at the call site.
+const MASS_ASSIGN_ROLE_VALUES: &str =
+    "administrator|superadmin|super_admin|superuser|sysadmin|admin|root|owner|system|sa";
+/// Credential / token / financial / authz-collection keys — never expected
+/// from an end-user write body regardless of value, so name-presence is the
+/// signal (`scope` deliberately absent).
+const MASS_ASSIGN_NAME_KEYS: &str = concat!(
+    "permissions|privileges|grants",
+    "|",
+    "balance|account_balance|accountBalance|credit",
+    "|",
+    "password_hash|passwordHash|api_key|apiKey|api_token|apiToken",
+    "|",
+    "access_token|accessToken|refresh_token|refreshToken",
+);
+
+/// JSON FLAG shape: `"is_admin"\s*:\s*<truthy>`. `"is_admin":false`/`:0`
+/// (the dominant benign shape) does NOT match.
+static MASS_ASSIGN_FLAG_JSON: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
-        r#"(?i)"\s*(?:{MASS_ASSIGN_KEY_NAMES})\s*"\s*:"#
+        r#"(?i)"\s*(?:{MASS_ASSIGN_FLAG_KEYS})\s*"\s*:\s*(?:true|"true"|"1"|"yes"|"on"|1\b)"#
     ))
-    .expect("mass-assign JSON regex compiles")
+    .expect("mass-assign flag JSON regex compiles")
+});
+/// JSON ROLE shape: `"role"\s*:\s*"?<escalating>`. `"role":"CREATOR"` does
+/// NOT match; `"role":"admin"` does. Nested wrappers still match.
+static MASS_ASSIGN_ROLE_JSON: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r#"(?i)"\s*(?:{MASS_ASSIGN_ROLE_KEYS})\s*"\s*:\s*"?\s*(?:{MASS_ASSIGN_ROLE_VALUES})\b"#
+    ))
+    .expect("mass-assign role JSON regex compiles")
+});
+/// JSON NAME shape: `"key"\s*:` — keyed on property name (credential/
+/// financial/authz keys only) so nested wrappers still match.
+static MASS_ASSIGN_NAME_JSON: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r#"(?i)"\s*(?:{MASS_ASSIGN_NAME_KEYS})\s*"\s*:"#
+    ))
+    .expect("mass-assign name JSON regex compiles")
 });
 
-/// Form-encoded shape: `key=` anchored at start or after `&` so
-/// substring keys (e.g. `dropdown_role` containing `role`) don't
-/// false-positive. The leading `?` is **not** in the boundary set
-/// because `req.uri.query()` returns the query portion without it.
-static MASS_ASSIGN_KEYS_FORM: LazyLock<Regex> = LazyLock::new(|| {
+/// Form-encoded FLAG shape: `key=<truthy>` anchored at start or after `&`.
+static MASS_ASSIGN_FLAG_FORM: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
-        r#"(?i)(?:^|&)(?:{MASS_ASSIGN_KEY_NAMES})="#
+        r#"(?i)(?:^|&)(?:{MASS_ASSIGN_FLAG_KEYS})=(?:true|1|yes|on)(?:&|$)"#
     ))
-    .expect("mass-assign form regex compiles")
+    .expect("mass-assign flag form regex compiles")
+});
+/// Form-encoded ROLE shape: `key=<escalating>` with a value boundary so
+/// `role=adminxyz` doesn't match.
+static MASS_ASSIGN_ROLE_FORM: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r#"(?i)(?:^|&)(?:{MASS_ASSIGN_ROLE_KEYS})=(?:{MASS_ASSIGN_ROLE_VALUES})(?:&|$)"#
+    ))
+    .expect("mass-assign role form regex compiles")
+});
+/// Form-encoded NAME shape: `key=` (credential/financial/authz keys).
+static MASS_ASSIGN_NAME_FORM: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r#"(?i)(?:^|&)(?:{MASS_ASSIGN_NAME_KEYS})="#
+    ))
+    .expect("mass-assign name form regex compiles")
 });
 
 /// Query-surface form shape over the privilege-escalation subset.
@@ -190,8 +260,13 @@ impl Detector for BodyAbuseDetector {
                             field: "body".into(),
                         });
                     }
-                    // Mass assignment: privileged-field key in body.
-                    if MASS_ASSIGN_KEYS_JSON.is_match(text) {
+                    // Mass assignment: privileged FLAG set truthy, ROLE set
+                    // to an escalating value, or a credential/financial key
+                    // present (S-C value context, 2026-06-18 r2).
+                    if MASS_ASSIGN_FLAG_JSON.is_match(text)
+                        || MASS_ASSIGN_ROLE_JSON.is_match(text)
+                        || MASS_ASSIGN_NAME_JSON.is_match(text)
+                    {
                         signals.push(Signal {
                             score: super::scores::body_abuse::MASS_ASSIGNMENT,
                             tag: "mass_assignment".into(),
@@ -213,9 +288,12 @@ impl Detector for BodyAbuseDetector {
                 // forms so `%72ole=admin` is caught.
                 if content_type.starts_with("application/x-www-form-urlencoded") {
                     let decoded = super::url_decode(text);
-                    if MASS_ASSIGN_KEYS_FORM.is_match(&decoded)
-                        || MASS_ASSIGN_KEYS_FORM.is_match(text)
-                    {
+                    let hit = |s: &str| {
+                        MASS_ASSIGN_FLAG_FORM.is_match(s)
+                            || MASS_ASSIGN_ROLE_FORM.is_match(s)
+                            || MASS_ASSIGN_NAME_FORM.is_match(s)
+                    };
+                    if hit(&decoded) || hit(text) {
                         signals.push(Signal {
                             score: super::scores::body_abuse::MASS_ASSIGNMENT,
                             tag: "mass_assignment".into(),
@@ -611,6 +689,20 @@ mod tests {
     ma_clean!(ma_clean_role_substr,    r#"{"description":"accessory rolepoint"}"#);
     ma_clean!(ma_clean_color,          r#"{"color":"admin","preference":"dark"}"#);
     ma_clean!(ma_clean_orderitems,     r#"{"items":[{"sku":"x","qty":1}]}"#);
+    // S-C (2026-06-18 round-2) — value-context: a privileged KEY with a
+    // non-escalating VALUE is benign telemetry, not mass-assignment. These
+    // are the exact captured FP shapes (Instacart/Semrush/UberEats etc.).
+    ma_clean!(ma_clean_is_admin_false, r#"{"is_admin":false}"#);
+    ma_clean!(ma_clean_admin_false,    r#"{"admin":false}"#);
+    ma_clean!(ma_clean_isadmin_false,  r#"{"isAdmin":false}"#);
+    ma_clean!(ma_clean_superuser_false, r#"{"superuser":false}"#);
+    ma_clean!(ma_clean_verified_false, r#"{"verified":false}"#);
+    ma_clean!(ma_clean_role_creator,   r#"{"role":"CREATOR"}"#);
+    ma_clean!(ma_clean_role_viewer,    r#"{"role":"viewer","name":"x"}"#);
+    ma_clean!(ma_clean_role_region,    r#"{"role":"westus2"}"#);
+    ma_clean!(ma_clean_scope_openid,   r#"{"scope":"openid profile email"}"#);
+    ma_clean!(ma_clean_scope_read,     r#"{"scope":"read"}"#);
+    ma_clean!(ma_clean_access_level_user, r#"{"access_level":"user"}"#);
 
     // ---- Positive: XXE external-entity decls ----
     macro_rules! xxe {
@@ -1113,12 +1205,10 @@ mod tests {
 
     #[test]
     fn s2_json_legit_role_string_value_not_flagged() {
-        // A legit job-title field, where `role` IS a privileged key
-        // and `"engineer"` happens to be the value — this WILL still
-        // fire because we match on the key name. Documented trade-off
-        // in the plan: matching on key avoids parsing the value.
-        // This test pins that behaviour so it doesn't regress
-        // silently — if we ever soften, this test must be updated.
+        // S-C (2026-06-18 round-2) — the prior trade-off (match on key name
+        // alone) flagged this legit job-title field. The body surfaces now
+        // require an ESCALATING role value, so `"role":"engineer"` is
+        // correctly benign. `"role":"admin"` still fires (see ma_role_admin).
         let d = BodyAbuseDetector::default();
         let body = br#"{"role":"engineer"}"#;
         let (m, u, h, b) = build_view(
@@ -1128,6 +1218,9 @@ mod tests {
             body,
         );
         let req = view(&m, &u, &h, &b);
-        assert_mass_assign(&d.inspect(&req), "body");
+        assert!(
+            !d.inspect(&req).iter().any(|s| s.tag == "mass_assignment"),
+            "legit role value must not trip mass-assignment",
+        );
     }
 }

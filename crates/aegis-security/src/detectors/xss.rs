@@ -11,7 +11,13 @@ static XSS_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
         r"(?i)<script[\s>]",
         r"(?i)</script>",
-        r"(?i)javascript\s*:",
+        // S-G (2026-06-18 round-2): the `javascript:` URI scheme fires only
+        // when followed by a JS-execution sink. The inert href placeholders
+        // `javascript:void(0)` / `javascript:;` / `javascript:` are ubiquitous
+        // in captured DOM / analytics payloads and drove the xss benign
+        // blocks. Rust's regex has no lookahead, so `void` is excluded by
+        // listing the real sinks rather than a generic `ident(`.
+        r"(?i)javascript\s*:\s*(?:alert|eval|prompt|confirm|atob|unescape|fetch|import\s*\(|location|document\s*\.|window\s*\.|top\s*\.|self\s*\.|parent\s*\.|globalthis|this\s*\.|new\s+function|function\b|settimeout|setinterval|string\s*\.\s*fromcharcode|xmlhttprequest|=>|\[)",
         r"(?i)vbscript\s*:",
         // S4 (2026-06-18): event handlers fire only inside a tag
         // (`<tag … onX=`). Bare `?onload=` query params (Cloudflare
@@ -106,7 +112,11 @@ impl Detector for XssDetector {
         check_css(&url_decoded_uri, "uri", &mut signals);
 
         let body = std::str::from_utf8(req.body.peek(8192)).unwrap_or("");
-        if !body.is_empty() {
+        // S-B (2026-06-18 round-2) — skip bot-management sensor beacons
+        // (form-urlencoded/text-plain single huge high-entropy value). The
+        // blob coincidentally matches tag/handler/`javascript:` shapes and
+        // drove the xss benign blocks. Mirrors the cmdi/sqli body gate.
+        if !body.is_empty() && !super::form_body_is_opaque_beacon(req.headers, body) {
             let url_decoded_body = super::url_decode(body);
             let entity_decoded_body = super::html_entity_decode(&url_decoded_body);
             check_xss(&url_decoded_body, "body", &mut signals);
@@ -246,7 +256,16 @@ mod tests {
     positive!(xss_script_tag, "/?q=%3Cscript%3Ealert(1)%3C/script%3E");
     positive!(xss_script_src, "/?q=%3Cscript+src=evil.js%3E%3C/script%3E");
     positive!(xss_onerror, "/?q=%3Cimg+onerror=alert(1)+src=x%3E");
-    positive!(xss_javascript_proto, "/?q=javascript:void(0)");
+    // S-G (2026-06-18 round-2) — `javascript:` now requires a JS-execution
+    // sink. `javascript:alert(1)` fires; the inert href placeholders
+    // `javascript:void(0)` / `javascript:;` (ubiquitous in captured DOM /
+    // analytics payloads) no longer do.
+    positive!(xss_javascript_alert, "/?q=javascript:alert(1)");
+    positive!(xss_javascript_eval,  "/?q=javascript:eval(atob('x'))");
+    positive!(xss_javascript_docref, "/?u=javascript:document.cookie");
+    negative!(xss_javascript_void_inert, "/?q=javascript:void(0)");
+    negative!(xss_javascript_semicolon,  "/?q=javascript:;");
+    negative!(xss_javascript_void_space, "/?q=javascript:void%200");
     positive!(xss_eval, "/?q=eval%28%27malicious%27%29");
     positive!(xss_document_cookie, "/?q=document.cookie");
     positive!(xss_window_location, "/?q=window.location");
@@ -485,4 +504,44 @@ mod tests {
     // A redirect-style param carrying an external https URL is open_redirect's
     // job, not CSS — no `@import`/`url(`/selector structure here.
     negative!(css_clean_redirect_param, "/r?next=https://example.com/welcome");
+
+    // ===== S-B (2026-06-18 round-2) — beacon gate on the body scan =====
+
+    fn body_with_ct(ct: &str, body: &str) -> Vec<Signal> {
+        let m = http::Method::POST;
+        let u: http::Uri = "/submit".parse().unwrap();
+        let mut h = http::HeaderMap::new();
+        h.insert("content-type", ct.parse().unwrap());
+        let b = BodyPeek::new(body.as_bytes().to_vec(), Some(body.len() as u64), false);
+        XssDetector.inspect(&make_view(&m, &u, &h, &b))
+    }
+
+    fn xss_blob() -> String {
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+            .chars()
+            .cycle()
+            .take(320)
+            .collect()
+    }
+
+    #[test]
+    fn text_plain_sensor_beacon_with_coincidental_xss_is_skipped() {
+        // 2026-06-18 r2: a text/plain sensor beacon whose high-entropy blob
+        // coincidentally contains a `<img … onerror=>` shape must be skipped
+        // — bot telemetry, not a reflected-XSS surface.
+        let body = format!("{{\"sensor_data\":\"{}<img src=x onerror=alert(1)>\"}}", xss_blob());
+        assert!(
+            body_with_ct("text/plain;charset=UTF-8", &body).is_empty(),
+            "text/plain sensor beacon must be skipped by xss",
+        );
+    }
+
+    #[test]
+    fn real_xss_in_short_text_body_still_fires() {
+        // Same shape in a short, low-entropy body → NOT a beacon → fires.
+        assert!(
+            !body_with_ct("text/plain", "<img src=x onerror=alert(1)>").is_empty(),
+            "real xss in a normal text body must still fire",
+        );
+    }
 }
