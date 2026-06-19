@@ -40,7 +40,13 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)(?:\.(?:bak|old|orig|save|swp|tmp)$)",
         r"(?i)(?:~$)",
         r"(?i)(?:Dockerfile)",
-        r"(?i)(?:docker-compose\.ya?ml)",
+        // 2026-06-19 (btc-miss report) — broadened from the narrow
+        // `docker-compose\.ya?ml`. Covers Compose v1 override variants
+        // (`docker-compose.override.yml`, `docker-compose.prod.yml`)
+        // and the Compose v2 canonical name (`compose.yml`/`compose.yaml`).
+        // Segment + value anchored so `/static/compose-ui/widget.js`
+        // and similar don't FP.
+        r"(?i)(?:^|/)(?:docker-)?compose(?:\.[\w-]+)?\.ya?ml(?:$|[?#])",
         // SEC-L001 (2026-05-08) — Docker REST API surface.
         // Versioned paths /v{major}.{minor}/{containers,images,...}
         // are how the Docker daemon's HTTP API is reachable when
@@ -68,6 +74,20 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // single-blocking (operator decision 2026-06-13).
         r"(?i)(?:^|/)config\.ya?ml(?:$|[?#])",
         r"(?i)(?:^|/)(?:secrets?|settings|credentials)\.ya?ml(?:$|[?#])",
+        // 2026-06-19 (btc-miss report) — framework DB/parameter config
+        // files. Same segment + value anchoring as the config/secrets
+        // family above: `/config/database.yaml` (Rails), `/app/config/
+        // parameters.yml` (Symfony) leak DB creds. Specific filenames
+        // only — NOT a blanket `*.yml` (FPs on legit manifest traffic).
+        r"(?i)(?:^|/)(?:database|parameters)\.ya?ml(?:$|[?#])",
+        // SQL dumps left in the webroot — `dump.sql`, `db.sql.gz`,
+        // `backup.sql`, `mysql.sql`, `pg_dump.sql`. Anchored to
+        // dump-shaped filenames (NOT bare `*.sql`) + optional `.gz`.
+        r"(?i)(?:^|/)(?:dump|db|backup|mysql|pg[_-]?dump)[\w.-]*\.sql(?:\.gz)?(?:$|[?#])",
+        // Laravel log exposure — `/storage/logs/laravel.log` leaks
+        // stack traces, queries, env. Anchored to the framework's
+        // log directory so generic `*.log` API params don't FP.
+        r"(?i)(?:^|/)storage/logs/[\w.-]*\.log\b",
         // Private-key / keystore material. Restrict to private-bearing
         // extensions; .crt/.cer/.der are EXCLUDED (public certs are
         // sometimes legitimately downloadable) to keep FP at zero.
@@ -135,6 +155,20 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // Common filenames operators leave behind by accident:
         // `phpinfo.php`, `info.php`, `test.php`, `i.php`.
         r"(?i)/(?:phpinfo|info|test|i)\.php(?:$|\?|/)",
+        // 2026-06-19 (btc-miss report) — vendor/control-panel recon
+        // surfaces that were fully missed.
+        // SAP NetWeaver RECON (CVE-2020-6287) — unauthenticated admin
+        // user creation via the LM Configuration Wizard.
+        r"(?i)(?:^|/)developmentserver/metadatauploader\b",
+        // MSSQL Reporting Services root. Distinct anchored token so the
+        // `report` substring in `/api/reports/monthly` doesn't FP.
+        r"(?i)(?:^|/)ReportServer(?:$|[/?])",
+        // Control Web Panel file manager (CVE-2021-45467) — the
+        // `initialize` action is the LFI/RCE entry point.
+        r"(?i)(?:^|/)file-manager/initialize\b",
+        // cPanel / WHM internal subdomain proxy — `___proxy_subdomain*`
+        // is a cPanel-internal token never seen in legit external traffic.
+        r"(?i)(?:^|/)___proxy_subdomain",
     ]
     .iter()
     .map(|p| Regex::new(p).unwrap())
@@ -430,6 +464,40 @@ mod tests {
     path_negative!(fp_fb_plugins_page,    "/v6.0/plugins/page.php");
     path_negative!(fp_fb_plugins_chat,    "/v5.0/plugins/customerchat.php");
     path_negative!(fp_fb_plugins_v22,     "/v2.2/plugins/page.php");
+
+    // 2026-06-19 (btc-miss report) — recon path coverage gaps. These
+    // probe shapes were FULLY-MISSED (rule=none) before; each is a
+    // distinct config/secret/control-panel surface.
+    // Docker Compose: override variants + Compose v2 canonical name.
+    path_positive!(compose_override,      "/docker-compose.override.yml");
+    path_positive!(compose_v2_yml,        "/compose.yml");
+    path_positive!(compose_v2_yaml,       "/compose.yaml");
+    // Rails/Symfony framework config files (segment-anchored filenames).
+    path_positive!(config_database_yaml,  "/config/database.yaml");
+    path_positive!(config_database_yml,   "/config/database.yml");
+    path_positive!(symfony_parameters,    "/app/config/parameters.yml");
+    // SQL dumps left in the webroot.
+    path_positive!(sql_dump,              "/dump.sql");
+    path_positive!(sql_dump_gz,           "/db.sql.gz");
+    path_positive!(sql_backup,            "/backup.sql");
+    // Laravel log exposure.
+    path_positive!(laravel_log,           "/storage/logs/laravel.log");
+    // SAP RECON (CVE-2020-6287).
+    path_positive!(sap_recon,             "/developmentserver/metadatauploader");
+    // MSSQL Reporting Services.
+    path_positive!(ssrs_reportserver,     "/ReportServer");
+    // Control Web Panel file manager (CVE-2021-45467).
+    path_positive!(cwp_file_manager,      "/file-manager/initialize");
+    // cPanel / WHM internal proxy.
+    path_positive!(whm_proxy,             "/___proxy_subdomain_whm/login/?login_only=1");
+    // ...and the FP guards: legit traffic that brushes the new tokens.
+    path_negative!(fp_reports_monthly,    "/api/reports/monthly?year=2024&month=1");
+    path_negative!(fp_report_pdf,         "/files/documents/report.pdf");
+    path_negative!(fp_logs_api,           "/api/logs?level=error&limit=100");
+    path_negative!(fp_compose_ui_js,      "/static/compose-ui/widget.js");
+    path_negative!(fp_database_status,    "/api/database-status");
+    path_negative!(fp_parameters_api,     "/api/parameters?env=prod");
+    path_negative!(fp_file_manager_list,  "/file-manager/list");
 
     // UA-based positive tests.
     macro_rules! ua_positive {
