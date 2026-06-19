@@ -89,7 +89,10 @@ upstreams:
 state:
   backend: redis
   redis:
-    urls: ["redis://127.0.0.1:6379"]  # REPLACE
+    # REPLACE. In any multi-node / non-loopback deploy the URL MUST carry the
+    # password (redis://:PASSWORD@host:6379) — see deploy/redis/redis.conf +
+    # HACKATHON-DEPLOY.md §2 (Redis hardening, R-2/R-6, 2026-06-19).
+    urls: ["redis://127.0.0.1:6379"]
     pool_size: 32
     timeout: "100ms"
 
