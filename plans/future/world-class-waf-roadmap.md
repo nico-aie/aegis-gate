@@ -10,8 +10,8 @@
 > Quadrant + the leaders' 2025 product announcements (sources at the
 > bottom), and (2) a **code-verified** audit of what Aegis actually ships
 > on `develop` as of this date — not what the docs claim. Per the standing
-> caution (`Implement-Progress`, memory), repo docs drift both ways, so
-> every "have / don't have" below was grep-checked against `crates/`.
+> caution that repo docs drift both ways, so every "have / don't have"
+> below was grep-checked against `crates/`.
 
 ---
 

@@ -34,8 +34,7 @@ verbatim.
 | [velocity-sequence.md](./velocity-sequence.md) | `velocity_login_to_deposit`, `velocity_login_to_withdrawal`, `velocity_otp_to_deposit`, `velocity_otp_to_withdrawal` | Cross-endpoint sequence engine — fires when login/otp is followed by deposit/withdrawal within 5 s from the same peer IP. Scores 60/70/50/60. Added 2026-05-18 (Phase F F-CRITICAL-003). |
 | [ai-detector.md](./ai-detector.md) | `ai` | URL, body, headers (binary attack/normal verdict over a 26-feature vector via ONNX) |
 
-The detector mask (P2/P3 in [`Implement-Progress.md`](../../../Implement-Progress.md))
-controls which of these are active per tier — see
+The detector mask controls which of these are active per tier — see
 [`../tiered-protection.md`](../tiered-protection.md) and the
 [`/api/detectors`](../../control-plane/enterprise/api.md) admin
 endpoint.

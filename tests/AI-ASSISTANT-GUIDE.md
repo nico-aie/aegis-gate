@@ -320,8 +320,8 @@ copies.
 
 - [`AI-ASSISTANT-RULES.md`](./AI-ASSISTANT-RULES.md) — terse rules sheet
 - [`tests/README.md`](./README.md) — test-suite catalogue
-- [`Implement-Progress.md`](../Implement-Progress.md) §"AI-Assistant
-  testing track" — current sprint state for this work
+- [`plans/issues/README.md`](../plans/issues/README.md) — open backlog
+  + known limitations for this work
 - [`docs/operator/profiles.md`](../docs/operator/profiles.md) — what
   "prod-balanced" means; tests should be honest about which profile
   they assume

@@ -11,15 +11,16 @@ through a tiered security pipeline before it reaches the upstream.
 ## Read these first (in order)
 
 1. [`README.md`](./README.md) — what it does + crate responsibilities.
-2. [`Implement-Progress.md`](./Implement-Progress.md) — living snapshot:
-   last completed task, next task, carry-overs.
-3. [`plans/README.md`](./plans/README.md) — track status board
+2. [`plans/README.md`](./plans/README.md) — track status board
    (active / queued / closed; deferred work lives in `plans/future/`).
-4. [`plans/plan.md`](./plans/plan.md) — the working protocol (session
-   startup, progress-file rules, prompt template). **Authoritative.**
-5. [`Architecture.md`](./Architecture.md) — 27-section system design,
+   For *current state*, read recent **git history** + the open items in
+   [`plans/issues/`](./plans/issues/README.md) — those are the source of
+   truth, not a hand-maintained progress file.
+3. [`plans/plan.md`](./plans/plan.md) — the working protocol (session
+   startup, prompt template). **Authoritative.**
+4. [`Architecture.md`](./Architecture.md) — 27-section system design,
    cross-referenced to source paths.
-6. The `docs/<category>/…` doc for the subsystem you're touching — each
+5. The `docs/<category>/…` doc for the subsystem you're touching — each
    has a `> **Status:**` banner; [`docs/README.md`](./docs/README.md) is the index.
 
 ## Workspace (5 crates)

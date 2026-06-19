@@ -479,6 +479,5 @@ volumetric guard.
   — per-script contracts the smoke harness exercises today.
 - [`docs/security/rate-limiting.md`](../security/rate-limiting.md)
   — the dual-surface rate-limit contract referenced above.
-- [`Implement-Progress.md`](../../Implement-Progress.md)
-  — current carry-over slate + which items in §"Roadmap"
-  are gating B6 vs deferred.
+- [`plans/issues/README.md`](../../plans/issues/README.md)
+  — open backlog + known cluster limitations.

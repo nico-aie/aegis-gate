@@ -1,6 +1,6 @@
 # PLAN — SEC regression triage (2026-06-14) — SUPERSEDED
 
-> **Superseded by [`PLAN-sec-regression-2026-06-16-newmodel.md`](./PLAN-sec-regression-2026-06-16-newmodel.md)** (2026-06-16).
+> **Superseded by [`PLAN-sec-regression-2026-06-16-threshold-and-detectors.md`](../PLAN-sec-regression-2026-06-16-threshold-and-detectors.md)** (2026-06-16).
 >
 > That plan re-evaluates the same gate-off / all-detectors-on baseline (`run-20260614-192320`)
 > against the **new AI model** run (`run-20260616-201503`) and carries forward the still-open
