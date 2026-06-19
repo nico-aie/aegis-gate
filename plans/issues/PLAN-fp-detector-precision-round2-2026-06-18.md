@@ -1,7 +1,25 @@
 # PLAN — Benign over-block triage, Round 2: residual detector FPs on the 21:32 run (2026-06-18)
 
 - **Type:** PLAN (QC FP-report double-check → code-grounded root cause + per-rule fix specs)
-- **Status:** 🟡 PROPOSED (2026-06-18) — awaiting confirmation before any code.
+- **Status:** ✅ **IMPLEMENTED** (2026-06-19) on branch `fix/fp-detector-precision-round2`, TDD
+  (RED→GREEN per step). All 7 steps S-A…S-G landed; full `aegis-security` lib suite green
+  (**1819 passed / 0 failed**, +45 detector fixtures over the 1774 baseline). Workspace (`aegis-proxy`)
+  builds; no new clippy warnings. **Remaining:** corpus replay (200k n-tester run) as the final field gate —
+  the per-step fixtures reproduce every captured benign shape, so this is confirmation, not discovery.
+  - ✅ **S-A** — opaque-beacon fast-path restricted to high-specificity tokens (`${jndi`, `/bin/`,
+    `/etc/passwd`, `sh -c`, `union`, `select`, …); bare `` ` ``/`$(`/`${`/`{{`/`<%` dropped. Also fixed the
+    gate's text/plain `=`-truncation. Clears cmdi (397) + sqli (149) beacon FPs.
+  - ✅ **S-B** — beacon gate wired into xss + ssrf body scans.
+  - ✅ **S-C** — mass-assignment body surfaces require value context (truthy flag / escalating role); `scope`
+    dropped. Clears `is_admin:false` (122) / `admin:false` (156) / `role:CREATOR` / `scope:read` (252).
+  - ✅ **S-D** — ssrf userinfo: tight RFC-3986 charclass + internal-host requirement. Clears JSON-LD
+    `schema.org","@type` + Sentry DSN FPs; keeps `evil@internal-svc` / `evil@169.254.169.254`.
+  - ✅ **S-E** — header-injection query **and** header-value CRLF require a header-name token after the
+    newline (path scan stays strict). Clears the 107 query + 91 cookie-value `%0a`/`%0d` FPs.
+  - ✅ **S-F** — recon: Docker pattern pinned to `v1.NN` (kills FB `/v6.0/plugins/…`); `is_benign_recon_path`
+    guard for Chrome attribution-reporting + WordPress `admin-ajax.php`. Clears ~382 non-blocking noise hits.
+  - ✅ **S-G** — xss `javascript:` requires a JS-execution sink; inert `javascript:void(0)` / `;` no longer fire.
+- **Original status:** 🟡 PROPOSED (2026-06-18) — confirmed, then executed.
 - **Source run:** `qc-fp-report/20260618_213203_fp_logs/` (post-fix re-run; **now logs full headers + body**,
   so the §1/S0 attribution gap from the 12:25 plan is closed — every root cause below is read off the captured
   request, not inferred from a URL).
