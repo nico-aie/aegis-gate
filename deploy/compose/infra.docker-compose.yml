@@ -26,16 +26,22 @@ name: aegis-infra
 services:
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--save", "60", "1", "--appendonly", "yes"]
+    # Hardened (2026-06-18 hijack mitigation): AUTH + anti-hijack renames (redis.conf).
+    # REDIS_PASSWORD comes from deploy/compose/.env (gitignored). Must match the fleet
+    # nodes' WAF_STATE__REDIS__URLS (Ansible group_vars vault → each node's .env).
+    command: ["redis-server", "/etc/redis/redis.conf", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD in deploy/compose/.env}"]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "sh", "-c", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 2s
       timeout: 2s
       retries: 10
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD}"
     ports:
       - "10.20.0.72:6379:6379"
     volumes:
+      - ../redis/redis.conf:/etc/redis/redis.conf:ro
       - redis-data:/data
 
   mock:

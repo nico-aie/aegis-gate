@@ -122,3 +122,6 @@ deploy/nginx/native/
 
 # ansible WAF pidfile dir (infra node deploy_dir == repo root)
 run/
+
+# infra Redis password for docker compose
+deploy/compose/.env
