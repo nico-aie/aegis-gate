@@ -1,7 +1,11 @@
 # PLAN — Consolidated security remediation (Redis hijack + admin lockout + host audit) 2026-06-19
 
 - **Type:** PLAN (consolidation of 3 findings → one register → fix-all, split OPERATOR vs REPO)
-- **Status:** 🔴 OPEN (2026-06-19). Incident contained; hardening outstanding.
+- **Status:** 🟡 IN PROGRESS (2026-06-19). Incident contained. **REPO P1 COMPLETE** on `develop`:
+  R-1 (PR #62, loud session-store failure → login 503), R-1b (PR #63, `state_backend_writable` →
+  `/healthz/ready` degraded on a read-only backend), R-2 + R-6 (PR #62, hardened `deploy/redis/redis.conf`
+  + loopback bind + auth + persistence). **Remaining REPO:** R-3, R-4, R-5(verify), R-8, O-7(sweeper).
+  **OPERATOR track** (O-1, O-2, O-4…O-9 + secret rotation) outstanding on the box.
 - **Supersedes / folds in:**
   - `plans/issues/PLAN-prod-redis-hijack-and-admin-lockout-2026-06-19.md` (Redis hijack + login loop; **now
     superseded by this doc** — its Parts B/C/D become R-* items here).
@@ -42,8 +46,9 @@ Severity → ID → owner. **OPERATOR** = action on the prod host (agent can't r
 
 | ID | Sev | Issue | Source | Owner |
 |----|-----|-------|--------|-------|
-| **R-1** | CRIT | Read-only/down backend silently swallowed → admin lockout (`put_record` `let _ =`, login still 200) | login-loop + incident | **REPO** |
-| **R-2** | CRIT | Redis ships with no auth / no `rename-command REPLICAOF/CONFIG` / publishes 6379 | incident + audit C-1/M-2 | **REPO** (config) + OPERATOR (apply) |
+| **R-1** | CRIT | Read-only/down backend silently swallowed → admin lockout (`put_record` `let _ =`, login still 200) | login-loop + incident | ✅ **DONE** (PR #62) |
+| **R-1b** | CRIT | Read-only backend looked healthy on `/healthz/ready` (PING ok, writes rejected) | incident | ✅ **DONE** (PR #63) |
+| **R-2** | CRIT | Redis ships with no auth / no `rename-command REPLICAOF/CONFIG` / publishes 6379 | incident + audit C-1/M-2 | ✅ **DONE** repo (PR #62); OPERATOR applies on box |
 | **O-1** | CRIT | No host firewall; `0.0.0.0` services rely solely on AWS SG (audit **C-1**) | audit | **OPERATOR** |
 | **O-2** | CRIT | `sshd PermitRootLogin yes` (audit **C-2**) | audit | **OPERATOR** |
 | **O-3** | ~~CRIT~~ **ACCEPTED** | Admin plane public `0.0.0.0:9443` + `0.0.0.0/0` + HTTP + insecure cookies (audit **C-3**) — **committee contract requirement, NOT a bug.** Re-scoped to *compensating controls over HTTP* (O-9) | audit + operator | **ACCEPTED CONSTRAINT** |
@@ -55,7 +60,7 @@ Severity → ID → owner. **OPERATOR** = action on the prod host (agent can't r
 | **O-6** | HIGH | journald volatile (no `/var/log/journal`) (audit **H-3**) | audit | **OPERATOR** |
 | **O-7** | HIGH | `logs/audit/` 4.9 GB; retention not enforcing → disk-fill crash (audit **H-4**) | audit | **OPERATOR** + **REPO** (verify sweeper) |
 | **R-5** | MED | Secrets inline in deployed `waf.yaml` (csrf_secret, argon2 hash) (audit **M-3**) — repo profiles use `${secret:...}` refs; box inlined | audit | **OPERATOR** (rotate→env ref) + **REPO** (verify profile refs) |
-| **R-6** | MED | No Redis persistence/backup (`--save ""`) (audit **M-2**) | audit | **REPO** (config) |
+| **R-6** | MED | No Redis persistence/backup (`--save ""`) (audit **M-2**) | audit | ✅ **DONE** (PR #62; `save` in redis.conf) |
 | **O-8** | MED | Stale `/etc/aegis-gate.env` secret sprawl (audit **M-1**) | audit | **OPERATOR** |
 | **R-7** | ~~MED~~ **ACCEPTED** | `aegis_session` no `Secure` (AEGIS_INSECURE_COOKIES=1) (audit **M-4**) — **required** over the contracted HTTP admin plane; browsers drop `Secure` cookies on HTTP. Accepted; mitigated by O-9 (TOTP + short TTL) | audit | **ACCEPTED CONSTRAINT** |
 | **R-8** | LOW | HAProxy `cluster_http` no session affinity (backstop for R-3) | login-loop §fix-3 | **REPO** (config) |
@@ -76,10 +81,11 @@ Severity → ID → owner. **OPERATOR** = action on the prod host (agent can't r
 - **TDD:** a failing/read-only backend mock → `create` returns `Err`, `authenticate` → `StoreUnavailable`;
   in-memory → unchanged `Ok`; all existing session/login tests stay green.
 
-### R-1b — Surface backend write-health on readiness
-*File:* `crates/aegis-control/src/health.rs`. `state_backend_up` is a read/ping check (stayed `true` against a
-read-only replica). Add a `state_backend_writable` signal (cheap periodic write-probe or reflect observed write
-failures) so `/healthz/ready` reports `degraded`. Report-only — consistent with the reported-not-gating posture.
+### R-1b — Surface backend write-health on readiness ✅ DONE (PR #63)
+*Files:* `crates/aegis-core/src/health.rs`, `crates/aegis-control/src/health.rs`, `crates/aegis-proxy/src/run.rs`.
+Added `state_backend_writable` to `ReadinessSignal` + `HealthChecks`; the proxy health poller now does a tiny
+set-probe each tick and `check_ready` reports `degraded` when writes are rejected (a read-only replica). Report-
+only — never gates `is_ready()` (data plane keeps serving on in-memory fallback).
 
 ### R-2 / R-6 — Hardened Redis config (ship secure defaults)
 *Files:* new `deploy/redis/redis.conf` + `deploy/docker-compose*.yml`.
