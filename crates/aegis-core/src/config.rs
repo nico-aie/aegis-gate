@@ -1296,6 +1296,38 @@ impl WafConfig {
                     .into(),
             ));
         }
+        // STATE-02 (LT-RUN-11, 2026-06-19) — loud boot warning when the shared
+        // security-state store is reachable, plaintext, AND unauthenticated on
+        // a NON-loopback host. That is exactly the 2026-06-18 incident posture:
+        // an exposed credential-less Redis a `REPLICAOF`/`FLUSHALL` away from
+        // full takeover. Loopback (dev/single-node) and TLS/AUTH URLs are fine,
+        // so this never fires on a sane local setup. Reported, not gating
+        // (some operators run trusted-network Redis); credentials go in the URL
+        // (`redis://:PASSWORD@host` / `rediss://…`) — see deploy/redis/redis.conf.
+        if self.state.backend == StateBackendKind::Redis {
+            if let Some(redis) = self.state.redis.as_ref() {
+                let risky: Vec<&str> = redis
+                    .urls
+                    .iter()
+                    .filter(|u| redis_url_is_unauthenticated_nonloopback(u))
+                    .map(|u| u.as_str())
+                    .collect();
+                if !risky.is_empty() {
+                    eprintln!(
+                        "aegis: WARNING state.backend=redis but {} URL(s) are PLAINTEXT + \
+                         UNAUTHENTICATED on a non-loopback host: {}. The shared security-state \
+                         store (rate-limit / risk / replay-nonce / cluster config) is then \
+                         readable AND writable by anyone who can reach the port — this is how \
+                         the 2026-06-18 REPLICAOF takeover happened. Require AUTH \
+                         (redis://:PASSWORD@host) and prefer TLS (rediss://); lock the port to \
+                         loopback / a trusted CIDR. See deploy/redis/redis.conf + \
+                         HACKATHON-DEPLOY.md (R-2/R-6).",
+                        risky.len(),
+                        risky.join(", "),
+                    );
+                }
+            }
+        }
         match self.state.reconcile.mode {
             ReconcileMode::Max => {}
             ReconcileMode::Latest => {
@@ -1411,6 +1443,75 @@ mod admin_csrf_secret_tests {
     fn allows_real_secret_with_login_enabled() {
         let cfg = auth("$argon2id$hash", "test-csrf-secret-do-not-use-in-production-32b");
         assert!(validate_admin_csrf_secret(&cfg).is_ok());
+    }
+}
+
+/// STATE-02 (LT-RUN-11) — does a Redis URL describe a plaintext, credential-less
+/// connection to a NON-loopback host? That is the dangerous shape (the incident
+/// vector). Returns `false` for: `rediss://` (TLS), any URL with userinfo
+/// (`user@` / `:pass@` ⇒ AUTH), and loopback / `localhost` hosts. An
+/// unparseable (DNS-name) host is treated as non-loopback (warn), since a
+/// remote credential-less Redis is exactly what we want to flag.
+pub(crate) fn redis_url_is_unauthenticated_nonloopback(url: &str) -> bool {
+    let url = url.trim();
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return false; // not a URL we recognise — don't warn
+    };
+    if !scheme.eq_ignore_ascii_case("redis") {
+        return false; // rediss:// (TLS) or some other scheme
+    }
+    // Authority = everything before the path / query.
+    let authority = rest.split(['/', '?']).next().unwrap_or(rest);
+    if authority.contains('@') {
+        return false; // userinfo present ⇒ authenticated
+    }
+    // Strip the port, handling bracketed IPv6 (`[::1]:6379`).
+    let host = if let Some(after_bracket) = authority.strip_prefix('[') {
+        after_bracket.split(']').next().unwrap_or(after_bracket)
+    } else {
+        authority.rsplit_once(':').map(|(h, _)| h).unwrap_or(authority)
+    }
+    .trim();
+    if host.eq_ignore_ascii_case("localhost") {
+        return false;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => !ip.is_loopback(),
+        Err(_) => true, // DNS name ⇒ remote ⇒ warn
+    }
+}
+
+#[cfg(test)]
+mod redis_url_guard_tests {
+    use super::redis_url_is_unauthenticated_nonloopback as risky;
+
+    #[test]
+    fn loopback_plaintext_is_fine() {
+        assert!(!risky("redis://127.0.0.1:6379"));
+        assert!(!risky("redis://127.0.0.1"));
+        assert!(!risky("redis://[::1]:6379"));
+        assert!(!risky("redis://localhost:6379"));
+    }
+
+    #[test]
+    fn tls_or_authenticated_is_fine() {
+        assert!(!risky("rediss://10.0.0.5:6379")); // TLS
+        assert!(!risky("redis://:s3cret@10.0.0.5:6379")); // password
+        assert!(!risky("redis://user:s3cret@redis.internal:6379")); // user+pass
+    }
+
+    #[test]
+    fn nonloopback_plaintext_unauth_is_flagged() {
+        assert!(risky("redis://10.0.0.5:6379"));
+        assert!(risky("redis://192.168.1.10")); // no port
+        assert!(risky("redis://my-redis.internal:6379")); // DNS name, no creds
+        assert!(risky("redis://[2001:db8::1]:6379")); // public v6
+    }
+
+    #[test]
+    fn non_redis_urls_are_ignored() {
+        assert!(!risky("http://example.com"));
+        assert!(!risky("not a url"));
     }
 }
 

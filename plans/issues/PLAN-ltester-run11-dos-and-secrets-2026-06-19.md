@@ -68,8 +68,8 @@ Priority follows Run 11's recommended order, adjusted for "what's still open in 
 | **C1** | CRIT | Sign `ConfigDoc` (Ed25519 or HMAC w/ non-Redis boot key); reject unsigned before `apply_and_swap` | `config_store.rs`, `redis_source.rs:189,317` | med |
 | **C2** ✅ | HIGH | **Fail boot** on empty csrf_secret when admin login enabled (was R-3 / CTL-02) — empty ⇒ publicly-computable `blake3("")` cookie key | `config.rs` `validate_admin_csrf_secret` | **DONE 2026-06-19** (short-secret stays a `warn!`; `session_key_fp` deferred to R-3) | 
 | **C3** | MED | Make `scrub_secrets` actually redact; gate config-export to write scope | `api/config.rs` | low |
-| **A6** | MED | READONLY/MISCONF/NOAUTH classified distinctly from connectivity; no fail-open-reset on read-only primary | `state/reconcile.rs:105`, error classifier | med |
-| **A7** | LOW | RedisConfig gains `username/password_ref/tls`; boot warns (or fails) on plaintext+unauth `redis://` | `config.rs:3269`, `state/redis.rs:275` | med |
+| **A6** ✅ | MED | READONLY/MISCONF/NOAUTH classified distinctly from connectivity; distinct log + `degraded_reason()` accessor | `state/reconcile.rs` `DegradedReason` + `classify_state_error` | **DONE 2026-06-19** (2 tests). Kept the fall-through (availability / reported-not-gating — see [[project_health_signals_reported_not_gating]]); did NOT fail-closed (would contradict the posture). Health-surfacing partly covered by R-1b's write-probe. |
+| **A7** ✅ | MED | Boot WARNING on plaintext + unauthenticated + non-loopback `redis://` | `config.rs` `redis_url_is_unauthenticated_nonloopback` + `validate()` guard | **DONE 2026-06-19** (4 tests). Implemented the boot guard (the substance); did NOT add `username/password_ref/tls` schema fields — they'd be dead config (the URL already carries creds: `redis://:PASS@host` / `rediss://`). First-class fields + feature-gated client wiring = follow-up. |
 | **D1** | LOW | Re-fetch Rules (and access-list counter) on mutation success | dashboard front-end | low |
 | **D2** | LOW | Boot warning when country/ASN access-list entries exist but GeoIP DB unloaded; document DB load | geoip wiring + `HACKATHON-DEPLOY.md` | low |
 | **E1** | LOW | WS bridge idle timeout | `proto/ws_inspect.rs:384` | low |
@@ -115,9 +115,16 @@ slots; A5 sets `header_read_timeout` + `TokioTimer` on all four serve sites.
 Sign config docs with a boot-held key; reject unsigned/invalid before apply. Closes the "Redis attacker
 rewrites the fleet" path. Pairs naturally with A6/A7 (Redis trust boundary).
 
-**P3 — Redis trust-boundary depth + disclosure: A6 + A7 + C3.**
-Classify READONLY distinctly (the operator's exact symptom, state-plane half that R-1 didn't cover); add
-auth/TLS schema fields + boot guard; make `scrub_secrets` redact.
+**P3 — Redis trust-boundary depth + disclosure: A6 + A7 (✅ DONE 2026-06-19); C3 pending.**
+- **A6** ✅ — READONLY/NOAUTH/MISCONF classified distinctly from connectivity; `enter_partition` logs the
+  real cause (the operator's incident showed a generic "unreachable") + `degraded_reason()` accessor. Kept
+  the availability fall-through (reported-not-gating); did not fail-closed. `state/reconcile.rs`, 2 tests.
+- **A7** ✅ — loud boot WARNING when `state.backend=redis` and a URL is plaintext + unauthenticated +
+  non-loopback (the exposed-Redis incident shape). `config.rs::redis_url_is_unauthenticated_nonloopback`,
+  4 tests. No dead schema fields — credentials ride the URL today.
+- **C3** pending — see decision in §6.
+
+> Test evidence: `aegis-proxy --lib state::reconcile` 12/12 (+2 new), `aegis-core` 314/314 (+4 new).
 
 **P4 — Polish: D1 + D2 + E1 + E2 + E3.**
 - **E2** ✅ constant-time TOTP compare done (1 test).
