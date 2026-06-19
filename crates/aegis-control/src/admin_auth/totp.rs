@@ -88,17 +88,32 @@ pub fn verify_with_counter(
     let step = config.step;
     let base_counter = time / step;
     for offset in 0..=config.skew {
-        if generate(secret, time + offset * step, config) == code {
+        if ct_eq_str(&generate(secret, time + offset * step, config), code) {
             return Some(base_counter + offset);
         }
         if offset > 0
             && time >= offset * step
-            && generate(secret, time - offset * step, config) == code
+            && ct_eq_str(&generate(secret, time - offset * step, config), code)
         {
             return Some(base_counter - offset);
         }
     }
     None
+}
+
+/// SEC-02 (LT-RUN-11, 2026-06-19) — constant-time compare of the generated
+/// candidate against the client-supplied code. Plain `==` short-circuits on the
+/// first differing byte, leaking a timing signal about how many leading digits
+/// matched. Length is not secret (it's the configured digit count), so an
+/// early length mismatch is fine; equal-length comparison is branch-free over
+/// the bytes. Mirrors `interop::control::constant_time_eq` /
+/// `challenge::pow::ct_eq`.
+fn ct_eq_str(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// 2026-05-17 F-HIGH-admin sub-finding: pre-fix, `verify` had no
@@ -209,6 +224,16 @@ mod tests {
         let code = generate(SECRET, 1000000, &CONFIG);
         assert_eq!(code.len(), 6);
         assert!(code.chars().all(|c| c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn ct_eq_str_matches_plain_equality_semantics() {
+        // SEC-02 — the constant-time compare must agree with `==` on result.
+        assert!(ct_eq_str("123456", "123456"));
+        assert!(!ct_eq_str("123456", "123457"));
+        assert!(!ct_eq_str("123456", "12345")); // length mismatch
+        assert!(!ct_eq_str("000000", "999999"));
+        assert!(ct_eq_str("", ""));
     }
 
     #[test]
