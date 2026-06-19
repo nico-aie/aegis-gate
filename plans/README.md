@@ -59,6 +59,12 @@ plans/
   deferred follow-up (3.2a) to the shipped *honest upstream badge* fix: derive
   member health from real traffic and feed the LB. Must ship with a fail-open
   LB change first (`LbStrategy::pick` currently fails closed). Not started.
+- **[`security-analytics-and-reporting.md`](./future/security-analytics-and-reporting.md)** —
+  enterprise **analytics + reporting**: durable, historical, queryable security-event
+  store (today the dashboard analytics are a 15-min in-memory ring, lost on restart) +
+  Analytics Query API + time-range dashboards + scheduled/compliance reports + cold
+  Parquet tier. Cloudflare / AWS-WAF / GCP-Cloud-Armor parity. Designed-only; start at
+  P0+P1. Not started.
 - **SSE / streaming support** — ✅ **SHIPPED 2026-06-14**, archived to
   [`archive/sse-streaming-support.md`](./archive/sse-streaming-support.md).
   Streams `text/event-stream` through the data plane instead of buffering
