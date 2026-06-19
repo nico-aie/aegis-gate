@@ -311,6 +311,11 @@ pub fn route_summaries(
                 default: r.default,
                 enabled: r.enabled,
                 strip_prefix: r.strip_prefix,
+                mode: match r.mode {
+                    aegis_core::config::RouteMode::Enforce => "enforce",
+                    aegis_core::config::RouteMode::LogOnly => "log_only",
+                }
+                .to_string(),
             };
             (priority, summary)
         })
@@ -992,6 +997,42 @@ state: { backend: in_memory }
         let summaries = super::route_summaries(&cfg.routes);
         let ids: Vec<&str> = summaries.iter().map(|s| s.id.as_str()).collect();
         assert!(ids.contains(&"blocked"), "disabled route still in summaries");
+    }
+
+    /// MEDIUM-2 (2026-06-19) — the routes-list summary (GET /api/routes)
+    /// must carry `mode` so the dashboard can render the `monitor` badge
+    /// and the editor checkbox can reflect saved state. Pre-fix the
+    /// summary dropped the field entirely.
+    #[test]
+    fn route_summaries_carry_mode() {
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: staging
+    path: "/staging/"
+    upstream: pool
+    mode: log_only
+  - id: root
+    path: "/"
+    upstream: pool
+    default: true
+upstreams:
+  pool:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+"#;
+        let cfg: WafConfig = serde_yaml::from_str(yaml).unwrap();
+        let summaries = super::route_summaries(&cfg.routes);
+        let staging = summaries.iter().find(|s| s.id == "staging").unwrap();
+        assert_eq!(staging.mode, "log_only", "monitored route reports log_only");
+        let root = summaries.iter().find(|s| s.id == "root").unwrap();
+        assert_eq!(root.mode, "enforce", "default route reports enforce");
     }
 
     #[test]

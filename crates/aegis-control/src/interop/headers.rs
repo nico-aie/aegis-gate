@@ -163,26 +163,35 @@ pub struct DecisionTag {
     /// `streamed` / `response_inspection_skipped` / `reason` from this flag
     /// so the security team can see *why* the body wasn't inspected.
     pub streamed: bool,
+    /// HIGH-1 (2026-06-19) — `true` when the matched route is in monitor
+    /// mode (`RouteConfig.mode == log_only`) AND this decision was
+    /// forwarded under that downgrade. The response stamper reads this to
+    /// emit `X-WAF-Mode: log_only` (+ the same in the audit row) instead
+    /// of re-deriving the mode from the GLOBAL `ModeStore` via
+    /// `mode_for_rule`, which has no per-route context. Defaults `false`;
+    /// hard blocks (blacklist, enforce-mode 403/429) leave it `false` so
+    /// they correctly report `enforce`.
+    pub route_log_only: bool,
 }
 
 impl DecisionTag {
     pub fn allow() -> Self {
-        Self { action: Action::Allow, rule_id: None, tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false }
+        Self { action: Action::Allow, rule_id: None, tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false }
     }
     pub fn block(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Block, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false }
+        Self { action: Action::Block, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false }
     }
     pub fn rate_limit(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::RateLimit, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false }
+        Self { action: Action::RateLimit, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false }
     }
     pub fn challenge(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Challenge, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false }
+        Self { action: Action::Challenge, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false }
     }
     pub fn timeout(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Timeout, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false }
+        Self { action: Action::Timeout, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false }
     }
     pub fn circuit_breaker(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::CircuitBreaker, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false }
+        Self { action: Action::CircuitBreaker, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false }
     }
 
     /// Attach the per-request detector score (sum of this request's
@@ -231,6 +240,15 @@ impl DecisionTag {
     /// `response_inspection_skipped: true`, `reason: "streaming"`.
     pub fn with_streamed(mut self, streamed: bool) -> Self {
         self.streamed = streamed;
+        self
+    }
+
+    /// HIGH-1 (2026-06-19) — mark this decision as belonging to a route in
+    /// monitor mode so the stamper reports `X-WAF-Mode: log_only` (header
+    /// + audit) regardless of the global `ModeStore`. See
+    /// [`Self::route_log_only`].
+    pub fn with_route_log_only(mut self, route_log_only: bool) -> Self {
+        self.route_log_only = route_log_only;
         self
     }
 }
@@ -430,6 +448,19 @@ mod tests {
         assert_eq!(CacheState::Hit.as_str(), "HIT");
         assert_eq!(CacheState::Miss.as_str(), "MISS");
         assert_eq!(CacheState::Bypass.as_str(), "BYPASS");
+    }
+
+    /// HIGH-1 (2026-06-19) — a `DecisionTag` defaults to NOT route-monitored
+    /// and `with_route_log_only` flips the flag the stamper reads to force
+    /// `X-WAF-Mode: log_only` on a forwarded monitored-route decision.
+    #[test]
+    fn route_log_only_defaults_false_and_builder_sets_it() {
+        let plain = DecisionTag::block("xss");
+        assert!(!plain.route_log_only, "default tag is not route-monitored");
+        let monitored = DecisionTag::block("xss").with_route_log_only(true);
+        assert!(monitored.route_log_only);
+        // Action is unchanged — the flag only governs the reported mode.
+        assert_eq!(monitored.action, Action::Block);
     }
 
     /// SC-1 — the smart-cache verdict must reach the wire. A `Decision`

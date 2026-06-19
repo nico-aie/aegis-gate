@@ -75,6 +75,13 @@ pub struct RouteSummary {
     /// deserialize to match `default_strip_prefix` for legacy clients.
     #[serde(default = "default_strip_prefix_summary")]
     pub strip_prefix: bool,
+    /// MEDIUM-2 (2026-06-19) — per-route enforcement mode: `"enforce"`
+    /// (default) or `"log_only"` (monitor). Emitted so the console can
+    /// render the `monitor` badge and the editor checkbox can reflect
+    /// saved state. Defaults to `"enforce"` on deserialize for legacy
+    /// clients / routes saved before the field existed.
+    #[serde(default = "default_route_summary_mode")]
+    pub mode: String,
 }
 
 fn default_route_summary_enabled() -> bool {
@@ -83,6 +90,10 @@ fn default_route_summary_enabled() -> bool {
 
 fn default_strip_prefix_summary() -> bool {
     true
+}
+
+fn default_route_summary_mode() -> String {
+    "enforce".to_string()
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -147,6 +158,7 @@ mod tests {
                 default: false,
                 enabled: true,
                 strip_prefix: true,
+                mode: "enforce".into(),
             },
             RouteSummary {
                 id: "catch-all".into(),
@@ -160,6 +172,7 @@ mod tests {
                 default: true,
                 enabled: true,
                 strip_prefix: false,
+                mode: "log_only".into(),
             },
         ]
     }
