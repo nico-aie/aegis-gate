@@ -135,6 +135,53 @@ pub(crate) async fn handle_data_request(
     (resp, tag)
 }
 
+/// PROXY-01 (LT-RUN-11) — reject before buffering when the client declares a
+/// `Content-Length` larger than the body cap. A malformed/multi-valued header
+/// is treated as "not over cap" here (the streaming `Limited` wrapper still
+/// enforces the true cap, so this is a cheap fast-path, not the only guard).
+pub(crate) fn declared_content_length_over_cap(
+    headers: &hyper::HeaderMap,
+    max_body_bytes: usize,
+) -> bool {
+    headers
+        .get(hyper::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .is_some_and(|len| len > max_body_bytes as u64)
+}
+
+#[cfg(test)]
+mod content_length_cap_tests {
+    use super::declared_content_length_over_cap;
+
+    fn headers_with(cl: &str) -> hyper::HeaderMap {
+        let mut h = hyper::HeaderMap::new();
+        h.insert(hyper::header::CONTENT_LENGTH, cl.parse().unwrap());
+        h
+    }
+
+    #[test]
+    fn over_cap_is_rejected() {
+        assert!(declared_content_length_over_cap(&headers_with("2048"), 1024));
+    }
+
+    #[test]
+    fn at_or_under_cap_is_allowed() {
+        assert!(!declared_content_length_over_cap(&headers_with("1024"), 1024));
+        assert!(!declared_content_length_over_cap(&headers_with("10"), 1024));
+    }
+
+    #[test]
+    fn absent_header_is_allowed() {
+        assert!(!declared_content_length_over_cap(&hyper::HeaderMap::new(), 1024));
+    }
+
+    #[test]
+    fn unparseable_header_defers_to_streaming_guard() {
+        assert!(!declared_content_length_over_cap(&headers_with("not-a-number"), 1024));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_data_request_inner(
     req: hyper::Request<hyper::body::Incoming>,
@@ -728,9 +775,40 @@ pub(crate) async fn handle_data_request_inner(
     // upstream forwarder; each request reads its body exactly
     // once.
     let (parts, body) = req.into_parts();
-    let body_bytes = match body.collect().await {
+    // PROXY-01 (LT-RUN-11, 2026-06-19) — bound the body BEFORE buffering.
+    // Previously `body.collect()` read the entire client body into RAM and the
+    // cap was checked only afterwards, so a single multi-GB or unbounded-
+    // chunked request OOM'd the worker before the 413 could fire. Now:
+    //   1. a declared Content-Length over the cap is rejected without reading
+    //      a byte, and
+    //   2. `http_body_util::Limited` enforces the cap during streaming for
+    //      chunked / mis-declared bodies (same pattern as the response side in
+    //      `upstream/forward.rs`).
+    let body_too_large = || {
+        Response::builder()
+            .status(hyper::StatusCode::PAYLOAD_TOO_LARGE)
+            .header("content-type", "application/json")
+            .body(crate::body::full(Bytes::from(
+                serde_json::json!({
+                    "error": "body_too_large",
+                    "max_bytes": max_body_bytes,
+                })
+                .to_string(),
+            )))
+            .unwrap()
+    };
+    if declared_content_length_over_cap(&parts.headers, max_body_bytes) {
+        return (body_too_large(), DecisionTag::block("body-too-large"));
+    }
+    let body_bytes = match http_body_util::Limited::new(body, max_body_bytes)
+        .collect()
+        .await
+    {
         Ok(c) => c.to_bytes(),
         Err(e) => {
+            if e.downcast_ref::<http_body_util::LengthLimitError>().is_some() {
+                return (body_too_large(), DecisionTag::block("body-too-large"));
+            }
             tracing::warn!(error = %e, "client body read failed");
             let resp = Response::builder()
                 .status(hyper::StatusCode::BAD_REQUEST)
@@ -742,20 +820,6 @@ pub(crate) async fn handle_data_request_inner(
             return (resp, DecisionTag::block("body-read-error"));
         }
     };
-    if body_bytes.len() > max_body_bytes {
-        let resp = Response::builder()
-            .status(hyper::StatusCode::PAYLOAD_TOO_LARGE)
-            .header("content-type", "application/json")
-            .body(crate::body::full(Bytes::from(
-                serde_json::json!({
-                    "error": "body_too_large",
-                    "max_bytes": max_body_bytes,
-                })
-                .to_string(),
-            )))
-            .unwrap();
-        return (resp, DecisionTag::block("body-too-large"));
-    }
 
     let body_peek = BodyPeek::new(
         body_bytes.to_vec(),
