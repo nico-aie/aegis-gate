@@ -1666,6 +1666,17 @@ pub(crate) async fn handle_data_request_inner(
     // `X-WAF-Action: block` + `X-WAF-Mode: log_only` reach the
     // OC. Audit was already recorded above with the block intent.
     let final_tag = log_only_intent.unwrap_or(allow_tag);
+    // HIGH-1 (2026-06-19) — for a monitored route, every decision that
+    // reaches this tail was FORWARDED (clean allow, or a gate that stashed
+    // `log_only_intent`). Stamp the route-effective mode onto the tag so
+    // the listener reports `X-WAF-Mode: log_only` on the header + audit.
+    // Hard blocks (blacklist, enforce-mode 403/429) early-return above and
+    // never reach here, so they correctly keep `enforce`.
+    let final_tag = if route_log_only {
+        final_tag.with_route_log_only(true)
+    } else {
+        final_tag
+    };
     (resp, final_tag)
 }
 

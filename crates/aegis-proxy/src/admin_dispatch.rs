@@ -1330,10 +1330,23 @@ pub(crate) fn stamp_interop_response<B>(
     // every response stamped the mode of the `rules_engine`
     // feature regardless of which detector or rate-limit /
     // risk gate actually decided the request.
-    let mode = aegis_control::interop::rule_map::mode_for_rule(
-        &rt.modes,
-        decision_tag.rule_id.as_deref(),
-    );
+    //
+    // HIGH-1 (2026-06-19) — a per-route monitor decision forwards the
+    // request under a route-level `log_only` downgrade that the GLOBAL
+    // `ModeStore` knows nothing about. The data plane stamps
+    // `route_log_only` onto the tail tag for exactly those forwarded
+    // paths, so honour it here (OR semantics: route forces log_only;
+    // otherwise the global per-policy resolution stands). This fixes BOTH
+    // the `X-WAF-Mode` response header AND the audit row below, since they
+    // share this single `mode`.
+    let mode = if decision_tag.route_log_only {
+        aegis_control::interop::headers::Mode::LogOnly
+    } else {
+        aegis_control::interop::rule_map::mode_for_rule(
+            &rt.modes,
+            decision_tag.rule_id.as_deref(),
+        )
+    };
     // NEW-4 (2026-05-08) — prefer the score the data plane stamped
     // at decision time (keyed on the XFF-resolved client IP, same
     // key as the risk accumulator). The peer.ip()-keyed snapshot
@@ -1587,6 +1600,80 @@ mod tests {
             node_b.resolve("rules_engine", None),
             Mode::LogOnly,
             "peer converges on the rolled-back global mode",
+        );
+    }
+
+    /// HIGH-1 (2026-06-19) — a per-route monitor decision is forwarded
+    /// (action=block) but MUST report `X-WAF-Mode: log_only`, even though
+    /// the GLOBAL ModeStore is `enforce`. Pre-fix the stamper re-derived
+    /// the mode from the global store via `mode_for_rule` and stamped
+    /// `enforce`, contradicting the forwarded behaviour (§5.3).
+    fn stamp_mode_for(route_log_only: bool) -> String {
+        use aegis_control::interop::headers::{DecisionTag, Mode, MODE};
+        use aegis_control::interop::mode::ModeStore;
+        use bytes::Bytes;
+        use http_body_util::Full;
+        use std::sync::Arc;
+
+        let cfg = aegis_core::load_config_str(concat!(
+            "listeners:\n  data: [{ bind: \"0.0.0.0:443\" }]\n",
+            "  admin: { bind: \"127.0.0.1:9443\" }\n",
+            "routes:\n  - { id: catch-all, path: \"/\", upstream: api }\n",
+            "upstreams:\n  api: { members: [{ addr: \"127.0.0.1:8443\" }] }\n",
+            "state: { backend: in_memory }\n",
+        ))
+        .unwrap();
+        let risk =
+            aegis_security::risk::RiskTracker::new(&aegis_core::config::RiskConfig::default());
+        let iprl = Arc::new(aegis_security::rate_limit::IpRateLimiter::new(
+            Default::default(),
+        ));
+        let rt = crate::run::build_interop_runtime(&cfg, &risk, &iprl)
+            .expect("interop surface is on by default");
+        // Global store stays ENFORCE — the route flag must win on its own.
+        rt.modes.set_all(Mode::Enforce);
+
+        let mut tag = DecisionTag::block("xss");
+        if route_log_only {
+            tag = tag.with_route_log_only(true);
+        }
+        let resp: hyper::Response<Full<Bytes>> =
+            hyper::Response::builder().status(200).body(Full::new(Bytes::new())).unwrap();
+        let stamped = super::stamp_interop_response(
+            resp,
+            tag,
+            Some(&rt),
+            "127.0.0.1:1234".parse().unwrap(),
+            &hyper::Method::GET,
+            "/",
+            0,
+            std::time::Instant::now(),
+        );
+        stamped
+            .headers()
+            .get(MODE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("<missing>")
+            .to_string()
+    }
+
+    // `#[tokio::test]` — the stamper offloads the audit write via
+    // `spawn_blocking`, which needs an active reactor.
+    #[tokio::test]
+    async fn monitored_route_block_stamps_x_waf_mode_log_only() {
+        assert_eq!(
+            stamp_mode_for(true),
+            "log_only",
+            "a forwarded monitor-route block must report X-WAF-Mode: log_only",
+        );
+    }
+
+    #[tokio::test]
+    async fn enforce_route_block_stamps_x_waf_mode_enforce() {
+        assert_eq!(
+            stamp_mode_for(false),
+            "enforce",
+            "a real enforce block keeps X-WAF-Mode: enforce (global store)",
         );
     }
 }
