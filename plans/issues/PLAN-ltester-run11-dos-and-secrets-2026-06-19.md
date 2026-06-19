@@ -73,7 +73,7 @@ Priority follows Run 11's recommended order, adjusted for "what's still open in 
 | **D1** | LOW | Re-fetch Rules (and access-list counter) on mutation success | dashboard front-end | low |
 | **D2** | LOW | Boot warning when country/ASN access-list entries exist but GeoIP DB unloaded; document DB load | geoip wiring + `HACKATHON-DEPLOY.md` | low |
 | **E1** | LOW | WS bridge idle timeout | `proto/ws_inspect.rs:384` | low |
-| **E2** | LOW | Constant-time TOTP compare | `admin_auth/totp.rs:91` | low |
+| **E2** ✅ | LOW | Constant-time TOTP compare (`ct_eq_str`) | `admin_auth/totp.rs` | **DONE 2026-06-19** (1 test) |
 | **E3** | LOW | Stub doc fix + CI guard that JWT/CAPTCHA stay uncalled (or default fail-closed) | `state/redis.rs` doc, `auth/jwt.rs`, `challenge/captcha.rs`, CI | low |
 
 ---
@@ -120,6 +120,36 @@ Classify READONLY distinctly (the operator's exact symptom, state-plane half tha
 auth/TLS schema fields + boot guard; make `scrub_secrets` redact.
 
 **P4 — Polish: D1 + D2 + E1 + E2 + E3.**
+- **E2** ✅ constant-time TOTP compare done (1 test).
+- D1, D2, E1, E3 remain.
+
+---
+
+## 6. Remaining work + decisions needed (2026-06-19)
+
+Done so far: **P0 (B2, C2; B1 accepted), P1 (A1–A5), E2.** Remaining items, with why each is NOT a
+context-tail change:
+
+- **C1 (CRIT, config-doc signing)** — highest remaining severity, but it touches the cluster
+  config-publish/apply path (`redis_source.rs::apply_and_swap`, the dashboard publish flow), which has a
+  history of subtle node-local-vs-cluster bugs (see `project_api_mode_no_cluster_publish`,
+  `project_apply_and_swap_helper_guard`). Needs a dedicated session: design the key source (boot-held,
+  non-Redis), sign on every publisher (dashboard mutate + CLI + seed), verify before apply, and a multi-node
+  propagation test. Do NOT rush.
+- **A6 (MED, READONLY classification)** — the operator's actual incident symptom (read-only Redis →
+  silent empty-fallback reset of rate-limit/risk/nonce). Medium-risk: changes reconcile fallback behavior;
+  needs Redis-error-string simulation tests + a decision on fail-closed-vs-degraded per tier.
+- **A7 (MED, Redis auth/TLS schema + boot guard)** — additive schema fields + a boot warn/fail on
+  plaintext+unauth `redis://`. Pairs with A6. The deploy-side hardening (R-2 `redis.conf`) already shipped;
+  this is the code-schema half.
+- **C3 (MED, scrub_secrets redaction)** — **DECISION NEEDED.** Redacting inline secrets to `***` would
+  break the YAML **backup→restore** flow for THIS deployment (it inlines csrf_secret + password_hash per
+  audit M-3) — a restored backup would lose admin login. Options: (a) redact in the GET /api/config *view*
+  only, keep the backup.yaml export faithful but gate it to write-scope; (b) redact everywhere + require
+  operators move inline secrets to `${secret:...}` refs (the documented model) before relying on backups.
+  Needs the operator's call.
+- **D1** (dashboard auto-refresh after mutate), **D2** (GeoIP-unloaded boot warning + docs), **E1** (WS
+  bridge idle timeout), **E3** (stub doc + CI guard) — low-risk polish, can batch later.
 
 ---
 
