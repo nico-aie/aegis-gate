@@ -622,7 +622,7 @@ pub enum AuthConfig {
 
 > **Deferred (origin-facing OIDC).** A browser-facing OIDC relying party
 > with PASETO session cookies is out of scope for v1. See
-> [`docs/future/rbac-sso.md`](docs/future/rbac-sso.md).
+> the [world-class roadmap](plans/future/world-class-waf-roadmap.md).
 
 ---
 
@@ -692,8 +692,8 @@ GitOps pull, audit witness export) acquire a lease key in the backend.
 Out of scope for v1. The v1 WAF runs single-tenant: one config,
 one dashboard, one audit stream, one compliance profile. `tenant_id`
 on `RequestCtx` / `RouteCtx` is reserved (always `None`) and the
-tenant governor is not implemented. See the deferred-features index
-[`docs/future/`](docs/future/README.md).
+tenant governor is not implemented. See the deferred-features index in
+the [world-class roadmap](plans/future/world-class-waf-roadmap.md).
 
 ---
 
@@ -755,7 +755,7 @@ spec in [`docs/control-plane/dashboard-auth.md`](docs/control-plane/dashboard-au
 
 > **Deferred**: OIDC/SSO, RBAC roles, per-user accounts, API
 > tokens, 4-eyes approval, SCIM, WebAuthn. See
-> [`docs/future/rbac-sso.md`](docs/future/rbac-sso.md).
+> the [world-class roadmap](plans/future/world-class-waf-roadmap.md).
 
 ---
 
@@ -932,7 +932,7 @@ enable or disable any detector class regardless of which modes are
 declared. The full per-regime enforcement plan (FIPS primitive
 allow-list, PCI-DSS PAN masking, SOC 2 export hooks, GDPR residency
 pinning, HIPAA PHI log suppression, mode stacking, dry-run validation)
-lives at [`plans/future/compliance-profiles.md`](plans/future/compliance-profiles.md).
+lives at [`plans/archive/compliance-profiles.md`](plans/archive/compliance-profiles.md).
 
 Code anchor: the Rust pin list at
 `crates/aegis-control/src/api/detectors.rs::COMPLIANCE_PINNED` is

@@ -181,5 +181,5 @@ to have effectively none on well-formed tokens.
 ## 6. Cross-refs
 
 - [`detectors/jwt-inspection.md`](./detectors/jwt-inspection.md) — engineering reference (rules, scores, config).
-- [`../../plans/issues/JWT_ATTACK_REPORT.md`](../../plans/issues/JWT_ATTACK_REPORT.md) — the source report + technique catalogue.
+- [`../../plans/issues/archived/JWT_ATTACK_REPORT.md`](../../plans/issues/archived/JWT_ATTACK_REPORT.md) — the source report + technique catalogue.
 - [`risk-scoring.md`](./risk-scoring.md) — how 80 / 70 / 20 interact with thresholds.
