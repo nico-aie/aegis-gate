@@ -182,6 +182,48 @@ mod content_length_cap_tests {
     }
 }
 
+#[cfg(test)]
+mod effective_mode_tests {
+    use super::effective_mode;
+    use aegis_control::interop::headers::Mode;
+
+    #[test]
+    fn monitored_route_forces_log_only_over_global_enforce() {
+        // A route in monitor mode downgrades a globally-enforcing
+        // decision to log-only.
+        assert_eq!(effective_mode(Mode::Enforce, true), Mode::LogOnly);
+    }
+
+    #[test]
+    fn monitored_route_stays_log_only_when_global_already_log_only() {
+        assert_eq!(effective_mode(Mode::LogOnly, true), Mode::LogOnly);
+    }
+
+    #[test]
+    fn enforce_route_passes_global_mode_through_unchanged() {
+        // route_log_only == false ⇒ the global set_profile mode stands.
+        assert_eq!(effective_mode(Mode::Enforce, false), Mode::Enforce);
+        assert_eq!(effective_mode(Mode::LogOnly, false), Mode::LogOnly);
+    }
+}
+
+/// 2026-06-19 — fold the per-route monitor flag into the globally
+/// resolved interop mode. A route in `mode: log_only` downgrades every
+/// WAF detector/risk decision to log-only (forward + audit); otherwise
+/// the global `set_profile` mode stands. The blacklist gate deliberately
+/// does NOT route through this — operator deny intent stays hard even on
+/// a monitored route.
+fn effective_mode(
+    global: aegis_control::interop::headers::Mode,
+    route_log_only: bool,
+) -> aegis_control::interop::headers::Mode {
+    if route_log_only {
+        aegis_control::interop::headers::Mode::LogOnly
+    } else {
+        global
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_data_request_inner(
     req: hyper::Request<hyper::body::Incoming>,
@@ -379,18 +421,28 @@ pub(crate) async fn handle_data_request_inner(
     // `classify_tier_from_path` (always Low) while per-request detector
     // blocks on the SAME route correctly showed high. Unmatched paths
     // fall back to Low (and still 404 in the forward path as before).
-    let route_tier = upstream_ctx
-        .route_table
-        .resolve(
-            req.headers()
-                .get(hyper::header::HOST)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("localhost"),
-            req.uri().path(),
-            req.method(),
-        )
+    let resolved_route = upstream_ctx.route_table.resolve(
+        req.headers()
+            .get(hyper::header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("localhost"),
+        req.uri().path(),
+        req.method(),
+    );
+    let route_tier = resolved_route
+        .as_ref()
         .map(|rc| rc.tier)
         .unwrap_or(aegis_core::tier::Tier::Low);
+    // 2026-06-19 — per-route monitor mode. When the matched route is
+    // `mode: log_only`, EVERY WAF detector/risk would-be-block on this
+    // request is downgraded to log-only (forward + audit), regardless of
+    // the global `set_profile` mode. Explicit blacklist blocks are NOT
+    // softened by this flag (operator deny intent stays hard). Unmatched
+    // paths default to `false` (enforce).
+    let route_log_only = resolved_route
+        .as_ref()
+        .map(|rc| rc.log_only)
+        .unwrap_or(false);
     // FIX 2026-05-03 — runtime access-list enforcement. The
     // blacklist + whitelist were CRUD-only before this commit
     // (operators could add entries via the Console + see them
@@ -473,9 +525,12 @@ pub(crate) async fn handle_data_request_inner(
             Some(s) => DecisionTag::block("risk-strikes").with_risk_score(s),
             None    => DecisionTag::block("risk-strikes"),
         };
-        let stk_mode = interop_modes
-            .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("risk-strikes")))
-            .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
+        let stk_mode = effective_mode(
+            interop_modes
+                .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("risk-strikes")))
+                .unwrap_or(aegis_control::interop::headers::Mode::Enforce),
+            route_log_only,
+        );
         // 2026-05-19 — stamp `risk-strikes` on the audit event so
         // the AttacksAggregator's detector_name() can map it to
         // "ip-strikes" instead of falling through to "unknown".
@@ -579,9 +634,14 @@ pub(crate) async fn handle_data_request_inner(
                     // intended block but forward upstream — the audit event
                     // above already recorded the intent; the response stamper
                     // emits X-WAF-Action: block + X-WAF-Mode: log_only.
-                    let ddos_mode = interop_modes
-                        .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("ddos")))
-                        .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
+                    let ddos_mode = effective_mode(
+                        interop_modes
+                            .map(|m| {
+                                aegis_control::interop::rule_map::mode_for_rule(m, Some("ddos"))
+                            })
+                            .unwrap_or(aegis_control::interop::headers::Mode::Enforce),
+                        route_log_only,
+                    );
                     if ddos_mode == aegis_control::interop::headers::Mode::LogOnly {
                         log_only_intent = Some(DecisionTag::block("ddos"));
                         // fall through to detectors + upstream
@@ -742,9 +802,12 @@ pub(crate) async fn handle_data_request_inner(
         // `rate_limit.per_ip`. Audit already emitted above; only
         // the 429 response is gated by the mode.
         let rl_tag = DecisionTag::rate_limit("ip-rate-limit");
-        let rl_mode = interop_modes
-            .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("ip-rate-limit")))
-            .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
+        let rl_mode = effective_mode(
+            interop_modes
+                .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("ip-rate-limit")))
+                .unwrap_or(aegis_control::interop::headers::Mode::Enforce),
+            route_log_only,
+        );
         if rl_mode == aegis_control::interop::headers::Mode::LogOnly {
             log_only_intent = Some(rl_tag);
             // fall through — no 429 sent.
@@ -1146,11 +1209,14 @@ pub(crate) async fn handle_data_request_inner(
         // the intent DecisionTag and emits `X-WAF-Action: block`
         // + `X-WAF-Mode: log_only`. Audit was already recorded
         // above, so the OC's correlation chain is intact.
-        let detector_mode = interop_modes
-            .map(|m| {
-                aegis_control::interop::rule_map::mode_for_rule(m, Some(detector_rule.as_str()))
-            })
-            .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
+        let detector_mode = effective_mode(
+            interop_modes
+                .map(|m| {
+                    aegis_control::interop::rule_map::mode_for_rule(m, Some(detector_rule.as_str()))
+                })
+                .unwrap_or(aegis_control::interop::headers::Mode::Enforce),
+            route_log_only,
+        );
         // NEW-4 (2026-05-08) — stamp the post-record score so
         // X-WAF-Risk-Score reflects the actual accumulated value
         // rather than 0.
@@ -1347,9 +1413,14 @@ pub(crate) async fn handle_data_request_inner(
                 // side-effect on the discarded response), stash
                 // the intent, and forward to upstream as if the
                 // level was Allow.
-                let rs_mode = interop_modes
-                    .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("risk-score")))
-                    .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
+                let rs_mode = effective_mode(
+                    interop_modes
+                        .map(|m| {
+                            aegis_control::interop::rule_map::mode_for_rule(m, Some("risk-score"))
+                        })
+                        .unwrap_or(aegis_control::interop::headers::Mode::Enforce),
+                    route_log_only,
+                );
                 // 2026-05-19 — stamp `risk-score` on the audit event
                 // so the AttacksAggregator can map it to "ip-risk"
                 // instead of falling through to "unknown". See the
@@ -1524,9 +1595,17 @@ pub(crate) async fn handle_data_request_inner(
                 // log_only` but MUST NOT apply enforcement — so we
                 // stash the intent and forward upstream instead of
                 // issuing the 429 PoW. Mirrors the Block arm above.
-                let rc_mode = interop_modes
-                    .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("risk-challenge")))
-                    .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
+                let rc_mode = effective_mode(
+                    interop_modes
+                        .map(|m| {
+                            aegis_control::interop::rule_map::mode_for_rule(
+                                m,
+                                Some("risk-challenge"),
+                            )
+                        })
+                        .unwrap_or(aegis_control::interop::headers::Mode::Enforce),
+                    route_log_only,
+                );
                 if has_valid_pass {
                     // Solved + verified within the pass TTL — allow
                     // through cleanly (no log_only intent stamping).

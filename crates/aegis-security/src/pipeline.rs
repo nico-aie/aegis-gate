@@ -347,6 +347,7 @@ mod tests {
             max_concurrent_tunnels_per_ip: 0,
             path_strip_prefix: None,
             ws_inspect: None,
+            log_only: false,
         };
         let (m, u, h, b) = view_for_path("/static/logo.png");
         let req = make_view(&m, &u, &h, &b);

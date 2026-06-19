@@ -75,11 +75,48 @@ The operator path calls `set_all` — it only moves the **global default**.
 For per-feature / per-policy control use the committee `set_profile`
 endpoint above.
 
+### 3. Per-route — monitor mode (2026-06-19)
+
+The two paths above are **fleet-wide** (or per-feature). When you want to
+put the WAF in front of **one** real backend and watch what it *would*
+block before committing — the Cloudflare-style "proxy-only" onboarding
+flow — mark that single route as monitor instead of flipping the whole
+fleet to `log_only`.
+
+```yaml
+routes:
+  - id: new-backend
+    path: /checkout
+    upstream: checkout-pool
+    mode: log_only        # enforce (default) | log_only
+```
+
+Or in the dashboard: **Routes → Edit → Advanced → "Monitor only (log,
+don't block)"**. A monitored route shows a `monitor` badge in the routes
+table. The field round-trips through `PUT /api/routes/{id}`
+(`"mode":"log_only"`, with `"monitor"` accepted as an alias) and survives
+reloads + cluster sync.
+
+A monitored route runs the **full** pipeline and forwards every request
+upstream, but downgrades its WAF detector/risk **block** and **challenge**
+decisions to log-only (audit + `X-WAF-Mode: log_only`, no 403/429).
+
+**Global × per-route is an OR:** the effective mode is `log_only` if
+**either** the global `set_profile`/`/api/mode` mode **or** the route's
+`mode` says so. A route can opt *into* monitoring while the fleet
+enforces, but a route cannot opt *out* of a global `log_only`.
+
+**Blacklist stays hard.** Unlike the global `log_only`, per-route monitor
+mode does **not** soften explicit access-list / blacklist blocks — an
+operator deny decision still returns 403 on a monitored route. Strikes,
+rate-limit, DDoS, detector, risk-score and risk-challenge gates **are**
+downgraded.
+
 ## Which actions honor `log_only`
 
 | Action | log_only-gated | Where |
 |---|---|---|
-| `block` (detectors, blacklist, strike-block, risk-score) | ✅ | data plane gates |
+| `block` (detectors, blacklist, strike-block, risk-score) | ✅ | data plane gates. Note: **per-route monitor mode** (above) downgrades all of these *except* blacklist, which stays hard. |
 | `block` (DDoS per-IP burst, rule `ddos`) | ✅ | data plane — `ddos` feature (added 2026-05-22). Also has its own `ddos.observe_only` config flag; `enforce` needs both mode=enforce AND observe_only=false |
 | `rate_limit` (per-IP gate) | ✅ | data plane |
 | `challenge` (cumulative-risk PoW) | ✅ | data plane (fixed 2026-05-22) |
