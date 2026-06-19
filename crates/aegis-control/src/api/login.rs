@@ -74,6 +74,12 @@ pub enum LoginOutcome {
     },
     /// Body wasn't parseable. Proxy emits 400.
     BadRequest { body: String },
+    /// R-1 (2026-06-19) — credentials were correct but the session record
+    /// could not be persisted to the shared backend (read-only / down Redis).
+    /// Proxy emits **503** so the operator sees a clear "try again" instead of
+    /// a 200 + a cookie that will never validate (the silent 401 redirect loop
+    /// from the Redis-hijack incident).
+    StoreUnavailable { body: String },
 }
 
 /// What a logout produced.
@@ -263,7 +269,22 @@ pub async fn authenticate(
 
     // 3. Success — issue session + CSRF cookies.
     rate_limiter.record_success(ip, &req.user);
-    let (session_id, signed_session_value) = sessions.create(ip, user_agent).await;
+    // R-1 (2026-06-19): if the session record can't be persisted (read-only /
+    // down shared backend), FAIL the login with 503 rather than handing back a
+    // cookie for a session that was never stored — that produced the silent
+    // 200→401 admin lockout during the Redis hijack.
+    let (session_id, signed_session_value) = match sessions.create(ip, user_agent).await {
+        Ok(pair) => pair,
+        Err(e) => {
+            tracing::error!(error = %e, ip, "admin login: session store write failed — returning 503");
+            return LoginOutcome::StoreUnavailable {
+                body: error_body(
+                    "session_store_unavailable",
+                    "session could not be persisted; please retry",
+                ),
+            };
+        }
+    };
     let session_cookie = format_cookie(
         "aegis_session",
         &signed_session_value,
@@ -392,6 +413,78 @@ mod tests {
 
     fn ok_body() -> String {
         serde_json::json!({"user":"admin","password":"aegis-test-1234"}).to_string()
+    }
+
+    // R-1 (2026-06-19) — correct credentials but a read-only/down session
+    // backend must yield 503 StoreUnavailable, NOT a 200 + unstored cookie.
+    struct FailWritesBackend;
+    #[async_trait::async_trait]
+    impl aegis_core::state::StateBackend for FailWritesBackend {
+        async fn get(&self, _: &str) -> aegis_core::Result<Option<Vec<u8>>> {
+            Ok(None)
+        }
+        async fn set(
+            &self,
+            _: &str,
+            _: &[u8],
+            _: std::time::Duration,
+        ) -> aegis_core::Result<()> {
+            Err(aegis_core::WafError::State("read only replica".into()))
+        }
+        async fn del(&self, _: &str) -> aegis_core::Result<()> {
+            Ok(())
+        }
+        async fn incr_window(
+            &self,
+            _: &str,
+            _: std::time::Duration,
+            _: u64,
+        ) -> aegis_core::Result<aegis_core::state::SlidingWindowResult> {
+            Ok(aegis_core::state::SlidingWindowResult { count: 0, allowed: true, retry_after: None })
+        }
+        async fn token_bucket(&self, _: &str, _: u32, _: u32) -> aegis_core::Result<bool> {
+            Ok(true)
+        }
+        async fn get_risk(&self, _: &aegis_core::RiskKey) -> aegis_core::Result<u32> {
+            Ok(0)
+        }
+        async fn add_risk(&self, _: &aegis_core::RiskKey, _: i32, _: u32) -> aegis_core::Result<u32> {
+            Ok(0)
+        }
+        async fn auto_block(
+            &self,
+            _: std::net::IpAddr,
+            _: std::time::Duration,
+        ) -> aegis_core::Result<()> {
+            Ok(())
+        }
+        async fn is_auto_blocked(&self, _: std::net::IpAddr) -> aegis_core::Result<bool> {
+            Ok(false)
+        }
+        async fn put_nonce(&self, _: &str, _: std::time::Duration) -> aegis_core::Result<bool> {
+            Ok(true)
+        }
+        async fn consume_nonce(&self, _: &str) -> aegis_core::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    #[tokio::test]
+    async fn login_with_read_only_backend_returns_store_unavailable() {
+        let (admin, rl, _ss, ds) = fixtures();
+        let key = derive_session_key("test-csrf-secret-32b");
+        let sessions = Arc::new(AuthSessionStore::with_backend(
+            key,
+            Arc::new(FailWritesBackend),
+            chrono::Duration::minutes(30),
+            chrono::Duration::hours(8),
+        ));
+        let outcome =
+            authenticate(&ok_body(), &admin, &rl, &sessions, &ds, "127.0.0.1", "ua", 1800).await;
+        assert!(
+            matches!(outcome, LoginOutcome::StoreUnavailable { .. }),
+            "read-only session backend must 503, not issue an unstored cookie: {outcome:?}",
+        );
     }
 
     #[tokio::test]
