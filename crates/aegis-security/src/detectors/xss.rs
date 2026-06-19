@@ -11,7 +11,13 @@ static XSS_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
         r"(?i)<script[\s>]",
         r"(?i)</script>",
-        r"(?i)javascript\s*:",
+        // S-G (2026-06-18 round-2): the `javascript:` URI scheme fires only
+        // when followed by a JS-execution sink. The inert href placeholders
+        // `javascript:void(0)` / `javascript:;` / `javascript:` are ubiquitous
+        // in captured DOM / analytics payloads and drove the xss benign
+        // blocks. Rust's regex has no lookahead, so `void` is excluded by
+        // listing the real sinks rather than a generic `ident(`.
+        r"(?i)javascript\s*:\s*(?:alert|eval|prompt|confirm|atob|unescape|fetch|import\s*\(|location|document\s*\.|window\s*\.|top\s*\.|self\s*\.|parent\s*\.|globalthis|this\s*\.|new\s+function|function\b|settimeout|setinterval|string\s*\.\s*fromcharcode|xmlhttprequest|=>|\[)",
         r"(?i)vbscript\s*:",
         // S4 (2026-06-18): event handlers fire only inside a tag
         // (`<tag … onX=`). Bare `?onload=` query params (Cloudflare
@@ -259,7 +265,7 @@ mod tests {
     positive!(xss_javascript_docref, "/?u=javascript:document.cookie");
     negative!(xss_javascript_void_inert, "/?q=javascript:void(0)");
     negative!(xss_javascript_semicolon,  "/?q=javascript:;");
-    negative!(xss_javascript_void_space, "/?q=javascript:void 0");
+    negative!(xss_javascript_void_space, "/?q=javascript:void%200");
     positive!(xss_eval, "/?q=eval%28%27malicious%27%29");
     positive!(xss_document_cookie, "/?q=document.cookie");
     positive!(xss_window_location, "/?q=window.location");
