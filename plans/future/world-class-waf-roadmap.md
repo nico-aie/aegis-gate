@@ -206,6 +206,13 @@ tiers:
   re-publish last-known-good config after a Redis data-loss wipe (the
   detect+alert half shipped 2026-06-18; auto-restore blocked on a fleet
   split-brain decision).
+- [`config-etcd-source-of-truth.md`](./config-etcd-source-of-truth.md) —
+  durability/infra: migrate the config **source of truth** (`config:waf:doc` +
+  `control:waf:*`) off Redis onto **etcd** for first-class Txn/Watch/Lease and
+  Raft durability (removes the empty-store root cause `config-auto-restore`
+  recovers from). Ephemeral hot path (`g:*`, cache, leases) stays on Redis; it's
+  a trait split, not a StateBackend port. Deferred — default stays Redis. **L**,
+  phased.
 - [`passive-upstream-health.md`](./passive-upstream-health.md) — correctness:
   mark members down from real forward failures (not just active probes), feed
   the LB. Requires a fail-open `LbStrategy::pick` change first.
