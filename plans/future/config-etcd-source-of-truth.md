@@ -199,9 +199,28 @@ stays on Redis — audit during P3.)
 - Re-litigating the `config:waf:doc` vs. boot-YAML validation model
   ([[project_config_plane_doc_vs_file]]) — that behavior is preserved as-is.
 
-## Complexity: L
+## Complexity & effort: L (~3–4 weeks)
 
 Two trait extractions touching the config + control planes, a new etcd
 backend with Txn/Watch/Lease, a shadow-validation phase, and a live data
 migration. Mechanically additive (an existing seam gets a second implementor),
 but it spans two planes and a stateful cutover, so it is large and phased.
+
+**Effort grade: L** (roadmap scale: S ≤~3 d, M ~1–2 wk, **L ~3 wk+**).
+**Risk: MEDIUM overall** — no CRITICAL/HIGH items in the risk table; opt-in with
+Redis as the default and rollback path is what keeps it off HIGH.
+
+Per-phase estimate, single engineer on this codebase:
+
+| Phase | Work | Estimate |
+|---|---|---|
+| **P1** | Extract `ConfigBackend` + `ConfigWatch` traits; retarget config + control planes off `StateBackend`/`FleetBus`, Redis still backing. Pure refactor, RED-safe. | ~2–4 d |
+| **P2** | `EtcdBackend` + `EtcdWatch` (etcd-client: KV/Txn/Watch/Lease) + dual-read shadow mode + 24 h parity soak | ~1–1.5 wk |
+| **P3** | Cutover, one-shot migration tool (copy `config:waf:doc` / `config:waf:v:*` / `control:waf:*`), verify active version + documented rollback | ~3–5 d |
+| **P4** | Runbook + cluster/HA docs; mark [`config-auto-restore.md`](./config-auto-restore.md) superseded | ~1–2 d |
+
+**Total: ~3–4 weeks of focused work.** Caveats: the long pole is the P2
+shadow-soak (wall-clock, not effort); add buffer if etcd provisioning /
+TLS / auth in the deploy environment is greenfield (ops time outside the code
+estimate). P1 is RED-safe, so the risky work doesn't begin until a clean
+refactor has landed.
