@@ -853,11 +853,51 @@ pub(crate) async fn handle_data_request_inner(
         }
     }
 
-    // Body collect — after cheap shedders (strike + rate-limit)
-    // so we don't pay the buffering cost on rejected requests.
-    // Bytes are threaded into the detector view AND down to the
-    // upstream forwarder; each request reads its body exactly
-    // once.
+    // 2026-06-20 (shed placement — s-tester load_shedder_placement_report):
+    // resolve tier + run the adaptive load shedder BEFORE body buffering, so a
+    // shed (non-Critical) request returns 503 WITHOUT reading or allocating its
+    // body. Admission control must reject excess at the cheapest point, before
+    // the network-read + heap-alloc that previously ran for every request even
+    // ones about to be shed (death-spiral fuel under a POST flood at high CPU).
+    // `route_tier` is already resolved up front (line ~432). Critical is never
+    // shed (CONTRACT — `should_admit(Critical)` returns true), so Critical
+    // requests fall through unchanged and buffer + inspect exactly as before.
+    // The RAII guard tracks in-flight across the whole request (now including
+    // body buffering, which is correctly WAF self-work) and releases on every
+    // exit path.
+    let tier = route_tier;
+    tracing::Span::current().record(
+        "tier",
+        aegis_security::detectors::tier_str(tier),
+    );
+    let _shed_guard = if let Some(shedder) = upstream_ctx.load_shedder.get() {
+        if !shedder.should_admit(&tier) {
+            // §5.5 — the reject path stays cheap: a small fixed 503, no
+            // detector/body/audit-heavy work, so shedding never adds load.
+            let resp = Response::builder()
+                .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
+                .header("retry-after", "1")
+                .header("content-type", "application/json")
+                .body(crate::body::full(Bytes::from(
+                    serde_json::json!({
+                        "error": "load_shed",
+                        "tier": aegis_security::detectors::tier_str(tier),
+                        "retry_after_seconds": 1,
+                    })
+                    .to_string(),
+                )))
+                .unwrap();
+            return (resp, DecisionTag::circuit_breaker("load_shed").with_tier(tier));
+        }
+        Some(shedder.admit_guard())
+    } else {
+        None
+    };
+
+    // Body collect — after the cheap gates AND the load shedder, so a
+    // rejected/shed request never pays the buffering cost. Bytes are
+    // threaded into the detector view AND down to the upstream forwarder;
+    // each request reads its body exactly once.
     let (parts, body) = req.into_parts();
     // PROXY-01 (LT-RUN-11, 2026-06-19) — bound the body BEFORE buffering.
     // Previously `body.collect()` read the entire client body into RAM and the
@@ -953,42 +993,10 @@ pub(crate) async fn handle_data_request_inner(
     // Reuse the route tier resolved up front (line ~290, same request,
     // before the early gates) — drives the per-request block gate, the
     // per-tier detector mask, and the load shedder.
-    let tier = route_tier;
-    tracing::Span::current().record(
-        "tier",
-        aegis_security::detectors::tier_str(tier),
-    );
-
-    // F-CRITICAL-006 (2026-05-17): adaptive load shedder. Runs after
-    // tier classification so Critical traffic is never shed and
-    // lower tiers shed in priority order. RAII guard tracks the
-    // in-flight count across the rest of the function and records
-    // the request's RTT into the Gradient2 estimator on every exit
-    // path (including detector blocks, upstream-forward errors,
-    // and panics). On admit-deny, return 503 + Retry-After: 1 with
-    // `X-WAF-Action: circuit_breaker` per v2.3 §3 (the WAF is the
-    // upstream-protection surface for this rejection).
-    let _shed_guard = if let Some(shedder) = upstream_ctx.load_shedder.get() {
-        if !shedder.should_admit(&tier) {
-            let resp = Response::builder()
-                .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
-                .header("retry-after", "1")
-                .header("content-type", "application/json")
-                .body(crate::body::full(Bytes::from(
-                    serde_json::json!({
-                        "error": "load_shed",
-                        "tier": aegis_security::detectors::tier_str(tier),
-                        "retry_after_seconds": 1,
-                    })
-                    .to_string(),
-                )))
-                .unwrap();
-            return (resp, DecisionTag::circuit_breaker("load_shed").with_tier(tier));
-        }
-        Some(shedder.admit_guard())
-    } else {
-        None
-    };
+    // (Tier + adaptive load shedder already resolved before body
+    // buffering above — F-CRITICAL-006 gate moved earlier so shed
+    // requests never pay the body-read cost. `_shed_guard` is held
+    // for the rest of the request.)
 
     // Run security detectors filtered by the effective mask for
     // this tier. A class turned off via PUT /api/detectors (base

@@ -141,6 +141,80 @@ So: **l-tester explains the cliff trigger/shape (shedder); P0 explains a primary
 missed (audit flush); l-tester adds the other big causes (AI/TLS, SO_REUSEPORT) with
 file:line.** No real conflict — they stack.
 
+## Cross-check — s-tester "load-shedder placement" report (`20260620_load_shedder_placement_report.md`) + pre-prod result
+
+**Operator observed: Fix A did NOT improve pre-prod much.** That is consistent and important —
+it reframes the root cause. Verified against code:
+
+- **Why Fix A underperformed on pre-prod.** P0 was run locally with **AI off** (`ai.enabled:false`,
+  zero inference), **plain HTTP** (no TLS), and **tiny bodies** — so the audit sink was the
+  heaviest *local* subtree and removing it ~doubled local throughput. On pre-prod the dominant
+  costs are **AI/ONNX inference + TLS crypto + full-body buffering**, none of which the local
+  repro exercised. Fix A removed a real cost, but a smaller share of the *pre-prod* budget.
+- **The pre-prod cliff is a congestion collapse / metastable failure** (11k stable → 14k →
+  ~2–3k), not a simple per-stage cost. The shed gate is correctly *before* detectors but still
+  **too late** in three ways, all verified:
+  1. ✅ **Shed runs after full-body buffering.** `Limited::new(body,cap).collect().await`
+     (`data_plane.rs:887`) reads + heap-allocs the whole body; `should_admit` is at
+     `data_plane.rs:972`. A request that gets shed has already paid network-read + alloc + memcpy
+     for its body — allocator/bandwidth pressure exactly when CPU is at 95% (death-spiral fuel).
+     `route_tier` is already resolved at `data_plane.rs:432`, so the gate **can move up** to
+     before `into_parts()`/collect without re-architecting tier resolution.
+  2. ✅ **No admission at accept/TLS.** `accept.rs` has no `should_admit`/semaphore before the
+     TLS handshake — under a connection flood every (expensive) handshake completes before any
+     shed decision.
+  3. ✅ **Shed signal lags the real constraint.** Gradient2 keys on RTT (`shed.rs`), fed by
+     `record_rtt(request_start.elapsed())` at the *end* of inspection (`data_plane.rs:1755`) — so
+     it reacts only after queues have already built, and request N+1's admit uses request N's
+     latency. Industry practice (Google SRE / AWS / DAGOR) sheds on **CPU / in-flight concurrency**
+     as the primary signal, RTT as secondary.
+  - §3.4 (Critical bypass + still counts inflight) — by design; the report's §5.4 (reserve
+    capacity for Critical instead of letting it self-saturate) is the safe way to keep "Critical
+    never shed" without it dragging the node down.
+
+The report's fixes are sound and standard. **They are a different, higher-priority track than
+Fix A for pre-prod**, folded into the list below as **F-shed/J/K**.
+
+### ⚠️ Hard dependency: does this help a *Critical-tier* benchmark?
+
+The shed-placement track only ever sheds **non-Critical** traffic (Critical bypasses by policy,
+verified `shed.rs:121`). So:
+- **Mixed-tier load:** early-shedding non-Critical frees CPU/RAM that lets the Critical route hold
+  its plateau → the whole track pays off (directly for low tiers, indirectly for Critical).
+- **Pure-Critical load:** *no shed-placement change moves the number* — Critical is admitted
+  regardless, still buffers body + runs detectors. The only levers are **per-request cost**
+  (Fix B: AI off the worker, TLS resumption; and moving body-buffering after a cheap gate) or
+  horizontal scale. This is an honest design limit: a 100%-Critical flood has no admission valve.
+
+→ **Confirm the failing benchmark's tier mix before investing in the shed track.**
+
+### Resolution (2026-06-20) — shed-before-body shipped; session closed
+
+Operator confirmed the failing pre-prod load is **mostly/all Critical-tier**, and
+**"Critical never apply shedder" is a hard contract** (not to be softened). Decision: implement
+the report's headline fix (P1, shed-before-body-buffer) as resilience hardening for the
+non-Critical fraction, keep the Critical contract intact, and close the perf-tuning session.
+
+**Shipped** (`perf/shed-before-body-buffer`): the adaptive-shedder gate + `admit_guard` moved
+from after body buffering (was `data_plane.rs:972`, post-`collect()`) to **before**
+`into_parts()`/`collect()`, keyed on the already-resolved `route_tier`. A shed (non-Critical)
+request now returns `503 load_shed` without reading or allocating its body. **Critical is
+untouched** — `should_admit(Critical)` still returns `true`, so Critical falls through and
+buffers + inspects exactly as before (contract preserved). The §5.5 reject stays cheap (small
+fixed 503). Validated: `aegis-proxy` lib **933/0**; smoke with `initial_limit=0` →
+non-Critical POST gets `503 {"error":"load_shed","tier":"high"}`, normal limit passes.
+
+**Honest limitation (stated to operator):** because the contract exempts Critical, this does
+**not** move the mostly-Critical pre-prod number — it only relieves the non-Critical fraction
+of the flood (freeing some CPU for Critical). The only remaining levers for a Critical-tier
+ceiling are **per-request cost reduction** (Fix B — AI/ONNX off the tokio worker via a
+dedicated pool + TLS session resumption) or horizontal scale; a 100%-Critical flood has no
+admission valve by contract. **Fix B is deferred** (needs on-pre-prod AI/TLS profiling).
+
+Remaining open items from the s-tester/l-tester cross-checks (F/G/H/J/K — accept-layer
+`SO_REUSEPORT`/admission, `Arc<AuditEvent>`, pool idle, CPU-signal shedding) are catalogued
+above but **not** scheduled — reopen if a future non-Critical-heavy load needs them.
+
 ### Net additions to the fix list (verified, folded in)
 
 | New # | Fix | From | Severity |
