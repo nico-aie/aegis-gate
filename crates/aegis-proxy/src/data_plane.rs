@@ -924,12 +924,33 @@ pub(crate) async fn handle_data_request_inner(
     if declared_content_length_over_cap(&parts.headers, max_body_bytes) {
         return (body_too_large(), DecisionTag::block("body-too-large"));
     }
-    let body_bytes = match http_body_util::Limited::new(body, max_body_bytes)
-        .collect()
-        .await
-    {
-        Ok(c) => c.to_bytes(),
-        Err(e) => {
+    // GAP 1 (anti-RUDY) — bound the body buffer with the proxy-global
+    // read deadline. A slow-trickle body (R-U-Dead-Yet) that does not
+    // complete within `read_timeout` is closed with 408 +
+    // `X-WAF-Action: timeout` (Contract v2.6 §3-4 — slow-loris /
+    // connection-level maps to `timeout`, not `rate_limit`) instead of
+    // pinning this task indefinitely. Header read is already bounded by
+    // `HEADER_READ_TIMEOUT`; the body size cap is enforced by `Limited`
+    // above. This closes the slow-*body* hole between them. See
+    // plans/issues/PLAN-conn-layer-dos-gaps-2026-06-20.md.
+    let collected = tokio::time::timeout(
+        upstream_ctx.read_timeout,
+        http_body_util::Limited::new(body, max_body_bytes).collect(),
+    )
+    .await;
+    let body_bytes = match collected {
+        Err(_elapsed) => {
+            let resp = Response::builder()
+                .status(hyper::StatusCode::REQUEST_TIMEOUT)
+                .header("content-type", "application/json")
+                .body(crate::body::full(Bytes::from(
+                    serde_json::json!({ "error": "request_body_timeout" }).to_string(),
+                )))
+                .unwrap();
+            return (resp, DecisionTag::timeout("slow-body"));
+        }
+        Ok(Ok(c)) => c.to_bytes(),
+        Ok(Err(e)) => {
             if e.downcast_ref::<http_body_util::LengthLimitError>().is_some() {
                 return (body_too_large(), DecisionTag::block("body-too-large"));
             }
@@ -6256,6 +6277,186 @@ state: {{ backend: in_memory }}
         assert_eq!(
             status_off, 200,
             "challenges off → band score must pass through as allow (forwarded), got {status_off}"
+        );
+    }
+
+    // ── GAP 1 (RUDY) — request-body read deadline ────────────────────
+    // plans/issues/PLAN-conn-layer-dos-gaps-2026-06-20.md
+
+    /// Spin up the data-plane listener serving `handle_data_request`
+    /// against the given `ctx`/`cfg`, returning its bound address. Built
+    /// from the same wiring the inline log_only/enforce tests use; shared
+    /// here so the RUDY tests don't duplicate the 40-line harness.
+    async fn spawn_waf_listener(
+        cfg: &aegis_core::config::WafConfig,
+        ctx: Arc<ProxyContext>,
+    ) -> std::net::SocketAddr {
+        let metrics = aegis_control::metrics::MetricsRegistry::init();
+        let args = Arc::new(Args {
+            detectors: aegis_security::detectors::default_detectors(),
+            mask: aegis_security::detectors::SharedDetectorMask::from_config(&cfg.detectors),
+            risk: aegis_security::risk::RiskTracker::new(&cfg.risk),
+            ip_rl: aegis_security::rate_limit::IpRateLimiter::new(
+                crate::config_source::reload::derive_ip_rate_cfg(cfg),
+            ),
+            load_gauge: aegis_core::LoadGauge::new(cfg.load_mode.clone()),
+            verbosity: aegis_core::SharedVerbosity::from_config(&cfg.logging),
+            rsh: aegis_control::metrics::request_duration::RequestStageHistogram::register(&metrics)
+                .unwrap(),
+            rlh: aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&metrics)
+                .unwrap(),
+            ra: aegis_control::metrics::route_activity::RouteActivityWindow::new(),
+            dlh: aegis_control::metrics::detector_latency::DetectorLatencyHistogram::register(
+                &metrics,
+            )
+            .unwrap(),
+            dhm: aegis_control::metrics::detector_hits::DetectorHitMetrics::register(&metrics)
+                .unwrap(),
+            bus: AuditBus::new(64),
+            ctx,
+        });
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let args_l = args.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, peer)) = waf.accept().await {
+                let args_c = args_l.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                        let a = args_c.clone();
+                        async move {
+                            let (resp, _tag) = super::handle_data_request(
+                                req,
+                                peer,
+                                None,
+                                &a.detectors,
+                                &a.mask,
+                                &a.risk,
+                                &a.ip_rl,
+                                &a.load_gauge,
+                                &a.verbosity,
+                                &a.rsh,
+                                &a.rlh,
+                                &a.ra,
+                                &a.dlh,
+                                &a.bus,
+                                &a.ctx,
+                                &a.dhm,
+                                &ClientIdentity::Anonymous,
+                                None,
+                            )
+                            .await;
+                            Ok::<_, Infallible>(resp)
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        waf_addr
+    }
+
+    /// Read the HTTP status line from a socket under a 3s cap; returns 0
+    /// if no response arrives (i.e. the request hung — the RUDY failure).
+    async fn read_status_capped(mut s: tokio::net::TcpStream) -> u16 {
+        let mut buf = Vec::new();
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            s.read_to_end(&mut buf),
+        )
+        .await
+        {
+            Ok(_) => String::from_utf8_lossy(&buf)
+                .lines()
+                .next()
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|c| c.parse::<u16>().ok())
+                .unwrap_or(0),
+            Err(_) => 0,
+        }
+    }
+
+    /// RUDY: a client that declares a body but trickles it must hit
+    /// `proxy.read_timeout` and get a 408 — not pin the worker forever.
+    #[tokio::test]
+    async fn slow_post_body_times_out_with_408() {
+        let backend = spawn_upstream().await;
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+proxy: {{ read_timeout: "300ms" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: pool }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend}" }}] }}
+state: {{ backend: in_memory }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
+        ctx.interop_modes.set(Arc::new(ModeStore::new(Mode::Enforce))).ok();
+        let waf_addr = spawn_waf_listener(&cfg, ctx).await;
+
+        // Declare a 1000-byte body, send 3 bytes, then stall (never send
+        // the rest). Connection: close so the WAF doesn't keep-alive.
+        let mut s = tokio::net::TcpStream::connect(waf_addr).await.unwrap();
+        let head =
+            "POST / HTTP/1.1\r\nHost: any\r\nContent-Length: 1000\r\nConnection: close\r\n\r\nabc";
+        s.write_all(head.as_bytes()).await.unwrap();
+
+        let status = read_status_capped(s).await;
+        assert_eq!(
+            status, 408,
+            "slow-trickle body must return 408 within read_timeout (got {status}; \
+             0 = no response = the request hung, i.e. RUDY unfixed)"
+        );
+    }
+
+    /// Regression guard: a complete body delivered promptly must forward
+    /// normally (200) and never trip a false read-timeout.
+    #[tokio::test]
+    async fn complete_post_body_is_not_falsely_timed_out() {
+        let backend = spawn_upstream().await;
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+proxy: {{ read_timeout: "2s" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: pool }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend}" }}] }}
+state: {{ backend: in_memory }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
+        ctx.interop_modes.set(Arc::new(ModeStore::new(Mode::Enforce))).ok();
+        let waf_addr = spawn_waf_listener(&cfg, ctx).await;
+
+        let mut s = tokio::net::TcpStream::connect(waf_addr).await.unwrap();
+        let body = "hello-world";
+        let req = format!(
+            "POST / HTTP/1.1\r\nHost: any\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        s.write_all(req.as_bytes()).await.unwrap();
+
+        let status = read_status_capped(s).await;
+        assert_eq!(
+            status, 200,
+            "a promptly-delivered complete body must forward (200), not 408 (got {status})"
         );
     }
 }

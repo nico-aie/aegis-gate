@@ -245,6 +245,8 @@ pub(crate) fn admin_router(
                     block_ttl_s: snap.block_ttl_s,
                     spike_multiplier: snap.spike_multiplier,
                     tightened_per_ip_rps: snap.tightened_per_ip_rps,
+                    spike_engage_ticks: snap.spike_engage_ticks,
+                    spike_release_ticks: snap.spike_release_ticks,
                 }
             });
             let overlay = RuntimeOverlay {

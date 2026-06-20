@@ -352,8 +352,13 @@ ddos:
   per_ip_limit: 60000        # 2026-05-22 — raised 1000 → 60000 (6k rps/IP) per operator policy
   per_ip_window_s: 10        # sliding-window length (seconds)
   block_ttl_s: 300           # auto-block duration on burst-exceed (5 min)
-  spike_multiplier: 3.0      # current_rps > 3 × baseline → spike_active
-  tightened_per_ip_rps: 20   # per-IP cap during spike (cluster-wire deferred)
+  spike_multiplier: 3.0      # per-node: current_rps > 3 × baseline → spike (engage/release dwell below)
+  tightened_per_ip_rps: 20   # ENFORCED: during spike, per-IP cap = 20 rps × per_ip_window_s = 200/window (vs 60000)
+  spike_engage_ticks: 2      # consecutive over-threshold ticks (~1s each) before spike engages
+  spike_release_ticks: 8     # consecutive under-threshold ticks before spike releases (anti-flap)
+  # NOTE: spike detection is PER-NODE (rolling RPS counted locally); true
+  # cluster-wide RPS aggregation is deferred — see
+  # plans/issues/PLAN-ddos-spike-enforcement-2026-06-20.md (P3).
 
 # ---------------------------------------------------------------------------
 # Adaptive load shedder (Gradient2). Tier-aware availability gate, NOT a

@@ -602,4 +602,240 @@ state:
         let resp = dashboard_shell_response(true);
         assert_security_headers(resp.headers());
     }
+
+    // ── GAP 2 — accept-time connection cap ───────────────────────────
+    // plans/issues/PLAN-conn-layer-dos-gaps-2026-06-20.md
+
+    /// Spawn a plain-HTTP data-plane `accept_loop` for `cfg`, returning
+    /// the bound address and a clone of the shared `ProxyContext` (so the
+    /// test can read `inflight.current()`). Mirrors the inline wiring in
+    /// `run_binds_and_serves_200`.
+    async fn spawn_data_accept_loop(
+        cfg: &WafConfig,
+    ) -> (std::net::SocketAddr, Arc<crate::proxy::ProxyContext>) {
+        let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = tcp.local_addr().unwrap();
+        let metrics_reg = aegis_control::metrics::MetricsRegistry::init();
+        let upstream_ctx = Arc::new(
+            crate::proxy::ProxyContext::build(cfg, Arc::new(aegis_security::NoopPipeline)).unwrap(),
+        );
+        let ctx_clone = upstream_ctx.clone();
+        tokio::spawn(accept_loop(
+            tcp,
+            Arc::new(aegis_security::detectors::default_detectors()),
+            aegis_security::detectors::SharedDetectorMask::default(),
+            aegis_security::risk::RiskTracker::new(&aegis_core::config::RiskConfig::default()),
+            Arc::new(aegis_security::rate_limit::IpRateLimiter::new(Default::default())),
+            aegis_core::LoadGauge::new(aegis_core::LoadModeConfig::default()),
+            aegis_core::SharedVerbosity::default(),
+            Arc::new(
+                aegis_control::metrics::request_duration::RequestStageHistogram::register(
+                    &metrics_reg,
+                )
+                .unwrap(),
+            ),
+            Arc::new(
+                aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&metrics_reg)
+                    .unwrap(),
+            ),
+            aegis_control::metrics::route_activity::RouteActivityWindow::new(),
+            Arc::new(
+                aegis_control::metrics::detector_latency::DetectorLatencyHistogram::register(
+                    &metrics_reg,
+                )
+                .unwrap(),
+            ),
+            aegis_core::AuditBus::new(64),
+            upstream_ctx,
+            None,
+            None,
+            None,
+            Arc::new(
+                aegis_control::metrics::decisions::DecisionMetrics::register(&metrics_reg).unwrap(),
+            ),
+            Arc::new(
+                aegis_control::metrics::detector_hits::DetectorHitMetrics::register(&metrics_reg)
+                    .unwrap(),
+            ),
+            None,
+            Arc::new(crate::state::InMemoryBackend::new()),
+            aegis_core::config::ProxyProtocolMode::Off,
+            Arc::new(
+                aegis_control::metrics::proxy_protocol::ProxyProtocolMetrics::register(
+                    &metrics_reg,
+                    &crate::listener::proxy_protocol::METRIC_LABELS,
+                )
+                .unwrap(),
+            ),
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        (addr, ctx_clone)
+    }
+
+    /// Connection-flood: with `proxy.max_connections = 2`, two idle-held
+    /// connections must consume both slots; a third must be rejected at
+    /// TCP (closed without a response) and must NOT inflate the in-flight
+    /// drain counter (reject happens BEFORE `inflight.admit()`).
+    #[tokio::test]
+    async fn over_cap_connection_is_rejected_and_not_admitted() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (upstream_addr, _up) = spawn_mock_upstream(b"upstream-ok").await;
+        let yaml = format!(
+            r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:0"
+  admin:
+    bind: "127.0.0.1:0"
+proxy:
+  max_connections: 2
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "{upstream_addr}"
+state:
+  backend: in_memory
+"#
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let (addr, ctx) = spawn_data_accept_loop(&cfg).await;
+
+        // Two connections that connect and stall (no request bytes). Each
+        // accepted connection holds a slot while its handler waits on the
+        // header read. Keep the streams alive by binding them.
+        let _hold1 = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let _hold2 = tokio::net::TcpStream::connect(addr).await.unwrap();
+
+        // Wait until both are admitted (slots consumed).
+        for _ in 0..50 {
+            if ctx.inflight.current() >= 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(ctx.inflight.current(), 2, "two held connections must occupy both slots");
+
+        // Third connection: send a full request. With the cap it is closed
+        // at TCP → empty read. Without the cap it is served → "upstream-ok".
+        let mut third = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let _ = third
+            .write_all(b"GET / HTTP/1.1\r\nHost: any\r\nConnection: close\r\n\r\n")
+            .await;
+        let mut buf = Vec::new();
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            third.read_to_end(&mut buf),
+        )
+        .await;
+        assert!(
+            buf.is_empty(),
+            "over-cap connection must be closed at TCP with no response (got {} bytes: {:?})",
+            buf.len(),
+            String::from_utf8_lossy(&buf)
+        );
+
+        // The rejected connection must never have been admitted: the drain
+        // gauge stays at 2, never 3. Proves reject-before-admit (§2.4.1).
+        assert_eq!(
+            ctx.inflight.current(),
+            2,
+            "rejected connection must not increment the in-flight drain counter"
+        );
+    }
+
+    /// Drain safety (§2.4.2): when connections end, both the cap permit and
+    /// the in-flight guard must release, so the gauge returns to 0 (the
+    /// SIGUSR2 handover's exit condition) and freed slots are reusable. A
+    /// rejected connection (no permit/admit taken) must not leak either.
+    #[tokio::test]
+    async fn ended_connections_release_permit_and_inflight_slot() {
+        use tokio::io::AsyncWriteExt;
+
+        let (upstream_addr, _up) = spawn_mock_upstream(b"upstream-ok").await;
+        let yaml = format!(
+            r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:0"
+  admin:
+    bind: "127.0.0.1:0"
+proxy:
+  max_connections: 1
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "{upstream_addr}"
+state:
+  backend: in_memory
+"#
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let (addr, ctx) = spawn_data_accept_loop(&cfg).await;
+
+        // Hold the single slot.
+        let hold = tokio::net::TcpStream::connect(addr).await.unwrap();
+        for _ in 0..50 {
+            if ctx.inflight.current() >= 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(ctx.inflight.current(), 1);
+        assert_eq!(ctx.conn_limit.available_permits(), 0, "the one slot is held");
+
+        // A second connection is rejected while the slot is held — it must
+        // not take a permit or admit (no leak from the reject path).
+        let mut rejected = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let _ = rejected
+            .write_all(b"GET / HTTP/1.1\r\nHost: any\r\nConnection: close\r\n\r\n")
+            .await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(ctx.inflight.current(), 1, "reject must not admit");
+
+        // End the holding connection → its guard + permit drop.
+        drop(hold);
+        let mut drained = false;
+        for _ in 0..100 {
+            if ctx.inflight.current() == 0 && ctx.conn_limit.available_permits() == 1 {
+                drained = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            drained,
+            "after the connection ends the in-flight gauge must reach 0 and the \
+             permit must be returned (inflight={}, permits={})",
+            ctx.inflight.current(),
+            ctx.conn_limit.available_permits()
+        );
+
+        // The freed slot is reusable: a fresh request is served again.
+        let mut again = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let _ = again
+            .write_all(b"GET / HTTP/1.1\r\nHost: any\r\nConnection: close\r\n\r\n")
+            .await;
+        let mut buf = Vec::new();
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            tokio::io::AsyncReadExt::read_to_end(&mut again, &mut buf),
+        )
+        .await;
+        assert!(
+            String::from_utf8_lossy(&buf).contains("upstream-ok"),
+            "freed slot must serve a new connection (got: {:?})",
+            String::from_utf8_lossy(&buf)
+        );
+    }
 }

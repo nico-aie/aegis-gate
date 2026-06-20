@@ -12512,7 +12512,17 @@ function DdosGateCard() {
           <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
             <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>tightened_per_ip_rps</div>
             <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>{cfg.tightened_per_ip_rps}</div>
-            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>cap during spike</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>cap during spike ({(cfg.tightened_per_ip_rps * Math.max(cfg.per_ip_window_s, 1)).toLocaleString()}/window)</div>
+          </div>
+          <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>spike_engage_ticks</div>
+            <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>{cfg.spike_engage_ticks}</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>ticks to engage (~{cfg.spike_engage_ticks}s)</div>
+          </div>
+          <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>spike_release_ticks</div>
+            <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>{cfg.spike_release_ticks}</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>ticks to release (~{cfg.spike_release_ticks}s)</div>
           </div>
           <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
             <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>effective rate</div>
@@ -12527,7 +12537,8 @@ function DdosGateCard() {
       <GateExplain
         rows={[
           ['How it fires', 'Per-IP sliding-window burst counter (StateBackend-backed, cluster-wide). When count exceeds per_ip_limit within the window, the IP is added to the auto-block keyspace.'],
-          ['Counter', <span key="c">Cluster-shared per-IP window. EWMA spike mode raises detection sensitivity when overall RPS exceeds <strong>spike_multiplier × baseline</strong>.</span>],
+          ['Counter', <span key="c">Cluster-shared per-IP window. EWMA spike mode (per-node RPS) raises detection sensitivity when overall RPS exceeds <strong>spike_multiplier × baseline</strong>.</span>],
+          ['Spike tighten', <span key="st">While spike-active, every IP's cap drops to <strong>tightened_per_ip_rps × per_ip_window_s</strong> (tighten-only). Hysteresis: engages after <code>spike_engage_ticks</code> consecutive over-threshold ticks, releases after <code>spike_release_ticks</code> under-threshold ticks — so a brief blip never throttles all clients.</span>],
           ['Response', '403 + ', <code key="rc">X-WAF-Action: block</code>, ' + ', <code key="rid">X-WAF-Rule-Id: ddos</code>, '. Subsequent requests from the IP are 403\'d for the full TTL.'],
           ['Recovery', <span key="r"><strong>TTL\'d</strong> — IP is rejected for <code>block_ttl_s</code> (default 300s), then automatically allowed again. Tighter recovery than rate-limit\'s instant retry.</span>],
           ['Tunable', <span key="t">Edit modal on this card. Audit-mutated <code>PUT /api/gates/ddos</code>; per-IP StateBackend window preserved across edits.</span>],
@@ -12553,6 +12564,8 @@ function DdosEditModal({ current, onClose, onSaved }) {
   const [blockTtlS, setBlockTtlS] = useStateP(current?.block_ttl_s ?? 300);
   const [spikeMultiplier, setSpikeMultiplier] = useStateP(current?.spike_multiplier ?? 3.0);
   const [tightenedRps, setTightenedRps] = useStateP(current?.tightened_per_ip_rps ?? 20);
+  const [engageTicks, setEngageTicks] = useStateP(current?.spike_engage_ticks ?? 2);
+  const [releaseTicks, setReleaseTicks] = useStateP(current?.spike_release_ticks ?? 8);
   const [busy, setBusy] = useStateP(false);
   const [err, setErr] = useStateP(null);
 
@@ -12569,6 +12582,8 @@ function DdosEditModal({ current, onClose, onSaved }) {
           block_ttl_s: parseInt(blockTtlS, 10),
           spike_multiplier: parseFloat(spikeMultiplier),
           tightened_per_ip_rps: parseInt(tightenedRps, 10),
+          spike_engage_ticks: parseInt(engageTicks, 10),
+          spike_release_ticks: parseInt(releaseTicks, 10),
         },
       });
       if (r && r.ok !== false && (r.status === undefined || (r.status >= 200 && r.status < 300))) {
@@ -12635,7 +12650,21 @@ function DdosEditModal({ current, onClose, onSaved }) {
               <input className="input" type="number" min="1" value={tightenedRps}
                 onChange={e => setTightenedRps(e.target.value)} disabled={busy}
                 style={{ marginTop: 4, width: '100%' }} />
-              <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>per-IP cap during spike mode</div>
+              <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>per-IP cap during spike (= {(parseInt(tightenedRps, 10) || 0) * (parseInt(perIpWindowS, 10) || 1)} req/window when spike-active)</div>
+            </label>
+            <label style={{ fontSize: 12 }}>
+              spike_engage_ticks
+              <input className="input" type="number" min="1" value={engageTicks}
+                onChange={e => setEngageTicks(e.target.value)} disabled={busy}
+                style={{ marginTop: 4, width: '100%' }} />
+              <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>consecutive over-threshold ticks (~1s each) before spike engages</div>
+            </label>
+            <label style={{ fontSize: 12 }}>
+              spike_release_ticks
+              <input className="input" type="number" min="1" value={releaseTicks}
+                onChange={e => setReleaseTicks(e.target.value)} disabled={busy}
+                style={{ marginTop: 4, width: '100%' }} />
+              <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>consecutive under-threshold ticks before spike releases (anti-flap)</div>
             </label>
           </div>
           <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>

@@ -74,6 +74,10 @@ pub struct DdosConfigView {
     pub block_ttl_s: u64,
     pub spike_multiplier: f64,
     pub tightened_per_ip_rps: u64,
+    /// P2 spike hysteresis — consecutive over-threshold ticks to engage
+    /// `spike_active`, and consecutive under-threshold ticks to release it.
+    pub spike_engage_ticks: u32,
+    pub spike_release_ticks: u32,
 }
 
 impl From<DdosConfig> for DdosConfigView {
@@ -86,6 +90,8 @@ impl From<DdosConfig> for DdosConfigView {
             block_ttl_s: c.block_ttl_s,
             spike_multiplier: c.spike_multiplier,
             tightened_per_ip_rps: c.tightened_per_ip_rps,
+            spike_engage_ticks: c.spike_engage_ticks,
+            spike_release_ticks: c.spike_release_ticks,
         }
     }
 }
@@ -112,6 +118,8 @@ impl DdosView {
                     block_ttl_s: 0,
                     spike_multiplier: 0.0,
                     tightened_per_ip_rps: 0,
+                    spike_engage_ticks: 0,
+                    spike_release_ticks: 0,
                 },
                 current_rps: 0,
                 baseline_rps: 0,
@@ -136,9 +144,18 @@ pub struct DdosPutBody {
     pub block_ttl_s: u64,
     pub spike_multiplier: f64,
     pub tightened_per_ip_rps: u64,
+    /// P2 spike hysteresis. Optional in the PUT body (serde defaults 2/8)
+    /// so older clients that omit them keep working; the dashboard panel
+    /// always sends them so an operator edit round-trips.
+    #[serde(default = "default_spike_engage_ticks")]
+    pub spike_engage_ticks: u32,
+    #[serde(default = "default_spike_release_ticks")]
+    pub spike_release_ticks: u32,
 }
 
 fn default_true() -> bool { true }
+fn default_spike_engage_ticks() -> u32 { 2 }
+fn default_spike_release_ticks() -> u32 { 8 }
 
 impl DdosPutBody {
     pub fn validate(self) -> Result<DdosConfig, Vec<String>> {
@@ -158,6 +175,12 @@ impl DdosPutBody {
         if self.tightened_per_ip_rps == 0 {
             errors.push("tightened_per_ip_rps must be > 0".into());
         }
+        if self.spike_engage_ticks == 0 {
+            errors.push("spike_engage_ticks must be > 0".into());
+        }
+        if self.spike_release_ticks == 0 {
+            errors.push("spike_release_ticks must be > 0".into());
+        }
         if !errors.is_empty() {
             return Err(errors);
         }
@@ -169,6 +192,10 @@ impl DdosPutBody {
             block_ttl_s: self.block_ttl_s,
             spike_multiplier: self.spike_multiplier,
             tightened_per_ip_rps: self.tightened_per_ip_rps,
+            // 2026-06-20 (P2) — spike hysteresis is now dashboard-editable
+            // (surfaced in the DDoS panel); the PUT carries it.
+            spike_engage_ticks: self.spike_engage_ticks,
+            spike_release_ticks: self.spike_release_ticks,
             // 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005): the PUT
             // body doesn't carry per-tier overrides today —
             // operators tune those via YAML. The hot-swap surface
@@ -453,6 +480,7 @@ mod tests {
                 tightened_per_ip_rps: 20,
                 tier_overrides: std::collections::HashMap::new(),
                 failure_mode: std::collections::HashMap::new(),
+                ..Default::default()
             },
             Arc::new(DummyState),
         ));
@@ -465,6 +493,9 @@ mod tests {
         assert_eq!(v["config"]["per_ip_window_s"], 10);
         assert_eq!(v["config"]["block_ttl_s"], 60);
         assert_eq!(v["config"]["tightened_per_ip_rps"], 20);
+        // P2 dwell knobs surfaced to the dashboard (defaults 2/8).
+        assert_eq!(v["config"]["spike_engage_ticks"], 2);
+        assert_eq!(v["config"]["spike_release_ticks"], 8);
         assert!(v.get("current_rps").is_some());
         assert!(v.get("baseline_rps").is_some());
         assert_eq!(v["spike_active"], false);
@@ -480,8 +511,13 @@ mod tests {
             block_ttl_s: 60,
             spike_multiplier: 3.0,
             tightened_per_ip_rps: 20,
+            spike_engage_ticks: 3,
+            spike_release_ticks: 9,
         };
-        assert!(valid.validate().is_ok());
+        // Dwell knobs round-trip from PUT into the runtime config.
+        let cfg = valid.validate().unwrap();
+        assert_eq!(cfg.spike_engage_ticks, 3);
+        assert_eq!(cfg.spike_release_ticks, 9);
 
         let zero_limit = DdosPutBody {
             enabled: true,
@@ -491,6 +527,8 @@ mod tests {
             block_ttl_s: 60,
             spike_multiplier: 3.0,
             tightened_per_ip_rps: 20,
+            spike_engage_ticks: 2,
+            spike_release_ticks: 8,
         };
         let errs = zero_limit.validate().unwrap_err();
         assert!(errs.iter().any(|e| e.contains("per_ip_limit")));
@@ -503,9 +541,25 @@ mod tests {
             block_ttl_s: 60,
             spike_multiplier: 0.5, // < 1.0
             tightened_per_ip_rps: 20,
+            spike_engage_ticks: 2,
+            spike_release_ticks: 8,
         };
         let errs = bad_multiplier.validate().unwrap_err();
         assert!(errs.iter().any(|e| e.contains("spike_multiplier")));
+
+        let zero_engage = DdosPutBody {
+            enabled: true,
+            observe_only: false,
+            per_ip_limit: 100,
+            per_ip_window_s: 10,
+            block_ttl_s: 60,
+            spike_multiplier: 3.0,
+            tightened_per_ip_rps: 20,
+            spike_engage_ticks: 0,
+            spike_release_ticks: 8,
+        };
+        let errs = zero_engage.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("spike_engage_ticks")));
     }
 
     #[test]

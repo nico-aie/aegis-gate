@@ -47,11 +47,24 @@ pub struct DdosConfig {
     pub per_ip_window_s: u32,
     /// TTL for auto-block after breach.
     pub block_ttl_s: u64,
-    /// Cluster-wide RPS multiplier to detect spikes.
+    /// Per-node RPS multiplier to detect spikes (`current_rps >
+    /// multiplier × baseline_rps`). Per-node, not fleet-wide — see
+    /// `DdosDetector::rolling_rps`.
     pub spike_multiplier: f64,
-    /// Per-IP RPS cap during cluster spike mode. Tighter than
-    /// `per_ip_limit` so a spike clamps every offender. Default 20.
+    /// Per-IP RPS cap that ENGAGES during spike mode (P1). Expressed as
+    /// an RPS; the gate converts it to a per-window count
+    /// (`tightened_per_ip_rps × per_ip_window_s`) and clamps the per-IP
+    /// limit to the tighter of that and `per_ip_limit`. Tighter than
+    /// `per_ip_limit` so a spike throttles every offender. Default 20.
     pub tightened_per_ip_rps: u64,
+    /// 2026-06-20 (P2) — spike hysteresis. Consecutive over-threshold
+    /// ticks required to engage `spike_active` (default 2) and consecutive
+    /// under-threshold ticks required to release it (default 8). Asymmetric
+    /// so a 1-tick blip never engages and a brief dip never releases — the
+    /// flag is global but the tighten is per-IP, so flapping would throttle
+    /// all clients. See `plans/issues/PLAN-ddos-spike-enforcement-2026-06-20.md`.
+    pub spike_engage_ticks: u32,
+    pub spike_release_ticks: u32,
     /// 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005): per-tier limit
     /// overrides. Schema landed in Phase G (`678baa2`); this is
     /// the runtime side that actually consumes it. Empty map (the
@@ -117,6 +130,8 @@ impl Default for DdosConfig {
             block_ttl_s: 300,
             spike_multiplier: 3.0,
             tightened_per_ip_rps: 20,
+            spike_engage_ticks: 2,
+            spike_release_ticks: 8,
             tier_overrides: HashMap::new(),
             failure_mode: HashMap::new(),
         }
@@ -153,6 +168,8 @@ impl From<aegis_core::config::DdosConfig> for DdosConfig {
             block_ttl_s: c.block_ttl_s,
             spike_multiplier: c.spike_multiplier,
             tightened_per_ip_rps: c.tightened_per_ip_rps,
+            spike_engage_ticks: c.spike_engage_ticks,
+            spike_release_ticks: c.spike_release_ticks,
             tier_overrides,
             // The fail-mode map at the WafConfig level is keyed
             // by Tier via the v2.3 `fail_mode_by_tier` schema
@@ -165,6 +182,29 @@ impl From<aegis_core::config::DdosConfig> for DdosConfig {
     }
 }
 
+/// Spike-mode per-IP cap. When `spike_active`, return the tighter of the
+/// normal per-window `per_ip_limit` and the spike cap derived from
+/// `tightened_per_ip_rps` (an RPS → multiply by the window seconds to get a
+/// per-window count). `.min` makes it tighten-only: a config where
+/// `tightened × window` exceeds `per_ip_limit` is a safe no-op. When no
+/// spike is active the normal limit is returned unchanged.
+///
+/// See `plans/issues/PLAN-ddos-spike-enforcement-2026-06-20.md` (P1).
+fn spike_tightened_limit(
+    cfg: &DdosConfig,
+    per_ip_limit: u64,
+    per_ip_window_s: u32,
+    spike_active: bool,
+) -> u64 {
+    if !spike_active {
+        return per_ip_limit;
+    }
+    let tightened = cfg
+        .tightened_per_ip_rps
+        .saturating_mul(u64::from(per_ip_window_s));
+    per_ip_limit.min(tightened)
+}
+
 /// DDoS detector.
 pub struct DdosDetector {
     /// Wrapped in `ArcSwap` so config hot-reload (file/etcd
@@ -174,11 +214,24 @@ pub struct DdosDetector {
     /// Hot-path cost: one `ArcSwap::load` per request (~5 ns).
     config: arc_swap::ArcSwap<DdosConfig>,
     /// Rolling RPS estimate (requests in current second).
+    /// **PER-NODE** — `fetch_add` on this node's traffic only; spike
+    /// detection is therefore per-node, NOT fleet-wide (despite the
+    /// historical "cluster" wording elsewhere). True cluster-wide RPS
+    /// (Redis `INCR` a per-tick key + read the fleet sum in `tick_rps`)
+    /// is deferred — see plans/issues/PLAN-ddos-spike-enforcement-2026-06-20.md
+    /// (P3). In practice an LB fans a single source IP to every node, so
+    /// each node observes the spike independently.
     rolling_rps: AtomicU64,
-    /// Average RPS baseline.
+    /// Average RPS baseline (per-node EWMA).
     baseline_rps: AtomicU64,
-    /// Whether cluster spike mode is active.
+    /// Whether spike mode is active (per-node — see `rolling_rps`).
     spike_active: AtomicU64,
+    /// P2 hysteresis — consecutive over-threshold ticks (engage counter)
+    /// and consecutive under-threshold ticks (release counter). Each resets
+    /// the other; `spike_active` flips only when one reaches its configured
+    /// dwell. See `tick_rps`.
+    spike_over_ticks: AtomicU64,
+    spike_under_ticks: AtomicU64,
     /// 2026-05-23 (perf) — in-process per-`(tier,ip)` sliding window.
     /// Replaces the per-request `StateBackend::incr_window` round-trip
     /// (the dominant WAF-overhead tail + a Redis-throughput cap at
@@ -410,6 +463,8 @@ impl DdosDetector {
             rolling_rps: AtomicU64::new(0),
             baseline_rps: AtomicU64::new(100),
             spike_active: AtomicU64::new(0),
+            spike_over_ticks: AtomicU64::new(0),
+            spike_under_ticks: AtomicU64::new(0),
             windows: DashMap::new(),
             local_blocks: DashMap::new(),
             last_sweep: Mutex::new(Instant::now()),
@@ -444,6 +499,12 @@ impl DdosDetector {
         // tight Critical-tier quota doesn't auto-block an IP's Low
         // static-asset traffic — mirrors the old backend key.
         let (per_ip_limit, per_ip_window_s) = cfg.limit_for(tier);
+        // Spike enforcement (plans/issues/PLAN-ddos-spike-enforcement):
+        // when spike-mode is active, clamp the per-IP window count to the
+        // tightened cap (`tightened_per_ip_rps` is an RPS, convert to a
+        // per-window count). `.min` so it only ever tightens — a
+        // misconfigured `tightened×window > per_ip_limit` is a safe no-op.
+        let per_ip_limit = spike_tightened_limit(&cfg, per_ip_limit, per_ip_window_s, self.is_spike_active());
         let window = Duration::from_secs(u64::from(per_ip_window_s));
         let tier_str = tier.map(|t| t.as_str()).unwrap_or("none");
         let key = format!("{tier_str}:{ip}");
@@ -582,6 +643,9 @@ impl DdosDetector {
         // `Critical` tier's tight quota doesn't auto-block its
         // `Low` tier static-asset requests.
         let (per_ip_limit, per_ip_window_s) = cfg.limit_for(tier);
+        // Parity with `check_local` — spike-tighten the per-IP cap so
+        // enforcement is identical regardless of which backend is enabled.
+        let per_ip_limit = spike_tightened_limit(&cfg, per_ip_limit, per_ip_window_s, self.is_spike_active());
         let tier_str = tier.map(|t| t.as_str()).unwrap_or("none");
         let key = format!("ddos:ip:{tier_str}:{ip}");
         let window = Duration::from_secs(u64::from(per_ip_window_s));
@@ -613,7 +677,7 @@ impl DdosDetector {
         })
     }
 
-    /// Update cluster spike detection.  Called periodically (e.g. every second).
+    /// Update per-node spike detection. Called periodically (~1s tick).
     pub fn tick_rps(&self) {
         let cfg = self.config.load();
         // 2026-05-19 — when the gate is hot-disabled, freeze the
@@ -625,6 +689,8 @@ impl DdosDetector {
         if !cfg.enabled {
             self.rolling_rps.store(0, Ordering::Relaxed);
             self.spike_active.store(0, Ordering::Relaxed);
+            self.spike_over_ticks.store(0, Ordering::Relaxed);
+            self.spike_under_ticks.store(0, Ordering::Relaxed);
             return;
         }
         let current = self.rolling_rps.swap(0, Ordering::Relaxed);
@@ -634,15 +700,30 @@ impl DdosDetector {
         let new_baseline = ((baseline as f64) * 0.9 + (current as f64) * 0.1) as u64;
         self.baseline_rps.store(new_baseline.max(1), Ordering::Relaxed);
 
+        // P2 hysteresis/dwell — `spike_active` flips only after a run of
+        // consecutive same-direction ticks, so traffic oscillating around
+        // the threshold doesn't flap the flag (which clamps every IP when
+        // set). Over-ticks and under-ticks reset each other; engage after
+        // `spike_engage_ticks` consecutive over, release after
+        // `spike_release_ticks` consecutive under. Tighten-fast / relax-slow.
         let threshold = (baseline as f64 * cfg.spike_multiplier) as u64;
-        if current > threshold && baseline > 10 {
-            self.spike_active.store(1, Ordering::Relaxed);
+        let over = current > threshold && baseline > 10;
+        if over {
+            self.spike_under_ticks.store(0, Ordering::Relaxed);
+            let run = self.spike_over_ticks.fetch_add(1, Ordering::Relaxed) + 1;
+            if run >= u64::from(cfg.spike_engage_ticks.max(1)) {
+                self.spike_active.store(1, Ordering::Relaxed);
+            }
         } else {
-            self.spike_active.store(0, Ordering::Relaxed);
+            self.spike_over_ticks.store(0, Ordering::Relaxed);
+            let run = self.spike_under_ticks.fetch_add(1, Ordering::Relaxed) + 1;
+            if run >= u64::from(cfg.spike_release_ticks.max(1)) {
+                self.spike_active.store(0, Ordering::Relaxed);
+            }
         }
     }
 
-    /// Whether cluster spike mode is currently active.
+    /// Whether spike mode is currently active (per-node).
     pub fn is_spike_active(&self) -> bool {
         self.spike_active.load(Ordering::Relaxed) != 0
     }
@@ -669,6 +750,8 @@ impl DdosDetector {
     pub fn reset(&self) {
         self.rolling_rps.store(0, Ordering::Relaxed);
         self.spike_active.store(0, Ordering::Relaxed);
+        self.spike_over_ticks.store(0, Ordering::Relaxed);
+        self.spike_under_ticks.store(0, Ordering::Relaxed);
         self.baseline_rps.store(100, Ordering::Relaxed);
         self.windows.clear();
         self.local_blocks.clear();
@@ -802,7 +885,11 @@ mod tests {
         detector.tick_rps();
         assert!(!detector.is_spike_active());
 
-        // Spike traffic — 3x baseline.
+        // Spike traffic — 3x baseline. With P2 dwell (engage=2) it takes
+        // two consecutive over-threshold ticks to engage.
+        detector.baseline_rps.store(100, Ordering::Relaxed);
+        detector.rolling_rps.store(300, Ordering::Relaxed);
+        detector.tick_rps();
         detector.baseline_rps.store(100, Ordering::Relaxed);
         detector.rolling_rps.store(300, Ordering::Relaxed);
         detector.tick_rps();
@@ -816,17 +903,204 @@ mod tests {
             ..Default::default()
         };
         let detector = DdosDetector::new(cfg);
-        detector.baseline_rps.store(100, Ordering::Relaxed);
 
-        // Trigger spike.
-        detector.rolling_rps.store(300, Ordering::Relaxed);
-        detector.tick_rps();
+        // Trigger spike — engage needs 2 consecutive over ticks (P2 dwell).
+        for _ in 0..2 {
+            detector.baseline_rps.store(100, Ordering::Relaxed);
+            detector.rolling_rps.store(300, Ordering::Relaxed);
+            detector.tick_rps();
+        }
         assert!(detector.is_spike_active());
 
-        // Normal traffic.
-        detector.rolling_rps.store(50, Ordering::Relaxed);
-        detector.tick_rps();
+        // Normal traffic — release needs the full cooldown (8 ticks).
+        for _ in 0..8 {
+            detector.baseline_rps.store(100, Ordering::Relaxed);
+            detector.rolling_rps.store(50, Ordering::Relaxed);
+            detector.tick_rps();
+        }
         assert!(!detector.is_spike_active());
+    }
+
+    // ── Spike enforcement (GAP: tightened_per_ip_rps was dead config) ──
+    // plans/issues/PLAN-ddos-spike-enforcement-2026-06-20.md (P1)
+
+    /// When spike-mode is active, the per-IP block threshold must drop to
+    /// `tightened_per_ip_rps × per_ip_window_s` (tighten-only). Today the
+    /// in-process gate ignores `tightened_per_ip_rps` entirely.
+    #[test]
+    fn spike_active_tightens_check_local_block_threshold() {
+        let cfg = DdosConfig {
+            per_ip_limit: 1000,        // normal: very loose
+            per_ip_window_s: 10,
+            tightened_per_ip_rps: 2,   // spike cap = 2 × 10s = 20 / window
+            block_ttl_s: 60,
+            ..Default::default()
+        };
+        let detector = DdosDetector::new(cfg);
+        detector.spike_active.store(1, Ordering::Relaxed); // force spike
+
+        let ip: IpAddr = "10.1.0.1".parse().unwrap();
+        let now = Instant::now();
+        // 20 requests in-window are allowed under the tightened cap …
+        for i in 0..20 {
+            assert_eq!(
+                detector.check_local(ip, None, now),
+                LocalDdosDecision::Allowed,
+                "request {i} should be allowed under the tightened cap (20)"
+            );
+        }
+        // … the 21st trips the tightened threshold (well under per_ip_limit).
+        assert!(
+            matches!(
+                detector.check_local(ip, None, now),
+                LocalDdosDecision::NewlyBlocked { .. }
+            ),
+            "21st request must block under the spike-tightened cap"
+        );
+    }
+
+    /// Companion: with no spike, the same rate is allowed — tightening is
+    /// spike-gated, never applied to steady-state traffic.
+    #[test]
+    fn no_spike_leaves_per_ip_limit_untightened() {
+        let cfg = DdosConfig {
+            per_ip_limit: 1000,
+            per_ip_window_s: 10,
+            tightened_per_ip_rps: 2, // would be 20/window IF spike were active
+            block_ttl_s: 60,
+            ..Default::default()
+        };
+        let detector = DdosDetector::new(cfg);
+        // spike_active stays 0.
+        let ip: IpAddr = "10.1.0.2".parse().unwrap();
+        let now = Instant::now();
+        for i in 0..21 {
+            assert_eq!(
+                detector.check_local(ip, None, now),
+                LocalDdosDecision::Allowed,
+                "request {i} must be allowed when no spike is active (cap is 1000)"
+            );
+        }
+    }
+
+    /// Parity: the Redis/StateBackend path (`check_with_tier`) must tighten
+    /// identically so enforcement is backend-agnostic.
+    #[tokio::test]
+    async fn spike_active_tightens_redis_check_with_tier() {
+        let cfg = DdosConfig {
+            per_ip_limit: 1000,
+            per_ip_window_s: 10,
+            tightened_per_ip_rps: 2, // spike cap = 20 / window
+            block_ttl_s: 60,
+            ..Default::default()
+        };
+        let state = Arc::new(MockState::new());
+        let detector = DdosDetector::new(cfg);
+        detector.spike_active.store(1, Ordering::Relaxed);
+        let ip: IpAddr = "10.1.0.3".parse().unwrap();
+
+        for i in 0..20 {
+            let r = detector.check_with_tier(state.as_ref(), ip, None).await.unwrap();
+            assert!(!r.blocked, "request {i} should be allowed under tightened cap");
+        }
+        let r = detector.check_with_tier(state.as_ref(), ip, None).await.unwrap();
+        assert!(
+            r.blocked,
+            "21st request must block under the spike-tightened cap on the Redis path"
+        );
+    }
+
+    /// Composition: spike tightening must NOT turn a shadow gate into an
+    /// enforcing one. With `observe_only`, a tightened breach is recorded
+    /// (`blocked`) but `enforced()` stays false.
+    #[tokio::test]
+    async fn observe_only_with_spike_still_only_observes() {
+        let cfg = DdosConfig {
+            per_ip_limit: 1000,
+            per_ip_window_s: 10,
+            tightened_per_ip_rps: 2,
+            block_ttl_s: 60,
+            observe_only: true,
+            ..Default::default()
+        };
+        let state: Arc<dyn StateBackend> = Arc::new(MockState::new());
+        let runtime = DdosRuntime::new(cfg, state);
+        runtime.detector.spike_active.store(1, Ordering::Relaxed);
+        let ip: IpAddr = "10.1.0.4".parse().unwrap();
+
+        // Breach the tightened cap.
+        let mut last = None;
+        for _ in 0..25 {
+            last = Some(runtime.check_with_tier(ip, None).await.unwrap());
+        }
+        let outcome = last.unwrap();
+        assert!(outcome.blocked, "tightened breach must be recorded as blocked");
+        assert!(
+            !outcome.should_enforce(),
+            "observe_only must keep should_enforce() false even under spike tightening"
+        );
+    }
+
+    // ── Spike hysteresis / dwell (P2) ────────────────────────────────
+    // plans/issues/PLAN-ddos-spike-enforcement-2026-06-20.md (P2)
+    // Defaults: engage after >=2 consecutive over-threshold ticks; release
+    // after >=8 consecutive under-threshold ticks. Drive the RPS sequence
+    // directly (no wall-clock) — re-store baseline+rolling before each tick
+    // so the threshold stays fixed across the EWMA update.
+
+    /// Push one over-threshold tick (rolling = 3× a fixed baseline of 100,
+    /// multiplier 2 → threshold 200).
+    fn tick_over(d: &DdosDetector) {
+        d.baseline_rps.store(100, Ordering::Relaxed);
+        d.rolling_rps.store(300, Ordering::Relaxed);
+        d.tick_rps();
+    }
+    /// Push one under-threshold tick.
+    fn tick_under(d: &DdosDetector) {
+        d.baseline_rps.store(100, Ordering::Relaxed);
+        d.rolling_rps.store(50, Ordering::Relaxed);
+        d.tick_rps();
+    }
+
+    #[test]
+    fn spike_engages_only_after_dwell_not_on_single_tick() {
+        let detector = DdosDetector::new(DdosConfig { spike_multiplier: 2.0, ..Default::default() });
+        // One over tick must NOT engage (dwell requires >= 2).
+        tick_over(&detector);
+        assert!(!detector.is_spike_active(), "single over tick must not engage spike (dwell=2)");
+        // Second consecutive over tick engages.
+        tick_over(&detector);
+        assert!(detector.is_spike_active(), "two consecutive over ticks must engage spike");
+    }
+
+    #[test]
+    fn spike_holds_through_brief_dip() {
+        let detector = DdosDetector::new(DdosConfig { spike_multiplier: 2.0, ..Default::default() });
+        tick_over(&detector);
+        tick_over(&detector);
+        assert!(detector.is_spike_active(), "precondition: engaged");
+        // A single quiet tick must NOT release (release dwell = 8).
+        tick_under(&detector);
+        assert!(detector.is_spike_active(), "one under tick must not clear an engaged spike");
+        // Traffic returns hot — still engaged.
+        tick_over(&detector);
+        assert!(detector.is_spike_active(), "spike must hold through a brief dip");
+    }
+
+    #[test]
+    fn spike_clears_only_after_release_cooldown() {
+        let detector = DdosDetector::new(DdosConfig { spike_multiplier: 2.0, ..Default::default() });
+        tick_over(&detector);
+        tick_over(&detector);
+        assert!(detector.is_spike_active(), "precondition: engaged");
+        // 7 consecutive under ticks: still engaged (release needs 8).
+        for i in 0..7 {
+            tick_under(&detector);
+            assert!(detector.is_spike_active(), "under tick {i} (<8) must not clear spike yet");
+        }
+        // 8th consecutive under tick clears it.
+        tick_under(&detector);
+        assert!(!detector.is_spike_active(), "spike must clear after the release cooldown (8 ticks)");
     }
 
     // 2026-05-20 — reset_state committee item 6. reset() must
@@ -840,9 +1114,12 @@ mod tests {
             ..Default::default()
         };
         let detector = DdosDetector::new(cfg);
-        detector.baseline_rps.store(900, Ordering::Relaxed);
-        detector.rolling_rps.store(5000, Ordering::Relaxed);
-        detector.tick_rps();
+        // Two over ticks to engage (P2 dwell).
+        for _ in 0..2 {
+            detector.baseline_rps.store(900, Ordering::Relaxed);
+            detector.rolling_rps.store(5000, Ordering::Relaxed);
+            detector.tick_rps();
+        }
         assert!(detector.is_spike_active(), "precondition: spike active");
 
         detector.reset();
@@ -878,8 +1155,10 @@ mod tests {
             block_ttl_s: 60,
             spike_multiplier: 3.0,
             tightened_per_ip_rps: 20,
-        tier_overrides: HashMap::new(),
-        failure_mode: HashMap::new(),
+            spike_engage_ticks: 2,
+            spike_release_ticks: 8,
+            tier_overrides: HashMap::new(),
+            failure_mode: HashMap::new(),
         };
         let state: Arc<dyn aegis_core::state::StateBackend> = Arc::new(MockState::new());
         let runtime = DdosRuntime::new(cfg, state);
@@ -913,8 +1192,10 @@ mod tests {
             block_ttl_s: 60,
             spike_multiplier: 3.0,
             tightened_per_ip_rps: 20,
-        tier_overrides: HashMap::new(),
-        failure_mode: HashMap::new(),
+            spike_engage_ticks: 2,
+            spike_release_ticks: 8,
+            tier_overrides: HashMap::new(),
+            failure_mode: HashMap::new(),
         };
         let state: Arc<dyn aegis_core::state::StateBackend> = Arc::new(MockState::new());
         let runtime = DdosRuntime::new(cfg, state);
@@ -958,6 +1239,8 @@ mod tests {
             block_ttl_s: 9,
             spike_multiplier: 4.0,
             tightened_per_ip_rps: 11,
+            spike_engage_ticks: 3,
+            spike_release_ticks: 9,
             tier_overrides: std::collections::HashMap::new(),
         };
         let sec_cfg: DdosConfig = core_cfg.clone().into();
@@ -968,6 +1251,8 @@ mod tests {
         assert_eq!(sec_cfg.block_ttl_s, 9);
         assert!((sec_cfg.spike_multiplier - 4.0).abs() < 1e-9);
         assert_eq!(sec_cfg.tightened_per_ip_rps, 11);
+        assert_eq!(sec_cfg.spike_engage_ticks, 3);
+        assert_eq!(sec_cfg.spike_release_ticks, 9);
     }
 
     // ---- 2026-05-18 QC Sprint 1.2 (F-CRITICAL-005) — per-tier ----
@@ -1113,6 +1398,8 @@ mod tests {
             block_ttl_s: 300,
             spike_multiplier: 3.0,
             tightened_per_ip_rps: 20,
+            spike_engage_ticks: 2,
+            spike_release_ticks: 8,
             tier_overrides: std::collections::HashMap::new(),
         };
         core_cfg.tier_overrides.insert(

@@ -705,6 +705,29 @@ pub struct ProxyConfig {
     /// every node agrees on which proxies to trust.
     #[serde(default)]
     pub trusted_proxies: Vec<String>,
+    /// 2026-06-20 — global request-body read deadline (anti-RUDY). The
+    /// data plane wraps the client-body buffering in this timeout; a
+    /// slow-trickle body (R-U-Dead-Yet) that does not complete within
+    /// the window returns `408` with `X-WAF-Action: timeout` instead of
+    /// pinning a worker task indefinitely. Reuses the semantics of the
+    /// long-declared `QuotaConfig.read_timeout` (per-route, never wired)
+    /// but applied proxy-global like `max_body_bytes` so the hot path
+    /// reads it off the context it already holds. Default 30s. See
+    /// `plans/issues/PLAN-conn-layer-dos-gaps-2026-06-20.md` (GAP 1).
+    #[serde(default = "default_read_timeout", with = "humantime_serde")]
+    pub read_timeout: Duration,
+    /// 2026-06-20 — cap on concurrent data-plane connections (anti
+    /// connection-exhaustion). The accept loop acquires one permit per
+    /// accepted connection BEFORE the TLS handshake / task spawn; when
+    /// the cap is reached, excess connections are closed immediately at
+    /// the TCP layer (cheap reject — no crypto, no task) rather than
+    /// burning fd/CPU/memory. Independent of the in-flight drain gauge:
+    /// a rejected connection is never admitted, so the SIGUSR2 handover
+    /// is unaffected. Default 20_000 — size to the host `ulimit -n`
+    /// headroom. See `plans/issues/PLAN-conn-layer-dos-gaps-2026-06-20.md`
+    /// (GAP 2).
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
 }
 
 impl Default for ProxyConfig {
@@ -712,12 +735,18 @@ impl Default for ProxyConfig {
         Self {
             max_body_bytes: default_proxy_max_body_bytes(),
             trusted_proxies: Vec::new(),
+            read_timeout: default_read_timeout(),
+            max_connections: default_max_connections(),
         }
     }
 }
 
 fn default_proxy_max_body_bytes() -> u64 {
     10 * 1024 * 1024 // 10 MiB — matches QuotaConfig::default()
+}
+
+fn default_max_connections() -> usize {
+    20_000
 }
 
 impl ProxyConfig {
@@ -1187,6 +1216,17 @@ impl WafConfig {
         // Zero Trust: validate per-pool upstream (WAF-as-client) mTLS
         // against the shared identity (cross-references upstreams + zero_trust).
         validate_upstream_mtls(&self.upstreams, self.zero_trust.as_ref())?;
+        // GAP 2: a zero connection cap would reject every connection at
+        // accept — a deny-all footgun. Reject it at boot rather than going
+        // live with a black-hole listener.
+        if self.proxy.max_connections == 0 {
+            return Err(crate::error::WafError::Config(
+                "proxy.max_connections must be >= 1 (0 would reject every \
+                 connection at accept — a deny-all listener). Omit the field \
+                 for the default, or set a positive cap."
+                    .to_string(),
+            ));
+        }
         // C-5: every `proxy.trusted_proxies` entry must parse as a CIDR.
         // Parse-don't-validate at the boundary so the data-plane hot path
         // (`ProxyConfig::parsed_trusted_proxies`) can assume well-formed
@@ -4175,9 +4215,16 @@ pub struct DetectorToggle {
 /// burning a single IP at >100 req/s sustained will trip in <10s
 /// and earn the auto-block.
 ///
-/// `tightened_per_ip_rps` is the per-IP cap that kicks in cluster-
-/// wide once spike-mode is active (current_rps > spike_multiplier
-/// × baseline_rps).
+/// `tightened_per_ip_rps` is the per-IP cap that **is enforced** once
+/// spike-mode is active (per-node `current_rps > spike_multiplier ×
+/// baseline_rps`, held across the `spike_engage_ticks`/`spike_release_ticks`
+/// dwell). It is an **RPS**, converted to a per-window count
+/// (`tightened_per_ip_rps × per_ip_window_s`) and clamped against
+/// `per_ip_limit` (tighten-only). Note the unit differs from
+/// `per_ip_limit` (a count over the window). Enforced in both the
+/// in-process and Redis gates — see
+/// `plans/issues/PLAN-ddos-spike-enforcement-2026-06-20.md` (P1).
+/// Spike detection is **per-node**, not fleet-wide (P3).
 ///
 /// **Contract compliance** (`Hackathon_Doc/EN_waf_interop_contract_v2.3.md` §3.1):
 /// volumetric abuse from a single source maps to acceptable
@@ -4217,6 +4264,19 @@ pub struct DdosConfig {
     pub spike_multiplier: f64,
     #[serde(default = "default_ddos_tightened_rps")]
     pub tightened_per_ip_rps: u64,
+    /// 2026-06-20 (P2) — spike hysteresis/dwell. `spike_engage_ticks` is
+    /// the number of consecutive over-threshold `tick_rps` ticks (1 tick ≈
+    /// 1s) required before `spike_active` engages; `spike_release_ticks` is
+    /// the consecutive under-threshold ticks required before it clears.
+    /// Asymmetric defaults (engage fast at 2, release slow at 8) stop the
+    /// flag flapping when traffic oscillates around the threshold — which
+    /// matters because the flag is global but the spike-tighten is per-IP,
+    /// so a 1-tick blip must not throttle every client. See
+    /// `plans/issues/PLAN-ddos-spike-enforcement-2026-06-20.md` (P2).
+    #[serde(default = "default_ddos_spike_engage_ticks")]
+    pub spike_engage_ticks: u32,
+    #[serde(default = "default_ddos_spike_release_ticks")]
+    pub spike_release_ticks: u32,
     /// 2026-05-17 F-CRITICAL-008 (core audit): per-tier overrides
     /// for the global DDoS knobs. Any field not specified in the
     /// override falls back to the top-level value. Empty (default)
@@ -4262,6 +4322,8 @@ fn default_ddos_per_ip_window_s() -> u32 { 10 }
 fn default_ddos_block_ttl_s() -> u64 { 300 }
 fn default_ddos_spike_multiplier() -> f64 { 3.0 }
 fn default_ddos_tightened_rps() -> u64 { 20 }
+fn default_ddos_spike_engage_ticks() -> u32 { 2 }
+fn default_ddos_spike_release_ticks() -> u32 { 8 }
 
 impl Default for DdosConfig {
     fn default() -> Self {
@@ -4273,6 +4335,8 @@ impl Default for DdosConfig {
             block_ttl_s: default_ddos_block_ttl_s(),
             spike_multiplier: default_ddos_spike_multiplier(),
             tightened_per_ip_rps: default_ddos_tightened_rps(),
+            spike_engage_ticks: default_ddos_spike_engage_ticks(),
+            spike_release_ticks: default_ddos_spike_release_ticks(),
             tier_overrides: HashMap::new(),
         }
     }
@@ -5853,6 +5917,37 @@ state:
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("listeners.data must contain at least one entry"));
+    }
+
+    #[test]
+    fn validate_rejects_zero_max_connections() {
+        // GAP 2 — a 0 connection cap is a deny-all footgun; boot must reject.
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+proxy:
+  max_connections: 0
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+"#;
+        let result = super::load_config_str(yaml);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("proxy.max_connections must be >= 1"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

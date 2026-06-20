@@ -1521,6 +1521,33 @@ pub(crate) async fn accept_loop(
             }
         };
 
+        // GAP 2 — accept-time connection cap (anti connection-exhaustion).
+        // Acquire one permit BEFORE any per-connection work (TLS handshake,
+        // task spawn, and critically the in-flight `admit()`). `try_acquire`
+        // (not `acquire().await`) so a full cap rejects instantly instead of
+        // damming new connections into the OS backlog. On exhaustion we drop
+        // the socket — closing at TCP, since pre-TLS we can't send a polite
+        // HTTP 503 cheaply — and `continue` WITHOUT admitting, so a rejected
+        // connection never inflates the drain gauge (reject-before-admit;
+        // keeps the SIGUSR2 handover correct). The permit moves into the
+        // task below and releases on its end. Per-request overload (after
+        // TLS) remains the load-shedder's job (503). See
+        // plans/issues/PLAN-conn-layer-dos-gaps-2026-06-20.md (§2.4).
+        let conn_permit = match upstream_ctx.conn_limit.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                // debug, not warn: under a connection-flood this fires per
+                // rejected socket — a warn here would be its own log-flood
+                // self-DoS. Off by default in prod; on for dev triage.
+                tracing::debug!(
+                    peer = %peer,
+                    "connection cap reached — rejecting connection at TCP"
+                );
+                drop(stream);
+                continue;
+            }
+        };
+
         let detectors = detectors.clone();
         let mask = mask.clone();
         let risk = risk.clone();
@@ -1547,6 +1574,11 @@ pub(crate) async fn accept_loop(
         // phase to know when in-flight=0.
         let conn_inflight = upstream_ctx.inflight.clone();
         tokio::spawn(async move {
+            // GAP 2 — hold the connection-cap permit for the whole task
+            // lifetime; it releases (returns the slot) when the task ends,
+            // alongside the in-flight guard. Order is irrelevant since both
+            // are RAII and drop together on every exit path.
+            let _conn_permit = conn_permit;
             let _admit = conn_inflight.admit();
             // PROXY-T3 — the real LB transport hop, captured before a
             // trusted header rebinds `peer` to the client. `None` unless
