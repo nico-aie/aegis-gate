@@ -304,7 +304,7 @@ Validation failures (e.g. compliance clamp) leave the chain
 untouched so the invariant **"every chain entry is a state
 change that actually happened"** holds.
 
-[p1]: ../../Implement-Progress.md
+[p1]: ../gitops-change-management.md
 
 #### `GET /api/detectors` &nbsp;·&nbsp; `PUT /api/detectors`
 

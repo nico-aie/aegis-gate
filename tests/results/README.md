@@ -37,7 +37,6 @@ mkdir tests/results/run-NN-YYYY-MM-DD-<theme>
 # … run the suite, redirecting logs into it …
 # Copy the README template from one of the current baselines.
 # Update this index when the new run becomes a reference.
-# Reference the run from Implement-Progress.md's Verification block.
 ```
 
 When a new run supersedes a current baseline (e.g. a fresh

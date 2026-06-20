@@ -13,7 +13,8 @@ distroless image, hot-reloadable config, audit-chained mutations,
 SOC-first dashboard.
 
 > **For AI assistants** — start with [`AGENTS.md`](./AGENTS.md), then
-> `Implement-Progress.md` and `plans/plan.md` before writing any code.
+> [`plans/plan.md`](./plans/plan.md) before writing any code. For current
+> state, read recent git history + [`plans/issues/`](./plans/issues/README.md).
 
 ---
 
@@ -358,8 +359,8 @@ waf help
 | **Linux staging deploy** (single host, Docker infra, benchmark-ready, AI-assistant-driven) | [`deploy/STAGING-BENCHMARK.md`](deploy/STAGING-BENCHMARK.md) |
 | **Architecture** | [`Architecture.md`](Architecture.md) |
 | **Requirements** | [`Requirement.md`](Requirement.md) |
-| **Implementation log** | [`Implement-Progress.md`](Implement-Progress.md) |
 | **Plans (per track)** | [`plans/README.md`](plans/README.md) |
+| **Open issues / backlog** | [`plans/issues/README.md`](plans/issues/README.md) |
 
 ---
 
@@ -368,7 +369,7 @@ waf help
 ```text
 aegis-gate/
 ├── README.md / QUICKSTART.md / Architecture.md / Requirement.md
-├── Implement-Progress.md          # Living implementation snapshot
+├── AGENTS.md                      # AI-assistant / contributor orientation
 ├── Makefile
 ├── config/                        # YAML profiles
 │   ├── dev.yaml

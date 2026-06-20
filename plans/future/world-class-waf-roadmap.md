@@ -10,8 +10,8 @@
 > Quadrant + the leaders' 2025 product announcements (sources at the
 > bottom), and (2) a **code-verified** audit of what Aegis actually ships
 > on `develop` as of this date — not what the docs claim. Per the standing
-> caution (`Implement-Progress`, memory), repo docs drift both ways, so
-> every "have / don't have" below was grep-checked against `crates/`.
+> caution that repo docs drift both ways, so every "have / don't have"
+> below was grep-checked against `crates/`.
 
 ---
 
@@ -190,7 +190,14 @@ tiers:
 - [`audit-log-disk-growth.md`](../archive/audit-log-disk-growth.md) — boot disk
   guard + between-run rotation (the 6 GB/min soak finding).
 - [`audit-cold-tier-export.md`](../archive/audit-cold-tier-export.md) — persist
-  beyond the 200-event ring (v1 JSONL ~30 LoC).
+  beyond the 200-event ring (v1 JSONL ~30 LoC). **Superseded by the analytics
+  track below** for anything past the minimal JSONL dump.
+- [`security-analytics-and-reporting.md`](./security-analytics-and-reporting.md) —
+  **enterprise analytics + reporting**: turn the ephemeral 15-min in-memory
+  attack ring into a durable, historical, queryable warm store (ClickHouse) +
+  Analytics Query API + time-range dashboards + scheduled/compliance reports +
+  cold Parquet tier. Cloudflare / AWS-WAF / GCP-Cloud-Armor parity. Start at
+  P0+P1 (schema + warm writer + query API). **M → L**, phased.
 - [`smart-caching.md`](./smart-caching.md) — **per-upstream**, path-scoped
   opt-in response cache; serves repeats without an upstream round-trip, never
   caches CRITICAL tier, with Cache-Deception-Armor + poisoning-safe keys

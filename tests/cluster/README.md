@@ -104,7 +104,7 @@ docker rm -f aegis-cluster-redis 2>/dev/null || true
   in
   [`HA-TEST-METHODOLOGY.md`](./HA-TEST-METHODOLOGY.md). The
   recommended next step is option 2 (HAProxy in front) —
-  see `Implement-Progress.md`'s carry-over list.
+  see `plans/issues/` for the open backlog.
 - These scripts run **two nodes on one host**. That's enough to
   prove the state-backend + lease + readiness contracts, but it
   doesn't exercise real network partitions (use `tc qdisc` or a
@@ -134,5 +134,4 @@ docker rm -f aegis-cluster-redis 2>/dev/null || true
 
 - [`docs/operations/ha-clustering.md`](../../docs/operations/ha-clustering.md)
 - [`plans/phase-b/README.md` § B1](../../plans/archive/phase-b-2026/README.md#b1--ha--multi-node-unblocks-everything-else)
-- [`Implement-Progress.md`](../../Implement-Progress.md) — current
-  Phase B status board.
+- [`plans/README.md`](../../plans/README.md) — track status board.

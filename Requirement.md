@@ -538,8 +538,8 @@ for the full spec.
   and session revocation produces an `AuditClass::Admin` event on the
   admin hash chain (separate from detection events).
 
-> **Deferred to future work** (see
-> [`docs/future/rbac-sso.md`](docs/future/rbac-sso.md)): OIDC/SSO,
+> **Deferred to future work** (see the
+> [world-class roadmap](plans/future/world-class-waf-roadmap.md)): OIDC/SSO,
 > SAML, LDAP, role-based access control, per-user accounts, API
 > tokens, 4-eyes change approval, SCIM, WebAuthn.
 
@@ -575,7 +575,8 @@ stream, one set of metrics, one compliance profile, one rule
 namespace. All references to `tenant_id` in the request context
 are reserved for future use and always `None` in v1.
 
-See the deferred-features index [`docs/future/`](docs/future/README.md)
+See the deferred-features index in the
+[world-class roadmap](plans/future/world-class-waf-roadmap.md)
 for the future re-introduction plan.
 
 ---

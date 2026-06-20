@@ -8,7 +8,12 @@ zero-trust/mTLS, and multi-node-consistency plans all shipped/dropped and
 moved to `archive/`; both `issues/` entries resolved → `issues/archived/`.
 `future/` now holds the world-class roadmap and `smart-caching.md` (Phase 4
 open). 2026-06-14: `sse-streaming-support.md` shipped and the
-`ws-global-mode-and-cluster-config-sync` PLAN shipped — both → `archive/`.)
+`ws-global-mode-and-cluster-config-sync` PLAN shipped — both → `archive/`.
+**2026-06-19:** the hand-maintained `Implement-Progress.md` + `docs/progress/`
+were removed (stale, contradicted git) — **status now = git history +
+[`issues/`](./issues/README.md)**; 7 resolved issues archived → `issues/archived/`
+(per-route monitor QC, btc-miss recon, FP-precision round 2, css/jwt gap reports,
+the superseded 06-14 sec-regression triage, the host security audit).)
 
 ## Layout
 
@@ -31,8 +36,10 @@ plans/
    conventions. Read this when picking up any task.
 2. **[`implementation-matrix.md`](./implementation-matrix.md)** — what's
    actually shipped vs specified, per doc.
-3. **[`../Implement-Progress.md`](../Implement-Progress.md)** — the
-   living progress snapshot (current task, recent history, next task).
+3. **[`issues/README.md`](./issues/README.md)** + recent **git history** —
+   the current state of play (open backlog, what shipped, by when). There
+   is no hand-maintained progress snapshot; git + the issues board are the
+   source of truth.
 
 ## `future/`
 
@@ -52,6 +59,12 @@ plans/
   deferred follow-up (3.2a) to the shipped *honest upstream badge* fix: derive
   member health from real traffic and feed the LB. Must ship with a fail-open
   LB change first (`LbStrategy::pick` currently fails closed). Not started.
+- **[`security-analytics-and-reporting.md`](./future/security-analytics-and-reporting.md)** —
+  enterprise **analytics + reporting**: durable, historical, queryable security-event
+  store (today the dashboard analytics are a 15-min in-memory ring, lost on restart) +
+  Analytics Query API + time-range dashboards + scheduled/compliance reports + cold
+  Parquet tier. Cloudflare / AWS-WAF / GCP-Cloud-Armor parity. Designed-only; start at
+  P0+P1. Not started.
 - **SSE / streaming support** — ✅ **SHIPPED 2026-06-14**, archived to
   [`archive/sse-streaming-support.md`](./archive/sse-streaming-support.md).
   Streams `text/event-stream` through the data plane instead of buffering

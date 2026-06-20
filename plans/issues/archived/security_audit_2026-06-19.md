@@ -5,7 +5,7 @@
 generalisable items that apply to any aegis-gate single-node deployment.
 **State:** Findings only. No mitigations applied to items below except:
 **Redis re-bound to `127.0.0.1:6379`** (fix already shipped — see
-[deploy/docker-compose.dev.yml](../../deploy/docker-compose.dev.yml)).
+[deploy/docker-compose.dev.yml](../../../deploy/docker-compose.dev.yml)).
 
 ## The incident, in brief
 
@@ -392,7 +392,7 @@ smoke + conformance helpers, move on.
 |---|---|
 | **SA team** | Tighten AWS Security Group `ht-hackathon-13-sg`: inbound `:22000` only from your team's IP range; inbound `:80`/`:443`/`:9443` only from the committee's known CIDRs (ask committee for theirs). |
 | **Committee** | Their source CIDRs for the `:9443` admin allowlist + `:80`/`:443` data plane. |
-| **Dev team** | The hot-flippable gate-toggle apply-on-rehydrate bug ([plans/issues/runtime_gate_toggles_not_durable.md](runtime_gate_toggles_not_durable.md)) — still half-fixed. |
+| **Dev team** | The hot-flippable gate-toggle apply-on-rehydrate bug ([plans/issues/runtime_gate_toggles_not_durable.md](../runtime_gate_toggles_not_durable.md)) — still half-fixed. |
 
 ---
 

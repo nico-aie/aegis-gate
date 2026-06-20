@@ -2,8 +2,8 @@
 
 > **Status:** Implemented — `aegis-security/src/detectors/jwt_inspection.rs`.
 > Phases A1–A3 (2026-06-12), in response to
-> [`../../../plans/issues/JWT_ATTACK_REPORT.md`](../../../plans/issues/JWT_ATTACK_REPORT.md).
-> Plan: [`../../../plans/future/jwt-and-smuggling-detection.md`](../../../plans/future/jwt-and-smuggling-detection.md).
+> [`../../../plans/issues/archived/JWT_ATTACK_REPORT.md`](../../../plans/issues/archived/JWT_ATTACK_REPORT.md).
+> Plan: [`../../../plans/archive/jwt-and-smuggling-detection.md`](../../../plans/archive/jwt-and-smuggling-detection.md).
 
 ## Purpose
 

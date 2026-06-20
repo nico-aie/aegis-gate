@@ -239,7 +239,7 @@ Net status must be one of: `Working`, `Dead — not called`, `Bypass`,
   user hasn't specified one — always ask first.
 - ❌ **Overwriting an existing run directory** — always increment the run number.
 - ❌ **Filing "CRITICAL" for documented limitations** listed in
-  `Implement-Progress.md` or similar carry-over docs.
+  `plans/issues/` or similar known-issue docs.
 - ❌ **Omitting the cross-crate wiring table** — it is the most
   actionable part of the report.
 - ❌ **Writing prose findings without file:line references** — every

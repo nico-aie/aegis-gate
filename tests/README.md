@@ -485,4 +485,4 @@ The features under test are documented across:
 - [`../docs/data-plane/adaptive-load-shedding.md`](../docs/data-plane/adaptive-load-shedding.md) — P7 LoadMode
 - [`../docs/data-plane/graceful-degradation.md`](../docs/data-plane/graceful-degradation.md) — P7/P8 degraded logging
 - [`../docs/observability/siem-log-forwarding.md`](../docs/observability/siem-log-forwarding.md) — P8 cold-tier surface
-- [`../Implement-Progress.md`](../Implement-Progress.md) — phase-by-phase changelog
+- [`../plans/issues/README.md`](../plans/issues/README.md) — open backlog + known issues

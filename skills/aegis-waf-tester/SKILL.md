@@ -141,7 +141,7 @@ The Cowork-friendly run sequence:
 
 Sandbox bash is still useful for: reading repo files, grepping
 the dashboard `src/` for typo'd hook aliases, writing finding
-markdown, looking at `Implement-Progress.md`'s carry-over list.
+markdown, scanning `plans/issues/` for known limitations.
 Just not for hitting the WAF.
 
 ---
@@ -639,8 +639,8 @@ scores can sit below it as separate blocks.
 - ❌ **Fabricating browser interactions** when no browser tool
   is loaded. Note the gap, fall back to curl, keep going.
 - ❌ **Filing CRITICAL on documented limitations** (e.g. AI
-  detector empty when no `.onnx` is configured). Read
-  `Implement-Progress.md`'s carry-over list when the repo is
+  detector empty when no `.onnx` is configured). Scan
+  `plans/issues/` for known limitations when the repo is
   available; otherwise default to LOW / INFO for anything
   ambiguous.
 - ❌ **Skipping a page because "it looks fine" from a screenshot.**
@@ -666,8 +666,8 @@ scores can sit below it as separate blocks.
 
 - `tests/manual/` — hand-runnable validation scripts (mirror of
   Phase 4 above).
-- `Implement-Progress.md` — current state of every track,
-  including documented limitations to NOT file findings against.
+- `plans/issues/README.md` — open backlog + documented limitations
+  to NOT file findings against.
 - `tests/results/run-perf-5krps-prod-balanced-2026-05-02-v3/` —
   perf baseline for comparison.
 - `docs/operator/upstream-cookbook.md` — what each `connection.scheme`

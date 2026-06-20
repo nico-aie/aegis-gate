@@ -578,9 +578,37 @@ pub(crate) async fn handle_data_request_inner(
             aegis_security::pipeline::classify_tier_from_path(req.uri().path());
         match ddos.check_with_tier(peer_ip, Some(early_tier)).await {
             Ok(outcome) if outcome.blocked => {
-                // Always emit the audit event so operators can
-                // observe-mode bake the signal before Phase 2.
-                if allow_block_emit {
+                // 2026-06-20 — single audit event per DDoS block.
+                //
+                // Resolve the effective `ddos` mode up front so we can
+                // tell whether THIS request will hard-enforce. A hard
+                // enforce emits its block event through `blocked_response`
+                // below (action "block", route-resolved tier, rule "ddos").
+                // Emitting a separate `ddos_blocked` event here as well
+                // double-counted every enforced block in the Live Feed —
+                // and with a mismatched tier (this event hard-coded
+                // `tier: None` → rendered Low, while the `block` twin
+                // showed the real route tier). So we now emit the
+                // standalone detection event ONLY on the paths that have
+                // no `block` twin: observe-only and log-only.
+                //
+                // 2026-05-22 — `set_profile mode=log_only` on the `ddos`
+                // feature (and the config-level `ddos.observe_only` flag)
+                // both forward upstream while reporting the intended block;
+                // the response stamper emits X-WAF-Action: block +
+                // X-WAF-Mode: log_only in that case.
+                let ddos_mode = effective_mode(
+                    interop_modes
+                        .map(|m| {
+                            aegis_control::interop::rule_map::mode_for_rule(m, Some("ddos"))
+                        })
+                        .unwrap_or(aegis_control::interop::headers::Mode::Enforce),
+                    route_log_only,
+                );
+                let hard_enforce = outcome.should_enforce()
+                    && ddos_mode != aegis_control::interop::headers::Mode::LogOnly;
+
+                if allow_block_emit && !hard_enforce {
                     let action = if outcome.observe_only {
                         "ddos_observed"
                     } else {
@@ -628,28 +656,21 @@ pub(crate) async fn handle_data_request_inner(
                     bus.emit(ev);
                 }
                 if outcome.should_enforce() {
-                    // 2026-05-22 — honor `set_profile mode=log_only` on the
-                    // `ddos` feature (in addition to the config-level
-                    // `ddos.observe_only` flag). In log_only, report the
-                    // intended block but forward upstream — the audit event
-                    // above already recorded the intent; the response stamper
-                    // emits X-WAF-Action: block + X-WAF-Mode: log_only.
-                    let ddos_mode = effective_mode(
-                        interop_modes
-                            .map(|m| {
-                                aegis_control::interop::rule_map::mode_for_rule(m, Some("ddos"))
-                            })
-                            .unwrap_or(aegis_control::interop::headers::Mode::Enforce),
-                        route_log_only,
-                    );
                     if ddos_mode == aegis_control::interop::headers::Mode::LogOnly {
                         log_only_intent = Some(DecisionTag::block("ddos"));
                         // fall through to detectors + upstream
                     } else {
-                        // Enforce — 503. The response shape mirrors the
-                        // strike-block path above so operators get a
-                        // consistent block envelope regardless of which
-                        // gate tripped.
+                        // Enforce — 503. `blocked_response` emits the single
+                        // `block` audit event for this request (the standalone
+                        // `ddos_blocked` emit above was suppressed via
+                        // `hard_enforce`). Carry the DDoS spike signal into
+                        // its echo fields so the detail drawer keeps the same
+                        // context the old dual-event path surfaced.
+                        let mut echo = serde_json::Map::new();
+                        echo.insert(
+                            "ddos_spike_active".to_string(),
+                            serde_json::Value::Bool(outcome.spike_active),
+                        );
                         let resp = blocked_response(
                             peer,
                             outcome.reason.as_deref().unwrap_or("ddos: blocked"),
@@ -659,7 +680,7 @@ pub(crate) async fn handle_data_request_inner(
                             req.uri(),
                             req.method(),
                             bus,
-                            None,
+                            Some(echo),
                         );
                         return (resp, DecisionTag::block("ddos"));
                     }
@@ -5771,6 +5792,161 @@ state: {{ backend: in_memory }}
         modes.set_feature("rules_engine", Mode::LogOnly);
         let feat = get_status(waf_addr, atk).await;
         assert_eq!(feat, 200, "rules_engine=log_only must forward");
+    }
+
+    // 2026-06-20 — an enforced DDoS block must emit exactly ONE audit
+    // event. The old path emitted two: a standalone `ddos_blocked`
+    // (hard-coded `tier: None` → rendered Low) AND a `block` from
+    // `blocked_response` (real route tier). The Live Feed showed both,
+    // double-counting every block with a mismatched tier. Regression
+    // guard: assert no `ddos_blocked` twin accompanies the `block`.
+    #[tokio::test]
+    async fn ddos_enforced_block_emits_single_event_not_dual() {
+        let backend = spawn_upstream().await;
+        // `per_ip_limit: 1` → the first request seeds the per-IP window;
+        // every subsequent request from the same peer IP trips the burst
+        // gate and hard-enforces (observe_only defaults false).
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: pool }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend}" }}] }}
+state: {{ backend: in_memory }}
+ddos: {{ per_ip_limit: 1, per_ip_window_s: 10 }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
+
+        // Install the DDoS runtime exactly like run.rs — `ProxyContext::build`
+        // does not wire it. The in-process sliding window drives the per-IP
+        // decision; the state backend only takes the fire-and-forget
+        // auto-block propagation, so an in-memory backend is sufficient.
+        let ddos_state: Arc<dyn aegis_core::state::StateBackend> =
+            Arc::new(crate::state::in_memory::InMemoryBackend::new());
+        let ddos_rt = Arc::new(aegis_security::ddos::DdosRuntime::new(
+            crate::config_source::reload::derive_ddos_runtime_cfg(&cfg),
+            ddos_state,
+        ));
+        ctx.ddos.set(ddos_rt).ok();
+
+        let modes = Arc::new(ModeStore::new(Mode::Enforce));
+        ctx.interop_modes.set(modes.clone()).ok();
+
+        let metrics = aegis_control::metrics::MetricsRegistry::init();
+        let args = Arc::new(Args {
+            detectors: aegis_security::detectors::default_detectors(),
+            mask: aegis_security::detectors::SharedDetectorMask::from_config(&cfg.detectors),
+            risk: aegis_security::risk::RiskTracker::new(&cfg.risk),
+            ip_rl: aegis_security::rate_limit::IpRateLimiter::new(
+                crate::config_source::reload::derive_ip_rate_cfg(&cfg),
+            ),
+            load_gauge: aegis_core::LoadGauge::new(cfg.load_mode.clone()),
+            verbosity: aegis_core::SharedVerbosity::from_config(&cfg.logging),
+            rsh: aegis_control::metrics::request_duration::RequestStageHistogram::register(&metrics)
+                .unwrap(),
+            rlh: aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&metrics)
+                .unwrap(),
+            ra: aegis_control::metrics::route_activity::RouteActivityWindow::new(),
+            dlh: aegis_control::metrics::detector_latency::DetectorLatencyHistogram::register(
+                &metrics,
+            )
+            .unwrap(),
+            dhm: aegis_control::metrics::detector_hits::DetectorHitMetrics::register(&metrics)
+                .unwrap(),
+            bus: AuditBus::new(256),
+            ctx: ctx.clone(),
+        });
+
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let args_l = args.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, peer)) = waf.accept().await {
+                let args_c = args_l.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                        let a = args_c.clone();
+                        async move {
+                            let (resp, _tag) = super::handle_data_request(
+                                req,
+                                peer,
+                                None,
+                                &a.detectors,
+                                &a.mask,
+                                &a.risk,
+                                &a.ip_rl,
+                                &a.load_gauge,
+                                &a.verbosity,
+                                &a.rsh,
+                                &a.rlh,
+                                &a.ra,
+                                &a.dlh,
+                                &a.bus,
+                                &a.ctx,
+                                &a.dhm,
+                                &ClientIdentity::Anonymous,
+                                None,
+                            )
+                            .await;
+                            Ok::<_, Infallible>(resp)
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Subscribe BEFORE generating traffic so we capture every event.
+        let mut rx = args.bus.subscribe();
+
+        // First request seeds the window (allowed); the rest enforce.
+        let mut blocked_seen = false;
+        for _ in 0..4 {
+            let status = get_status(waf_addr, "/").await;
+            if status == 403 {
+                blocked_seen = true;
+            }
+        }
+        assert!(blocked_seen, "per_ip_limit=1 must produce at least one 403");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let mut events = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            events.push(ev);
+        }
+        let shape: Vec<(String, Option<String>)> = events
+            .iter()
+            .map(|e| (e.action.as_str().to_string(), e.rule_id.clone()))
+            .collect();
+
+        let enforced_blocks = events
+            .iter()
+            .filter(|e| e.action.as_str() == "block" && e.rule_id.as_deref() == Some("ddos"))
+            .count();
+        let standalone_ddos = events
+            .iter()
+            .filter(|e| e.action.as_str() == "ddos_blocked")
+            .count();
+
+        assert!(
+            enforced_blocks >= 1,
+            "expected at least one enforced ddos `block` event; saw {shape:?}",
+        );
+        assert_eq!(
+            standalone_ddos, 0,
+            "enforced DDoS block must emit a single `block` event, not a duplicate \
+             `ddos_blocked` twin; saw {shape:?}",
+        );
     }
 
     // 2026-05-24 — a block routed through `blocked_response` (cumulative

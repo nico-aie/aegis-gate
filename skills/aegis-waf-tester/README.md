@@ -129,8 +129,8 @@ skills/aegis-waf-tester/
 ## Customising
 
 Edit `checklists/*.md` to add product-specific checks (the
-defaults cover everything documented in `Implement-Progress.md`
-as of 2026-05-03). Edit `scripts/drive-traffic.sh` to change
+defaults cover the shipped detector/feature set — cross-check
+against recent git history). Edit `scripts/drive-traffic.sh` to change
 the synthetic traffic mix. The Skill picks up changes
 automatically — just re-run.
 
@@ -169,6 +169,6 @@ that should be QA'd:
    `scripts/` and reference it from the checklist.
 3. Bump the date in `SKILL.md` if you're adding a phase.
 
-The `Implement-Progress.md` "Last Completed" section is the
-authoritative source for what's new in the product — when it
-moves, the Skill should move with it.
+Recent **git history** (merged PRs) is the authoritative source for
+what's new in the product — when the product moves, the Skill should
+move with it.
