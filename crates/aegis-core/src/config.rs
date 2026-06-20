@@ -705,6 +705,17 @@ pub struct ProxyConfig {
     /// every node agrees on which proxies to trust.
     #[serde(default)]
     pub trusted_proxies: Vec<String>,
+    /// 2026-06-20 — global request-body read deadline (anti-RUDY). The
+    /// data plane wraps the client-body buffering in this timeout; a
+    /// slow-trickle body (R-U-Dead-Yet) that does not complete within
+    /// the window returns `408` with `X-WAF-Action: timeout` instead of
+    /// pinning a worker task indefinitely. Reuses the semantics of the
+    /// long-declared `QuotaConfig.read_timeout` (per-route, never wired)
+    /// but applied proxy-global like `max_body_bytes` so the hot path
+    /// reads it off the context it already holds. Default 30s. See
+    /// `plans/issues/PLAN-conn-layer-dos-gaps-2026-06-20.md` (GAP 1).
+    #[serde(default = "default_read_timeout", with = "humantime_serde")]
+    pub read_timeout: Duration,
 }
 
 impl Default for ProxyConfig {
@@ -712,6 +723,7 @@ impl Default for ProxyConfig {
         Self {
             max_body_bytes: default_proxy_max_body_bytes(),
             trusted_proxies: Vec::new(),
+            read_timeout: default_read_timeout(),
         }
     }
 }

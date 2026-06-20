@@ -136,6 +136,14 @@ pub struct ProxyContext {
     /// `data_plane.rs`; surfaced here so the data-plane hot path
     /// reads the live value via the context it already holds.
     pub max_body_bytes: usize,
+    /// 2026-06-20 (GAP 1, anti-RUDY) — global request-body read deadline,
+    /// populated from `cfg.proxy.read_timeout`. The data plane wraps the
+    /// client-body buffering in this timeout; a slow-trickle body that
+    /// does not complete in time returns `408` + `X-WAF-Action: timeout`
+    /// rather than pinning the worker task. Read off this context on the
+    /// hot path exactly like `max_body_bytes`. See
+    /// `plans/issues/PLAN-conn-layer-dos-gaps-2026-06-20.md`.
+    pub read_timeout: std::time::Duration,
     /// C-5 (multi-node consistency) — trusted reverse-proxy / LB CIDRs,
     /// parsed once from `cfg.proxy.trusted_proxies` at build time (like
     /// `max_body_bytes`). The data plane walks `X-Forwarded-For`
@@ -269,6 +277,8 @@ impl ProxyContext {
             // are unsupported anyway) to avoid silent truncation.
             max_body_bytes: usize::try_from(cfg.proxy.max_body_bytes)
                 .unwrap_or(usize::MAX),
+            // GAP 1 — anti-RUDY body read deadline, applied proxy-global.
+            read_timeout: cfg.proxy.read_timeout,
             // C-5 — parse trusted-proxy CIDRs once; validate() already
             // rejected malformed entries at boot.
             trusted_proxies: cfg.proxy.parsed_trusted_proxies(),

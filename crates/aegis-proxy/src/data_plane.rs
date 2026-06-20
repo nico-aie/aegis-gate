@@ -924,12 +924,33 @@ pub(crate) async fn handle_data_request_inner(
     if declared_content_length_over_cap(&parts.headers, max_body_bytes) {
         return (body_too_large(), DecisionTag::block("body-too-large"));
     }
-    let body_bytes = match http_body_util::Limited::new(body, max_body_bytes)
-        .collect()
-        .await
-    {
-        Ok(c) => c.to_bytes(),
-        Err(e) => {
+    // GAP 1 (anti-RUDY) — bound the body buffer with the proxy-global
+    // read deadline. A slow-trickle body (R-U-Dead-Yet) that does not
+    // complete within `read_timeout` is closed with 408 +
+    // `X-WAF-Action: timeout` (Contract v2.6 §3-4 — slow-loris /
+    // connection-level maps to `timeout`, not `rate_limit`) instead of
+    // pinning this task indefinitely. Header read is already bounded by
+    // `HEADER_READ_TIMEOUT`; the body size cap is enforced by `Limited`
+    // above. This closes the slow-*body* hole between them. See
+    // plans/issues/PLAN-conn-layer-dos-gaps-2026-06-20.md.
+    let collected = tokio::time::timeout(
+        upstream_ctx.read_timeout,
+        http_body_util::Limited::new(body, max_body_bytes).collect(),
+    )
+    .await;
+    let body_bytes = match collected {
+        Err(_elapsed) => {
+            let resp = Response::builder()
+                .status(hyper::StatusCode::REQUEST_TIMEOUT)
+                .header("content-type", "application/json")
+                .body(crate::body::full(Bytes::from(
+                    serde_json::json!({ "error": "request_body_timeout" }).to_string(),
+                )))
+                .unwrap();
+            return (resp, DecisionTag::timeout("slow-body"));
+        }
+        Ok(Ok(c)) => c.to_bytes(),
+        Ok(Err(e)) => {
             if e.downcast_ref::<http_body_util::LengthLimitError>().is_some() {
                 return (body_too_large(), DecisionTag::block("body-too-large"));
             }
