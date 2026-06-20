@@ -14,6 +14,7 @@ listeners:
 
 # PROXY/XFF trust boundary — a header is honoured ONLY from these peers (anti-spoof).
 proxy:
+  max_connections: 20000          # accept-time connection cap (pinned = code default)
   trusted_proxies:
 {% for net in trusted_proxies %}
     - "{{ net }}"
@@ -68,6 +69,14 @@ risk:
 ddos:
   enabled: true
   observe_only: false
+  # Knobs pinned to code defaults (reproducibility + dashboard visibility).
+  per_ip_limit: 1000              # req per window before an IP is blocked
+  per_ip_window_s: 10
+  block_ttl_s: 300                # blocked IP banned 5 min
+  spike_multiplier: 3.0           # spike = 3x baseline traffic
+  tightened_per_ip_rps: 20        # during a spike, clamp each IP to 20 rps
+  spike_engage_ticks: 2           # engage fast
+  spike_release_ticks: 8          # release slow (anti-flap)
 
 logging:
   verbosity: info
