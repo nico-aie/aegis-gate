@@ -209,6 +209,86 @@ mod tests {
         assert!(line.contains("\"risk_score\":75"), "got {line}");
     }
 
+    // ---- Fix A (perf/audit-sink-async-writer) -------------------------
+    // The interop sink must NOT flush to disk on every append under a
+    // global mutex (that serialized all data-plane workers across a
+    // blocking syscall — the throughput cliff root cause, see
+    // plans/issues/PLAN-perf-throughput-cliff-2026-06-20.md §P0). Writes
+    // are handed to a dedicated writer thread that batches flushes. These
+    // tests pin the new behavior; the durability/append-only/schema tests
+    // above remain the unchanged external contract.
+
+    #[test]
+    fn append_batches_flushes_not_one_per_entry() {
+        // A burst of appends well under the size-flush threshold, then a
+        // single explicit sync, must produce only a handful of flushes —
+        // NOT one per entry (which is what the old flush-per-write sink
+        // did). This is the core Fix A guarantee: disk flush is decoupled
+        // from the per-request append.
+        let dir = tempdir();
+        let path = dir.join("waf_audit.log");
+        let sink = MinimalJsonlSink::open(&path).unwrap();
+
+        const N: usize = 50; // < FLUSH_EVERY so size-flush never triggers
+        for _ in 0..N {
+            sink.append(&entry_template()).unwrap();
+        }
+        sink.sync();
+
+        let flushes = sink.flushes();
+        assert!(
+            flushes <= 10,
+            "expected flushes decoupled from {N} appends (batched), got {flushes}",
+        );
+        // And every entry is durably on disk after sync.
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content.lines().count(), N, "all entries must persist");
+    }
+
+    #[test]
+    fn concurrent_appends_all_persist_after_sync() {
+        // Many worker threads appending concurrently must lose nothing and
+        // never tear a line (each line stays a valid JSON object). Drives
+        // the single-writer channel design.
+        use std::sync::Arc;
+        use std::thread;
+
+        let dir = tempdir();
+        let path = dir.join("waf_audit.log");
+        let sink = Arc::new(MinimalJsonlSink::open(&path).unwrap());
+
+        const THREADS: usize = 8;
+        const PER_THREAD: usize = 250;
+        let handles: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let s = Arc::clone(&sink);
+                thread::spawn(move || {
+                    for _ in 0..PER_THREAD {
+                        s.append(&entry_template()).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        sink.sync();
+
+        let f = File::open(&path).unwrap();
+        let lines: Vec<String> =
+            BufReader::new(f).lines().filter_map(|l| l.ok()).collect();
+        assert_eq!(
+            lines.len(),
+            THREADS * PER_THREAD,
+            "no audit lines may be lost under concurrency",
+        );
+        for l in &lines {
+            let v: serde_json::Value = serde_json::from_str(l)
+                .unwrap_or_else(|e| panic!("torn line {l:?}: {e}"));
+            assert!(v.is_object());
+        }
+    }
+
     #[test]
     fn ip_field_is_serialised_as_string() {
         let line = format_line(&entry_template());
