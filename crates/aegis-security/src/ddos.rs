@@ -981,6 +981,68 @@ mod tests {
         );
     }
 
+    // ── Spike hysteresis / dwell (P2) ────────────────────────────────
+    // plans/issues/PLAN-ddos-spike-enforcement-2026-06-20.md (P2)
+    // Defaults: engage after >=2 consecutive over-threshold ticks; release
+    // after >=8 consecutive under-threshold ticks. Drive the RPS sequence
+    // directly (no wall-clock) — re-store baseline+rolling before each tick
+    // so the threshold stays fixed across the EWMA update.
+
+    /// Push one over-threshold tick (rolling = 3× a fixed baseline of 100,
+    /// multiplier 2 → threshold 200).
+    fn tick_over(d: &DdosDetector) {
+        d.baseline_rps.store(100, Ordering::Relaxed);
+        d.rolling_rps.store(300, Ordering::Relaxed);
+        d.tick_rps();
+    }
+    /// Push one under-threshold tick.
+    fn tick_under(d: &DdosDetector) {
+        d.baseline_rps.store(100, Ordering::Relaxed);
+        d.rolling_rps.store(50, Ordering::Relaxed);
+        d.tick_rps();
+    }
+
+    #[test]
+    fn spike_engages_only_after_dwell_not_on_single_tick() {
+        let detector = DdosDetector::new(DdosConfig { spike_multiplier: 2.0, ..Default::default() });
+        // One over tick must NOT engage (dwell requires >= 2).
+        tick_over(&detector);
+        assert!(!detector.is_spike_active(), "single over tick must not engage spike (dwell=2)");
+        // Second consecutive over tick engages.
+        tick_over(&detector);
+        assert!(detector.is_spike_active(), "two consecutive over ticks must engage spike");
+    }
+
+    #[test]
+    fn spike_holds_through_brief_dip() {
+        let detector = DdosDetector::new(DdosConfig { spike_multiplier: 2.0, ..Default::default() });
+        tick_over(&detector);
+        tick_over(&detector);
+        assert!(detector.is_spike_active(), "precondition: engaged");
+        // A single quiet tick must NOT release (release dwell = 8).
+        tick_under(&detector);
+        assert!(detector.is_spike_active(), "one under tick must not clear an engaged spike");
+        // Traffic returns hot — still engaged.
+        tick_over(&detector);
+        assert!(detector.is_spike_active(), "spike must hold through a brief dip");
+    }
+
+    #[test]
+    fn spike_clears_only_after_release_cooldown() {
+        let detector = DdosDetector::new(DdosConfig { spike_multiplier: 2.0, ..Default::default() });
+        tick_over(&detector);
+        tick_over(&detector);
+        assert!(detector.is_spike_active(), "precondition: engaged");
+        // 7 consecutive under ticks: still engaged (release needs 8).
+        for i in 0..7 {
+            tick_under(&detector);
+            assert!(detector.is_spike_active(), "under tick {i} (<8) must not clear spike yet");
+        }
+        // 8th consecutive under tick clears it.
+        tick_under(&detector);
+        assert!(!detector.is_spike_active(), "spike must clear after the release cooldown (8 ticks)");
+    }
+
     // 2026-05-20 — reset_state committee item 6. reset() must
     // clear the temporary enforcement atomics but leave config
     // (thresholds, enabled flag) intact.
