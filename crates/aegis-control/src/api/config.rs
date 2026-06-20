@@ -83,6 +83,8 @@ pub struct DdosOverlay {
     pub block_ttl_s: u64,
     pub spike_multiplier: f64,
     pub tightened_per_ip_rps: u64,
+    pub spike_engage_ticks: u32,
+    pub spike_release_ticks: u32,
 }
 
 /// Fold the runtime overlay into a parsed YAML document and
@@ -169,6 +171,17 @@ pub fn apply_runtime_overlay(
             ddos,
             "tightened_per_ip_rps",
             yaml_u64(d.tightened_per_ip_rps),
+        );
+        // P2 spike hysteresis — round-trip so a dashboard edit persists.
+        set_mapping_field(
+            ddos,
+            "spike_engage_ticks",
+            yaml_u64(d.spike_engage_ticks as u64),
+        );
+        set_mapping_field(
+            ddos,
+            "spike_release_ticks",
+            yaml_u64(d.spike_release_ticks as u64),
         );
     }
 
@@ -548,6 +561,8 @@ detectors:
                 block_ttl_s: 600,
                 spike_multiplier: 3.5,
                 tightened_per_ip_rps: 25,
+                spike_engage_ticks: 3,
+                spike_release_ticks: 9,
             }),
             ..Default::default()
         };
@@ -559,6 +574,8 @@ detectors:
         assert_eq!(parsed["ddos"]["per_ip_window_s"].as_u64(), Some(30));
         assert_eq!(parsed["ddos"]["block_ttl_s"].as_u64(), Some(600));
         assert_eq!(parsed["ddos"]["tightened_per_ip_rps"].as_u64(), Some(25));
+        assert_eq!(parsed["ddos"]["spike_engage_ticks"].as_u64(), Some(3));
+        assert_eq!(parsed["ddos"]["spike_release_ticks"].as_u64(), Some(9));
         let mult = parsed["ddos"]["spike_multiplier"].as_f64().unwrap();
         assert!((mult - 3.5).abs() < 1e-9, "spike_multiplier float survives");
     }
