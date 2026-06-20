@@ -165,6 +165,29 @@ impl From<aegis_core::config::DdosConfig> for DdosConfig {
     }
 }
 
+/// Spike-mode per-IP cap. When `spike_active`, return the tighter of the
+/// normal per-window `per_ip_limit` and the spike cap derived from
+/// `tightened_per_ip_rps` (an RPS → multiply by the window seconds to get a
+/// per-window count). `.min` makes it tighten-only: a config where
+/// `tightened × window` exceeds `per_ip_limit` is a safe no-op. When no
+/// spike is active the normal limit is returned unchanged.
+///
+/// See `plans/issues/PLAN-ddos-spike-enforcement-2026-06-20.md` (P1).
+fn spike_tightened_limit(
+    cfg: &DdosConfig,
+    per_ip_limit: u64,
+    per_ip_window_s: u32,
+    spike_active: bool,
+) -> u64 {
+    if !spike_active {
+        return per_ip_limit;
+    }
+    let tightened = cfg
+        .tightened_per_ip_rps
+        .saturating_mul(u64::from(per_ip_window_s));
+    per_ip_limit.min(tightened)
+}
+
 /// DDoS detector.
 pub struct DdosDetector {
     /// Wrapped in `ArcSwap` so config hot-reload (file/etcd
@@ -444,6 +467,12 @@ impl DdosDetector {
         // tight Critical-tier quota doesn't auto-block an IP's Low
         // static-asset traffic — mirrors the old backend key.
         let (per_ip_limit, per_ip_window_s) = cfg.limit_for(tier);
+        // Spike enforcement (plans/issues/PLAN-ddos-spike-enforcement):
+        // when spike-mode is active, clamp the per-IP window count to the
+        // tightened cap (`tightened_per_ip_rps` is an RPS, convert to a
+        // per-window count). `.min` so it only ever tightens — a
+        // misconfigured `tightened×window > per_ip_limit` is a safe no-op.
+        let per_ip_limit = spike_tightened_limit(&cfg, per_ip_limit, per_ip_window_s, self.is_spike_active());
         let window = Duration::from_secs(u64::from(per_ip_window_s));
         let tier_str = tier.map(|t| t.as_str()).unwrap_or("none");
         let key = format!("{tier_str}:{ip}");
@@ -582,6 +611,9 @@ impl DdosDetector {
         // `Critical` tier's tight quota doesn't auto-block its
         // `Low` tier static-asset requests.
         let (per_ip_limit, per_ip_window_s) = cfg.limit_for(tier);
+        // Parity with `check_local` — spike-tighten the per-IP cap so
+        // enforcement is identical regardless of which backend is enabled.
+        let per_ip_limit = spike_tightened_limit(&cfg, per_ip_limit, per_ip_window_s, self.is_spike_active());
         let tier_str = tier.map(|t| t.as_str()).unwrap_or("none");
         let key = format!("ddos:ip:{tier_str}:{ip}");
         let window = Duration::from_secs(u64::from(per_ip_window_s));
