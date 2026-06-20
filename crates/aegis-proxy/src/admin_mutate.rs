@@ -6391,6 +6391,10 @@ fn patch_ddos(
     ddos.insert(yaml_str("block_ttl_s"), yaml_u64(v.block_ttl_s));
     ddos.insert(yaml_str("spike_multiplier"), yaml_f64(v.spike_multiplier));
     ddos.insert(yaml_str("tightened_per_ip_rps"), yaml_u64(v.tightened_per_ip_rps));
+    // P2 spike hysteresis — persist so a dashboard edit survives a restart
+    // (boot rehydrate rebuilds the runtime from this doc).
+    ddos.insert(yaml_str("spike_engage_ticks"), yaml_u64(v.spike_engage_ticks as u64));
+    ddos.insert(yaml_str("spike_release_ticks"), yaml_u64(v.spike_release_ticks as u64));
     serde_yaml::to_string(&serde_yaml::Value::Mapping(root))
         .map_err(|e| format!("re-serialize config: {e}"))
 }
@@ -6498,6 +6502,10 @@ mod gate_toggle_patch_tests {
             block_ttl_s: 60,
             spike_multiplier: 3.0,
             tightened_per_ip_rps: 20,
+            // Non-default dwell so durability tests can prove the patch
+            // persists them (defaults are 2/8).
+            spike_engage_ticks: 5,
+            spike_release_ticks: 12,
         }
     }
 
@@ -6521,6 +6529,19 @@ mod gate_toggle_patch_tests {
         assert_eq!(parsed["ddos"]["per_ip_limit"].as_u64(), Some(100));
         // YAML-only per-tier override is untouched by the dashboard edit.
         assert_eq!(parsed["ddos"]["tier_overrides"]["high"]["per_ip_limit"].as_u64(), Some(5));
+        assert_loads(&out);
+    }
+
+    #[test]
+    fn ddos_patch_persists_spike_dwell_knobs() {
+        // Durability: a dashboard edit of the hysteresis knobs must be
+        // written into the published config doc, else it reverts on the
+        // next boot rehydrate (plans/issues/runtime_gate_toggles_not_durable).
+        let base = format!("{BASE}ddos:\n  enabled: true\n  per_ip_limit: 500\n");
+        let out = patch_ddos(&base, &ddos_view(true)).unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(parsed["ddos"]["spike_engage_ticks"].as_u64(), Some(5));
+        assert_eq!(parsed["ddos"]["spike_release_ticks"].as_u64(), Some(12));
         assert_loads(&out);
     }
 
