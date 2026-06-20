@@ -716,6 +716,18 @@ pub struct ProxyConfig {
     /// `plans/issues/PLAN-conn-layer-dos-gaps-2026-06-20.md` (GAP 1).
     #[serde(default = "default_read_timeout", with = "humantime_serde")]
     pub read_timeout: Duration,
+    /// 2026-06-20 — cap on concurrent data-plane connections (anti
+    /// connection-exhaustion). The accept loop acquires one permit per
+    /// accepted connection BEFORE the TLS handshake / task spawn; when
+    /// the cap is reached, excess connections are closed immediately at
+    /// the TCP layer (cheap reject — no crypto, no task) rather than
+    /// burning fd/CPU/memory. Independent of the in-flight drain gauge:
+    /// a rejected connection is never admitted, so the SIGUSR2 handover
+    /// is unaffected. Default 20_000 — size to the host `ulimit -n`
+    /// headroom. See `plans/issues/PLAN-conn-layer-dos-gaps-2026-06-20.md`
+    /// (GAP 2).
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
 }
 
 impl Default for ProxyConfig {
@@ -724,12 +736,17 @@ impl Default for ProxyConfig {
             max_body_bytes: default_proxy_max_body_bytes(),
             trusted_proxies: Vec::new(),
             read_timeout: default_read_timeout(),
+            max_connections: default_max_connections(),
         }
     }
 }
 
 fn default_proxy_max_body_bytes() -> u64 {
     10 * 1024 * 1024 // 10 MiB — matches QuotaConfig::default()
+}
+
+fn default_max_connections() -> usize {
+    20_000
 }
 
 impl ProxyConfig {
@@ -1199,6 +1216,17 @@ impl WafConfig {
         // Zero Trust: validate per-pool upstream (WAF-as-client) mTLS
         // against the shared identity (cross-references upstreams + zero_trust).
         validate_upstream_mtls(&self.upstreams, self.zero_trust.as_ref())?;
+        // GAP 2: a zero connection cap would reject every connection at
+        // accept — a deny-all footgun. Reject it at boot rather than going
+        // live with a black-hole listener.
+        if self.proxy.max_connections == 0 {
+            return Err(crate::error::WafError::Config(
+                "proxy.max_connections must be >= 1 (0 would reject every \
+                 connection at accept — a deny-all listener). Omit the field \
+                 for the default, or set a positive cap."
+                    .to_string(),
+            ));
+        }
         // C-5: every `proxy.trusted_proxies` entry must parse as a CIDR.
         // Parse-don't-validate at the boundary so the data-plane hot path
         // (`ProxyConfig::parsed_trusted_proxies`) can assume well-formed
@@ -5865,6 +5893,37 @@ state:
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("listeners.data must contain at least one entry"));
+    }
+
+    #[test]
+    fn validate_rejects_zero_max_connections() {
+        // GAP 2 — a 0 connection cap is a deny-all footgun; boot must reject.
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+proxy:
+  max_connections: 0
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+"#;
+        let result = super::load_config_str(yaml);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("proxy.max_connections must be >= 1"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

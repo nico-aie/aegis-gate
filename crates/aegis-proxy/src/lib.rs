@@ -748,4 +748,94 @@ state:
             "rejected connection must not increment the in-flight drain counter"
         );
     }
+
+    /// Drain safety (§2.4.2): when connections end, both the cap permit and
+    /// the in-flight guard must release, so the gauge returns to 0 (the
+    /// SIGUSR2 handover's exit condition) and freed slots are reusable. A
+    /// rejected connection (no permit/admit taken) must not leak either.
+    #[tokio::test]
+    async fn ended_connections_release_permit_and_inflight_slot() {
+        use tokio::io::AsyncWriteExt;
+
+        let (upstream_addr, _up) = spawn_mock_upstream(b"upstream-ok").await;
+        let yaml = format!(
+            r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:0"
+  admin:
+    bind: "127.0.0.1:0"
+proxy:
+  max_connections: 1
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "{upstream_addr}"
+state:
+  backend: in_memory
+"#
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let (addr, ctx) = spawn_data_accept_loop(&cfg).await;
+
+        // Hold the single slot.
+        let hold = tokio::net::TcpStream::connect(addr).await.unwrap();
+        for _ in 0..50 {
+            if ctx.inflight.current() >= 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(ctx.inflight.current(), 1);
+        assert_eq!(ctx.conn_limit.available_permits(), 0, "the one slot is held");
+
+        // A second connection is rejected while the slot is held — it must
+        // not take a permit or admit (no leak from the reject path).
+        let mut rejected = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let _ = rejected
+            .write_all(b"GET / HTTP/1.1\r\nHost: any\r\nConnection: close\r\n\r\n")
+            .await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(ctx.inflight.current(), 1, "reject must not admit");
+
+        // End the holding connection → its guard + permit drop.
+        drop(hold);
+        let mut drained = false;
+        for _ in 0..100 {
+            if ctx.inflight.current() == 0 && ctx.conn_limit.available_permits() == 1 {
+                drained = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            drained,
+            "after the connection ends the in-flight gauge must reach 0 and the \
+             permit must be returned (inflight={}, permits={})",
+            ctx.inflight.current(),
+            ctx.conn_limit.available_permits()
+        );
+
+        // The freed slot is reusable: a fresh request is served again.
+        let mut again = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let _ = again
+            .write_all(b"GET / HTTP/1.1\r\nHost: any\r\nConnection: close\r\n\r\n")
+            .await;
+        let mut buf = Vec::new();
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            tokio::io::AsyncReadExt::read_to_end(&mut again, &mut buf),
+        )
+        .await;
+        assert!(
+            String::from_utf8_lossy(&buf).contains("upstream-ok"),
+            "freed slot must serve a new connection (got: {:?})",
+            String::from_utf8_lossy(&buf)
+        );
+    }
 }

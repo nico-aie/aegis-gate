@@ -44,6 +44,18 @@ pub struct ProxyContext {
     /// phase reads `inflight.current()` to know when it's
     /// safe to exit. Cheap to clone (Arc<AtomicU32> shared).
     pub inflight: crate::hotbin::InFlightCounter,
+    /// 2026-06-20 (GAP 2) — accept-time concurrent-connection cap. The
+    /// data-plane accept loop `try_acquire_owned()`s one permit per
+    /// accepted connection BEFORE admitting it to the in-flight gauge or
+    /// spawning its task; the permit rides the connection task and
+    /// releases on its end (clean close / panic / cancel). When permits
+    /// are exhausted the loop closes the connection at TCP and `continue`s
+    /// WITHOUT calling `inflight.admit()`, so the drain gauge never counts
+    /// a rejected connection (reject-before-admit — keeps the SIGUSR2
+    /// handover correct). Sized from `cfg.proxy.max_connections` at boot.
+    /// Modeled on `streaming_permits`. See
+    /// `plans/issues/PLAN-conn-layer-dos-gaps-2026-06-20.md`.
+    pub conn_limit: Arc<tokio::sync::Semaphore>,
     /// FIX 2026-05-03 — runtime access-list enforcement.
     /// Operators populate these via the Console; the handler
     /// consults them after XFF resolution but BEFORE the
@@ -254,6 +266,11 @@ impl ProxyContext {
             benchmark: BenchmarkConfig::off(),
             tunnels: crate::tcp_tunnel::ConcurrentTunnels::new(),
             inflight: crate::hotbin::InFlightCounter::new(),
+            // GAP 2 — accept-time connection cap. `Semaphore::MAX_PERMITS`
+            // is never reached by a sane config; saturate to be safe.
+            conn_limit: Arc::new(tokio::sync::Semaphore::new(
+                cfg.proxy.max_connections.min(tokio::sync::Semaphore::MAX_PERMITS),
+            )),
             // Default empty stores — boot path shares the
             // same Arcs into DashboardServices so
             // /api/blacklist + /api/whitelist mutations are
