@@ -47,10 +47,15 @@ pub struct DdosConfig {
     pub per_ip_window_s: u32,
     /// TTL for auto-block after breach.
     pub block_ttl_s: u64,
-    /// Cluster-wide RPS multiplier to detect spikes.
+    /// Per-node RPS multiplier to detect spikes (`current_rps >
+    /// multiplier × baseline_rps`). Per-node, not fleet-wide — see
+    /// `DdosDetector::rolling_rps`.
     pub spike_multiplier: f64,
-    /// Per-IP RPS cap during cluster spike mode. Tighter than
-    /// `per_ip_limit` so a spike clamps every offender. Default 20.
+    /// Per-IP RPS cap that ENGAGES during spike mode (P1). Expressed as
+    /// an RPS; the gate converts it to a per-window count
+    /// (`tightened_per_ip_rps × per_ip_window_s`) and clamps the per-IP
+    /// limit to the tighter of that and `per_ip_limit`. Tighter than
+    /// `per_ip_limit` so a spike throttles every offender. Default 20.
     pub tightened_per_ip_rps: u64,
     /// 2026-06-20 (P2) — spike hysteresis. Consecutive over-threshold
     /// ticks required to engage `spike_active` (default 2) and consecutive
@@ -209,10 +214,17 @@ pub struct DdosDetector {
     /// Hot-path cost: one `ArcSwap::load` per request (~5 ns).
     config: arc_swap::ArcSwap<DdosConfig>,
     /// Rolling RPS estimate (requests in current second).
+    /// **PER-NODE** — `fetch_add` on this node's traffic only; spike
+    /// detection is therefore per-node, NOT fleet-wide (despite the
+    /// historical "cluster" wording elsewhere). True cluster-wide RPS
+    /// (Redis `INCR` a per-tick key + read the fleet sum in `tick_rps`)
+    /// is deferred — see plans/issues/PLAN-ddos-spike-enforcement-2026-06-20.md
+    /// (P3). In practice an LB fans a single source IP to every node, so
+    /// each node observes the spike independently.
     rolling_rps: AtomicU64,
-    /// Average RPS baseline.
+    /// Average RPS baseline (per-node EWMA).
     baseline_rps: AtomicU64,
-    /// Whether cluster spike mode is active.
+    /// Whether spike mode is active (per-node — see `rolling_rps`).
     spike_active: AtomicU64,
     /// P2 hysteresis — consecutive over-threshold ticks (engage counter)
     /// and consecutive under-threshold ticks (release counter). Each resets
@@ -665,7 +677,7 @@ impl DdosDetector {
         })
     }
 
-    /// Update cluster spike detection.  Called periodically (e.g. every second).
+    /// Update per-node spike detection. Called periodically (~1s tick).
     pub fn tick_rps(&self) {
         let cfg = self.config.load();
         // 2026-05-19 — when the gate is hot-disabled, freeze the
@@ -711,7 +723,7 @@ impl DdosDetector {
         }
     }
 
-    /// Whether cluster spike mode is currently active.
+    /// Whether spike mode is currently active (per-node).
     pub fn is_spike_active(&self) -> bool {
         self.spike_active.load(Ordering::Relaxed) != 0
     }

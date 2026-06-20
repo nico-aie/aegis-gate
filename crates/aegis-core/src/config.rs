@@ -4215,9 +4215,16 @@ pub struct DetectorToggle {
 /// burning a single IP at >100 req/s sustained will trip in <10s
 /// and earn the auto-block.
 ///
-/// `tightened_per_ip_rps` is the per-IP cap that kicks in cluster-
-/// wide once spike-mode is active (current_rps > spike_multiplier
-/// × baseline_rps).
+/// `tightened_per_ip_rps` is the per-IP cap that **is enforced** once
+/// spike-mode is active (per-node `current_rps > spike_multiplier ×
+/// baseline_rps`, held across the `spike_engage_ticks`/`spike_release_ticks`
+/// dwell). It is an **RPS**, converted to a per-window count
+/// (`tightened_per_ip_rps × per_ip_window_s`) and clamped against
+/// `per_ip_limit` (tighten-only). Note the unit differs from
+/// `per_ip_limit` (a count over the window). Enforced in both the
+/// in-process and Redis gates — see
+/// `plans/issues/PLAN-ddos-spike-enforcement-2026-06-20.md` (P1).
+/// Spike detection is **per-node**, not fleet-wide (P3).
 ///
 /// **Contract compliance** (`Hackathon_Doc/EN_waf_interop_contract_v2.3.md` §3.1):
 /// volumetric abuse from a single source maps to acceptable
