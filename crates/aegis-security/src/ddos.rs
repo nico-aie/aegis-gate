@@ -829,6 +829,126 @@ mod tests {
         assert!(!detector.is_spike_active());
     }
 
+    // ── Spike enforcement (GAP: tightened_per_ip_rps was dead config) ──
+    // plans/issues/PLAN-ddos-spike-enforcement-2026-06-20.md (P1)
+
+    /// When spike-mode is active, the per-IP block threshold must drop to
+    /// `tightened_per_ip_rps × per_ip_window_s` (tighten-only). Today the
+    /// in-process gate ignores `tightened_per_ip_rps` entirely.
+    #[test]
+    fn spike_active_tightens_check_local_block_threshold() {
+        let cfg = DdosConfig {
+            per_ip_limit: 1000,        // normal: very loose
+            per_ip_window_s: 10,
+            tightened_per_ip_rps: 2,   // spike cap = 2 × 10s = 20 / window
+            block_ttl_s: 60,
+            ..Default::default()
+        };
+        let detector = DdosDetector::new(cfg);
+        detector.spike_active.store(1, Ordering::Relaxed); // force spike
+
+        let ip: IpAddr = "10.1.0.1".parse().unwrap();
+        let now = Instant::now();
+        // 20 requests in-window are allowed under the tightened cap …
+        for i in 0..20 {
+            assert_eq!(
+                detector.check_local(ip, None, now),
+                LocalDdosDecision::Allowed,
+                "request {i} should be allowed under the tightened cap (20)"
+            );
+        }
+        // … the 21st trips the tightened threshold (well under per_ip_limit).
+        assert!(
+            matches!(
+                detector.check_local(ip, None, now),
+                LocalDdosDecision::NewlyBlocked { .. }
+            ),
+            "21st request must block under the spike-tightened cap"
+        );
+    }
+
+    /// Companion: with no spike, the same rate is allowed — tightening is
+    /// spike-gated, never applied to steady-state traffic.
+    #[test]
+    fn no_spike_leaves_per_ip_limit_untightened() {
+        let cfg = DdosConfig {
+            per_ip_limit: 1000,
+            per_ip_window_s: 10,
+            tightened_per_ip_rps: 2, // would be 20/window IF spike were active
+            block_ttl_s: 60,
+            ..Default::default()
+        };
+        let detector = DdosDetector::new(cfg);
+        // spike_active stays 0.
+        let ip: IpAddr = "10.1.0.2".parse().unwrap();
+        let now = Instant::now();
+        for i in 0..21 {
+            assert_eq!(
+                detector.check_local(ip, None, now),
+                LocalDdosDecision::Allowed,
+                "request {i} must be allowed when no spike is active (cap is 1000)"
+            );
+        }
+    }
+
+    /// Parity: the Redis/StateBackend path (`check_with_tier`) must tighten
+    /// identically so enforcement is backend-agnostic.
+    #[tokio::test]
+    async fn spike_active_tightens_redis_check_with_tier() {
+        let cfg = DdosConfig {
+            per_ip_limit: 1000,
+            per_ip_window_s: 10,
+            tightened_per_ip_rps: 2, // spike cap = 20 / window
+            block_ttl_s: 60,
+            ..Default::default()
+        };
+        let state = Arc::new(MockState::new());
+        let detector = DdosDetector::new(cfg);
+        detector.spike_active.store(1, Ordering::Relaxed);
+        let ip: IpAddr = "10.1.0.3".parse().unwrap();
+
+        for i in 0..20 {
+            let r = detector.check_with_tier(state.as_ref(), ip, None).await.unwrap();
+            assert!(!r.blocked, "request {i} should be allowed under tightened cap");
+        }
+        let r = detector.check_with_tier(state.as_ref(), ip, None).await.unwrap();
+        assert!(
+            r.blocked,
+            "21st request must block under the spike-tightened cap on the Redis path"
+        );
+    }
+
+    /// Composition: spike tightening must NOT turn a shadow gate into an
+    /// enforcing one. With `observe_only`, a tightened breach is recorded
+    /// (`blocked`) but `enforced()` stays false.
+    #[tokio::test]
+    async fn observe_only_with_spike_still_only_observes() {
+        let cfg = DdosConfig {
+            per_ip_limit: 1000,
+            per_ip_window_s: 10,
+            tightened_per_ip_rps: 2,
+            block_ttl_s: 60,
+            observe_only: true,
+            ..Default::default()
+        };
+        let state: Arc<dyn StateBackend> = Arc::new(MockState::new());
+        let runtime = DdosRuntime::new(cfg, state);
+        runtime.detector.spike_active.store(1, Ordering::Relaxed);
+        let ip: IpAddr = "10.1.0.4".parse().unwrap();
+
+        // Breach the tightened cap.
+        let mut last = None;
+        for _ in 0..25 {
+            last = Some(runtime.check_with_tier(ip, None).await.unwrap());
+        }
+        let outcome = last.unwrap();
+        assert!(outcome.blocked, "tightened breach must be recorded as blocked");
+        assert!(
+            !outcome.should_enforce(),
+            "observe_only must keep should_enforce() false even under spike tightening"
+        );
+    }
+
     // 2026-05-20 — reset_state committee item 6. reset() must
     // clear the temporary enforcement atomics but leave config
     // (thresholds, enabled flag) intact.
