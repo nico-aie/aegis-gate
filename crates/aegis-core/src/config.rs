@@ -4257,6 +4257,19 @@ pub struct DdosConfig {
     pub spike_multiplier: f64,
     #[serde(default = "default_ddos_tightened_rps")]
     pub tightened_per_ip_rps: u64,
+    /// 2026-06-20 (P2) — spike hysteresis/dwell. `spike_engage_ticks` is
+    /// the number of consecutive over-threshold `tick_rps` ticks (1 tick ≈
+    /// 1s) required before `spike_active` engages; `spike_release_ticks` is
+    /// the consecutive under-threshold ticks required before it clears.
+    /// Asymmetric defaults (engage fast at 2, release slow at 8) stop the
+    /// flag flapping when traffic oscillates around the threshold — which
+    /// matters because the flag is global but the spike-tighten is per-IP,
+    /// so a 1-tick blip must not throttle every client. See
+    /// `plans/issues/PLAN-ddos-spike-enforcement-2026-06-20.md` (P2).
+    #[serde(default = "default_ddos_spike_engage_ticks")]
+    pub spike_engage_ticks: u32,
+    #[serde(default = "default_ddos_spike_release_ticks")]
+    pub spike_release_ticks: u32,
     /// 2026-05-17 F-CRITICAL-008 (core audit): per-tier overrides
     /// for the global DDoS knobs. Any field not specified in the
     /// override falls back to the top-level value. Empty (default)
@@ -4302,6 +4315,8 @@ fn default_ddos_per_ip_window_s() -> u32 { 10 }
 fn default_ddos_block_ttl_s() -> u64 { 300 }
 fn default_ddos_spike_multiplier() -> f64 { 3.0 }
 fn default_ddos_tightened_rps() -> u64 { 20 }
+fn default_ddos_spike_engage_ticks() -> u32 { 2 }
+fn default_ddos_spike_release_ticks() -> u32 { 8 }
 
 impl Default for DdosConfig {
     fn default() -> Self {
@@ -4313,6 +4328,8 @@ impl Default for DdosConfig {
             block_ttl_s: default_ddos_block_ttl_s(),
             spike_multiplier: default_ddos_spike_multiplier(),
             tightened_per_ip_rps: default_ddos_tightened_rps(),
+            spike_engage_ticks: default_ddos_spike_engage_ticks(),
+            spike_release_ticks: default_ddos_spike_release_ticks(),
             tier_overrides: HashMap::new(),
         }
     }

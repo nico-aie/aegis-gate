@@ -52,6 +52,14 @@ pub struct DdosConfig {
     /// Per-IP RPS cap during cluster spike mode. Tighter than
     /// `per_ip_limit` so a spike clamps every offender. Default 20.
     pub tightened_per_ip_rps: u64,
+    /// 2026-06-20 (P2) — spike hysteresis. Consecutive over-threshold
+    /// ticks required to engage `spike_active` (default 2) and consecutive
+    /// under-threshold ticks required to release it (default 8). Asymmetric
+    /// so a 1-tick blip never engages and a brief dip never releases — the
+    /// flag is global but the tighten is per-IP, so flapping would throttle
+    /// all clients. See `plans/issues/PLAN-ddos-spike-enforcement-2026-06-20.md`.
+    pub spike_engage_ticks: u32,
+    pub spike_release_ticks: u32,
     /// 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005): per-tier limit
     /// overrides. Schema landed in Phase G (`678baa2`); this is
     /// the runtime side that actually consumes it. Empty map (the
@@ -117,6 +125,8 @@ impl Default for DdosConfig {
             block_ttl_s: 300,
             spike_multiplier: 3.0,
             tightened_per_ip_rps: 20,
+            spike_engage_ticks: 2,
+            spike_release_ticks: 8,
             tier_overrides: HashMap::new(),
             failure_mode: HashMap::new(),
         }
@@ -153,6 +163,8 @@ impl From<aegis_core::config::DdosConfig> for DdosConfig {
             block_ttl_s: c.block_ttl_s,
             spike_multiplier: c.spike_multiplier,
             tightened_per_ip_rps: c.tightened_per_ip_rps,
+            spike_engage_ticks: c.spike_engage_ticks,
+            spike_release_ticks: c.spike_release_ticks,
             tier_overrides,
             // The fail-mode map at the WafConfig level is keyed
             // by Tier via the v2.3 `fail_mode_by_tier` schema
@@ -202,6 +214,12 @@ pub struct DdosDetector {
     baseline_rps: AtomicU64,
     /// Whether cluster spike mode is active.
     spike_active: AtomicU64,
+    /// P2 hysteresis — consecutive over-threshold ticks (engage counter)
+    /// and consecutive under-threshold ticks (release counter). Each resets
+    /// the other; `spike_active` flips only when one reaches its configured
+    /// dwell. See `tick_rps`.
+    spike_over_ticks: AtomicU64,
+    spike_under_ticks: AtomicU64,
     /// 2026-05-23 (perf) — in-process per-`(tier,ip)` sliding window.
     /// Replaces the per-request `StateBackend::incr_window` round-trip
     /// (the dominant WAF-overhead tail + a Redis-throughput cap at
@@ -433,6 +451,8 @@ impl DdosDetector {
             rolling_rps: AtomicU64::new(0),
             baseline_rps: AtomicU64::new(100),
             spike_active: AtomicU64::new(0),
+            spike_over_ticks: AtomicU64::new(0),
+            spike_under_ticks: AtomicU64::new(0),
             windows: DashMap::new(),
             local_blocks: DashMap::new(),
             last_sweep: Mutex::new(Instant::now()),
@@ -657,6 +677,8 @@ impl DdosDetector {
         if !cfg.enabled {
             self.rolling_rps.store(0, Ordering::Relaxed);
             self.spike_active.store(0, Ordering::Relaxed);
+            self.spike_over_ticks.store(0, Ordering::Relaxed);
+            self.spike_under_ticks.store(0, Ordering::Relaxed);
             return;
         }
         let current = self.rolling_rps.swap(0, Ordering::Relaxed);
@@ -666,11 +688,26 @@ impl DdosDetector {
         let new_baseline = ((baseline as f64) * 0.9 + (current as f64) * 0.1) as u64;
         self.baseline_rps.store(new_baseline.max(1), Ordering::Relaxed);
 
+        // P2 hysteresis/dwell — `spike_active` flips only after a run of
+        // consecutive same-direction ticks, so traffic oscillating around
+        // the threshold doesn't flap the flag (which clamps every IP when
+        // set). Over-ticks and under-ticks reset each other; engage after
+        // `spike_engage_ticks` consecutive over, release after
+        // `spike_release_ticks` consecutive under. Tighten-fast / relax-slow.
         let threshold = (baseline as f64 * cfg.spike_multiplier) as u64;
-        if current > threshold && baseline > 10 {
-            self.spike_active.store(1, Ordering::Relaxed);
+        let over = current > threshold && baseline > 10;
+        if over {
+            self.spike_under_ticks.store(0, Ordering::Relaxed);
+            let run = self.spike_over_ticks.fetch_add(1, Ordering::Relaxed) + 1;
+            if run >= u64::from(cfg.spike_engage_ticks.max(1)) {
+                self.spike_active.store(1, Ordering::Relaxed);
+            }
         } else {
-            self.spike_active.store(0, Ordering::Relaxed);
+            self.spike_over_ticks.store(0, Ordering::Relaxed);
+            let run = self.spike_under_ticks.fetch_add(1, Ordering::Relaxed) + 1;
+            if run >= u64::from(cfg.spike_release_ticks.max(1)) {
+                self.spike_active.store(0, Ordering::Relaxed);
+            }
         }
     }
 
@@ -701,6 +738,8 @@ impl DdosDetector {
     pub fn reset(&self) {
         self.rolling_rps.store(0, Ordering::Relaxed);
         self.spike_active.store(0, Ordering::Relaxed);
+        self.spike_over_ticks.store(0, Ordering::Relaxed);
+        self.spike_under_ticks.store(0, Ordering::Relaxed);
         self.baseline_rps.store(100, Ordering::Relaxed);
         self.windows.clear();
         self.local_blocks.clear();
@@ -834,7 +873,11 @@ mod tests {
         detector.tick_rps();
         assert!(!detector.is_spike_active());
 
-        // Spike traffic — 3x baseline.
+        // Spike traffic — 3x baseline. With P2 dwell (engage=2) it takes
+        // two consecutive over-threshold ticks to engage.
+        detector.baseline_rps.store(100, Ordering::Relaxed);
+        detector.rolling_rps.store(300, Ordering::Relaxed);
+        detector.tick_rps();
         detector.baseline_rps.store(100, Ordering::Relaxed);
         detector.rolling_rps.store(300, Ordering::Relaxed);
         detector.tick_rps();
@@ -848,16 +891,21 @@ mod tests {
             ..Default::default()
         };
         let detector = DdosDetector::new(cfg);
-        detector.baseline_rps.store(100, Ordering::Relaxed);
 
-        // Trigger spike.
-        detector.rolling_rps.store(300, Ordering::Relaxed);
-        detector.tick_rps();
+        // Trigger spike — engage needs 2 consecutive over ticks (P2 dwell).
+        for _ in 0..2 {
+            detector.baseline_rps.store(100, Ordering::Relaxed);
+            detector.rolling_rps.store(300, Ordering::Relaxed);
+            detector.tick_rps();
+        }
         assert!(detector.is_spike_active());
 
-        // Normal traffic.
-        detector.rolling_rps.store(50, Ordering::Relaxed);
-        detector.tick_rps();
+        // Normal traffic — release needs the full cooldown (8 ticks).
+        for _ in 0..8 {
+            detector.baseline_rps.store(100, Ordering::Relaxed);
+            detector.rolling_rps.store(50, Ordering::Relaxed);
+            detector.tick_rps();
+        }
         assert!(!detector.is_spike_active());
     }
 
@@ -1054,9 +1102,12 @@ mod tests {
             ..Default::default()
         };
         let detector = DdosDetector::new(cfg);
-        detector.baseline_rps.store(900, Ordering::Relaxed);
-        detector.rolling_rps.store(5000, Ordering::Relaxed);
-        detector.tick_rps();
+        // Two over ticks to engage (P2 dwell).
+        for _ in 0..2 {
+            detector.baseline_rps.store(900, Ordering::Relaxed);
+            detector.rolling_rps.store(5000, Ordering::Relaxed);
+            detector.tick_rps();
+        }
         assert!(detector.is_spike_active(), "precondition: spike active");
 
         detector.reset();
@@ -1092,8 +1143,10 @@ mod tests {
             block_ttl_s: 60,
             spike_multiplier: 3.0,
             tightened_per_ip_rps: 20,
-        tier_overrides: HashMap::new(),
-        failure_mode: HashMap::new(),
+            spike_engage_ticks: 2,
+            spike_release_ticks: 8,
+            tier_overrides: HashMap::new(),
+            failure_mode: HashMap::new(),
         };
         let state: Arc<dyn aegis_core::state::StateBackend> = Arc::new(MockState::new());
         let runtime = DdosRuntime::new(cfg, state);
@@ -1127,8 +1180,10 @@ mod tests {
             block_ttl_s: 60,
             spike_multiplier: 3.0,
             tightened_per_ip_rps: 20,
-        tier_overrides: HashMap::new(),
-        failure_mode: HashMap::new(),
+            spike_engage_ticks: 2,
+            spike_release_ticks: 8,
+            tier_overrides: HashMap::new(),
+            failure_mode: HashMap::new(),
         };
         let state: Arc<dyn aegis_core::state::StateBackend> = Arc::new(MockState::new());
         let runtime = DdosRuntime::new(cfg, state);
@@ -1172,6 +1227,8 @@ mod tests {
             block_ttl_s: 9,
             spike_multiplier: 4.0,
             tightened_per_ip_rps: 11,
+            spike_engage_ticks: 3,
+            spike_release_ticks: 9,
             tier_overrides: std::collections::HashMap::new(),
         };
         let sec_cfg: DdosConfig = core_cfg.clone().into();
@@ -1182,6 +1239,8 @@ mod tests {
         assert_eq!(sec_cfg.block_ttl_s, 9);
         assert!((sec_cfg.spike_multiplier - 4.0).abs() < 1e-9);
         assert_eq!(sec_cfg.tightened_per_ip_rps, 11);
+        assert_eq!(sec_cfg.spike_engage_ticks, 3);
+        assert_eq!(sec_cfg.spike_release_ticks, 9);
     }
 
     // ---- 2026-05-18 QC Sprint 1.2 (F-CRITICAL-005) — per-tier ----
@@ -1327,6 +1386,8 @@ mod tests {
             block_ttl_s: 300,
             spike_multiplier: 3.0,
             tightened_per_ip_rps: 20,
+            spike_engage_ticks: 2,
+            spike_release_ticks: 8,
             tier_overrides: std::collections::HashMap::new(),
         };
         core_cfg.tier_overrides.insert(

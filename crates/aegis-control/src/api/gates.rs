@@ -179,6 +179,11 @@ impl DdosPutBody {
             // but leaves tier_overrides + failure_mode untouched.
             tier_overrides: std::collections::HashMap::new(),
             failure_mode: std::collections::HashMap::new(),
+            // 2026-06-20 (P2) — the PUT body doesn't carry spike
+            // hysteresis (engage/release ticks); they're YAML-tuned, not
+            // dashboard-editable. Fill from Default so they keep their
+            // defaults rather than being a required PUT field.
+            ..Default::default()
         })
     }
 }
@@ -453,6 +458,7 @@ mod tests {
                 tightened_per_ip_rps: 20,
                 tier_overrides: std::collections::HashMap::new(),
                 failure_mode: std::collections::HashMap::new(),
+                ..Default::default()
             },
             Arc::new(DummyState),
         ));
