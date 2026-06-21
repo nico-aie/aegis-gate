@@ -12200,7 +12200,7 @@ function CumulativeIpRiskCard() {
           {riskApi.data && (
             <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
               currently: challenge ≥ <strong>{riskApi.data.challenge_at}</strong> · block ≥ <strong>{riskApi.data.block_at}</strong>
-              {' · '}half-life <span className="num">{riskApi.data?.decay_half_life || '5m'}</span>
+              {' · '}decays <span className="num">{riskApi.data?.trust_per_hour ?? 30}</span>/hr
             </span>
           )}
         </div>
@@ -12231,13 +12231,42 @@ function CumulativeIpRiskCard() {
             </button>
           </div>
         </div>
+
+        {/* How decay works — operators ask "why is a quiet IP still at 100?".
+            State the linear, time-based, decay-on-read model + a worked example
+            using the live rate, and that strikes are the one thing that sticks. */}
+        {(() => {
+          const perHour = riskApi.data?.trust_per_hour ?? 30;
+          const blockAt = Number(riskApi.data?.block_at) || (challenge + 1);
+          const hoursToClear = perHour > 0 ? (blockAt / perHour) : Infinity;
+          return (
+            <div style={{
+              marginTop: 14, padding: '12px 14px', borderRadius: 6,
+              background: 'var(--surface-2)', borderLeft: '3px solid var(--brand-yellow)',
+              fontSize: 12, color: 'var(--ink)', lineHeight: 1.55,
+            }}>
+              <strong>How the score decays.</strong> A bucket's score falls <strong>{perHour} points per hour</strong>,
+              linearly, based on wall-clock time since its last request. The decay is applied <strong>on read</strong> —
+              so a source that floods and then goes quiet ages toward zero on its own; it does <em>not</em> stay
+              pinned at its peak until it sends more traffic.
+              {Number.isFinite(hoursToClear) && (
+                <> A bucket sitting at the block line ({blockAt}) clears in about <strong>{hoursToClear.toFixed(1)}h</strong> of silence.</>
+              )}
+              {' '}
+              <span style={{ color: 'var(--ink-mute)' }}>
+                One exception: <strong>strikes never decay</strong> — once a source is strike-blocked for repeat
+                offences, score recovery does not release it (that gate is separate, on this page).
+              </span>
+            </div>
+          );
+        })()}
       </div>
       <GateExplain
         rows={[
           ['How it fires', <span key="hf">Each detector hit adds weight to the request's RiskKey bucket score (sum of signals). Crossing <code>challenge_at</code> serves a JS/CAPTCHA challenge; crossing <code>block_at</code> refuses requests at the gate. Bucket is keyed by <code>{`{ip, device_fp?, session?}`}</code> — two browsers on the same NAT'd IP each accumulate independently.</span>],
-          ['Counter', <span key="c"><strong>Decays exponentially</strong> (half-life ~5m from <code>risk.decay_half_life</code>). Score drifts down between hits; a bucket that stops attracting detector hits eventually recovers.</span>],
-          ['Response', <span key="rsp">429 + <code>X-WAF-Action: challenge</code> when above challenge_at; 403 + <code>X-WAF-Action: block</code> + <code>X-WAF-Rule-Id: risk-score</code> when above block_at. <code>X-WAF-Risk-Score</code> reports this same accumulated score, satisfying the contract's accumulation+decay invariant.</span>],
-          ['Recovery', 'Automatic — score decays toward zero as time passes without new detector hits.'],
+          ['Decay', <span key="c"><strong>Linear, time-based, applied on read.</strong> The score falls at <code>{riskApi.data?.trust_per_hour ?? 30}</code> points/hour of wall-clock time (config <code>risk.trust_recovery.per_hour</code>), evaluated every time the score is read — so a bucket that stops attracting hits ages toward zero even with no further traffic, and the gate decision + <code>/api/risk</code> view both reflect the aged value.</span>],
+          ['Response', <span key="rsp">429 + <code>X-WAF-Action: challenge</code> when above challenge_at; 403 + <code>X-WAF-Action: block</code> + <code>X-WAF-Rule-Id: risk-score</code> when above block_at. <code>X-WAF-Risk-Score</code> reports this same (decayed) accumulated score, satisfying the contract's accumulation+decay invariant.</span>],
+          ['Recovery', <span key="r">Automatic — score decays toward zero as time passes without new hits (see "How the score decays" above). <strong>Strikes are the exception</strong>: the repeat-offender strike-block never decays.</span>],
           ['Tunable', <span key="t">Sliders above. Audit-mutated <code>PUT /api/risk/thresholds</code>; takes effect on the next request.</span>],
           ['Distinct from', <span key="d">The per-request <em>tier risk threshold</em> (50/70/80/90 by tier) which blocks <em>this</em> request based on its detector hits. That one lives on <a href="#/detectors" style={{ color: 'var(--accent)' }}>Detectors &amp; Tiers</a> → Edit tier.</span>],
         ]}

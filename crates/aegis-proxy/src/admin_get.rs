@@ -991,6 +991,10 @@ pub(crate) fn admin_router(
                 "challenge_at": t.challenge_at,
                 "block_at":     t.block_at,
                 "max":          t.max,
+                // Live linear decay rate (points/hour), applied on read +
+                // as trust-recovery. Lets the dashboard show the real decay
+                // model instead of a misleading exponential "half-life".
+                "trust_per_hour": services.risk.trust_per_hour(),
             })
             .to_string();
             json_body_response(200, body, "private, max-age=2")
