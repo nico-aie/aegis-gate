@@ -126,3 +126,10 @@ run/
 
 # infra Redis password for docker compose
 deploy/compose/.env
+
+# =========================
+# Raw l-tester recon dumps
+# =========================
+# 518KB+ raw recon path dumps capture scanned tokens (Atlassian JWTs)
+# and trip GitHub push protection. Curated .md reports DO go in.
+/tests/l-tester/reports/recon-path.txt
