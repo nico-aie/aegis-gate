@@ -29,6 +29,7 @@
 #![allow(dead_code)]
 
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -142,7 +143,10 @@ struct TrackerInner {
     /// without a restart. Reads through `Arc::clone` (free)
     /// and the inner clone is cheap (3 u32s).
     thresholds: arc_swap::ArcSwap<RiskThresholds>,
-    trust: TrustRecoveryConfig,
+    /// Linear decay rate (points/hour). Atomic so `PUT /api/risk/thresholds`
+    /// can hot-tune it (and the cluster reload helper can sync it across
+    /// nodes) without a restart — see [`RiskTracker::set_trust_per_hour`].
+    trust_per_hour: AtomicU32,
     /// 2026-05-10 — wrapped in ArcSwap so `PUT /api/gates/strikes`
     /// can hot-flip `enabled` and tune `block_at` without a
     /// restart. Per-IP strike *state* in `map` is preserved
@@ -171,7 +175,9 @@ impl RiskTracker {
             inner: Arc::new(TrackerInner {
                 map: DashMap::new(),
                 thresholds: arc_swap::ArcSwap::from_pointee(cfg.thresholds.clone()),
-                trust: cfg.trust_recovery.clone().unwrap_or_default(),
+                trust_per_hour: AtomicU32::new(
+                    cfg.trust_recovery.clone().unwrap_or_default().per_hour,
+                ),
                 strikes: arc_swap::ArcSwap::from_pointee(
                     cfg.strikes.clone().unwrap_or_default(),
                 ),
@@ -246,6 +252,21 @@ impl RiskTracker {
         (**self.inner.thresholds.load()).clone()
     }
 
+    /// Linear decay rate (points per hour) applied to the cumulative score,
+    /// both as trust-recovery on clean traffic and as decay-on-read. Surfaced
+    /// to `/api/risk/thresholds` so the dashboard shows the real rate.
+    pub fn trust_per_hour(&self) -> u32 {
+        self.inner.trust_per_hour.load(Ordering::Relaxed)
+    }
+
+    /// Hot-swap the linear decay rate (points/hour). Used by the audit-mutated
+    /// `PUT /api/risk/thresholds` and the cluster reload helper so a decay-rate
+    /// change applies live and converges across nodes. Per-IP score state is
+    /// preserved — only the rate at which it ages changes.
+    pub fn set_trust_per_hour(&self, per_hour: u32) {
+        self.inner.trust_per_hour.store(per_hour, Ordering::Relaxed);
+    }
+
     /// Register a malicious event. Adds `delta` to the score
     /// (clamped at `max`) and increments the lifetime strike
     /// counter by one. Returns the post-state.
@@ -289,8 +310,13 @@ impl RiskTracker {
         now: Instant,
     ) -> RiskState {
         let max = self.inner.thresholds.load().max;
+        let per_hour = self.inner.trust_per_hour.load(Ordering::Relaxed);
         let state = if let Some(mut entry) = self.inner.map.get_mut(&key) {
-            entry.score = (entry.score + delta).min(max);
+            // Age the stored score for time elapsed since last touch, THEN add
+            // the new strike's delta — so the decay-on-read value and the
+            // post-malicious value agree (no jump back up to a stale peak).
+            let decayed = decayed_slot(*entry, now, per_hour).score;
+            entry.score = (decayed + delta).min(max);
             entry.strikes = entry.strikes.saturating_add(1);
             entry.last_seen = now;
             slot_to_state(*entry)
@@ -338,7 +364,7 @@ impl RiskTracker {
     ) -> RiskState {
         let state = if let Some(mut entry) = self.inner.map.get_mut(&key) {
             let elapsed = now.saturating_duration_since(entry.last_seen);
-            let recovery = trust_decay_points(elapsed, self.inner.trust.per_hour);
+            let recovery = trust_decay_points(elapsed, self.inner.trust_per_hour.load(Ordering::Relaxed));
             entry.score = entry.score.saturating_sub(recovery);
             entry.last_seen = now;
             slot_to_state(*entry)
@@ -355,9 +381,15 @@ impl RiskTracker {
         state
     }
 
-    /// Read the current state without mutating.
+    /// Read the current state without mutating. Applies decay-on-read so the
+    /// returned score reflects time elapsed since the IP's last request.
     pub fn snapshot(&self, ip: IpAddr) -> Option<RiskState> {
         self.snapshot_with_key(&aegis_core::risk::RiskKey::from_ip(ip))
+    }
+
+    /// IP-only, explicit-clock read variant (deterministic tests).
+    pub fn snapshot_at(&self, ip: IpAddr, now: Instant) -> Option<RiskState> {
+        self.snapshot_with_key_at(&aegis_core::risk::RiskKey::from_ip(ip), now)
     }
 
     /// Composite-key variant of [`snapshot`].
@@ -365,7 +397,23 @@ impl RiskTracker {
         &self,
         key: &aegis_core::risk::RiskKey,
     ) -> Option<RiskState> {
-        self.inner.map.get(key).map(|e| slot_to_state(*e))
+        self.snapshot_with_key_at(key, Instant::now())
+    }
+
+    /// Composite-key + explicit-clock read variant. Applies decay-on-read
+    /// (see [`decayed_slot`]) — the score is aged by elapsed time without
+    /// mutating the store, so the gate decision and `/api/risk` view age
+    /// consistently even for an IP that has gone silent.
+    pub fn snapshot_with_key_at(
+        &self,
+        key: &aegis_core::risk::RiskKey,
+        now: Instant,
+    ) -> Option<RiskState> {
+        let per_hour = self.inner.trust_per_hour.load(Ordering::Relaxed);
+        self.inner
+            .map
+            .get(key)
+            .map(|e| slot_to_state(decayed_slot(*e, now, per_hour)))
     }
 
     /// Adaptive mitigation decision for a given IP. Strike-block
@@ -376,9 +424,25 @@ impl RiskTracker {
         self.level_for_key(&aegis_core::risk::RiskKey::from_ip(ip))
     }
 
+    /// IP-only, explicit-clock variant of [`level`] (deterministic tests).
+    pub fn level_at(&self, ip: IpAddr, now: Instant) -> RiskLevel {
+        self.level_for_key_at(&aegis_core::risk::RiskKey::from_ip(ip), now)
+    }
+
     /// Composite-key variant of [`level`].
     pub fn level_for_key(&self, key: &aegis_core::risk::RiskKey) -> RiskLevel {
-        let Some(state) = self.snapshot_with_key(key) else {
+        self.level_for_key_at(key, Instant::now())
+    }
+
+    /// Composite-key + explicit-clock variant. Evaluates against the
+    /// decay-on-read score so a quiet IP's gate level relaxes over time,
+    /// while strike-block (which never decays) still short-circuits to Block.
+    pub fn level_for_key_at(
+        &self,
+        key: &aegis_core::risk::RiskKey,
+        now: Instant,
+    ) -> RiskLevel {
+        let Some(state) = self.snapshot_with_key_at(key, now) else {
             return RiskLevel::Allow;
         };
         if self.is_strike_blocked_for_key(key) {
@@ -596,6 +660,24 @@ impl RiskTracker {
 fn slot_to_state(slot: Slot) -> RiskState {
     RiskState {
         score: slot.score,
+        strikes: slot.strikes,
+        last_seen: slot.last_seen,
+    }
+}
+
+/// 2026-06-21 — time-based decay applied on READ (decay-on-access). Returns a
+/// copy of `slot` with its score aged by the elapsed time since `last_seen` at
+/// the linear trust-recovery rate (`per_hour`). `last_seen` is preserved so the
+/// dashboard's idle indicator stays accurate and repeated reads decay from the
+/// same anchor (idempotent). Strikes are NEVER decayed — that is the lifetime
+/// repeat-offender guarantee. Used by every read path and as the rebase step on
+/// `record_malicious`, so a gate decision, the `/api/risk` view, and the next
+/// write all see the same aged score instead of a value frozen at last touch.
+fn decayed_slot(slot: Slot, now: Instant, per_hour: u32) -> Slot {
+    let elapsed = now.saturating_duration_since(slot.last_seen);
+    let recovered = trust_decay_points(elapsed, per_hour);
+    Slot {
+        score: slot.score.saturating_sub(recovered),
         strikes: slot.strikes,
         last_seen: slot.last_seen,
     }
@@ -886,6 +968,81 @@ mod tests {
         }
         let s = t.snapshot(ip("10.0.0.1")).unwrap();
         assert_eq!(s.strikes, 3);
+    }
+
+    // 2026-06-21 — decay-on-read. The cumulative score must reflect elapsed
+    // time when READ, not only when a clean request happens to arrive. Removes
+    // the "quiet attacker stuck at peak score" surprise and aligns with how
+    // reputation / rate systems age scores on access. Strikes stay permanent.
+    #[test]
+    fn trust_per_hour_getter_reports_configured_rate() {
+        // Surfaced to /api/risk/thresholds so the dashboard can show the
+        // real (linear) decay rate instead of a misleading "half-life".
+        let t = RiskTracker::new(&cfg()); // cfg() sets per_hour = 30
+        assert_eq!(t.trust_per_hour(), 30);
+    }
+
+    #[test]
+    fn set_trust_per_hour_hot_swaps_decay_rate() {
+        // The dashboard PUT edits the decay rate live; it must hot-swap on the
+        // tracker AND actually change the decay-on-read maths (no restart).
+        let t = RiskTracker::new(&cfg()); // per_hour = 30
+        assert_eq!(t.trust_per_hour(), 30);
+        t.set_trust_per_hour(60);
+        assert_eq!(t.trust_per_hour(), 60);
+        let now = Instant::now();
+        t.record_malicious_at(ip("10.0.0.7"), 80, now);
+        let later = now + Duration::from_secs(3600); // 1h at the new 60/hr
+        let s = t.snapshot_at(ip("10.0.0.7"), later).unwrap();
+        assert_eq!(s.score, 20); // 80 − 60
+    }
+
+    #[test]
+    fn snapshot_decays_score_on_read_without_a_clean_request() {
+        let t = RiskTracker::new(&cfg());
+        let now = Instant::now();
+        t.record_malicious_at(ip("10.0.0.9"), 80, now);
+        // One hour later, with NO intervening request, a plain read sees decay.
+        let later = now + Duration::from_secs(3600);
+        let s = t.snapshot_at(ip("10.0.0.9"), later).unwrap();
+        assert_eq!(s.score, 50); // 80 − 30/hr
+    }
+
+    #[test]
+    fn snapshot_decay_on_read_preserves_strikes() {
+        let t = RiskTracker::new(&cfg());
+        let now = Instant::now();
+        for _ in 0..4 {
+            t.record_malicious_at(ip("10.0.0.9"), 20, now);
+        }
+        let later = now + Duration::from_secs(10 * 3600); // long enough to zero it
+        let s = t.snapshot_at(ip("10.0.0.9"), later).unwrap();
+        assert_eq!(s.score, 0);
+        assert_eq!(s.strikes, 4); // strikes never decay
+    }
+
+    #[test]
+    fn level_uses_decayed_score_on_read() {
+        // score thresholds: challenge_at=30, block_at=70; strike block at 5.
+        let t = RiskTracker::new(&cfg());
+        let now = Instant::now();
+        t.record_malicious_at(ip("10.0.0.9"), 80, now); // 1 strike, score 80
+        assert_eq!(t.level_at(ip("10.0.0.9"), now), RiskLevel::Block);
+        // 2h later: 80 − 60 = 20 → below challenge → Allow, on read alone.
+        let later = now + Duration::from_secs(2 * 3600);
+        assert_eq!(t.level_at(ip("10.0.0.9"), later), RiskLevel::Allow);
+    }
+
+    #[test]
+    fn record_malicious_rebases_to_decayed_score_before_adding() {
+        // Avoids an "un-decay" jump: a returning attacker's score is aged
+        // first, THEN the new delta is added — so reads and writes agree.
+        let t = RiskTracker::new(&cfg());
+        let now = Instant::now();
+        t.record_malicious_at(ip("10.0.0.9"), 80, now);
+        let later = now + Duration::from_secs(3600); // decay 30 → 50
+        let st = t.record_malicious_at(ip("10.0.0.9"), 10, later);
+        assert_eq!(st.score, 60); // 50 + 10, not 90
     }
 
     #[test]

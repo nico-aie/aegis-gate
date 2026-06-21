@@ -100,7 +100,7 @@ below will work.
 |---|---|---|
 | ✅ Custom rule engine | Rule Manager → New rule → write DSL → Save & deploy | Rule lives, request matching the pattern triggers configured action + `risk_delta`. |
 | ✅ Risk score (per-request) | Drive a request that triggers two detectors at once | Audit chain shows the summed score; if it crosses the route's tier `risk_threshold`, request is blocked. |
-| ✅ IP cumulative strike | Hammer the WAF with 5+ attacks from `127.0.0.1`, then send a benign request | Investigation page → Recent requests: the benign request shows `IP risk` ≥ the cumulative score (decays over 5 min). |
+| ✅ IP cumulative strike | Hammer the WAF with 5+ attacks from `127.0.0.1`, then send a benign request | Investigation page → Recent requests: the benign request shows `IP risk` ≥ the cumulative score (decays linearly at `trust_recovery.per_hour`, default 30/hr, applied on read). |
 | ✅ Strike gate (block on accumulated score) | Set `risk.thresholds.block_threshold` lower, drive enough attacks to cross it | Subsequent requests from the same IP are blocked by the strike gate even if they themselves carry no detector signal. |
 | ✅ Risk reset (per IP) | Tracking → Risk → click `Reset` on an IP row | Audit chain entry; subsequent fetches show that IP back to score 0. |
 

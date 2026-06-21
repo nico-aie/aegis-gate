@@ -684,6 +684,12 @@ pub fn apply_cfg_change_to_risk(
     let mut applied = false;
     if let Some(tracker) = risk {
         tracker.set_thresholds(new_cfg.risk.thresholds.clone());
+        // 2026-06-21 — sync the cumulative-risk decay rate across nodes. A
+        // converged doc that tuned `trust_recovery.per_hour` must hot-apply
+        // here, not just on the node that handled the PUT.
+        tracker.set_trust_per_hour(
+            new_cfg.risk.trust_recovery.clone().unwrap_or_default().per_hour,
+        );
         if let Some(sc) = &new_cfg.risk.strikes {
             tracker.set_strike_config(sc.clone());
         }
@@ -1566,6 +1572,29 @@ bots:
             canary.raw(),
             vec!["/only-this".to_string()],
             "canary set re-derived from doc",
+        );
+    }
+
+    #[test]
+    fn risk_readback_syncs_trust_per_hour_to_peers() {
+        // "sync node" — a converged config doc that changes the cumulative
+        // decay rate must hot-apply on every node via the reload helper, not
+        // just the node that handled the PUT.
+        let boot = parse(&gate_yaml(true, true, true));
+        let tracker = aegis_security::risk::RiskTracker::new(&boot.risk);
+        assert_eq!(tracker.trust_per_hour(), 30, "boot default per_hour");
+
+        let mut doc = parse(&gate_yaml(true, true, true));
+        doc.risk.trust_recovery =
+            Some(aegis_core::config::TrustRecoveryConfig { per_hour: 90 });
+        assert_eq!(
+            apply_cfg_change_to_risk(&doc, Some(&tracker), None),
+            GateReloadOutcome::Applied,
+        );
+        assert_eq!(
+            tracker.trust_per_hour(),
+            90,
+            "decay rate re-derived from the converged doc",
         );
     }
 

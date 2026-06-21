@@ -155,7 +155,7 @@ heuristics.
 
 Tracing one IP through three requests on a default `prod-balanced`
 config (`challenge_at: 40`, `block_at: 80`, `max: 100`,
-`decay_half_life: 5m`).
+`trust_recovery.per_hour: 30` — linear decay, applied on read).
 
 > Tier note (2026-05-21): there is **no automatic path→tier
 > heuristic** anymore. Every request defaults to the **Low** tier
@@ -188,10 +188,14 @@ T=30s  GET /etc/passwd via ../../../ traversal
        ─ strikes(IP) = 3 (still below strikes.block_at=50, so decay
          can still recover this IP eventually).
 
-T=5m+  Score has decayed from 100 to 50 (half-life 5 min):
-       ─ Above challenge_at (40) but below block_at (80) — IP gets
-         a JS challenge instead of a block. Solving lowers score
-         in the cookie-bound grace period.
+T=2h   Linear decay at trust_recovery.per_hour=30: 100 − 2×30 = 40.
+       Decay is applied ON READ, so this happens even with zero
+       traffic in between.
+       ─ Now at challenge_at (40) but below block_at (80) — the IP
+         gets a JS challenge instead of a block. Solving lowers the
+         effective score in the cookie-bound grace period.
+       ─ (Decay is slow by design — 30/hr. A genuinely abusive IP
+         that keeps probing never recovers; strikes also persist.)
 ```
 
 **Key thing to internalize**: the per-request score (one request's
@@ -256,14 +260,31 @@ profile and the 26-feature extractor list.
 
 ## Decay
 
-A background tokio task applies linear decay every minute:
+The live in-process tracker (`risk::tracker::RiskTracker`) decays the
+cumulative score **linearly** at `trust_recovery.per_hour` points per hour
+of wall-clock time, and applies it **on read** (decay-on-access) — there is
+no background sweep task:
 
 ```
-score = max(0, score - decay_per_minute * elapsed_min)
+effective_score = max(0, stored_score - per_hour * hours_since_last_seen)
 ```
 
-Decay is computed on read in Redis-backed deployments (`GET + time_delta`
-Lua script) to avoid a sweeping decay pass across millions of keys.
+Because decay is applied on read, a source that floods and then goes silent
+ages toward zero on its own — the gate decision, `/api/risk`, and the next
+write all see the same aged value (it is **not** frozen at the peak until
+more traffic arrives). The same rate also claws back score on a clean
+request (trust recovery). To keep the model consistent, a new malicious
+event **rebases** to the decayed score before adding its delta, so reads
+and writes never disagree.
+
+**Strikes never decay.** The lifetime strike counter is unaffected by the
+above; a strike-blocked source stays blocked regardless of score recovery
+(see P6 below).
+
+> Note: `risk::mod::RiskEngine` carries an older *exponential* half-life
+> accumulator (`decay_half_life`, default 5m). It is **not wired into the
+> data-plane hot path** — the live model is the linear, decay-on-read
+> tracker above. `decay_half_life` is retained as a dormant/legacy knob.
 
 ## Decision
 
@@ -284,9 +305,8 @@ with full request context for forensics.
 
 ```yaml
 risk:
-  thresholds: { allow: 30, challenge: 70 }
-  decay_per_minute: 5
-  max_score: 100
+  thresholds: { challenge_at: 40, block_at: 80, max: 100 }
+  trust_recovery: { per_hour: 30 }   # linear decay, applied on read
   canary_routes: [ "/admin/backup", "/.git/config", "/wp-admin" ]
 ```
 
@@ -316,21 +336,28 @@ risk:
     challenge_at: 40         # Allow → Challenge boundary
     block_at:     80         # Challenge → Block boundary
     max:          100
-  decay_half_life: 5m        # legacy half-life decay (P6 trust
-                             # recovery applies in addition)
-  trust_recovery:            # P6: clean-traffic claw-back
-    per_hour: 30             # cap on score reduction per hour
+  decay_half_life: 5m        # DORMANT legacy exponential engine —
+                             # not wired into the hot path
+  trust_recovery:            # LIVE decay model (linear, on read)
+    per_hour: 30             # score falls this many points per hour
   strikes:                   # P6: lifetime malicious-event count
     block_at: 50             # permanent block at this many strikes
 ```
 
 ## P6 — strikes + trust recovery + adaptive mitigation
 
-The legacy half-life decay is supplemented by two new policies:
+The live decay model is **trust recovery** (linear, applied on read — see
+[Decay](#decay)), plus two adaptive policies:
 
-- **Trust recovery** — a clean request claws back score capped at
-  `trust_recovery.per_hour` per hour of elapsed clean traffic. One
-  benign request can never reset a flagged client.
+- **Trust recovery** — score falls at `trust_recovery.per_hour` points per
+  hour of elapsed wall-clock time, applied both on read and on a clean
+  request. Decay is proportional to elapsed time, so one benign request
+  after a short gap can never reset a flagged client. The rate is
+  **operator-tunable from the dashboard** (Traffic Gates → #3 Cumulative IP
+  risk → "Decay rate") via the audit-mutated `PUT /api/risk/thresholds`
+  (`trust_per_hour`); the change hot-applies, persists across restart, and
+  **converges across cluster nodes** through `apply_cfg_change_to_risk`
+  (`RiskTracker::set_trust_per_hour`).
 - **Strikes** — every malicious detection bumps a lifetime counter
   that *never decays*. Once `strikes.block_at` is reached, the IP
   is permanently blocked at the data plane until an operator runs
@@ -355,10 +382,13 @@ for response shapes.
 
 ## Implementation
 
-- `aegis-security::risk::RiskEngine` — legacy half-life accumulator
-- `aegis-security::risk::tracker::RiskTracker` — **P6** in-memory
-  per-RiskKey-bucket store with strikes + trust recovery; DashMap-backed; cheap
-  to clone (Arc-shared). Hot path = one map lookup + bitfield AND.
+- `aegis-security::risk::RiskEngine` — legacy exponential half-life
+  accumulator; **dormant** (not wired into the data-plane hot path)
+- `aegis-security::risk::tracker::RiskTracker` — **P6 / live** in-memory
+  per-RiskKey-bucket store with strikes + linear trust recovery applied
+  **on read** (`snapshot_with_key_at` / `level_for_key_at` / `decayed_slot`);
+  DashMap-backed; cheap to clone (Arc-shared). Hot path = one map lookup +
+  bitfield AND.
 - `aegis-control::api::risk` — `/api/risk*` HTTP surface
 - `aegis-proxy::handle_risk_reset` — audit-mutated reset path
 
