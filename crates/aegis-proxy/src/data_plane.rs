@@ -1947,6 +1947,24 @@ pub(crate) async fn forward_allow_to_upstream(
                     reason = %decision.reason,
                     "request blocked by operator rule",
                 );
+                // 2026-06-21 — emit the block audit event (Live Feed /
+                // Investigation / Audit Trail). The rule engine builds its own
+                // response (to honor the rule's custom `block.status` + rule_id
+                // body), so it can't use `blocked_response`; share the emit via
+                // `emit_block_audit` so a rule block is observable like detector
+                // blocks. Without this it returned 403 + headers but logged
+                // nothing → invisible on every dashboard surface.
+                emit_block_audit(
+                    std::net::SocketAddr::new(peer_ip, 0),
+                    &decision.reason,
+                    Some(rule_id.clone()),
+                    None,
+                    route_ctx.tier,
+                    &parts.uri,
+                    &parts.method,
+                    bus,
+                    None,
+                );
                 let resp = Response::builder()
                     .status(status)
                     .header("content-type", "application/json")
@@ -1957,7 +1975,7 @@ pub(crate) async fn forward_allow_to_upstream(
                         decision.reason.replace('"', "\\\""),
                     ))))
                     .unwrap();
-                return (resp, DecisionTag::block(rule_id));
+                return (resp, DecisionTag::block(rule_id).with_tier(route_ctx.tier));
             }
         }
     }
@@ -4180,6 +4198,35 @@ fn blocked_response(
     // detector blocks already do. `None` keeps the slim shape.
     echo: Option<serde_json::Map<String, serde_json::Value>>,
 ) -> Response<crate::body::DataBody> {
+    emit_block_audit(peer, reason, rule_id, risk_score, tier, uri, method, bus, echo);
+    Response::builder()
+        .status(403)
+        .header("content-type", "application/json")
+        .body(crate::body::full(Bytes::from(
+            serde_json::json!({ "error": "forbidden", "reason": reason }).to_string(),
+        )))
+        .unwrap()
+}
+
+/// Emit the single `block` audit/Detection event for a terminated request.
+/// Split out of [`blocked_response`] (2026-06-21) so block paths that build
+/// their OWN response — e.g. the operator rule engine, which honors the rule's
+/// custom `block.status` and a rule_id body — still produce the SAME audit row
+/// (Live Feed / Investigation / Audit Trail). Without this, a rule-engine block
+/// returned 403 + `X-WAF-Rule-Id` but emitted nothing, so it was invisible on
+/// every observability surface.
+#[allow(clippy::too_many_arguments)]
+fn emit_block_audit(
+    peer: std::net::SocketAddr,
+    reason: &str,
+    rule_id: Option<String>,
+    risk_score: Option<u32>,
+    tier: aegis_core::tier::Tier,
+    uri: &hyper::Uri,
+    method: &hyper::Method,
+    bus: &AuditBus,
+    echo: Option<serde_json::Map<String, serde_json::Value>>,
+) {
     let ev = aegis_core::audit::AuditEvent {
         schema_version: 1,
         ts: chrono::Utc::now(),
@@ -4224,13 +4271,6 @@ fn blocked_response(
         },
     };
     bus.emit(ev);
-    Response::builder()
-        .status(403)
-        .header("content-type", "application/json")
-        .body(crate::body::full(Bytes::from(
-            serde_json::json!({ "error": "forbidden", "reason": reason }).to_string(),
-        )))
-        .unwrap()
 }
 
 #[cfg(test)]

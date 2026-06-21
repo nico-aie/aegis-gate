@@ -158,7 +158,19 @@ impl AuditFilter {
                         })
                     })
                     .unwrap_or(false);
-                if !detectors_hit {
+                // 2026-06-21 — config-mutation events (rule_update / rule_delete,
+                // route_*, pool_*) carry a null top-level `rule_id`; the id lives
+                // in `fields.resource` (e.g. `/api/rules/<id>`). Match the last
+                // path segment so the Audit Trail `rule_id` filter finds the
+                // events that mutated that rule (mirrors the UI's RULE column).
+                let resource_hit = ev
+                    .fields
+                    .get("resource")
+                    .and_then(|v| v.as_str())
+                    .and_then(|res| res.trim_end_matches('/').rsplit('/').next())
+                    .map(|seg| seg.eq_ignore_ascii_case(rule))
+                    .unwrap_or(false);
+                if !detectors_hit && !resource_hit {
                     return false;
                 }
             }
@@ -706,6 +718,34 @@ mod tests {
         assert!(f.matches(&ev_filter("b", "1.1.1.1", None, &["recon_path"])));
         // Neither — rejected.
         assert!(!f.matches(&ev_filter("c", "1.1.1.1", Some("sqli"), &["xss"])));
+    }
+
+    #[test]
+    fn audit_filter_rule_id_matches_resource_tail() {
+        // 2026-06-21 — config-mutation events (rule_update/_delete, route_*,
+        // pool_*) carry rule_id=None; the id is the last segment of
+        // `fields.resource`. The Audit Trail rule_id filter must find them.
+        let mut ev = ev_filter("a", "1.1.1.1", None, &[]);
+        ev.action = "rule_update".into();
+        ev.fields = serde_json::json!({ "resource": "/api/rules/sample-block-ip-rule" });
+
+        let f = AuditFilter {
+            rule_id: Some("sample-block-ip-rule".into()),
+            ..Default::default()
+        };
+        assert!(f.matches(&ev), "must match the resource path's rule id");
+        // case-insensitive
+        let f2 = AuditFilter {
+            rule_id: Some("SAMPLE-BLOCK-IP-RULE".into()),
+            ..Default::default()
+        };
+        assert!(f2.matches(&ev));
+        // a different id is rejected
+        let f3 = AuditFilter {
+            rule_id: Some("other-rule".into()),
+            ..Default::default()
+        };
+        assert!(!f3.matches(&ev));
     }
 
     #[test]
