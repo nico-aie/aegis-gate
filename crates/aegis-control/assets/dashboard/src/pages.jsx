@@ -3076,12 +3076,17 @@ function PageRuleManager() {
               </div>
               <div style={{ padding: 16 }}>
                 {tab === 'general' && (
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, fontSize: 12 }}>
-                    <div><div className="field-label">ID</div><div className="mono">{selected.id}</div></div>
-                    <div><div className="field-label">Kind</div><span className={`pill ${selected.kind}`}>{selected.kind}</span></div>
-                    <div><div className="field-label">Action</div><window.ActionPill value={selected.action} /></div>
-                    <div><div className="field-label">Priority</div><span className="num">{selected.pri}</span></div>
-                    <div><div className="field-label">Enabled</div><span className={`pill ${selected.enabled ? 'ok' : 'warn'}`}>{selected.enabled ? 'enabled' : 'disabled'}</span></div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', columnGap: 24, rowGap: 12, fontSize: 12, alignItems: 'center', maxWidth: 440 }}>
+                    <div className="field-label">ID</div>
+                    <div className="mono">{selected.id}</div>
+                    <div className="field-label">Kind</div>
+                    <div><span className={`pill ${selected.kind}`}>{selected.kind}</span></div>
+                    <div className="field-label">Action</div>
+                    <div><window.ActionPill value={selected.action} /></div>
+                    <div className="field-label">Priority</div>
+                    <div className="num">{selected.pri}</div>
+                    <div className="field-label">Enabled</div>
+                    <div><span className={`pill ${selected.enabled ? 'ok' : 'warn'}`}>{selected.enabled ? 'enabled' : 'disabled'}</span></div>
                   </div>
                 )}
                 {tab === 'dsl' && (

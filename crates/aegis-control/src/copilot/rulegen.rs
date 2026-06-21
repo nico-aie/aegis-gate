@@ -34,8 +34,17 @@ Grammar (one rule, a YAML list item):
 
 Rules:
 - Emit exactly ONE rule and nothing else.
-- Use the EXACT id the operator gives; if none is given, invent a short kebab-case id.
-- Prefer the narrowest `when` that satisfies the intent; default `then` to block:{status:403} for deny intents.";
+- Use the EXACT id the operator gives; if none is given, invent a short
+  kebab-case id that DESCRIBES THE INTENT (e.g. block-ip-1-2-3-4), never a
+  generic template name.
+- The `then` action MUST match the intent's verb — do not default to allow:
+    block / deny / forbid / reject  -> block: { status: 403 }
+    allow / permit / whitelist / trust -> allow
+    log / monitor / observe / shadow   -> log_only
+    challenge / captcha                 -> challenge: { level: js }
+    rate limit / throttle / slow down   -> rate_limit: { key: ip, limit: N, window: Ns }
+  A 'block ...' request must produce block, NOT allow.
+- Prefer the narrowest `when` that satisfies the intent.";
 
 /// Build the (un-redacted) generation prompt. Pure. `id` is the operator's
 /// requested rule id (the model is told to use it verbatim so the body id and
@@ -96,6 +105,15 @@ mod tests {
         assert!(req.system.as_deref().unwrap().contains("when:"));
         assert!(req.prompt.contains("block /admin from outside office"));
         assert!(req.prompt.contains("custom-admin-block"));
+    }
+
+    #[test]
+    fn system_prompt_steers_block_intent_to_block_action() {
+        let sys = render_rule_prompt("block ip 1.2.3.4", "x").system.unwrap();
+        // The verb→action mapping must be present so a block intent can't
+        // produce `allow` (the reported mis-generation).
+        assert!(sys.contains("block: { status: 403 }"));
+        assert!(sys.contains("must produce block, NOT allow"));
     }
 
     #[test]
