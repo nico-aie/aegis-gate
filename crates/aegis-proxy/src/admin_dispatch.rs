@@ -827,6 +827,7 @@ async fn handle_simulate(
         &parsed,
         detectors.as_ref(),
         &services.detector_mask,
+        &services.tiers,
     );
     let body = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".into());
     json_body_response(200, body, "private, no-store")
