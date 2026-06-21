@@ -2941,6 +2941,11 @@ function PageRuleManager() {
         <div>
           <h1 className="page-title">
             Rules
+            <span
+              className="pill"
+              title="Beta — the operator rule engine + simulator are still stabilizing. Validate rules in the Simulator and review carefully before relying on them in production."
+              style={{ marginLeft: 8, fontSize: 10, verticalAlign: 'middle', background: 'rgba(252,213,53,0.16)', color: 'var(--brand-yellow)', border: '1px solid var(--brand-yellow)' }}
+            >BETA</span>
             <window.PageTitleRefresh
               onClick={() => rulesApi.reload && rulesApi.reload()}
               label="Reload rules"
