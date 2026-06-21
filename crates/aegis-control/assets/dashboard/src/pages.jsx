@@ -12992,26 +12992,45 @@ function PageReports() {
         </div>
       </div>
       <div className="card" style={{ padding: 16 }}>
+        {/* `align-items: stretch` (grid default) makes every card fill the row
+            height; each card is a flex column so the download button anchors to
+            the bottom (`margin-top: auto`) → buttons align across cards even
+            though the descriptions differ in length. */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
-          {cards.map(card => (
-            <div key={card.id} className="card" style={{ padding: 12 }}>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>{card.title}</div>
-              <div style={{ fontSize: 11, color: 'var(--ink-dim)', margin: '4px 0 10px' }}>{card.sub}</div>
-              {card.kind === 'href' ? (
-                <a className="btn primary" href={card.href} download>
-                  <window.I.Download /> Download CSV
-                </a>
-              ) : (
-                <button
-                  className="btn primary"
-                  onClick={card.onClick}
-                  disabled={busyId === card.id}
-                >
-                  <window.I.Download /> {busyId === card.id ? 'Preparing…' : (card.label || 'Download')}
-                </button>
-              )}
-            </div>
-          ))}
+          {cards.map(card => {
+            // Shared button styling so the href (CSV) and click variants render
+            // identically and sit flush at the card bottom, full-width.
+            const btnStyle = {
+              marginTop: 'auto',
+              width: '100%',
+              justifyContent: 'center',
+              textDecoration: 'none',
+            };
+            return (
+              <div
+                key={card.id}
+                className="card"
+                style={{ padding: 12, display: 'flex', flexDirection: 'column' }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{card.title}</div>
+                <div style={{ fontSize: 11, color: 'var(--ink-dim)', margin: '4px 0 12px', lineHeight: 1.5 }}>{card.sub}</div>
+                {card.kind === 'href' ? (
+                  <a className="btn primary" href={card.href} download style={btnStyle}>
+                    <window.I.Download /> {card.label || 'Download CSV'}
+                  </a>
+                ) : (
+                  <button
+                    className="btn primary"
+                    onClick={card.onClick}
+                    disabled={busyId === card.id}
+                    style={btnStyle}
+                  >
+                    <window.I.Download /> {busyId === card.id ? 'Preparing…' : (card.label || 'Download')}
+                  </button>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
     </>
