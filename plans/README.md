@@ -55,6 +55,12 @@ plans/
   follow-up to the shipped config-loss *detect+alert* fix: auto re-publish the
   last-known-good config after a Redis wipe. Blocked on a fleet split-brain
   decision (single-writer election). Not started.
+- **[`config-etcd-source-of-truth.md`](./future/config-etcd-source-of-truth.md)** —
+  durability/infra: move the config source of truth (`config:waf:doc` +
+  `control:waf:*`) from Redis to **etcd** for native Txn/Watch/Lease and Raft
+  durability. A trait split (durable config plane → etcd; hot ephemeral keyspace
+  stays Redis), additive and opt-in (default stays Redis). Deferred until the
+  hackathon one-dependency constraint lifts. Not started.
 - **[`passive-upstream-health.md`](./future/passive-upstream-health.md)** —
   deferred follow-up (3.2a) to the shipped *honest upstream badge* fix: derive
   member health from real traffic and feed the LB. Must ship with a fail-open

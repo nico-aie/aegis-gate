@@ -710,6 +710,7 @@ function RequestDetail({ data }) {
   const ip = data?.ip || '—';
   const action = data?.action || null;
   const tier = data?.tier || null;
+  const tierInferred = !!data?.tierInferred;
   const risk = (typeof data?.risk === 'number') ? data.risk : null;
   const rules = Array.isArray(data?.rules) ? data.rules : [];
   const cats = Array.isArray(data?.cats) ? data.cats : [];
@@ -803,7 +804,7 @@ function RequestDetail({ data }) {
           </div>
           <div>
             <div className="dim">Tier</div>
-            {tier ? <window.TierPill value={tier} /> : <span className="dim mono">—</span>}
+            {tier ? <window.TierPill value={tier} inferred={tierInferred} /> : <span className="dim mono">—</span>}
           </div>
         </div>
       </div>
@@ -1271,7 +1272,7 @@ function PageLiveFeed() {
                     title={e.path}
                   >{e.path}</td>
                   <td><span className="dim" style={{ fontSize: 11 }}>{e.region}</span></td>
-                  <td><window.TierPill value={e.tier} /></td>
+                  <td><window.TierPill value={e.tier} inferred={e.tierInferred} /></td>
                   <td><window.RiskMeter value={e.risk} /></td>
                   <td className="num mono" style={{ fontSize: 11 }}>
                     {Number.isFinite(Number(e.fields?.request_score))

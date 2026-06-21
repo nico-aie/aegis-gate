@@ -365,7 +365,20 @@ function RiskMeter({ value }) {
 
 // ============= Action / Tier pills =============
 function ActionPill({ value }) { return <span className={`pill ${value}`}>{value}</span>; }
-function TierPill({ value }) { return <span className={`pill tier-${value}`}>{value}</span>; }
+// `inferred` — the event carried no route tier, so this label was derived
+// from the IP's cumulative risk score (see `tierForRisk`). Render it muted +
+// dashed with a `~` so operators don't read it as an authoritative route tier.
+function TierPill({ value, inferred }) {
+  if (inferred) {
+    return (
+      <span
+        className={`pill tier-${value} tier-inferred`}
+        title="Tier inferred from this IP's cumulative risk score — the request carried no route tier. Not an authoritative route classification."
+      >~{value}</span>
+    );
+  }
+  return <span className={`pill tier-${value}`}>{value}</span>;
+}
 
 // ============= Drawer =============
 function Drawer({ open, onClose, title, children, footer }) {

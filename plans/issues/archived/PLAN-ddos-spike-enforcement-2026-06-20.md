@@ -138,6 +138,11 @@ so operators don't assume fleet-wide surge detection that isn't there.
 fleet sum in `tick_rps` — gated on whether multi-node spike detection is actually needed.
 Leave a one-line TODO breadcrumb at the `rolling_rps` site pointing here.
 
+> **Promoted to a future design doc (2026-06-20):**
+> [`../future/ddos-cross-node-rps-aggregation.md`](../future/ddos-cross-node-rps-aggregation.md)
+> — full design (per-second fleet bucket via existing `incrby`/`get_counter`, async tick seam,
+> fail-safe to per-node, `spike_scope` config gate). Not scheduled.
+
 ## P4 — Config / doc sweep
 
 - Update `config.rs` `DdosConfig` docs ([config.rs:4218](../../crates/aegis-core/src/config.rs#L4218))

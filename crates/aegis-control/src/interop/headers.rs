@@ -67,6 +67,32 @@ impl Action {
     }
 }
 
+/// Audit-emit ownership for a contract action — the single source of truth
+/// that keeps the Live Feed / Investigation table at exactly ONE row per
+/// request.
+///
+/// The data plane (`handle_data_request`) self-audits every decision it
+/// terminates itself with a rich Detection event (XFF-resolved client IP,
+/// detectors, strikes, route tier): `block`, `challenge`, and `rate_limit`.
+/// The connection listener (`accept.rs`) must therefore stay silent for
+/// those, or each request lands twice — the bug this consolidated:
+/// `rate_limit` used to be emitted by BOTH layers (a BLOCK twin from the
+/// data plane + a RATE_LIMIT row from the listener).
+///
+/// The listener is the SOLE emitter for `allow`, and for the upstream-failure
+/// verdicts the data plane does not self-audit (`timeout`, `circuit_breaker`).
+///
+/// Returns `true` when the LISTENER owns the emit, `false` when the data
+/// plane already emitted (listener must skip). Exhaustively matched so a
+/// newly-added [`Action`] forces a deliberate ownership choice here rather
+/// than silently defaulting into a double-row.
+pub fn listener_emits_audit(action: Action) -> bool {
+    match action {
+        Action::Allow | Action::Timeout | Action::CircuitBreaker => true,
+        Action::Block | Action::Challenge | Action::RateLimit => false,
+    }
+}
+
 /// `X-WAF-Mode` — `enforce` or `log_only`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -429,6 +455,29 @@ mod tests {
     fn mode_strings_match_spec() {
         assert_eq!(Mode::Enforce.as_str(), "enforce");
         assert_eq!(Mode::LogOnly.as_str(), "log_only");
+    }
+
+    /// 2026-06-21 — single source of truth for audit-emit ownership.
+    /// The data plane (`handle_data_request`) self-emits a rich Detection
+    /// row for every decision it terminates itself: `block`, `challenge`,
+    /// and `rate_limit`. The listener must NOT re-emit those, or the Live
+    /// Feed / Investigation table shows TWO rows per request. `allow` is
+    /// the listener's sole responsibility, and the upstream-failure verdicts
+    /// (`timeout`, `circuit_breaker`) are not self-audited by the data plane,
+    /// so the listener owns them too. This test pins the policy for EVERY
+    /// `Action` variant so a newly-added action can't silently regress into
+    /// a double-row (the bug this replaced: `rate_limit` was listener-emitted
+    /// AND data-plane-emitted).
+    #[test]
+    fn listener_audit_ownership_is_exhaustive_and_dedup_safe() {
+        // Listener is the sole emitter.
+        assert!(listener_emits_audit(Action::Allow));
+        assert!(listener_emits_audit(Action::Timeout));
+        assert!(listener_emits_audit(Action::CircuitBreaker));
+        // Data plane already emitted — listener must stay silent.
+        assert!(!listener_emits_audit(Action::Block));
+        assert!(!listener_emits_audit(Action::Challenge));
+        assert!(!listener_emits_audit(Action::RateLimit));
     }
 
     /// 2026-05-21 — an under-threshold detection is forwarded as

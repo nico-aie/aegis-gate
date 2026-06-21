@@ -792,15 +792,27 @@ pub(crate) async fn handle_data_request_inner(
                 .to_string(),
                 class: aegis_core::audit::AuditClass::Detection,
                 tenant_id: None,
-                tier: None,
-                action: "block".into(),
+                // 2026-06-21 — stamp the resolved route tier so the Live Feed
+                // shows the real tier instead of falling back to a risk-score
+                // bucket colour (the rate limiter fires after `route_tier` is
+                // resolved up front at ~432).
+                tier: Some(route_tier),
+                // 2026-06-21 — a 429 is a rate-limit, not a block. The legacy
+                // `"block"` label rendered a misleading BLOCK badge and (paired
+                // with the listener's `rate_limit` row) produced TWO feed rows
+                // per denial. Now: one correctly-labelled `rate_limit` row.
+                action: "rate_limit".into(),
                 reason: reason.clone(),
                 client_ip: peer_ip.to_string(),
                 route_id: None,
                 rule_id: Some("ip-rate-limit".into()),
                 risk_score: Some(post_state.score),
-                method: None,
-                path: None,
+                // 2026-06-21 — populate top-level method/path so the row keeps
+                // the real request line even under critical load (when the
+                // `fields` blob below is dropped to cut hot-path serialisation),
+                // instead of the dashboard collapsing it to "/" with no method.
+                method: Some(req.method().to_string()),
+                path: Some(origin_form_target(req.uri()).to_string()),
                 mode: None,
                 fields: if load_mode.is_critical() {
                     serde_json::Value::Null
@@ -822,7 +834,7 @@ pub(crate) async fn handle_data_request_inner(
         // F-CRITICAL-002 — honor `set_profile mode=log_only` on
         // `rate_limit.per_ip`. Audit already emitted above; only
         // the 429 response is gated by the mode.
-        let rl_tag = DecisionTag::rate_limit("ip-rate-limit");
+        let rl_tag = DecisionTag::rate_limit("ip-rate-limit").with_tier(route_tier);
         let rl_mode = effective_mode(
             interop_modes
                 .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("ip-rate-limit")))
@@ -5976,6 +5988,173 @@ ddos: {{ per_ip_limit: 1, per_ip_window_s: 10 }}
             "enforced DDoS block must emit a single `block` event, not a duplicate \
              `ddos_blocked` twin; saw {shape:?}",
         );
+    }
+
+    // 2026-06-21 — a per-IP rate-limit denial must emit a SINGLE, correctly
+    // labelled Detection row: `action: "rate_limit"` (not the legacy
+    // mislabel `"block"`), carrying the route tier and the real request
+    // path, so the Live Feed / Investigation table shows one accurate row
+    // instead of a BLOCK twin with path "/" + a separate RATE_LIMIT row.
+    // (The listener-side dedup that prevents the second row lives in
+    // `accept.rs`, gated by `listener_emits_audit`; this test pins the
+    // data-plane half — the surviving row's shape.)
+    #[tokio::test]
+    async fn rate_limit_denial_emits_single_rate_limit_row_with_tier_and_path() {
+        let backend = spawn_upstream().await;
+        // `limit: 1` → the first request consumes the only token in the
+        // window; every subsequent request from the same key is denied and
+        // takes the per-IP rate-limit emit path.
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: pool }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend}" }}] }}
+state: {{ backend: in_memory }}
+rate_limit:
+  buckets:
+    - {{ id: global-ip, scope: global, key: ip, algo: sliding_window, limit: 1, window: "1m" }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
+
+        // DDoS runtime deliberately NOT wired — the ddos gate runs before the
+        // rate limiter and we want the rate-limit path to be the one that fires.
+        let modes = Arc::new(ModeStore::new(Mode::Enforce));
+        ctx.interop_modes.set(modes.clone()).ok();
+
+        let metrics = aegis_control::metrics::MetricsRegistry::init();
+        let args = Arc::new(Args {
+            detectors: aegis_security::detectors::default_detectors(),
+            mask: aegis_security::detectors::SharedDetectorMask::from_config(&cfg.detectors),
+            risk: aegis_security::risk::RiskTracker::new(&cfg.risk),
+            ip_rl: aegis_security::rate_limit::IpRateLimiter::new(
+                crate::config_source::reload::derive_ip_rate_cfg(&cfg),
+            ),
+            load_gauge: aegis_core::LoadGauge::new(cfg.load_mode.clone()),
+            verbosity: aegis_core::SharedVerbosity::from_config(&cfg.logging),
+            rsh: aegis_control::metrics::request_duration::RequestStageHistogram::register(&metrics)
+                .unwrap(),
+            rlh: aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&metrics)
+                .unwrap(),
+            ra: aegis_control::metrics::route_activity::RouteActivityWindow::new(),
+            dlh: aegis_control::metrics::detector_latency::DetectorLatencyHistogram::register(
+                &metrics,
+            )
+            .unwrap(),
+            dhm: aegis_control::metrics::detector_hits::DetectorHitMetrics::register(&metrics)
+                .unwrap(),
+            bus: AuditBus::new(256),
+            ctx: ctx.clone(),
+        });
+
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let args_l = args.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, peer)) = waf.accept().await {
+                let args_c = args_l.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                        let a = args_c.clone();
+                        async move {
+                            let (resp, _tag) = super::handle_data_request(
+                                req,
+                                peer,
+                                None,
+                                &a.detectors,
+                                &a.mask,
+                                &a.risk,
+                                &a.ip_rl,
+                                &a.load_gauge,
+                                &a.verbosity,
+                                &a.rsh,
+                                &a.rlh,
+                                &a.ra,
+                                &a.dlh,
+                                &a.bus,
+                                &a.ctx,
+                                &a.dhm,
+                                &ClientIdentity::Anonymous,
+                                None,
+                            )
+                            .await;
+                            Ok::<_, Infallible>(resp)
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let mut rx = args.bus.subscribe();
+
+        // First request consumes the token (allowed); the next two are denied.
+        // Two denials keep cumulative strikes (2×30=60) below the default
+        // strike block_at, so we isolate the rate-limit path from risk-strikes.
+        let mut rate_limited_seen = false;
+        for _ in 0..3 {
+            let status = get_status(waf_addr, "/").await;
+            if status == 429 {
+                rate_limited_seen = true;
+            }
+        }
+        assert!(rate_limited_seen, "limit=1 must produce at least one 429");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let mut events = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            events.push(ev);
+        }
+        let shape: Vec<(String, Option<String>)> = events
+            .iter()
+            .map(|e| (e.action.as_str().to_string(), e.rule_id.clone()))
+            .collect();
+
+        let rate_limit_rows: Vec<_> = events
+            .iter()
+            .filter(|e| e.rule_id.as_deref() == Some("ip-rate-limit"))
+            .collect();
+
+        // The data-plane row must be labelled `rate_limit`, never the legacy
+        // `block` (which rendered a misleading BLOCK badge for a 429).
+        assert!(
+            rate_limit_rows
+                .iter()
+                .all(|e| e.action.as_str() == "rate_limit"),
+            "ip-rate-limit rows must use action `rate_limit`, not `block`; saw {shape:?}",
+        );
+        assert!(
+            !rate_limit_rows.is_empty(),
+            "expected at least one ip-rate-limit row; saw {shape:?}",
+        );
+
+        let row = rate_limit_rows[0];
+        // UX: the row must carry the resolved route tier (so the dashboard
+        // shows the real tier instead of a risk-bucket fallback colour).
+        assert!(
+            row.tier.is_some(),
+            "rate-limit row must carry the route tier; saw {:?}",
+            row.tier,
+        );
+        // UX: the row must carry the real request path (top-level or fields),
+        // never collapse to "/" with no method.
+        let has_path = row.path.is_some()
+            || row
+                .fields
+                .get("path")
+                .and_then(|v| v.as_str())
+                .is_some();
+        assert!(has_path, "rate-limit row must carry the request path");
     }
 
     // 2026-05-24 — a block routed through `blocked_response` (cumulative

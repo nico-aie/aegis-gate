@@ -1988,27 +1988,25 @@ pub(crate) async fn accept_loop(
                     // whether send() actually reaches anyone; this
                     // is a cheap fire-and-forget on the hot path.
                     //
-                    // 2026-05-03 — skip the listener-side emit on
-                    // BLOCK actions: the data-plane block path
-                    // (`forward_allow_to_upstream` → detector
-                    // chain) already emitted a richer Detection
-                    // event with `fields.detectors[]` + `strikes`
-                    // + `load_mode` + the XFF-resolved
-                    // `client_ip`.  Double-writing here was
-                    // creating two audit rows per blocked
-                    // request — one with peer-IP + bot_category,
-                    // one with XFF-resolved client_ip + detectors
-                    // — which inflated /api/attacks/top with a
-                    // phantom loopback attacker and doubled the
-                    // by-detector counts.  For allow / challenge
-                    // we keep the listener emit (no data-plane
-                    // block path runs there).
+                    // 2026-05-03 / 2026-06-21 — audit-emit ownership is now
+                    // centralised in `interop::headers::listener_emits_audit`.
+                    // The data plane self-emits a richer Detection event
+                    // (XFF-resolved `client_ip`, `fields.detectors[]`,
+                    // `strikes`, `load_mode`, route tier) for every decision
+                    // it terminates itself — `block`, `challenge`, AND
+                    // `rate_limit`. Re-emitting any of those here produced TWO
+                    // feed rows per request (the bug: a `rate_limit` denial
+                    // showed a data-plane BLOCK twin + this listener
+                    // RATE_LIMIT row; blocks doubled `/api/attacks/top`). The
+                    // listener stays the SOLE emitter for `allow` and the
+                    // upstream-failure verdicts the data plane does not
+                    // self-audit (`timeout`, `circuit_breaker`).
                     let action = decision.action.as_str();
-                    if action == "block" {
+                    if !aegis_control::interop::headers::listener_emits_audit(decision.action) {
                         // Update MTLS tracker + interop response
                         // stamping below, but skip the
                         // bus.emit() entirely — the data plane
-                        // already audited this block.
+                        // already audited this decision.
                         if let (Some(tracker), Some(principal)) = (
                             identity_tracker.as_ref(),
                             conn_identity.principal(),
@@ -2200,17 +2198,12 @@ pub(crate) async fn accept_loop(
                             f
                         },
                     };
-                    // 2026-05-25 — the data plane now audits challenges too
-                    // (emit_challenge_audit: XFF-resolved client_ip +
-                    // fields.detectors + request_score + status:429), the same
-                    // way blocks are audited in the data plane. Skip the
-                    // listener emit for `challenge` to avoid a DUPLICATE feed
-                    // row (the data-plane row carries the detector; this one
-                    // wouldn't). `allow` stays listener-emitted (sole emitter);
-                    // `block` already returned early above.
-                    if action != "challenge" {
-                        bus.emit(event);
-                    }
+                    // Only listener-owned actions (`allow`, `timeout`,
+                    // `circuit_breaker`) reach this point — `block`,
+                    // `challenge`, and `rate_limit` took the early return above
+                    // because the data plane already audited them
+                    // (see `listener_emits_audit`). Emit the single row.
+                    bus.emit(event);
 
                     // MTLS-T3 — record this request against the
                     // per-identity sliding-window tracker so the
