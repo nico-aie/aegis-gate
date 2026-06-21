@@ -1044,9 +1044,34 @@ pub(crate) async fn handle_data_request_inner(
     // field on entries gives finer-grained control in a
     // future track, but the simple "match → bypass" semantics
     // matches every other WAF.
+    // 2026-06-21 — operator `allow` rules override detector blocks (a dynamic
+    // allowlist), mirroring the static whitelist bypass above. The rule engine
+    // also runs on the forward path (for block/challenge), but a detector block
+    // returns BEFORE that, so an `allow` rule had to be consulted HERE to take
+    // effect. An `allow` match skips the detector chain entirely. Scope:
+    // - blacklist, DDoS, rate-limit, and strike-block already ran above and are
+    //   NOT overridable (operator allow can't un-blacklist or bypass volumetric
+    //   protection — only the detector/cumulative-risk enforcement).
+    // - block rules still enforce on the forward path.
+    // Cheap: one OnceLock read + small-ruleset scan, only when a rule exists.
+    let rule_allow = match (upstream_ctx.active_ruleset.get(), resolved_route.as_ref()) {
+        (Some(rs), Some(rc)) => {
+            let snap = rs.snapshot();
+            !snap.is_empty()
+                && matches!(
+                    aegis_security::rules::evaluate(&snap, &view, rc).action,
+                    aegis_core::decision::Action::Allow,
+                )
+        }
+        _ => false,
+    };
+    // Either a static whitelist entry or a matching operator `allow` rule
+    // bypasses the detector chain.
+    let bypass_detectors = on_whitelist || rule_allow;
+
     let effective = mask.resolve(Some(tier));
     let detect_t0 = std::time::Instant::now();
-    let (signals, fired_classes) = if on_whitelist {
+    let (signals, fired_classes) = if bypass_detectors {
         request_stage_hist.record(stages::DETECT, detect_t0.elapsed());
         (Vec::new(), Vec::new())
     } else {
@@ -1079,7 +1104,7 @@ pub(crate) async fn handle_data_request_inner(
     // when the request was whitelisted (a trusted source isn't
     // rotation-suspicious by definition).
     let mut signals = signals;
-    if !on_whitelist {
+    if !bypass_detectors {
         if let Some(fp) = tls_fingerprint {
             if let Some(rotation_signal) = upstream_ctx
                 .device_ip_tracker
@@ -6263,6 +6288,115 @@ rate_limit:
                 .and_then(|v| v.as_str())
                 .is_some();
         assert!(has_path, "rate-limit row must carry the request path");
+    }
+
+    // 2026-06-21 — an operator `allow` rule must override a detector block (a
+    // dynamic allowlist), mirroring the static whitelist bypass. Build a WAF
+    // serving `handle_data_request`; send a payload that trips detectors past
+    // the tier threshold; assert it's BLOCKED without a rule and ALLOWED with a
+    // matching `then: allow` rule for the peer IP.
+    async fn build_attack_waf(with_allow_rule: bool) -> std::net::SocketAddr {
+        let backend = spawn_upstream().await;
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: pool }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend}" }}] }}
+state: {{ backend: in_memory }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
+        ctx.interop_modes.set(Arc::new(ModeStore::new(Mode::Enforce))).ok();
+        if with_allow_rule {
+            // Allow the loopback peer (dev: all traffic resolves to 127.0.0.1).
+            let rule_yaml = "- id: allow-local\n  priority: 100\n  when:\n    ip_in:\n      - \"127.0.0.1\"\n  then: allow\n  scope: global\n";
+            let rules: Vec<aegis_security::rules::ast::Rule> =
+                serde_yaml::from_str(rule_yaml).unwrap();
+            ctx.active_ruleset
+                .set(std::sync::Arc::new(aegis_security::RuleSet::from_rules(rules)))
+                .ok();
+        }
+        let metrics = aegis_control::metrics::MetricsRegistry::init();
+        let args = Arc::new(Args {
+            detectors: aegis_security::detectors::default_detectors(),
+            mask: aegis_security::detectors::SharedDetectorMask::from_config(&cfg.detectors),
+            risk: aegis_security::risk::RiskTracker::new(&cfg.risk),
+            ip_rl: aegis_security::rate_limit::IpRateLimiter::new(
+                crate::config_source::reload::derive_ip_rate_cfg(&cfg),
+            ),
+            load_gauge: aegis_core::LoadGauge::new(cfg.load_mode.clone()),
+            verbosity: aegis_core::SharedVerbosity::from_config(&cfg.logging),
+            rsh: aegis_control::metrics::request_duration::RequestStageHistogram::register(&metrics)
+                .unwrap(),
+            rlh: aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&metrics)
+                .unwrap(),
+            ra: aegis_control::metrics::route_activity::RouteActivityWindow::new(),
+            dlh: aegis_control::metrics::detector_latency::DetectorLatencyHistogram::register(
+                &metrics,
+            )
+            .unwrap(),
+            dhm: aegis_control::metrics::detector_hits::DetectorHitMetrics::register(&metrics)
+                .unwrap(),
+            bus: AuditBus::new(64),
+            ctx: ctx.clone(),
+        });
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let args_l = args.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, peer)) = waf.accept().await {
+                let args_c = args_l.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                        let a = args_c.clone();
+                        async move {
+                            let (resp, _tag) = super::handle_data_request(
+                                req, peer, None, &a.detectors, &a.mask, &a.risk, &a.ip_rl,
+                                &a.load_gauge, &a.verbosity, &a.rsh, &a.rlh, &a.ra, &a.dlh,
+                                &a.bus, &a.ctx, &a.dhm, &ClientIdentity::Anonymous, None,
+                            )
+                            .await;
+                            Ok::<_, Infallible>(resp)
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        waf_addr
+    }
+
+    // Path-traversal payload — valid URI chars (dots/slashes) so it's a clean
+    // raw request line (an `<script>` query would 400 at the HTTP parser before
+    // reaching detectors). Trips the path_traversal detector → block.
+    const ATTACK_PATH: &str = "/static/../../../../../../etc/passwd";
+
+    #[tokio::test]
+    async fn detector_block_fires_without_an_allow_rule() {
+        let waf = build_attack_waf(false).await;
+        assert_eq!(
+            get_status(waf, ATTACK_PATH).await,
+            403,
+            "the attack must be blocked by detectors when no allow rule matches",
+        );
+    }
+
+    #[tokio::test]
+    async fn allow_rule_overrides_detector_block() {
+        let waf = build_attack_waf(true).await;
+        let status = get_status(waf, ATTACK_PATH).await;
+        assert_ne!(status, 403, "an operator allow rule must override the detector block");
+        assert_eq!(status, 200, "the allowed request forwards to the upstream (200)");
     }
 
     // 2026-05-24 — a block routed through `blocked_response` (cumulative
