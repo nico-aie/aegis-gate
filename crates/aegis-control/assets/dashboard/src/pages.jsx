@@ -2470,6 +2470,27 @@ function ruleRowToBody(r) {
   return lines.join('\n');
 }
 
+// 2026-06-21 — derive the rule's action from its DSL body. GET /api/rules
+// returns only {id, body, enabled}, NOT an action field, so the merge can't
+// default to 'block' — an `allow`/`log_only` rule then rendered as BLOCK. Parse
+// the `then:` action (inline `then: allow` or nested `then:\n  block:`).
+function ruleActionFromBody(body, fallback) {
+  if (!body) return fallback || 'block';
+  const known = ['allow', 'log_only', 'block', 'challenge', 'rate_limit', 'raise_risk'];
+  const idx = body.search(/(^|\n)\s*then\s*:/);
+  if (idx >= 0) {
+    // Everything after the `then:` keyword (covers inline + nested forms).
+    const after = body.slice(body.indexOf(':', idx) + 1);
+    const m = after.match(/[a-z_]+/i);
+    const tok = m ? m[0].toLowerCase() : null;
+    if (tok && known.includes(tok)) {
+      // raise_risk is non-terminal (forwards) — show it as log_only, not block.
+      return tok === 'raise_risk' ? 'log_only' : tok;
+    }
+  }
+  return fallback || 'block';
+}
+
 // 2026-06-21 (P1) — keep the DSL body's `id:` in lock-step with the form Rule
 // ID. The engine matches on the body id, and the backend now rejects a form/body
 // id mismatch, so we rewrite the first `id:` value to the entered id before
@@ -2766,7 +2787,9 @@ function PageRuleManager() {
     field: 'any',
     op: 'regex',
     pattern: '',
-    action: r.action ?? 'block',
+    // GET /api/rules has no `action` field — derive it from the DSL body so
+    // allow/log_only/challenge rules don't all render as BLOCK.
+    action: ruleActionFromBody(r.body, r.action),
     enabled: r.enabled !== undefined ? r.enabled : true,
     cat: r.cat ?? 'custom',
     // 2026-06-21 — `risk` (+50 badge) and `hits1h` were removed from the UI:
@@ -3066,7 +3089,7 @@ function PageRuleManager() {
                 </div>
               </div>
               <div style={{ display: 'flex', borderBottom: '1px solid var(--hairline)' }}>
-                {['general','dsl','stats'].map(t => (
+                {['general','dsl'].map(t => (
                   <button key={t} onClick={() => setTab(t)} style={{
                     flex: 'unset', padding: '10px 16px', background: 'transparent', border: 'none',
                     color: tab === t ? 'var(--brand-yellow)' : 'var(--ink-mute)',
@@ -3109,21 +3132,6 @@ function PageRuleManager() {
                         {selected.body || ruleRowToBody(selected)}
                       </pre>
                     )}
-                  </div>
-                )}
-                {tab === 'stats' && (
-                  <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center', minHeight: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 6 }}>
-                    <span>Per-rule statistics ship in a follow-up.</span>
-                    {/* F-03 (2026-05-11) — deep-link the rule_id so
-                        Audit Trail pre-fills the filter. Previously
-                        landed operators on an unfiltered audit view
-                        with thousands of rows. */}
-                    <span style={{ fontSize: 11 }}>
-                      For now: <a
-                        href={`#/audit?rule_id=${encodeURIComponent(selected.id)}`}
-                        style={{ color: 'var(--accent)' }}
-                      >Open Audit Log filtered by <code>rule_id={selected.id}</code> →</a>
-                    </span>
                   </div>
                 )}
               </div>
@@ -3387,6 +3395,9 @@ function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNew
                 background: 'var(--canvas)', border: '1px solid var(--hairline)',
                 borderRadius: 6, padding: 10, fontSize: 11, lineHeight: 1.5,
                 fontFamily: 'var(--font-mono)', color: 'var(--ink-dim)', margin: 0,
+                // Keep the aligned columns but scroll inside the modal instead
+                // of bleeding the long `then:`/`when:` lines past its edge.
+                whiteSpace: 'pre', overflowX: 'auto', maxWidth: '100%',
               }}>
                 {RULE_DSL_CHEATSHEET.join('\n')}
               </pre>
