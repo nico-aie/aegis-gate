@@ -976,6 +976,10 @@ textarea.input { height: auto; padding: 8px 10px; resize: vertical; }
   overflow: auto;
   align-self: start;
   max-height: 100%;
+  /* 2026-06-21 — the detail pane reuses the `right` class name, which also
+     matches the global `.right { text-align: right }` utility and was
+     right-aligning the DSL/General content. Pin it back to left. */
+  text-align: left;
 }
 
 /* ===== Banner ===== */

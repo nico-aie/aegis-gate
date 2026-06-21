@@ -2803,6 +2803,16 @@ function PageRuleManager() {
   const filtered = merged.filter(r => !search || r.id.includes(search) || r.name.toLowerCase().includes(search.toLowerCase()));
   const selected = merged.find(r => r.id === selectedId) || merged[0] || null;
 
+  // 2026-06-21 — the RuleStore reflects a config activation a beat after
+  // /api/config/version advances, so a single immediate reload raced the update
+  // (create/edit/delete/toggle all "needed a manual reload"). Re-fetch a few
+  // times over ~3s so every mutation reflects without operator action.
+  function settleReload() {
+    const go = () => rulesApi.reload && rulesApi.reload();
+    go();
+    [800, 1800, 3200].forEach(ms => setTimeout(go, ms));
+  }
+
   // Run a mutation, wait for /api/config/version to advance, then toast.
   async function runMutation(label, fn) {
     if (busy) return;
@@ -2817,7 +2827,7 @@ function PageRuleManager() {
         } else {
           window.aegisToast(`${label} · pending after 10 s`, 'warn');
         }
-        rulesApi.reload && rulesApi.reload();
+        settleReload();
       } else {
         const msg = (result && (result.message || result.error || result.reason)) || 'unknown error';
         window.aegisToast(`${label} failed: ${msg}`, 'err');
@@ -3066,12 +3076,17 @@ function PageRuleManager() {
               </div>
               <div style={{ padding: 16 }}>
                 {tab === 'general' && (
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, fontSize: 12 }}>
-                    <div><div className="field-label">ID</div><div className="mono">{selected.id}</div></div>
-                    <div><div className="field-label">Kind</div><span className={`pill ${selected.kind}`}>{selected.kind}</span></div>
-                    <div><div className="field-label">Action</div><window.ActionPill value={selected.action} /></div>
-                    <div><div className="field-label">Priority</div><span className="num">{selected.pri}</span></div>
-                    <div><div className="field-label">Enabled</div><div className={`toggle ${selected.enabled ? 'on' : ''}`}></div></div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', columnGap: 24, rowGap: 12, fontSize: 12, alignItems: 'center', maxWidth: 440 }}>
+                    <div className="field-label">ID</div>
+                    <div className="mono">{selected.id}</div>
+                    <div className="field-label">Kind</div>
+                    <div><span className={`pill ${selected.kind}`}>{selected.kind}</span></div>
+                    <div className="field-label">Action</div>
+                    <div><window.ActionPill value={selected.action} /></div>
+                    <div className="field-label">Priority</div>
+                    <div className="num">{selected.pri}</div>
+                    <div className="field-label">Enabled</div>
+                    <div><span className={`pill ${selected.enabled ? 'ok' : 'warn'}`}>{selected.enabled ? 'enabled' : 'disabled'}</span></div>
                   </div>
                 )}
                 {tab === 'dsl' && (
@@ -3209,10 +3224,14 @@ function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNew
   // the Copilot; advisory (prefills the editor, never auto-applies).
   const [aiIntent, setAiIntent] = useStateP('');
   const [aiBusy, setAiBusy] = useStateP(false);
+  // Inline result of the last generation so the operator is told to review —
+  // AI output is a DRAFT and may be invalid or semantically wrong.
+  const [aiNote, setAiNote] = useStateP(null); // { tone: 'ok'|'warn'|'err', msg }
   const generateWithAi = async () => {
     const intent = aiIntent.trim();
     if (!intent) { window.aegisToast('Describe the rule you want first', 'err'); return; }
     setAiBusy(true);
+    setAiNote(null);
     try {
       const r = await window.rulesGenerate({ intent, id: newId.trim() });
       if (r && r.ok && r.body) {
@@ -3223,16 +3242,22 @@ function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNew
           if (m) { id = m[1].trim(); setNewId(id); }
         }
         setNewBody(syncRuleBodyId(r.body, id) || r.body);
-        const flagged = r.validation && r.validation.ok === false;
-        window.aegisToast(
-          flagged ? 'AI drafted a rule — review, it flagged validation issues' : 'AI drafted a rule — review & save',
-          flagged ? 'warn' : 'ok',
-        );
+        const v = r.validation;
+        if (v && v.ok === false) {
+          const first = (v.errors && v.errors[0] && v.errors[0].message) || 'invalid syntax';
+          setAiNote({ tone: 'err', msg: `Draft failed validation: ${first}. Fix it below before saving.` });
+          window.aegisToast('AI draft has errors — review before saving', 'warn');
+        } else {
+          setAiNote({ tone: 'warn', msg: 'Draft inserted below. AI can be wrong — read every line (id, when, action, status) and confirm it does what you intend before saving.' });
+          window.aegisToast('AI drafted a rule — review & save', 'ok');
+        }
       } else {
         const msg = (r && (r.error || r.hint)) || 'generation failed';
+        setAiNote({ tone: 'err', msg: `Generation failed: ${msg}` });
         window.aegisToast(`AI generate: ${msg}`, 'err');
       }
     } catch (e) {
+      setAiNote({ tone: 'err', msg: `Generation error: ${e.message || e}` });
       window.aegisToast(`AI generate error: ${e.message || e}`, 'err');
     } finally {
       setAiBusy(false);
@@ -3325,8 +3350,23 @@ function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNew
               </button>
             </div>
             <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginTop: 6 }}>
-              Drafts a rule body from your description — review &amp; edit before saving; nothing is applied automatically. Requires AI Copilot enabled.
+              ⚠️ AI drafts are a <strong>starting point, not a finished rule</strong> — they can be
+              syntactically invalid or block/allow the wrong thing. Nothing is applied automatically:
+              read every line and confirm the behavior before saving. Requires AI Copilot enabled.
             </div>
+            {aiNote && (
+              <div
+                style={{
+                  marginTop: 8, padding: '8px 10px', borderRadius: 4, fontSize: 11, lineHeight: 1.5,
+                  border: '1px solid',
+                  borderColor: aiNote.tone === 'err' ? 'var(--down)' : aiNote.tone === 'warn' ? 'var(--warn)' : 'var(--up)',
+                  color: aiNote.tone === 'err' ? 'var(--down)' : aiNote.tone === 'warn' ? 'var(--warn)' : 'var(--up)',
+                  background: 'var(--surface)',
+                }}
+              >
+                {aiNote.msg}
+              </div>
+            )}
           </div>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
