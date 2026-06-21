@@ -6641,6 +6641,7 @@ mod gate_toggle_patch_tests {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 

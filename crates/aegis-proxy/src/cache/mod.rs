@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use dashmap::DashMap;
 use http::{HeaderMap, HeaderName, HeaderValue, Method};
 use moka::future::Cache;
 use moka::Expiry;
@@ -193,6 +194,13 @@ impl PoolCache {
             #[cfg(feature = "redis")]
             l2,
         }
+    }
+
+    /// The normalized config this pool was built with. Used by the reload
+    /// reconcile ([`ResponseCache::apply`]) to detect an unchanged policy and
+    /// preserve the existing cache entries.
+    pub(crate) fn cfg(&self) -> &PoolCacheConfig {
+        &self.cfg
     }
 
     /// First (longest) prefix rule matching `path`, with its index.
@@ -397,7 +405,27 @@ impl PoolCache {
 
 /// Top-level cache: one [`PoolCache`] per opted-in upstream.
 pub struct ResponseCache {
-    pools: HashMap<String, Arc<PoolCache>>,
+    /// `DashMap` (not a plain map) so the config-plane reload helper
+    /// (`apply`) can add / replace / remove pools at runtime while the data
+    /// plane reads concurrently — the `Arc<ResponseCache>` identity stays
+    /// stable, so background flush/reset tasks holding a clone keep seeing
+    /// live pools instead of a detached snapshot.
+    pools: DashMap<String, Arc<PoolCache>>,
+}
+
+/// Normalize a raw `cache:` block: keep only the safe-to-cache verbs
+/// (GET/HEAD), defaulting to `[GET]` if the operator listed none. Shared by
+/// boot (`from_upstreams`) and the hot-reload reconcile (`apply`) so the two
+/// derive identical configs — and so the unchanged-config comparison in
+/// `apply` (which preserves cached entries) is exact.
+fn normalize_cache_cfg(cache_cfg: &PoolCacheConfig) -> PoolCacheConfig {
+    let mut cfg = cache_cfg.clone();
+    cfg.methods
+        .retain(|m| m.eq_ignore_ascii_case("GET") || m.eq_ignore_ascii_case("HEAD"));
+    if cfg.methods.is_empty() {
+        cfg.methods = vec!["GET".into()];
+    }
+    cfg
 }
 
 impl ResponseCache {
@@ -405,32 +433,59 @@ impl ResponseCache {
     /// `cache:` block (regardless of `enabled`) get a `PoolCache`; the
     /// `enabled` flag is re-checked per request so a hot toggle is cheap.
     pub fn from_upstreams(upstreams: &HashMap<String, PoolConfig>) -> Self {
-        let mut pools = HashMap::new();
+        let pools = DashMap::new();
         for (name, pool) in upstreams {
             if let Some(cache_cfg) = &pool.cache {
-                // Keep only GET/HEAD methods (the only safe-to-cache verbs).
-                let mut cfg = cache_cfg.clone();
-                cfg.methods
-                    .retain(|m| m.eq_ignore_ascii_case("GET") || m.eq_ignore_ascii_case("HEAD"));
-                if cfg.methods.is_empty() {
-                    cfg.methods = vec!["GET".into()];
-                }
+                let cfg = normalize_cache_cfg(cache_cfg);
                 pools.insert(name.clone(), Arc::new(PoolCache::new(name, cfg)));
             }
         }
         Self { pools }
     }
 
+    /// 2026-06-21 — config-plane hot-reload. Reconcile the live pools against
+    /// `upstreams` from a freshly-activated config WITHOUT a restart:
+    /// - a pool that gained a `cache:` block (or is new) gets a `PoolCache`;
+    /// - a pool whose normalized cache config is UNCHANGED keeps its existing
+    ///   `PoolCache` (cached entries + counters + L2 connection preserved);
+    /// - a pool whose cache config changed is rebuilt (cold);
+    /// - a pool that lost its `cache:` block is dropped.
+    /// Mirrors the risk/ddos "preserve state, swap config" reload pattern.
+    pub fn apply(&self, upstreams: &HashMap<String, PoolConfig>) {
+        // Desired set + (re)build where needed.
+        let mut desired: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (name, pool) in upstreams {
+            let Some(cache_cfg) = &pool.cache else { continue };
+            desired.insert(name.clone());
+            let cfg = normalize_cache_cfg(cache_cfg);
+            let unchanged = self
+                .pools
+                .get(name)
+                .map(|existing| existing.cfg() == &cfg)
+                .unwrap_or(false);
+            if !unchanged {
+                self.pools
+                    .insert(name.clone(), Arc::new(PoolCache::new(name, cfg)));
+            }
+        }
+        // Drop pools whose `cache:` block was removed.
+        self.pools.retain(|name, _| desired.contains(name));
+    }
+
     pub fn is_empty(&self) -> bool {
         self.pools.is_empty()
     }
 
-    pub fn pool(&self, name: &str) -> Option<&Arc<PoolCache>> {
-        self.pools.get(name)
+    pub fn pool(&self, name: &str) -> Option<Arc<PoolCache>> {
+        self.pools.get(name).map(|p| p.clone())
     }
 
     pub fn stats(&self) -> Vec<PoolStats> {
-        let mut out: Vec<PoolStats> = self.pools.iter().map(|(name, pc)| pc.stats(name)).collect();
+        let mut out: Vec<PoolStats> = self
+            .pools
+            .iter()
+            .map(|kv| kv.value().stats(kv.key()))
+            .collect();
         out.sort_by(|a, b| a.pool.cmp(&b.pool));
         out
     }
@@ -445,8 +500,8 @@ impl ResponseCache {
                 }
             }
             None => {
-                for pc in self.pools.values() {
-                    pc.invalidate_all();
+                for kv in self.pools.iter() {
+                    kv.value().invalidate_all();
                 }
             }
         }
@@ -457,7 +512,9 @@ impl ResponseCache {
     /// pub/sub fan-out). No-op when no pool has an L2.
     #[cfg(feature = "redis")]
     pub async fn invalidate_l2_all(&self) {
-        for pc in self.pools.values() {
+        // Collect Arcs first — never hold a DashMap guard across `.await`.
+        let pcs: Vec<Arc<PoolCache>> = self.pools.iter().map(|kv| kv.value().clone()).collect();
+        for pc in pcs {
             pc.invalidate_l2().await;
         }
     }
@@ -465,7 +522,7 @@ impl ResponseCache {
     /// True when any pool has a shared L2 (Redis) tier wired.
     #[cfg(feature = "redis")]
     pub fn any_l2(&self) -> bool {
-        self.pools.values().any(|pc| pc.has_l2())
+        self.pools.iter().any(|kv| kv.value().has_l2())
     }
 }
 
@@ -1016,6 +1073,70 @@ api:
         assert!(pc.method_allowed(&Method::HEAD));
         assert!(!pc.method_allowed(&Method::POST));
         assert!(!pc.method_allowed(&Method::PUT));
+    }
+
+    // 2026-06-21 — config-plane hot-reload. A pool that gains a `cache:` block
+    // at runtime (dashboard "Response cache" toggle) must get a live cache
+    // without a restart — the bug the user hit (BYPASS forever).
+    #[test]
+    fn apply_enables_pool_added_at_runtime() {
+        let boot: std::collections::HashMap<String, PoolConfig> =
+            serde_yaml::from_str("app:\n  members:\n    - addr: \"127.0.0.1:9000\"\n").unwrap();
+        let rc = ResponseCache::from_upstreams(&boot);
+        assert!(rc.pool("app").is_none(), "precondition: no cache block at boot");
+
+        let next: std::collections::HashMap<String, PoolConfig> = serde_yaml::from_str(
+            "app:\n  members:\n    - addr: \"127.0.0.1:9000\"\n  cache:\n    enabled: true\n    rules:\n      - prefix: \"/static/css\"\n",
+        )
+        .unwrap();
+        rc.apply(&next);
+        let pc = rc.pool("app").expect("cache live after apply, no restart");
+        assert!(pc.cfg().enabled);
+    }
+
+    #[test]
+    fn apply_preserves_pool_when_cfg_unchanged() {
+        let yaml = "app:\n  members:\n    - addr: \"127.0.0.1:9000\"\n  cache:\n    enabled: true\n    rules:\n      - prefix: \"/static/\"\n";
+        let up: std::collections::HashMap<String, PoolConfig> = serde_yaml::from_str(yaml).unwrap();
+        let rc = ResponseCache::from_upstreams(&up);
+        let before = rc.pool("app").unwrap();
+        rc.apply(&up); // identical config
+        let after = rc.pool("app").unwrap();
+        assert!(
+            Arc::ptr_eq(&before, &after),
+            "unchanged cfg must preserve the live cache instance (entries kept)",
+        );
+    }
+
+    #[test]
+    fn apply_rebuilds_pool_when_cfg_changed() {
+        let up1: std::collections::HashMap<String, PoolConfig> = serde_yaml::from_str(
+            "app:\n  members:\n    - addr: \"127.0.0.1:9000\"\n  cache:\n    enabled: true\n    rules:\n      - prefix: \"/static/\"\n",
+        )
+        .unwrap();
+        let rc = ResponseCache::from_upstreams(&up1);
+        let before = rc.pool("app").unwrap();
+        let up2: std::collections::HashMap<String, PoolConfig> = serde_yaml::from_str(
+            "app:\n  members:\n    - addr: \"127.0.0.1:9000\"\n  cache:\n    enabled: true\n    rules:\n      - prefix: \"/assets/\"\n",
+        )
+        .unwrap();
+        rc.apply(&up2);
+        let after = rc.pool("app").unwrap();
+        assert!(!Arc::ptr_eq(&before, &after), "changed cfg must rebuild the pool");
+    }
+
+    #[test]
+    fn apply_removes_pool_when_cache_block_dropped() {
+        let up1: std::collections::HashMap<String, PoolConfig> = serde_yaml::from_str(
+            "app:\n  members:\n    - addr: \"127.0.0.1:9000\"\n  cache:\n    enabled: true\n    rules:\n      - prefix: \"/static/\"\n",
+        )
+        .unwrap();
+        let rc = ResponseCache::from_upstreams(&up1);
+        assert!(rc.pool("app").is_some());
+        let up2: std::collections::HashMap<String, PoolConfig> =
+            serde_yaml::from_str("app:\n  members:\n    - addr: \"127.0.0.1:9000\"\n").unwrap();
+        rc.apply(&up2);
+        assert!(rc.pool("app").is_none(), "dropping the cache block removes the pool");
     }
 
     #[test]

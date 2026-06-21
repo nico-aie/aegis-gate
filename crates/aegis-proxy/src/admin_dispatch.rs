@@ -1610,7 +1610,6 @@ mod tests {
     /// `enforce`, contradicting the forwarded behaviour (§5.3).
     fn stamp_mode_for(route_log_only: bool) -> String {
         use aegis_control::interop::headers::{DecisionTag, Mode, MODE};
-        use aegis_control::interop::mode::ModeStore;
         use bytes::Bytes;
         use http_body_util::Full;
         use std::sync::Arc;

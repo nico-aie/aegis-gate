@@ -733,6 +733,26 @@ pub fn apply_cfg_change_to_routes(
     }
 }
 
+/// 2026-06-21 — config-plane hot-reload for the per-pool response (smart)
+/// cache. Reconciles `ctx.cache` against the activated config's `upstreams`
+/// so a dashboard pool edit that enables / adds / changes / removes a
+/// `cache:` block takes effect WITHOUT a restart. Before this, the response
+/// cache was absent from BOTH reload paths (file watcher + shared-store
+/// watcher), so a UI "Response cache" toggle was silently
+/// node-local-until-restart (and even a restart only helped if the boot
+/// config file itself carried the block). Cached entries on pools whose
+/// cache config is unchanged are preserved (see [`ResponseCache::apply`]).
+pub fn apply_cfg_change_to_cache(
+    new_cfg: &WafConfig,
+    ctx: Option<&Arc<ProxyContext>>,
+) -> GateReloadOutcome {
+    let Some(ctx) = ctx else {
+        return GateReloadOutcome::NoHandle;
+    };
+    ctx.cache.apply(&new_cfg.upstreams);
+    GateReloadOutcome::Applied
+}
+
 /// Outcome of [`apply_cfg_change_to_client_auth`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientAuthReloadOutcome {
@@ -955,6 +975,7 @@ pub(crate) fn receiver_to_config(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use aegis_core::config::ComplianceMode;
@@ -2184,7 +2205,8 @@ state:
     }
 
     // 2026-06-03 (copilot config-plane fold) — minimal config carrying an
-    // `observability.copilot` block.
+    // `observability.copilot` block. Only the `llm`-feature tests below use it.
+    #[cfg(feature = "llm")]
     fn yaml_with_copilot(
         enabled: bool,
         key_ref: Option<&str>,

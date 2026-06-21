@@ -4208,6 +4208,7 @@ fn blocked_response(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tcp_connect_tests {
     //! TCP-T5 — integration coverage for the CONNECT dispatch
     //! matrix. Drives `forward_allow_to_upstream` directly with
@@ -4243,7 +4244,6 @@ mod tcp_connect_tests {
     use std::time::Instant;
 
     use bytes::Bytes;
-    use http_body_util::BodyExt;
 
     use aegis_core::audit::{AuditBus, AuditEvent};
     use aegis_core::config::WafConfig;
@@ -4756,6 +4756,7 @@ state: { backend: in_memory }
 //   upgrade fires.  Detector-fires-before-WS coverage lives
 //   in the upstream unit tests.
 #[cfg(test)]
+#[allow(deprecated)]
 mod websocket_e2e_tests {
     use std::convert::Infallible;
     use std::sync::Arc;
@@ -4764,7 +4765,6 @@ mod websocket_e2e_tests {
     use aegis_core::audit::AuditBus;
     use aegis_core::ClientIdentity;
     use aegis_core::pipeline::SecurityPipeline;
-    use bytes::Bytes;
     use http_body_util::BodyExt;
     use hyper::service::service_fn;
     use hyper_util::rt::TokioIo;
@@ -5612,6 +5612,7 @@ state: {{ backend: in_memory }}
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod log_only_enforce_tests {
     //! 2026-05-24 regression guard for the v2.x interop contract:
     //! `set_profile` `log_only` MUST actually forward a would-be-blocked
@@ -5626,7 +5627,6 @@ mod log_only_enforce_tests {
     use std::sync::Arc;
 
     use bytes::Bytes;
-    use http_body_util::Full;
     use hyper::service::service_fn;
     use hyper_util::rt::TokioIo;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -6645,6 +6645,7 @@ state: {{ backend: in_memory }}
 // (and that a HIT does NOT re-dial the backend), and that a CRITICAL-tier
 // route is never cached (BYPASS, backend hit every time).
 #[cfg(test)]
+#[allow(deprecated)]
 mod smart_cache_e2e_tests {
     use std::convert::Infallible;
     use std::sync::atomic::{AtomicUsize, Ordering};

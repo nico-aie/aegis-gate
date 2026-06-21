@@ -402,6 +402,10 @@ async fn apply_and_swap(
         targets.canary_paths.as_ref(),
     );
     let _ = reload::apply_cfg_change_to_bots(new_cfg, targets.bots_enabled.as_ref());
+    // 2026-06-21 — reconcile the per-pool response (smart) cache from the
+    // converged doc so a dashboard "Response cache" enable/add/change/remove
+    // applies fleet-wide without a restart (was node-local-until-restart).
+    let _ = reload::apply_cfg_change_to_cache(new_cfg, targets.proxy_ctx.as_ref());
 
     cfg.store(Arc::new(new_cfg.clone()));
 }
