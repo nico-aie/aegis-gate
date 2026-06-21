@@ -323,6 +323,15 @@ async fn watch_loop(
                     }
                 }
 
+                // 2026-06-21 — per-pool response (smart) cache hot-reload on a
+                // file change, mirroring the shared-store watcher. Reconciles
+                // the live cache against the new config's `upstreams` (enable /
+                // add / change / remove `cache:` blocks) without a restart.
+                let _ = crate::config_source::reload::apply_cfg_change_to_cache(
+                    &new_cfg,
+                    proxy_ctx.as_ref(),
+                );
+
                 // 2026-05-08 NEW-1 — risk threshold hot-reload.
                 // Mirrors the detector-mask / route / rate-limit
                 // pattern: detect change vs the live snapshot and

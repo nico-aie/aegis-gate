@@ -81,9 +81,31 @@ cache:
 ## Cache invalidation
 
 - **TTL expiry:** handled automatically by moka
-- **Hot-reload:** clearing the cache on config reload is **opt-in** via `cache.clear_on_reload: true`
 - **API:** `DELETE /api/cache` on the dashboard flushes the cache
 - **Pattern-based:** `DELETE /api/cache?path=/api/user/*` invalidates matching entries
+
+## Config hot-reload (2026-06-21)
+
+The per-pool response cache reconciles live on every config activation —
+**no restart required.** Editing a pool's "Response cache" in the dashboard
+(or changing a `cache:` block in the YAML) applies on the next request, and
+converges across cluster nodes:
+
+- a pool that **gains** a `cache:` block (or is new) gets a live cache;
+- a pool whose cache config is **byte-for-byte unchanged** keeps its existing
+  entries + counters + L2 connection (reconcile reuses the instance) — so an
+  unrelated config edit elsewhere never flushes the cache;
+- a pool whose cache config **changed in any way** is rebuilt (its L1 entries
+  start cold);
+- a pool that **loses** its `cache:` block is dropped.
+
+Wired into both reload paths — the file watcher (`supervisor.rs`) and the
+shared-store/config-plane watcher (`redis_source.rs::apply_and_swap`, enforced
+by the structural guard test) — via
+`config_source::reload::apply_cfg_change_to_cache` →
+`cache::ResponseCache::apply`. The `Arc<ResponseCache>` identity is stable
+(internal `DashMap` of pools), so background flush/reset tasks keep operating
+on the live cache.
 
 ## Integration with request pipeline
 
