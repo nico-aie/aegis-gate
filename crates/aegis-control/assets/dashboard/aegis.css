@@ -704,6 +704,9 @@ button { font-family: inherit; }
 .pill.tier-med { background: rgba(240,185,11,0.14); color: var(--tier-med); }
 .pill.tier-high { background: rgba(246,70,93,0.14); color: var(--tier-high); }
 .pill.tier-crit { background: rgba(236,72,153,0.18); color: var(--tier-crit); }
+/* Tier inferred from cumulative risk (no route tier on the event): muted +
+   dashed so it reads as a hint, not an authoritative route classification. */
+.pill.tier-inferred { opacity: 0.55; border: 1px dashed currentColor; background: transparent; }
 .pill.builtin { background: rgba(120,134,159,0.14); color: var(--ink-mute); }
 .pill.custom { background: rgba(252,213,53,0.12); color: var(--brand-yellow); }
 .pill.solid-yellow {

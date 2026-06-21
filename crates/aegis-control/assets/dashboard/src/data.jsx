@@ -448,6 +448,9 @@ function mapAuditToLiveRow(ev, seq) {
     path: f.path || ev.path || '/',
     region: f.region || ev.region || '',
     tier: normalizeWafTier(ev.tier) || tierForRisk(risk),
+    // true when the tier above came from the risk-bucket fallback (no route
+    // tier on the event) — the renderer marks it as inferred, not authoritative.
+    tierInferred: !normalizeWafTier(ev.tier),
     risk,
     action: decisionAction(action),
     rules: feedRules(ruleId, f, ev.rules),
@@ -561,6 +564,8 @@ function useRealLiveFeed(maxLen = 60, paused = false) {
             path: f.path || ev.path || '/',
             region: f.region || ev.region || '',
             tier: normalizeWafTier(ev.tier) || tierForRisk(risk),
+            // see backfill path above — flags a risk-bucket fallback tier.
+            tierInferred: !normalizeWafTier(ev.tier),
             risk,
             action: decisionAction(action),
             rules: feedRules(ruleId, f, ev.rules),
