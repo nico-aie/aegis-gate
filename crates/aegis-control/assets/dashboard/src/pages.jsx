@@ -756,13 +756,16 @@ function RequestDetail({ data }) {
   const wsSurface = fields?.surface === 'websocket';
   const matchedField = typeof fields?.matched_field === 'string' && fields.matched_field ? fields.matched_field : null;
   const messageBytes = Number.isFinite(Number(fields?.message_bytes)) ? Number(fields.message_bytes) : null;
+  // The offending frame's content (capped + UTF-8-lossy, only on a block) so
+  // the operator can see WHAT tripped the detector, not just which field.
+  const messagePreview = typeof fields?.message_preview === 'string' && fields.message_preview ? fields.message_preview : null;
   const isStreamed = fields?.streamed === true;
   const streamReason = typeof fields?.reason === 'string' ? fields.reason : null;
   // Render any backend-emitted scalar that isn't already covered
   // by the dedicated rows above. Stable key ordering so the
   // drawer doesn't reflow on every poll.
   const ECHO_KEYS = ['request_headers', 'request_body_preview', 'request_body_bytes', 'request_body_truncated', 'request_score', 'risk_key',
-    'surface', 'matched_field', 'message_bytes', 'streamed', 'response_inspection_skipped'];
+    'surface', 'matched_field', 'message_bytes', 'message_preview', 'streamed', 'response_inspection_skipped'];
   const extraEntries = fields
     ? Object.entries(fields)
         .filter(([k]) => !['method', 'path', 'status', 'region', 'route_id', 'latency_ms', ...ECHO_KEYS].includes(k))
@@ -883,6 +886,17 @@ function RequestDetail({ data }) {
                 <div><span className="dim">surface</span> websocket</div>
                 {matchedField && <div><span className="dim">matched_field</span> {matchedField}</div>}
                 {messageBytes != null && <div><span className="dim">message_bytes</span> {messageBytes}</div>}
+                {messagePreview && (
+                  <div style={{ marginTop: 6 }}>
+                    <div className="dim" style={{ marginBottom: 2 }}>message (inspected · capped)</div>
+                    <pre style={{
+                      margin: 0, padding: '6px 8px', borderRadius: 4,
+                      background: 'var(--surface-2)', border: '1px solid var(--border)',
+                      color: 'var(--ink)', fontSize: 11, whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-all', maxHeight: 160, overflow: 'auto',
+                    }}>{messagePreview}</pre>
+                  </div>
+                )}
               </>
             )}
             {isStreamed && (
