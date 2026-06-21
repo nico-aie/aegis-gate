@@ -1166,9 +1166,8 @@ mod tests {
         let bound = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let original_fd = bound.as_raw_fd();
         // dup to a large slot so we don't collide with stdio.
-        // SAFETY: dup is always safe.
         let target_fd: i32 = 200;
-        let dup_fd = unsafe { libc_dup2(original_fd, target_fd) };
+        let dup_fd = libc_dup2(original_fd, target_fd);
         assert!(
             dup_fd >= 0,
             "dup2 to fd {target_fd} failed (errno={})",

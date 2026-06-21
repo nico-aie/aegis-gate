@@ -705,6 +705,7 @@ async fn watch_loop(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use std::io::Write;

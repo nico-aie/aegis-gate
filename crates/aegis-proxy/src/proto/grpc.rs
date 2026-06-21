@@ -92,7 +92,6 @@ mod tests {
         use http_body_util::BodyExt;
         use hyper::body::Frame;
         use std::convert::Infallible;
-        use std::sync::Arc;
 
         // 1. Mock gRPC backend — returns body + trailers with grpc-status.
         let backend_tcp = tokio::net::TcpListener::bind("127.0.0.1:0")

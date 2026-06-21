@@ -264,9 +264,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
 
         // Generate CA + server cert + client cert.
-        let (ca_pem, server_cert_pem, server_key_pem, _) =
+        let (_ca_pem, _server_cert_pem, _server_key_pem, _) =
             generate_ca_and_leaf(&["localhost"]);
-        let (_, client_cert_pem, client_key_pem, _) =
+        let (_, _client_cert_pem, _client_key_pem, _) =
             generate_ca_and_leaf(&["client"]);
         // For mTLS, the server needs to trust the client's CA.
         // In this test, we use the same CA for simplicity — regenerate client from same CA.

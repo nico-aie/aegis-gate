@@ -67,6 +67,7 @@ pub mod upstream;
 
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use crate::accept::accept_loop;
     use crate::admin_login::{process_admin_login, process_admin_logout};

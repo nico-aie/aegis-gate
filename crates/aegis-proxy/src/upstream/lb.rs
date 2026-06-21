@@ -164,7 +164,6 @@ fn pick_consistent_hash<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::SocketAddr;
     use std::sync::atomic::AtomicUsize;
 
     fn make_members(n: usize) -> Vec<Arc<Member>> {

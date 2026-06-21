@@ -955,6 +955,7 @@ pub(crate) fn receiver_to_config(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use aegis_core::config::ComplianceMode;
@@ -2184,7 +2185,8 @@ state:
     }
 
     // 2026-06-03 (copilot config-plane fold) — minimal config carrying an
-    // `observability.copilot` block.
+    // `observability.copilot` block. Only the `llm`-feature tests below use it.
+    #[cfg(feature = "llm")]
     fn yaml_with_copilot(
         enabled: bool,
         key_ref: Option<&str>,

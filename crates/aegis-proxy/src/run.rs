@@ -2337,6 +2337,7 @@ fn resolve_challenge_key(challenge_secret: Option<&str>) -> [u8; 32] {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod challenge_key_tests {
     use super::resolve_challenge_key;
 

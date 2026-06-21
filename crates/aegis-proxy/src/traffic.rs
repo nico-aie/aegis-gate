@@ -215,6 +215,11 @@ mod tests {
             (v1_pct - 0.95).abs() < 0.01,
             "v1 percentage {v1_pct} not within 1% of 0.95"
         );
+        let v2_pct = v2_count as f64 / total as f64;
+        assert!(
+            (v2_pct - 0.05).abs() < 0.01,
+            "v2 percentage {v2_pct} not within 1% of 0.05"
+        );
     }
 
     #[test]

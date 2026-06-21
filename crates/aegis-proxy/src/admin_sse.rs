@@ -227,7 +227,6 @@ impl Stream for SseFrameStream {
 mod tests {
     use super::*;
     use aegis_core::audit::{AuditClass, AuditEvent};
-    use http_body_util::BodyExt as _;
 
     fn ev(req_id: &str, class: AuditClass) -> AuditEvent {
         AuditEvent {
