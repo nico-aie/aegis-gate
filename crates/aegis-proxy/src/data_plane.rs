@@ -1742,6 +1742,27 @@ pub(crate) async fn handle_data_request_inner(
     (resp, final_tag)
 }
 
+/// Cap (in chars) for the blocked-WS-frame message preview stamped into the
+/// audit `fields.message_preview`. Bounds how much potentially-sensitive frame
+/// content is persisted — only ever populated on a BLOCK (the offending frame
+/// was rejected, not delivered), for forensic attribution in the drawer.
+const WS_FRAME_PREVIEW_CAP: usize = 256;
+
+/// Build a capped, UTF-8-lossy preview of a blocked WebSocket frame payload for
+/// the audit log. Truncates on a char boundary (never splits a multi-byte rune)
+/// and appends `…` when cut. Invalid UTF-8 becomes the replacement char rather
+/// than panicking.
+fn ws_frame_preview(payload: &[u8], cap: usize) -> String {
+    let text = String::from_utf8_lossy(payload);
+    let mut chars = text.chars();
+    let head: String = chars.by_ref().take(cap).collect();
+    if chars.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
+    }
+}
+
 /// Resolve a route + member from the live `ProxyContext`,
 /// collect the request body, and forward through
 /// `upstream::forward::forward()`. Returns 404 on no-route,
@@ -2396,6 +2417,11 @@ pub(crate) async fn forward_allow_to_upstream(
                                         "surface": "websocket",
                                         "matched_field": matched_field,
                                         "message_bytes": payload.len(),
+                                        // Capped, UTF-8-lossy preview of the
+                                        // offending frame so the drawer can show
+                                        // WHAT tripped the block (only on block).
+                                        "message_preview":
+                                            ws_frame_preview(&payload, WS_FRAME_PREVIEW_CAP),
                                         "path": ws_uri.to_string(),
                                     }),
                                 });
@@ -5175,6 +5201,40 @@ state: {{ backend: in_memory }}
     }
 
     /// WS-MSG4 — `mode: log_only` forwards the malicious frame to the
+    // 2026-06-21 — blocked WS frame forensics: the audit must carry a capped,
+    // UTF-8-lossy preview of the offending message so the Request-detail drawer
+    // can show WHAT tripped the block (not just `matched_field` + byte count).
+    #[test]
+    fn ws_frame_preview_passes_short_payload_through() {
+        assert_eq!(super::ws_frame_preview(b"' OR 1=1--", 256), "' OR 1=1--");
+    }
+
+    #[test]
+    fn ws_frame_preview_truncates_long_payload_with_ellipsis() {
+        let payload = vec![b'a'; 300];
+        let out = super::ws_frame_preview(&payload, 256);
+        assert_eq!(out.chars().filter(|&c| c == 'a').count(), 256);
+        assert!(out.ends_with('…'), "truncated preview marks the cut");
+    }
+
+    #[test]
+    fn ws_frame_preview_is_char_boundary_safe() {
+        // Multi-byte chars (3 bytes each) past the cap must truncate cleanly —
+        // never split a rune (char-count cap makes this structural).
+        let payload = "★".repeat(300).into_bytes();
+        let out = super::ws_frame_preview(&payload, 256);
+        assert!(out.ends_with('…'));
+        assert_eq!(out.chars().filter(|&c| c == '★').count(), 256);
+        assert!(!out.contains('\u{FFFD}'), "no mid-rune split");
+    }
+
+    #[test]
+    fn ws_frame_preview_lossy_on_invalid_utf8() {
+        // Invalid bytes become the replacement char, not a panic.
+        let out = super::ws_frame_preview(&[0xff, 0xfe, b'x'], 256);
+        assert!(out.ends_with('x'));
+    }
+
     /// upstream **and** emits a `websocket_frame_block` audit event with
     /// `mode: log_only`. The socket is NOT closed.
     #[tokio::test]
@@ -5315,6 +5375,14 @@ state: {{ backend: in_memory }}
                     ev.fields.get("path").and_then(|p| p.as_str()),
                     Some("/"),
                     "WS frame block must carry the real handshake path in fields.path",
+                );
+                // 2026-06-21 — the blocked frame's message content rides
+                // `fields.message_preview` so the drawer can show what tripped
+                // the block (capped + UTF-8-lossy).
+                assert_eq!(
+                    ev.fields.get("message_preview").and_then(|p| p.as_str()),
+                    Some("' OR 1=1--"),
+                    "WS frame block must carry a preview of the offending message",
                 );
                 break;
             }
