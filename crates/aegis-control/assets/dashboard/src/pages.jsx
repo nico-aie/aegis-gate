@@ -2803,6 +2803,16 @@ function PageRuleManager() {
   const filtered = merged.filter(r => !search || r.id.includes(search) || r.name.toLowerCase().includes(search.toLowerCase()));
   const selected = merged.find(r => r.id === selectedId) || merged[0] || null;
 
+  // 2026-06-21 — the RuleStore reflects a config activation a beat after
+  // /api/config/version advances, so a single immediate reload raced the update
+  // (create/edit/delete/toggle all "needed a manual reload"). Re-fetch a few
+  // times over ~3s so every mutation reflects without operator action.
+  function settleReload() {
+    const go = () => rulesApi.reload && rulesApi.reload();
+    go();
+    [800, 1800, 3200].forEach(ms => setTimeout(go, ms));
+  }
+
   // Run a mutation, wait for /api/config/version to advance, then toast.
   async function runMutation(label, fn) {
     if (busy) return;
@@ -2817,7 +2827,7 @@ function PageRuleManager() {
         } else {
           window.aegisToast(`${label} · pending after 10 s`, 'warn');
         }
-        rulesApi.reload && rulesApi.reload();
+        settleReload();
       } else {
         const msg = (result && (result.message || result.error || result.reason)) || 'unknown error';
         window.aegisToast(`${label} failed: ${msg}`, 'err');
@@ -3071,7 +3081,7 @@ function PageRuleManager() {
                     <div><div className="field-label">Kind</div><span className={`pill ${selected.kind}`}>{selected.kind}</span></div>
                     <div><div className="field-label">Action</div><window.ActionPill value={selected.action} /></div>
                     <div><div className="field-label">Priority</div><span className="num">{selected.pri}</span></div>
-                    <div><div className="field-label">Enabled</div><div className={`toggle ${selected.enabled ? 'on' : ''}`}></div></div>
+                    <div><div className="field-label">Enabled</div><span className={`pill ${selected.enabled ? 'ok' : 'warn'}`}>{selected.enabled ? 'enabled' : 'disabled'}</span></div>
                   </div>
                 )}
                 {tab === 'dsl' && (
