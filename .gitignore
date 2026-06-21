@@ -102,3 +102,10 @@ __pycache__
 # (3 MB) DO go in — they're small enough.
 /tests/security/dataset/attacks_v4.ndjson
 /tests/security/dataset/attacks_v4.ndjson.gz
+
+# =========================
+# Raw l-tester recon dumps
+# =========================
+# 518KB+ raw recon path dumps capture scanned tokens (Atlassian JWTs)
+# and trip GitHub push protection. Curated .md reports DO go in.
+/tests/l-tester/reports/recon-path.txt
