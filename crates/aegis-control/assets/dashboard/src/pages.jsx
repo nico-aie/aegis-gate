@@ -2672,15 +2672,9 @@ function RuleSimulator() {
             Replay a hypothetical request against the live detector chain — no traffic, no audit emit.
           </div>
         </div>
-        {/* LOW-07 (2026-05-11) — tooltip + link so operators new
-            to the framework see what "Tier A" means here vs. the
-            Critical/High/Medium/Low tiers on Detectors & Tiers. */}
-        <a
-          href="#/detectors"
-          className="pill neutral"
-          style={{ textDecoration: 'none' }}
-          title="Tier A bonus surface — runs the live detector chain in a sandbox so operators can preview verdicts before persisting a rule. The Critical/High/Medium/Low tiers on the Detectors page are a different concept (request risk tier)."
-        >Tier A</a>
+        {/* 2026-06-21 — dropped the "Tier A" badge: it was internal
+            hackathon-scoring jargon and linked to /detectors, which confused
+            operators (it's unrelated to the request risk tier). */}
       </div>
       <div style={{ padding: 14, display: 'grid', gridTemplateColumns: '110px 1fr 1fr', gap: 8, alignItems: 'start' }}>
         <select className="input select" value={method} onChange={e => setMethod(e.target.value)}>
@@ -2723,6 +2717,11 @@ function RuleSimulator() {
             <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>
               tier: <code>{result.tier}</code>
             </span>
+            {decision === 'allow' && fired.length > 0 && (
+              <span style={{ fontSize: 11, color: 'var(--warn)' }}>
+                · detected but allowed — score is below the <code>{result.tier}</code> tier's block threshold (repeat hits escalate via cumulative risk)
+              </span>
+            )}
           </>
         )}
       </div>

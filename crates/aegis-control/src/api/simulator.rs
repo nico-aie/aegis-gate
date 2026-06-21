@@ -147,6 +147,7 @@ pub fn simulate(
     req: &SimulateRequest,
     detectors: &[Box<dyn Detector>],
     mask: &SharedDetectorMask,
+    tiers: &crate::api::tiers::TierStore,
 ) -> SimulateResponse {
     let method = req
         .method
@@ -235,13 +236,20 @@ pub fn simulate(
         .fold(0u32, |acc, s| acc.saturating_add(s.score as u32))
         .min(100);
 
-    let decision_action = if !signals.is_empty() {
-        // Mirror the data-plane mapping: any detector signal
-        // produces a `block` decision under a stub route. The
-        // real pipeline can downgrade to challenge based on
-        // risk thresholds, but for a simulator preview "block
-        // when any detector fires" is the simpler explainable
-        // verdict.
+    // 2026-06-21 — match the data plane's per-request gate: block ONLY when the
+    // summed detector score reaches the matched tier's `risk_threshold`
+    // (defaults critical 50 / high 60 / medium 70 / low 80; live-configurable
+    // via the TierStore). Previously this blocked whenever ANY detector fired,
+    // so a low-tier request scoring 70 (< the 80 threshold) wrongly showed BLOCK
+    // when the real pipeline would ALLOW it (detected-but-forwarded). Falls back
+    // to 50 (critical default) when the tier has no entry, mirroring
+    // `data_plane.rs`. The cumulative-risk challenge band isn't simulated — it
+    // depends on an IP's accumulated history, which a stateless preview lacks.
+    let per_request_block_at = tiers
+        .get(tier.as_str())
+        .map(|t| t.risk_threshold)
+        .unwrap_or(50);
+    let decision_action = if risk_score >= per_request_block_at {
         "block".to_string()
     } else {
         "allow".to_string()
@@ -281,6 +289,12 @@ mod tests {
         SharedDetectorMask::default()
     }
 
+    // Default tier ladder (critical 50 / high 60 / medium 70 / low 80) — the
+    // same store the data plane uses, so the simulator verdict matches.
+    fn live_tiers() -> crate::api::tiers::TierStore {
+        crate::api::tiers::TierStore::new()
+    }
+
     #[test]
     fn benign_request_returns_allow_with_zero_risk() {
         let req = SimulateRequest {
@@ -290,7 +304,7 @@ mod tests {
             headers: Default::default(),
             body: None,
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask());
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers());
         assert_eq!(resp.decision_action, "allow");
         assert_eq!(resp.risk_score, 0);
         assert!(resp.detectors_fired.is_empty());
@@ -299,7 +313,10 @@ mod tests {
     }
 
     #[test]
-    fn sql_injection_path_is_blocked_with_sqli_rule_id() {
+    fn sql_injection_on_low_tier_is_detected_but_allowed() {
+        // A single SQLi hit scores 70; the default (Low) tier blocks at 80, so
+        // the data plane ALLOWS-but-detects it (the cumulative gate escalates a
+        // repeat offender). The simulator must match — not block on any hit.
         let req = SimulateRequest {
             method: Some("GET".into()),
             path: "/api/users?id=1' OR '1'='1".into(),
@@ -307,20 +324,40 @@ mod tests {
             headers: Default::default(),
             body: None,
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask());
-        assert_eq!(resp.decision_action, "block");
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers());
+        assert_eq!(resp.decision_action, "allow", "70 < low threshold 80");
+        assert_eq!(resp.tier, "low");
         assert!(
             resp.detectors_fired.iter().any(|d| d == "sqli"),
             "expected sqli in fired detectors, got {:?}",
             resp.detectors_fired,
         );
-        assert!(resp.risk_score > 0);
-        assert_eq!(resp.rule_id.as_deref(), Some("sqli"));
+        assert!(resp.risk_score > 0 && resp.risk_score < 80);
         assert!(!resp.signals.is_empty());
     }
 
     #[test]
-    fn xss_query_string_is_blocked() {
+    fn combined_detectors_cross_threshold_and_block() {
+        // Two clear-exploit detectors (path_traversal + xss) sum past the Low
+        // tier's 80 threshold → block, matching the data plane's per-request gate.
+        let req = SimulateRequest {
+            method: Some("GET".into()),
+            path: "/static/../../../etc/passwd?q=<script>alert(1)</script>".into(),
+            host: Some("api.example.com".into()),
+            headers: Default::default(),
+            body: None,
+        };
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers());
+        assert_eq!(resp.decision_action, "block", "combined score ≥ 80");
+        assert!(resp.risk_score >= 80);
+        assert!(resp.detectors_fired.len() >= 2, "got {:?}", resp.detectors_fired);
+    }
+
+    #[test]
+    fn strong_xss_payload_crosses_threshold_and_blocks() {
+        // `<script>alert(1)</script>` fires multiple xss signals that sum past
+        // the Low tier's 80 threshold → block. Proves the simulator honors the
+        // tier threshold (vs the old "block on any hit").
         let req = SimulateRequest {
             method: Some("GET".into()),
             path: "/search?q=<script>alert(1)</script>".into(),
@@ -328,13 +365,15 @@ mod tests {
             headers: Default::default(),
             body: None,
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask());
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers());
         assert_eq!(resp.decision_action, "block");
+        assert!(resp.risk_score >= 80);
         assert!(resp.detectors_fired.iter().any(|d| d == "xss"));
     }
 
     #[test]
-    fn path_traversal_is_blocked() {
+    fn path_traversal_is_detected_on_low_tier() {
+        // Single path_traversal hit (70) < Low threshold (80) → allow-but-detected.
         let req = SimulateRequest {
             method: Some("GET".into()),
             path: "/static/../../../etc/passwd".into(),
@@ -342,8 +381,8 @@ mod tests {
             headers: Default::default(),
             body: None,
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask());
-        assert_eq!(resp.decision_action, "block");
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers());
+        assert_eq!(resp.decision_action, "allow");
         assert!(
             resp.detectors_fired
                 .iter()
@@ -362,7 +401,7 @@ mod tests {
             headers: Default::default(),
             body: None,
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask());
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers());
         assert_eq!(resp.decision_action, "allow");
     }
 
@@ -376,7 +415,7 @@ mod tests {
             body: None,
         };
         // Should not panic; the simulator falls back to GET.
-        let resp = simulate(&req, &default_detectors(), &live_mask());
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers());
         assert_eq!(resp.decision_action, "allow");
     }
 
@@ -391,10 +430,11 @@ mod tests {
                 .collect(),
             body: Some("<script>alert(1)</script>".into()),
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask());
-        // Body-side detection — at least the XSS or body-abuse
-        // detector should fire.
-        assert_eq!(resp.decision_action, "block");
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers());
+        // Body-side detection — the XSS (or body-abuse) detector fires. A single
+        // 70 hit on the Low tier is allowed-but-detected (< 80 threshold).
+        assert_eq!(resp.decision_action, "allow");
+        assert!(!resp.detectors_fired.is_empty(), "a detector should fire on the body payload");
     }
 
     #[test]
@@ -414,7 +454,7 @@ mod tests {
             headers: Default::default(),
             body: None,
         };
-        let resp = simulate(&req, &default_detectors(), &mask);
+        let resp = simulate(&req, &default_detectors(), &mask, &live_tiers());
         assert!(
             resp.muted_detectors.iter().any(|d| d == "sqli"),
             "expected sqli muted, got {:?}",
@@ -431,7 +471,7 @@ mod tests {
             headers: Default::default(),
             body: None,
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask());
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers());
         assert!(!resp.signals.is_empty());
         for s in &resp.signals {
             assert!(!s.class.is_empty());
@@ -448,7 +488,7 @@ mod tests {
             headers: Default::default(),
             body: None,
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask());
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers());
         let json = serde_json::to_value(&resp).unwrap();
         assert!(json.get("decision_action").is_some());
         assert!(json.get("risk_score").is_some());
