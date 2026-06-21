@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use aegis_core::config::{RiskConfig, RiskThresholds, StrikeConfig, TrustRecoveryConfig};
+use aegis_core::config::{RiskConfig, RiskThresholds, StrikeConfig};
 use dashmap::DashMap;
 
 use super::RiskLevel;
@@ -700,6 +700,9 @@ fn trust_decay_points(elapsed: Duration, per_hour: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Test-only: the live tracker stores the rate as an atomic, so the
+    // struct type is only referenced when building test configs.
+    use aegis_core::config::TrustRecoveryConfig;
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
