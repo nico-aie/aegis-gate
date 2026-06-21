@@ -2745,6 +2745,14 @@ pub(crate) async fn handle_rules_post(
         v.errors.push(id_err);
         v.ok = false;
     }
+    // 2026-06-21 — the engine matches on the body's `id:`, so the form id and
+    // body id must agree or the list shows one id while traffic matches another.
+    if let Some(mismatch) =
+        aegis_control::api::rules::validate_rule_id_matches_body(&parsed.id, &parsed.body)
+    {
+        v.errors.push(mismatch);
+        v.ok = false;
+    }
     if !v.ok {
         return mutation_error_response(rule_validation_error(&v));
     }
@@ -2864,6 +2872,13 @@ pub(crate) async fn handle_rules_put(
     let mut v = aegis_control::api::rules::validate_rule_body(&parsed.body);
     if let Some(id_err) = aegis_control::api::rules::validate_rule_id(rule_id) {
         v.errors.push(id_err);
+        v.ok = false;
+    }
+    // 2026-06-21 — form id (the URL path id) must match the body's `id:`.
+    if let Some(mismatch) =
+        aegis_control::api::rules::validate_rule_id_matches_body(rule_id, &parsed.body)
+    {
+        v.errors.push(mismatch);
         v.ok = false;
     }
     if !v.ok {

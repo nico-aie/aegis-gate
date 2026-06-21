@@ -1627,6 +1627,88 @@ async fn copilot_ask_respond(
     }
 }
 
+/// `POST /api/copilot/rule` with JSON `{ "intent": "...", "id": "..." }` —
+/// generate a rule DSL body from a natural-language intent for the New-rule
+/// editor. **Advisory** — the body is returned + server-validated, never
+/// auto-applied (the operator reviews + saves through the normal POST
+/// /api/rules path). 503 when copilot disabled, 400 on empty intent, 502 on a
+/// provider error.
+pub(crate) async fn handle_copilot_generate_rule(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+    let _ = services; // generation needs no telemetry snapshot
+
+    #[derive(serde::Deserialize, Default)]
+    struct GenBody {
+        #[serde(default)]
+        intent: Option<String>,
+        #[serde(default)]
+        id: Option<String>,
+    }
+
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            let body = serde_json::json!({ "error": "body read failed" }).to_string();
+            return json_body_response(400, body, "no-store");
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+    let parsed: GenBody = if body_str.trim().is_empty() {
+        GenBody::default()
+    } else {
+        match serde_json::from_str(body_str) {
+            Ok(b) => b,
+            Err(e) => {
+                let body =
+                    serde_json::json!({ "error": format!("invalid JSON body: {e}") }).to_string();
+                return json_body_response(400, body, "no-store");
+            }
+        }
+    };
+    let intent = parsed.intent.unwrap_or_default();
+    let intent = intent.trim();
+    if intent.is_empty() {
+        let body =
+            serde_json::json!({ "error": "missing intent; pass {\"intent\":\"…\"}" }).to_string();
+        return json_body_response(400, body, "no-store");
+    }
+    // Bound the intent so a pasted wall of text can't blow up the prompt/cost.
+    let intent: String = intent.chars().take(500).collect();
+    let id = parsed.id.unwrap_or_default();
+    let id: String = id.trim().chars().take(64).collect();
+
+    let copilot = aegis_control::copilot::service::global();
+    if !copilot.enabled() {
+        let body = serde_json::json!({
+            "error": "copilot disabled",
+            "hint": "set LLM_ENABLED=true + LLM_BASE_URL/LLM_API_KEY/LLM_MODEL and build with --features llm",
+        })
+        .to_string();
+        return json_body_response(503, body, "no-store");
+    }
+    match copilot.generate_rule(&intent, &id).await {
+        Ok(rule_body) => {
+            // Server-validate the generated DSL so the UI can flag a bad
+            // generation before the operator tries to save it.
+            let validation = aegis_control::api::rules::validate_rule_body(&rule_body);
+            let body = serde_json::json!({
+                "ok": true,
+                "body": rule_body,
+                "validation": validation,
+            })
+            .to_string();
+            json_body_response(200, body, "no-store")
+        }
+        Err(e) => {
+            let body = serde_json::json!({ "error": e.to_string() }).to_string();
+            json_body_response(502, body, "no-store")
+        }
+    }
+}
+
 /// `GET /api/copilot/suggestions?minutes=60` — smart-catch triage:
 /// cluster the snapshot into campaigns + candidate rules. **Advisory** —
 /// the response is a review queue; nothing is applied. 503 disabled /

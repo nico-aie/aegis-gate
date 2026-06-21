@@ -2470,6 +2470,28 @@ function ruleRowToBody(r) {
   return lines.join('\n');
 }
 
+// 2026-06-21 (P1) — keep the DSL body's `id:` in lock-step with the form Rule
+// ID. The engine matches on the body id, and the backend now rejects a form/body
+// id mismatch, so we rewrite the first `id:` value to the entered id before
+// submit (and when a template is inserted). No-op when no id is given.
+function syncRuleBodyId(body, id) {
+  const safe = (id || '').trim();
+  if (!safe || !body) return body;
+  let replaced = false;
+  return body
+    .split('\n')
+    .map(line => {
+      if (replaced) return line;
+      const m = line.match(/^(\s*-?\s*id:\s*)(.*)$/);
+      if (m) {
+        replaced = true;
+        return `${m[1]}${safe}`;
+      }
+      return line;
+    })
+    .join('\n');
+}
+
 // 2026-05-17 F-CRITICAL-001 (UI friendliness pass) — quick-start
 // rule templates. Each template ships a canonical YAML body that
 // parses against `aegis_security::rules::parser`; operators tweak
@@ -2745,12 +2767,12 @@ function PageRuleManager() {
     op: 'regex',
     pattern: '',
     action: r.action ?? 'block',
-    risk: r.risk ?? 50,
     enabled: r.enabled !== undefined ? r.enabled : true,
     cat: r.cat ?? 'custom',
-    // CQF-T16 — preserve `hits1h` when the backend supplies it
-    // (was discarded as `0` regardless of API value).
-    hits1h: Number(r.hits1h ?? r.hits_1h ?? 0),
+    // 2026-06-21 — `risk` (+50 badge) and `hits1h` were removed from the UI:
+    // the rule model has no risk field, and GET /api/rules carries no hit count
+    // (real hits live on the unjoined /api/rules/top). See
+    // plans/issues/PLAN-rules-screen-ux-and-ai-gen-2026-06-21.md (P3).
     body: r.body || ruleRowToBody({ id: r.id }),
   }));
 
@@ -2839,15 +2861,34 @@ function PageRuleManager() {
     await runMutation(`Rule ${selected.id} deleted`, () => window.rulesDelete(selected.id));
   }
 
+  // P2 (2026-06-21) — config activation propagates asynchronously, so the
+  // rule store can lag a beat behind a successful POST. Poll /api/rules until
+  // the new id is live (bounded) so the row appears without a manual reload.
+  async function waitForRuleVisible(id) {
+    for (let i = 0; i < 6; i++) {
+      try {
+        const r = await fetch('/api/rules', { credentials: 'same-origin', cache: 'no-store' });
+        const j = await r.json();
+        if (Array.isArray(j.rules) && j.rules.some(x => x.id === id)) break;
+      } catch (_) { /* keep polling */ }
+      await new Promise(res => setTimeout(res, 700));
+    }
+    rulesApi.reload && rulesApi.reload();
+  }
+
   async function createNew() {
     const id = newId.trim();
     if (!id) { window.aegisToast('Rule id is required', 'err'); return; }
+    // P1 — force the body's `id:` to match the form id (engine matches body id;
+    // the backend rejects a mismatch).
+    const body = syncRuleBodyId(newBody, id);
     await runMutation(`Rule ${id} created`,
-      () => window.rulesPost({ id, body: newBody, enabled: newEnabled }));
+      () => window.rulesPost({ id, body, enabled: newEnabled }));
     setShowNew(false);
     setNewId('');
     setNewBody(defaultRuleBody('my-rule-001'));
     setNewEnabled(true);
+    await waitForRuleVisible(id);
     setSelectedId(id);
   }
 
@@ -2989,7 +3030,6 @@ function PageRuleManager() {
                   <span>·</span>
                   <window.ActionPill value={r.action} />
                   {r.enabled ? null : <span className="pill warn" style={{ marginLeft: 4 }}>off</span>}
-                  <span style={{ marginLeft: 'auto' }} className="num">+{r.risk}</span>
                 </div>
               </button>
             ))}
@@ -3001,7 +3041,7 @@ function PageRuleManager() {
               <div style={{ padding: 14, borderBottom: '1px solid var(--hairline)', display: 'flex', alignItems: 'center', gap: 10 }}>
                 <div>
                   <div style={{ fontSize: 14, fontWeight: 600 }}>{selected.name}</div>
-                  <div style={{ fontSize: 11, color: 'var(--ink-dim)' }} className="mono">{selected.id} · priority {selected.pri} · {(selected.hits1h || 0).toLocaleString()} hits/1h</div>
+                  <div style={{ fontSize: 11, color: 'var(--ink-dim)' }} className="mono">{selected.id} · priority {selected.pri}</div>
                 </div>
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
                   {!editing && (
@@ -3029,10 +3069,7 @@ function PageRuleManager() {
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, fontSize: 12 }}>
                     <div><div className="field-label">ID</div><div className="mono">{selected.id}</div></div>
                     <div><div className="field-label">Kind</div><span className={`pill ${selected.kind}`}>{selected.kind}</span></div>
-                    <div><div className="field-label">Field</div><div>{selected.field}</div></div>
-                    <div><div className="field-label">Operator</div><div>{selected.op}</div></div>
                     <div><div className="field-label">Action</div><window.ActionPill value={selected.action} /></div>
-                    <div><div className="field-label">Risk Δ</div><span className="num">+{selected.risk}</span></div>
                     <div><div className="field-label">Priority</div><span className="num">{selected.pri}</span></div>
                     <div><div className="field-label">Enabled</div><div className={`toggle ${selected.enabled ? 'on' : ''}`}></div></div>
                   </div>
@@ -3162,8 +3199,44 @@ function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNew
   // sample id. Avoid clobbering anything the operator has already
   // typed — both fields are still editable after the prefill.
   const applyTemplate = (tpl) => {
-    setNewBody(tpl.body);
+    // P1 — keep the body id in lock-step with the form id (or the sample id
+    // when the field is still empty) so create can't trip the id-match check.
+    const targetId = idEmpty ? tpl.sampleId : newId.trim();
+    setNewBody(syncRuleBodyId(tpl.body, targetId));
     if (idEmpty) setNewId(tpl.sampleId);
+  };
+  // P4 — AI rule generation. Drafts a body from a natural-language intent via
+  // the Copilot; advisory (prefills the editor, never auto-applies).
+  const [aiIntent, setAiIntent] = useStateP('');
+  const [aiBusy, setAiBusy] = useStateP(false);
+  const generateWithAi = async () => {
+    const intent = aiIntent.trim();
+    if (!intent) { window.aegisToast('Describe the rule you want first', 'err'); return; }
+    setAiBusy(true);
+    try {
+      const r = await window.rulesGenerate({ intent, id: newId.trim() });
+      if (r && r.ok && r.body) {
+        // Adopt the generated id when the operator hasn't typed one.
+        let id = newId.trim();
+        if (!id) {
+          const m = r.body.match(/^\s*-?\s*id:\s*(.+)$/m);
+          if (m) { id = m[1].trim(); setNewId(id); }
+        }
+        setNewBody(syncRuleBodyId(r.body, id) || r.body);
+        const flagged = r.validation && r.validation.ok === false;
+        window.aegisToast(
+          flagged ? 'AI drafted a rule — review, it flagged validation issues' : 'AI drafted a rule — review & save',
+          flagged ? 'warn' : 'ok',
+        );
+      } else {
+        const msg = (r && (r.error || r.hint)) || 'generation failed';
+        window.aegisToast(`AI generate: ${msg}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`AI generate error: ${e.message || e}`, 'err');
+    } finally {
+      setAiBusy(false);
+    }
   };
   const handleSave = () => {
     if (idEmpty) {
@@ -3226,6 +3299,33 @@ function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNew
             </div>
             <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginTop: 6 }}>
               Click a template to prefill the body — then edit values like paths, IPs, or status codes.
+            </div>
+          </div>
+          {/* P4 — AI rule generation (advisory; prefills the editor). */}
+          <div style={{ padding: '10px 12px', borderRadius: 6, background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+            <div className="field-label" style={{ marginBottom: 6 }}>✨ Generate with AI</div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <input
+                className="input"
+                value={aiIntent}
+                onChange={e => setAiIntent(e.target.value)}
+                placeholder="Describe it, e.g. block /admin from outside 10.0.0.0/8"
+                style={{ flex: 1 }}
+                disabled={aiBusy || busy}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); generateWithAi(); } }}
+              />
+              <button
+                type="button"
+                className="btn primary"
+                onClick={generateWithAi}
+                disabled={aiBusy || busy}
+                style={{ whiteSpace: 'nowrap' }}
+              >
+                {aiBusy ? 'Generating…' : 'Generate'}
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginTop: 6 }}>
+              Drafts a rule body from your description — review &amp; edit before saving; nothing is applied automatically. Requires AI Copilot enabled.
             </div>
           </div>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>

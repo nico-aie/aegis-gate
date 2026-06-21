@@ -1380,6 +1380,19 @@ async function rulesPost(body) {
   });
   return r.json().catch(() => ({ error: `HTTP ${r.status}` }));
 }
+// 2026-06-21 (P4) — AI rule generation. POST an intent (+ optional id) to the
+// copilot; returns { ok, body, validation } or { error } (503 when copilot off).
+// Advisory only — the body prefills the editor; nothing is applied.
+async function rulesGenerate({ intent, id }) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch('/api/copilot/rule', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+    body: JSON.stringify({ intent, id }),
+  });
+  return r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+}
 async function rulesPut(id, body) {
   const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
   const r = await fetch(`/api/rules/${encodeURIComponent(id)}`, {
@@ -1657,7 +1670,7 @@ Object.assign(window, {
   // TI-T — audit-mutated tier edits
   tierPut,
   useRoutesApi, useTiersApi,
-  rulesPost, rulesPut, rulesDelete, rulesToggle, waitForVersion, currentConfigVersion,
+  rulesPost, rulesPut, rulesDelete, rulesToggle, rulesGenerate, waitForVersion, currentConfigVersion,
   fetchConfigState, notifyConfigConvergence,
   // CI-T6 — settings mutations
   useModeApi, settingsModePut,
