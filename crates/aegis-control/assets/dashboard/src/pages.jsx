@@ -12437,6 +12437,19 @@ function DdosGateCard() {
       ? { bg: 'rgba(246,70,93,0.14)', fg: 'var(--down)', label: '⚠ SPIKE ACTIVE' }
       : { bg: 'rgba(14,203,129,0.14)', fg: 'var(--up)', label: 'NORMAL' };
 
+  // 2026-06-21 — derived "trip ceiling" maths so the card can state the LIVE
+  // effective cap in plain language. The gate is trip-and-quarantine, not a
+  // per-request throttle: crossing the per-window count jails the whole IP for
+  // block_ttl_s. `tightened_per_ip_rps` is an RPS that converts to a per-window
+  // count (× window) and only applies while spike is active (tighten-only).
+  const ddosWin = Math.max(cfg.per_ip_window_s, 1);
+  const normalCapWindow = cfg.per_ip_limit;
+  const spikeCapWindow = Math.min(cfg.per_ip_limit, cfg.tightened_per_ip_rps * ddosWin);
+  const spikeNow = !hotDisabled && data.spike_active;
+  const activeCapWindow = spikeNow ? spikeCapWindow : normalCapWindow;
+  const activeCapRps = activeCapWindow / ddosWin;
+  const spikeCapRps = spikeCapWindow / ddosWin;
+
   return (
     <div id="ddos-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
@@ -12456,6 +12469,56 @@ function DdosGateCard() {
           <button className="btn primary" onClick={() => setEditing(true)} style={{ fontSize: 11, padding: '4px 12px' }}>
             Edit thresholds
           </button>
+        </div>
+
+        {/* Behavior callout — the mental model operators trip over: this gate
+            QUARANTINES the whole IP on trip, it does not throttle per request. */}
+        <div style={{
+          display: 'flex', flexDirection: 'column', gap: 8,
+          padding: '12px 14px', marginBottom: 16, borderRadius: 6,
+          background: 'var(--surface-2)', borderLeft: '3px solid var(--brand-yellow)',
+        }}>
+          <div style={{ fontSize: 12, color: 'var(--ink)', lineHeight: 1.55 }}>
+            <strong>Trip &amp; quarantine — not a per-request throttle.</strong> When a single IP
+            sends more than its cap within the rolling <code>{cfg.per_ip_window_s}s</code> window, that
+            <strong> whole IP is blocked with 403 for {cfg.block_ttl_s}s</strong>. Every request after the
+            trip is dropped until the timer expires — even slow ones. It does <em>not</em> reject only the
+            one overflow request, so a flood that trips the gate shows up as <em>all</em> of its requests
+            blocked, not just the excess.
+          </div>
+          <div style={{
+            display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap',
+            paddingTop: 8, borderTop: '1px solid var(--border)',
+          }}>
+            <span style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              Active cap right now
+            </span>
+            {hotDisabled ? (
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink-dim)' }}>
+                gate disabled — no IP is blocked
+              </span>
+            ) : (
+              <span style={{ fontSize: 13, color: 'var(--ink)' }}>
+                <strong style={{ color: spikeNow ? 'var(--down)' : 'var(--up)' }}>
+                  {activeCapWindow.toLocaleString()} req / {cfg.per_ip_window_s}s
+                </strong>
+                <span style={{ color: 'var(--ink-faint)' }}> ({activeCapRps.toFixed(1)}/s) </span>
+                per IP before block
+                <span style={{
+                  marginLeft: 8, fontSize: 11, padding: '1px 7px', borderRadius: 4,
+                  background: spikeNow ? 'rgba(246,70,93,0.14)' : 'rgba(14,203,129,0.14)',
+                  color: spikeNow ? 'var(--down)' : 'var(--up)', fontWeight: 600,
+                }}>
+                  {spikeNow ? 'spike cap active' : 'normal cap'}
+                </span>
+              </span>
+            )}
+          </div>
+          {!hotDisabled && !spikeNow && (
+            <div style={{ fontSize: 11, color: 'var(--ink-faint)' }}>
+              If a traffic spike engages, this tightens to <strong>{spikeCapWindow.toLocaleString()} req / {cfg.per_ip_window_s}s</strong> ({spikeCapRps.toFixed(1)}/s) per IP.
+            </div>
+          )}
         </div>
 
         {/* Live telemetry — current/baseline RPS + spike threshold */}
@@ -12493,7 +12556,7 @@ function DdosGateCard() {
           <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
             <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>per_ip_limit</div>
             <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>{cfg.per_ip_limit.toLocaleString()}</div>
-            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>requests / window</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>trip ceiling / IP / window (normal)</div>
           </div>
           <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
             <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>per_ip_window_s</div>
@@ -12503,7 +12566,7 @@ function DdosGateCard() {
           <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
             <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>block_ttl_s</div>
             <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>{cfg.block_ttl_s}s</div>
-            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>auto-block duration</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>IP fully blocked after a trip</div>
           </div>
           <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
             <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>spike_multiplier</div>
@@ -12512,8 +12575,8 @@ function DdosGateCard() {
           </div>
           <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
             <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>tightened_per_ip_rps</div>
-            <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>{cfg.tightened_per_ip_rps}</div>
-            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>cap during spike ({(cfg.tightened_per_ip_rps * Math.max(cfg.per_ip_window_s, 1)).toLocaleString()}/window)</div>
+            <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>{cfg.tightened_per_ip_rps}/s</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>spike trip ceiling = {spikeCapWindow.toLocaleString()}/window</div>
           </div>
           <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
             <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>spike_engage_ticks</div>
@@ -12526,24 +12589,25 @@ function DdosGateCard() {
             <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>ticks to release (~{cfg.spike_release_ticks}s)</div>
           </div>
           <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
-            <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>effective rate</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>normal trip rate</div>
             <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>
-              {(cfg.per_ip_limit / Math.max(cfg.per_ip_window_s, 1)).toFixed(1)}/s
+              {(cfg.per_ip_limit / ddosWin).toFixed(1)}/s
             </div>
-            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>derived per-IP rate</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>per IP · {spikeCapRps.toFixed(1)}/s during spike</div>
           </div>
         </div>
 
       </div>
       <GateExplain
         rows={[
-          ['How it fires', 'Per-IP sliding-window burst counter (StateBackend-backed, cluster-wide). When count exceeds per_ip_limit within the window, the IP is added to the auto-block keyspace.'],
-          ['Counter', <span key="c">Cluster-shared per-IP window. EWMA spike mode (per-node RPS) raises detection sensitivity when overall RPS exceeds <strong>spike_multiplier × baseline</strong>.</span>],
-          ['Spike tighten', <span key="st">While spike-active, every IP's cap drops to <strong>tightened_per_ip_rps × per_ip_window_s</strong> (tighten-only). Hysteresis: engages after <code>spike_engage_ticks</code> consecutive over-threshold ticks, releases after <code>spike_release_ticks</code> under-threshold ticks — so a brief blip never throttles all clients.</span>],
-          ['Response', '403 + ', <code key="rc">X-WAF-Action: block</code>, ' + ', <code key="rid">X-WAF-Rule-Id: ddos</code>, '. Subsequent requests from the IP are 403\'d for the full TTL.'],
-          ['Recovery', <span key="r"><strong>TTL\'d</strong> — IP is rejected for <code>block_ttl_s</code> (default 300s), then automatically allowed again. Tighter recovery than rate-limit\'s instant retry.</span>],
-          ['Tunable', <span key="t">Edit modal on this card. Audit-mutated <code>PUT /api/gates/ddos</code>; per-IP StateBackend window preserved across edits.</span>],
-          ['When to use', '"Sustained-burst quarantine" — DDoS-grade protection. For "API rate fairness" use Rate Limit (#4) instead; the two are complementary.'],
+          ['The model', <span key="m"><strong>Trip → quarantine.</strong> This is NOT a per-request throttle (that's the Rate Limit gate, #4, which 429s the excess). Here, the moment an IP's request count crosses its cap inside the window, the <strong>entire IP</strong> is auto-blocked for <code>block_ttl_s</code> — every later request is 403'd until the timer expires.</span>],
+          ['How it fires', <span key="f">A per-IP sliding-window counter holds the last <code>per_ip_window_s</code> seconds of requests. When that count reaches the cap (<strong>per_ip_limit</strong> normally; the tightened cap during a spike), the IP is added to the auto-block keyspace. The breaching request itself is the first 403.</span>],
+          ['Worked example', <span key="ex">With <code>per_ip_window_s={cfg.per_ip_window_s}</code> and the {spikeNow ? 'spike' : 'normal'} cap of <strong>{activeCapWindow.toLocaleString()} req/window</strong>: an IP sending {(activeCapRps + 1).toFixed(0)}/s reaches {activeCapWindow.toLocaleString()} part-way through the window, trips, and is then 403'd for the remaining {cfg.block_ttl_s}s — so you'd see roughly <em>all</em> of its traffic blocked, not one request.</span>],
+          ['Spike tighten', <span key="st">EWMA spike mode watches overall RPS. When it exceeds <strong>spike_multiplier × baseline</strong> the per-IP cap drops from {normalCapWindow.toLocaleString()} to <strong>{spikeCapWindow.toLocaleString()} req/window</strong> (tighten-only). Hysteresis: engages after <code>spike_engage_ticks</code> over-threshold ticks, releases after <code>spike_release_ticks</code> under-threshold ticks — a brief blip never throttles everyone.</span>],
+          ['Response', '403 + ', <code key="rc">X-WAF-Action: block</code>, ' + ', <code key="rid">X-WAF-Rule-Id: ddos</code>, '. Keyed by TCP peer IP, not the RiskKey — rotating cookies can\'t dodge it.'],
+          ['Recovery', <span key="r"><strong>TTL'd</strong> — the IP is rejected for <code>block_ttl_s</code> ({cfg.block_ttl_s}s), then automatically allowed again. To watch a trip release fast while testing, set <code>block_ttl_s</code> low.</span>],
+          ['Tunable', <span key="t">Edit modal on this card. Audit-mutated <code>PUT /api/gates/ddos</code>; the per-IP window state is preserved across edits.</span>],
+          ['When to use', '"Sustained-burst quarantine" — DDoS-grade protection. For "API rate fairness" (serve up to a cap, 429 the rest) use Rate Limit (#4) instead; the two are complementary.'],
         ]}
       />
       {editing && (
