@@ -29,6 +29,7 @@
 #![allow(dead_code)]
 
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -142,7 +143,10 @@ struct TrackerInner {
     /// without a restart. Reads through `Arc::clone` (free)
     /// and the inner clone is cheap (3 u32s).
     thresholds: arc_swap::ArcSwap<RiskThresholds>,
-    trust: TrustRecoveryConfig,
+    /// Linear decay rate (points/hour). Atomic so `PUT /api/risk/thresholds`
+    /// can hot-tune it (and the cluster reload helper can sync it across
+    /// nodes) without a restart — see [`RiskTracker::set_trust_per_hour`].
+    trust_per_hour: AtomicU32,
     /// 2026-05-10 — wrapped in ArcSwap so `PUT /api/gates/strikes`
     /// can hot-flip `enabled` and tune `block_at` without a
     /// restart. Per-IP strike *state* in `map` is preserved
@@ -171,7 +175,9 @@ impl RiskTracker {
             inner: Arc::new(TrackerInner {
                 map: DashMap::new(),
                 thresholds: arc_swap::ArcSwap::from_pointee(cfg.thresholds.clone()),
-                trust: cfg.trust_recovery.clone().unwrap_or_default(),
+                trust_per_hour: AtomicU32::new(
+                    cfg.trust_recovery.clone().unwrap_or_default().per_hour,
+                ),
                 strikes: arc_swap::ArcSwap::from_pointee(
                     cfg.strikes.clone().unwrap_or_default(),
                 ),
@@ -250,7 +256,15 @@ impl RiskTracker {
     /// both as trust-recovery on clean traffic and as decay-on-read. Surfaced
     /// to `/api/risk/thresholds` so the dashboard shows the real rate.
     pub fn trust_per_hour(&self) -> u32 {
-        self.inner.trust.per_hour
+        self.inner.trust_per_hour.load(Ordering::Relaxed)
+    }
+
+    /// Hot-swap the linear decay rate (points/hour). Used by the audit-mutated
+    /// `PUT /api/risk/thresholds` and the cluster reload helper so a decay-rate
+    /// change applies live and converges across nodes. Per-IP score state is
+    /// preserved — only the rate at which it ages changes.
+    pub fn set_trust_per_hour(&self, per_hour: u32) {
+        self.inner.trust_per_hour.store(per_hour, Ordering::Relaxed);
     }
 
     /// Register a malicious event. Adds `delta` to the score
@@ -296,7 +310,7 @@ impl RiskTracker {
         now: Instant,
     ) -> RiskState {
         let max = self.inner.thresholds.load().max;
-        let per_hour = self.inner.trust.per_hour;
+        let per_hour = self.inner.trust_per_hour.load(Ordering::Relaxed);
         let state = if let Some(mut entry) = self.inner.map.get_mut(&key) {
             // Age the stored score for time elapsed since last touch, THEN add
             // the new strike's delta — so the decay-on-read value and the
@@ -350,7 +364,7 @@ impl RiskTracker {
     ) -> RiskState {
         let state = if let Some(mut entry) = self.inner.map.get_mut(&key) {
             let elapsed = now.saturating_duration_since(entry.last_seen);
-            let recovery = trust_decay_points(elapsed, self.inner.trust.per_hour);
+            let recovery = trust_decay_points(elapsed, self.inner.trust_per_hour.load(Ordering::Relaxed));
             entry.score = entry.score.saturating_sub(recovery);
             entry.last_seen = now;
             slot_to_state(*entry)
@@ -395,7 +409,7 @@ impl RiskTracker {
         key: &aegis_core::risk::RiskKey,
         now: Instant,
     ) -> Option<RiskState> {
-        let per_hour = self.inner.trust.per_hour;
+        let per_hour = self.inner.trust_per_hour.load(Ordering::Relaxed);
         self.inner
             .map
             .get(key)
@@ -966,6 +980,21 @@ mod tests {
         // real (linear) decay rate instead of a misleading "half-life".
         let t = RiskTracker::new(&cfg()); // cfg() sets per_hour = 30
         assert_eq!(t.trust_per_hour(), 30);
+    }
+
+    #[test]
+    fn set_trust_per_hour_hot_swaps_decay_rate() {
+        // The dashboard PUT edits the decay rate live; it must hot-swap on the
+        // tracker AND actually change the decay-on-read maths (no restart).
+        let t = RiskTracker::new(&cfg()); // per_hour = 30
+        assert_eq!(t.trust_per_hour(), 30);
+        t.set_trust_per_hour(60);
+        assert_eq!(t.trust_per_hour(), 60);
+        let now = Instant::now();
+        t.record_malicious_at(ip("10.0.0.7"), 80, now);
+        let later = now + Duration::from_secs(3600); // 1h at the new 60/hr
+        let s = t.snapshot_at(ip("10.0.0.7"), later).unwrap();
+        assert_eq!(s.score, 20); // 80 − 60
     }
 
     #[test]

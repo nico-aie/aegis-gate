@@ -3160,6 +3160,10 @@ pub(crate) async fn handle_risk_thresholds_put(
         challenge_at: Option<u32>,
         block_at: Option<u32>,
         max: Option<u32>,
+        // 2026-06-21 — linear decay rate (points/hour) for the cumulative
+        // score. Optional so existing {enabled,challenge_at,block_at,max}
+        // round-trips keep working unchanged.
+        trust_per_hour: Option<u32>,
     }
     let parsed: Body = match serde_json::from_str(if body_str.is_empty() { "{}" } else { body_str })
     {
@@ -3181,6 +3185,11 @@ pub(crate) async fn handle_risk_thresholds_put(
         block_at: parsed.block_at.unwrap_or(current.block_at),
         max: parsed.max.unwrap_or(current.max),
     };
+    // Decay rate (points/hour) — kept separate from RiskThresholds (which has
+    // no per_hour field). Defaults to the live value so a partial PUT that
+    // omits it leaves the rate untouched.
+    let cur_per_hour = services.risk.trust_per_hour();
+    let next_per_hour = parsed.trust_per_hour.unwrap_or(cur_per_hour);
 
     // Sanity: enforce ordering invariants the rule engine assumes.
     if next.challenge_at >= next.block_at {
@@ -3202,12 +3211,14 @@ pub(crate) async fn handle_risk_thresholds_put(
         "challenge_at": current.challenge_at,
         "block_at":     current.block_at,
         "max":          current.max,
+        "trust_per_hour": cur_per_hour,
     });
     let after = serde_json::json!({
         "enabled":      next.enabled,
         "challenge_at": next.challenge_at,
         "block_at":     next.block_at,
         "max":          next.max,
+        "trust_per_hour": next_per_hour,
     });
     // Durability (2026-06-18): persist `risk.thresholds` so the cumulative
     // IP-risk gate state survives restart (the reported regression — see
@@ -3217,7 +3228,7 @@ pub(crate) async fn handle_risk_thresholds_put(
         Err(resp) => return resp,
     };
     let new_blob =
-        match patch_risk_thresholds(&base_blob, next.enabled, next.challenge_at, next.block_at, next.max) {
+        match patch_risk_thresholds(&base_blob, next.enabled, next.challenge_at, next.block_at, next.max, next_per_hour) {
             Ok(b) => b,
             Err(e) => {
                 return mutation_error_response(
@@ -3254,6 +3265,7 @@ pub(crate) async fn handle_risk_thresholds_put(
                 .await;
             if let Ok(crate::config_source::config_store::Activate::Applied { .. }) = &res {
                 tracker.set_thresholds(next_for_apply);
+                tracker.set_trust_per_hour(next_per_hour);
             }
             res
         })
@@ -3268,6 +3280,7 @@ pub(crate) async fn handle_risk_thresholds_put(
                     "challenge_at": next.challenge_at,
                     "block_at":     next.block_at,
                     "max":          next.max,
+                    "trust_per_hour": next_per_hour,
                     "version":      version,
                     "request_id":   pre.request_id,
                 }),
@@ -6406,6 +6419,7 @@ fn patch_risk_thresholds(
     challenge_at: u32,
     block_at: u32,
     max: u32,
+    trust_per_hour: u32,
 ) -> Result<String, String> {
     let mut root = yaml_root(base)?;
     let risk = yaml_submap(&mut root, "risk")?;
@@ -6414,6 +6428,11 @@ fn patch_risk_thresholds(
     th.insert(yaml_str("challenge_at"), yaml_u64(challenge_at as u64));
     th.insert(yaml_str("block_at"), yaml_u64(block_at as u64));
     th.insert(yaml_str("max"), yaml_u64(max as u64));
+    // 2026-06-21 — persist the linear decay rate so it survives restart and
+    // converges across nodes (the cluster watcher re-derives it via
+    // `apply_cfg_change_to_risk`).
+    let tr = yaml_submap(risk, "trust_recovery")?;
+    tr.insert(yaml_str("per_hour"), yaml_u64(trust_per_hour as u64));
     serde_yaml::to_string(&serde_yaml::Value::Mapping(root))
         .map_err(|e| format!("re-serialize config: {e}"))
 }
@@ -6548,10 +6567,12 @@ mod gate_toggle_patch_tests {
     #[test]
     fn risk_thresholds_patch_writes_all_four() {
         let base = format!("{BASE}risk:\n  thresholds: {{ enabled: true, challenge_at: 50, block_at: 80, max: 100 }}\n");
-        let out = patch_risk_thresholds(&base, false, 40, 70, 100).unwrap();
+        let out = patch_risk_thresholds(&base, false, 40, 70, 100, 45).unwrap();
         let parsed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
         assert_eq!(parsed["risk"]["thresholds"]["enabled"].as_bool(), Some(false));
         assert_eq!(parsed["risk"]["thresholds"]["challenge_at"].as_u64(), Some(40));
+        // decay rate is persisted under risk.trust_recovery.per_hour
+        assert_eq!(parsed["risk"]["trust_recovery"]["per_hour"].as_u64(), Some(45));
         assert_loads(&out);
     }
 

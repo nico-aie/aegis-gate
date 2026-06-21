@@ -352,7 +352,12 @@ The live decay model is **trust recovery** (linear, applied on read — see
 - **Trust recovery** — score falls at `trust_recovery.per_hour` points per
   hour of elapsed wall-clock time, applied both on read and on a clean
   request. Decay is proportional to elapsed time, so one benign request
-  after a short gap can never reset a flagged client.
+  after a short gap can never reset a flagged client. The rate is
+  **operator-tunable from the dashboard** (Traffic Gates → #3 Cumulative IP
+  risk → "Decay rate") via the audit-mutated `PUT /api/risk/thresholds`
+  (`trust_per_hour`); the change hot-applies, persists across restart, and
+  **converges across cluster nodes** through `apply_cfg_change_to_risk`
+  (`RiskTracker::set_trust_per_hour`).
 - **Strikes** — every malicious detection bumps a lifetime counter
   that *never decays*. Once `strikes.block_at` is reached, the IP
   is permanently blocked at the data plane until an operator runs
