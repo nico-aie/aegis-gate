@@ -183,16 +183,23 @@ pub(crate) async fn handle_admin_request(
     if method == hyper::Method::PUT && path.starts_with("/api/rules/") {
         let suffix = &path["/api/rules/".len()..];
         if let Some(rule_id) = suffix.strip_suffix("/toggle") {
-            return handle_rules_toggle(req, rule_id, services).await;
+            // 2026-06-21 — percent-decode the id so non-ASCII / special-char
+            // rule ids (e.g. `ádasd` → `%C3%A1dasd`) match the stored key.
+            // Previously the raw encoded segment was used, so toggle/edit/
+            // delete silently no-op'd on any id the browser URL-encoded.
+            let id = crate::admin_get::percent_decode(rule_id);
+            return handle_rules_toggle(req, &id, services).await;
         }
         if !suffix.is_empty() && !suffix.contains('/') {
-            return handle_rules_put(req, suffix, services).await;
+            let id = crate::admin_get::percent_decode(suffix);
+            return handle_rules_put(req, &id, services).await;
         }
     }
     if method == hyper::Method::DELETE && path.starts_with("/api/rules/") {
-        let id = &path["/api/rules/".len()..];
-        if !id.is_empty() && !id.contains('/') {
-            return handle_rules_delete(req, id, services).await;
+        let raw = &path["/api/rules/".len()..];
+        if !raw.is_empty() && !raw.contains('/') {
+            let id = crate::admin_get::percent_decode(raw);
+            return handle_rules_delete(req, &id, services).await;
         }
     }
 

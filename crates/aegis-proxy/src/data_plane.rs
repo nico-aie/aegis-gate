@@ -1054,14 +1054,24 @@ pub(crate) async fn handle_data_request_inner(
     //   protection — only the detector/cumulative-risk enforcement).
     // - block rules still enforce on the forward path.
     // Cheap: one OnceLock read + small-ruleset scan, only when a rule exists.
+    // CRITICAL: `evaluate` returns `Action::Allow` as its DEFAULT when no rule
+    // matches (eval.rs "no rule matched"), so checking the action alone would
+    // bypass detectors for EVERY request the moment any rule exists. Only
+    // bypass when an EXPLICIT `then: allow` rule actually matched — i.e. the
+    // decision is Allow AND it was produced by a rule whose action is Allow
+    // (not the default pass-through, and not a non-terminal RaiseRisk/LogOnly
+    // match that also leaves a rule_id).
     let rule_allow = match (upstream_ctx.active_ruleset.get(), resolved_route.as_ref()) {
         (Some(rs), Some(rc)) => {
             let snap = rs.snapshot();
-            !snap.is_empty()
-                && matches!(
-                    aegis_security::rules::evaluate(&snap, &view, rc).action,
-                    aegis_core::decision::Action::Allow,
-                )
+            let decision = aegis_security::rules::evaluate(&snap, &view, rc);
+            matches!(decision.action, aegis_core::decision::Action::Allow)
+                && decision.rule_id.as_deref().is_some_and(|id| {
+                    snap.iter().any(|r| {
+                        r.id == id
+                            && matches!(r.action, aegis_security::rules::ast::RuleAction::Allow)
+                    })
+                })
         }
         _ => false,
     };
@@ -6295,7 +6305,7 @@ rate_limit:
     // serving `handle_data_request`; send a payload that trips detectors past
     // the tier threshold; assert it's BLOCKED without a rule and ALLOWED with a
     // matching `then: allow` rule for the peer IP.
-    async fn build_attack_waf(with_allow_rule: bool) -> std::net::SocketAddr {
+    async fn build_attack_waf(rule_yaml: Option<&str>) -> std::net::SocketAddr {
         let backend = spawn_upstream().await;
         let yaml = format!(
             r#"
@@ -6314,9 +6324,7 @@ state: {{ backend: in_memory }}
         let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
         let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
         ctx.interop_modes.set(Arc::new(ModeStore::new(Mode::Enforce))).ok();
-        if with_allow_rule {
-            // Allow the loopback peer (dev: all traffic resolves to 127.0.0.1).
-            let rule_yaml = "- id: allow-local\n  priority: 100\n  when:\n    ip_in:\n      - \"127.0.0.1\"\n  then: allow\n  scope: global\n";
+        if let Some(rule_yaml) = rule_yaml {
             let rules: Vec<aegis_security::rules::ast::Rule> =
                 serde_yaml::from_str(rule_yaml).unwrap();
             ctx.active_ruleset
@@ -6381,9 +6389,16 @@ state: {{ backend: in_memory }}
     // reaching detectors). Trips the path_traversal detector → block.
     const ATTACK_PATH: &str = "/static/../../../../../../etc/passwd";
 
+    // Allow the loopback peer (dev: all traffic resolves to 127.0.0.1).
+    const ALLOW_LOCAL_RULE: &str =
+        "- id: allow-local\n  priority: 100\n  when:\n    ip_in:\n      - \"127.0.0.1\"\n  then: allow\n  scope: global\n";
+    // A non-matching block rule (scopes to /admin; the attack hits /static/...).
+    const BLOCK_ADMIN_RULE: &str =
+        "- id: block-admin\n  priority: 100\n  when:\n    path_matches:\n      contains: \"/admin\"\n  then:\n    block:\n      status: 403\n  scope: global\n";
+
     #[tokio::test]
     async fn detector_block_fires_without_an_allow_rule() {
-        let waf = build_attack_waf(false).await;
+        let waf = build_attack_waf(None).await;
         assert_eq!(
             get_status(waf, ATTACK_PATH).await,
             403,
@@ -6393,10 +6408,24 @@ state: {{ backend: in_memory }}
 
     #[tokio::test]
     async fn allow_rule_overrides_detector_block() {
-        let waf = build_attack_waf(true).await;
+        let waf = build_attack_waf(Some(ALLOW_LOCAL_RULE)).await;
         let status = get_status(waf, ATTACK_PATH).await;
         assert_ne!(status, 403, "an operator allow rule must override the detector block");
         assert_eq!(status, 200, "the allowed request forwards to the upstream (200)");
+    }
+
+    // Regression: a ruleset whose rules DON'T match the request must NOT make
+    // the WAF bypass detectors. (`evaluate` returns a default `Allow` on no
+    // match — that must not be treated as an explicit allow override, or any
+    // rule's mere existence disables all detection.)
+    #[tokio::test]
+    async fn non_matching_block_rule_does_not_bypass_detectors() {
+        let waf = build_attack_waf(Some(BLOCK_ADMIN_RULE)).await;
+        assert_eq!(
+            get_status(waf, ATTACK_PATH).await,
+            403,
+            "a non-matching rule must leave detector enforcement intact",
+        );
     }
 
     // 2026-05-24 — a block routed through `blocked_response` (cumulative
