@@ -91,6 +91,17 @@ impl CopilotService {
             None => Err(LlmError::Disabled),
         }
     }
+
+    /// 2026-06-21 — generate a rule DSL body from a natural-language intent.
+    /// Returns the cleaned DSL text (the caller validates + the operator
+    /// reviews before saving — never auto-applied). `Err(Disabled)` when no
+    /// provider is configured.
+    pub async fn generate_rule(&self, intent: &str, id: &str) -> Result<String, LlmError> {
+        match self.provider.as_deref() {
+            Some(p) => super::rulegen::generate(p, &self.guard, intent, id).await,
+            None => Err(LlmError::Disabled),
+        }
+    }
 }
 
 #[cfg(feature = "llm")]

@@ -548,6 +548,10 @@ pub(crate) async fn handle_admin_request(
     if method == hyper::Method::POST && path == "/api/copilot/ask" {
         return crate::admin_get::handle_copilot_ask_post(req, services).await;
     }
+    // 2026-06-21 — AI rule generation for the New-rule editor (advisory).
+    if method == hyper::Method::POST && path == "/api/copilot/rule" {
+        return crate::admin_get::handle_copilot_generate_rule(req, services).await;
+    }
     if method == hyper::Method::GET && path == "/api/copilot/suggestions" {
         return crate::admin_get::handle_copilot_suggestions(req, services).await;
     }

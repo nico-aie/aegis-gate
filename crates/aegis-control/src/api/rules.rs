@@ -185,6 +185,32 @@ pub fn validate_rule_body(body: &str) -> ValidateResponse {
     }
 }
 
+/// 2026-06-21 — the rule ENGINE matches/audits on the DSL body's `id:`, while
+/// the store keys under the form `id` the POST/PUT carries. If those diverge,
+/// the list/detail show one id while traffic is matched under another (the
+/// `block-bad-ips` vs `custom-block-ip` bug). Reject the mismatch at the
+/// mutation boundary so the two can never drift.
+///
+/// Returns `None` when the body doesn't parse or carries no rule — those are
+/// already reported by [`validate_rule_body`], so we don't double-flag.
+pub fn validate_rule_id_matches_body(form_id: &str, body: &str) -> Option<ValidateMessage> {
+    let rules: Vec<aegis_security::rules::ast::Rule> = serde_yaml::from_str(body).ok()?;
+    let first = rules.first()?;
+    let form_id = form_id.trim();
+    if first.id != form_id {
+        return Some(ValidateMessage {
+            line: 1,
+            col: 1,
+            message: format!(
+                "rule id mismatch: form id '{form_id}' must match the body's `id: {}` \
+                 — the engine matches on the body id, so they must be identical",
+                first.id,
+            ),
+        });
+    }
+    None
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct RuleStatsResponse {
     pub rule_id: String,
@@ -540,6 +566,32 @@ mod tests {
         assert!(err.message.contains("must not be empty"));
         let err = validate_rule_id("   ").unwrap();
         assert!(err.message.contains("must not be empty"));
+    }
+
+    // 2026-06-21 — form id ↔ body id must agree (the engine uses the body id).
+    #[test]
+    fn rule_id_matches_body_accepts_when_equal() {
+        let body = "- id: custom-block-ip\n  priority: 100\n  when: { ip_in: [\"1.2.3.4\"] }\n  then: { block: { status: 403 } }\n";
+        assert!(validate_rule_id_matches_body("custom-block-ip", body).is_none());
+        // trims the form id before comparing
+        assert!(validate_rule_id_matches_body("  custom-block-ip  ", body).is_none());
+    }
+
+    #[test]
+    fn rule_id_matches_body_flags_divergence() {
+        // The reported bug: form id custom-block-ip, body id block-bad-ips.
+        let body = "- id: block-bad-ips\n  priority: 100\n  when: { ip_in: [\"1.2.3.4\"] }\n  then: { block: { status: 403 } }\n";
+        let err = validate_rule_id_matches_body("custom-block-ip", body).unwrap();
+        assert!(err.message.contains("mismatch"));
+        assert!(err.message.contains("block-bad-ips"));
+        assert!(err.message.contains("custom-block-ip"));
+    }
+
+    #[test]
+    fn rule_id_matches_body_tolerates_unparseable_body() {
+        // A broken body is reported by validate_rule_body, not double-flagged here.
+        assert!(validate_rule_id_matches_body("x", "this: is: not: valid").is_none());
+        assert!(validate_rule_id_matches_body("x", "").is_none());
     }
 
     #[test]
