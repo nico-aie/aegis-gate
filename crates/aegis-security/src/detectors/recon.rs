@@ -9,7 +9,10 @@ pub struct ReconDetector;
 
 static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
-        r"(?i)(?:\.env(?:\.|$))",
+        // 2026-06-21 (l-tester FP sweep) — segment-anchored so `.Env.`
+        // inside a JSONP callback (`YUI.Env.JSONP`) doesn't FP. `.env`
+        // is always a dotfile at a path segment (`/.env`, `/app/.env.prod`).
+        r"(?i)(?:^|/)\.env(?:\.|$)",
         r"(?i)(?:\.git(?:/|$))",
         r"(?i)(?:\.svn(?:/|$))",
         r"(?i)(?:\.hg(?:/|$))",
@@ -17,7 +20,10 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)(?:\.htaccess)",
         r"(?i)(?:\.htpasswd)",
         r"(?i)(?:wp-config\.php)",
-        r"(?i)(?:web\.config)",
+        // 2026-06-21 (l-tester FP sweep) — segment-anchored so a mid-filename
+        // `_web.Config…` (e.g. `config_fare_families_web.ConfigPrePageLanding`)
+        // doesn't FP. Real probe is the IIS `/web.config` file.
+        r"(?i)(?:^|/)web\.config(?:$|[/?#])",
         r"(?i)(?:phpinfo\(\))",
         // 2026-05-22 FP fix — anchor admin-panel probes to a path
         // SEGMENT (preceded by `/` or start, followed by a boundary)
@@ -29,7 +35,11 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)(?:^|/)administrator(?:$|[/?])",
         r"(?i)(?:^|/)phpmyadmin(?:$|[/?])",
         r"(?i)(?:^|/)adminer(?:$|[/?.])",
-        r"(?i)(?:/debug/)",
+        // 2026-06-21 (l-tester FP sweep) — narrowed from the blanket
+        // `/debug/` (which FP'd on app routes like `/api/v4/debug/logs`
+        // and Privacy-Sandbox `/.well-known/.../debug/...`) to the Go
+        // expvar/pprof recon surface, the actual high-signal target.
+        r"(?i)/debug/(?:pprof|vars)\b",
         r"(?i)(?:/console)(?:$|[/?])",
         r"(?i)(?:elmah\.axd)",
         r"(?i)(?:trace\.axd)",
@@ -38,7 +48,12 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)(?:backup\.(?:sql|zip|tar|gz|bak))",
         r"(?i)(?:database\.(?:sql|dump))",
         r"(?i)(?:\.(?:bak|old|orig|save|swp|tmp)$)",
-        r"(?i)(?:~$)",
+        // Editor backup files left in the webroot (`/index.php~`,
+        // `/config~`). 2026-06-21 (l-tester FP sweep) — the `~` must
+        // terminate the PATH, not a query value: `^[^?]*~$` rejects
+        // analytics pixels whose query ends in `~` (GA `__utm.gif?…~`,
+        // SHEIN `…scici=…~~~~`) while still catching path-tail backups.
+        r"^[^?]*~$",
         r"(?i)(?:Dockerfile)",
         // 2026-06-19 (btc-miss report) — broadened from the narrow
         // `docker-compose\.ya?ml`. Covers Compose v1 override variants
@@ -126,7 +141,17 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // shapes (Run-6 only had `app/kibana`).
         r"(?i)/(?:app/kibana|kibana/(?:app|api)|\.kibana(?:/|/_search)|_cat/indices|_cluster/health)\b",
         // Jenkins script console (Groovy RCE) and CLI jar.
-        r"(?i)/(?:script(?:Text)?|jnlpJars/jenkins-cli\.jar|manage|computer/(?:\(master\)|\(built-in\))/script)\b",
+        // 2026-06-21 (l-tester FP sweep) — `/script(Text)?` is anchored to
+        // a full path segment (end-of-path or query) so JS assets
+        // (`/assets/script.js`), tag-manager routes (`/api/tag/script/<id>`),
+        // and recon tokens inside decoded redirect params
+        // (`dl=…/script.google.com/…`) don't FP. Bare `/manage` was DROPPED:
+        // "Manage Jenkins" is too generic a segment — it collided with
+        // `/account/manage`, `/users/<id>/manage`, and analytics
+        // `ref=…/manage.wix.com`. The Jenkins-specific high-signal tokens
+        // (`/scriptText`, the CLI jar, per-node `/computer/.../script`) stay.
+        r"(?i)/script(?:Text)?(?:$|[?#])",
+        r"(?i)/(?:jnlpJars/jenkins-cli\.jar|computer/(?:\(master\)|\(built-in\))/script)\b",
         // CGI legacy probes — Shellshock surface, classic info
         // disclosure.
         r"(?i)/cgi-bin/(?:printenv\.pl|test-cgi|php-cgi|\.\.)\b",
@@ -210,10 +235,22 @@ fn is_benign_recon_path(path: &str) -> bool {
     // Chrome Privacy Sandbox Attribution Reporting (W3C standard) — the
     // `/debug/` recon pattern otherwise fires on its debug subpaths.
     path.starts_with("/.well-known/attribution-reporting/")
+        // Chrome Privacy Sandbox Private Aggregation (W3C standard) — same
+        // shape as attribution-reporting; emits `/debug/...` report subpaths.
+        || path.starts_with("/.well-known/private-aggregation/")
         // WordPress front-end AJAX endpoints — hit by every visitor; the
         // `wp-admin` panel-probe pattern otherwise fires.
         || path.ends_with("/admin-ajax.php")
         || path.ends_with("/admin-post.php")
+        // WordPress static front-end assets served from /wp-admin/ and loaded
+        // by anonymous visitors (e.g. password-strength-meter.min.js, the
+        // login/registration form scripts and styles). The directory itself
+        // is the admin panel — only these asset subpaths are benign.
+        || path.contains("/wp-admin/js/")
+        || path.contains("/wp-admin/css/")
+        || path.contains("/wp-admin/images/")
+        || path.contains("/wp-admin/load-scripts.php")
+        || path.contains("/wp-admin/load-styles.php")
 }
 
 impl Detector for ReconDetector {
@@ -498,6 +535,56 @@ mod tests {
     path_negative!(fp_database_status,    "/api/database-status");
     path_negative!(fp_parameters_api,     "/api/parameters?env=prod");
     path_negative!(fp_file_manager_list,  "/file-manager/list");
+
+    // ── L-tester run (2026-06-21) recon-path FP sweep ──────────────────
+    // 165 normal requests fired recon-path. Root causes + guards below.
+
+    // (a) Jenkins `/script` + `/manage` token was only `\b`-bounded, so it
+    // fired on JS assets, tag-manager routes, and app `/manage` pages.
+    // `/script(Text)?` is now anchored to a full path segment (end/query)
+    // and bare `/manage` was dropped (too generic). These must NOT fire:
+    path_negative!(fp_script_asset_js,     "/cdn/shop/t/37/assets/script.js");
+    path_negative!(fp_script_tag_route,    "/api/tag/script/4af34feb-fa17-4bbf-afd4-61e6d2a8819b/null");
+    path_negative!(fp_script_min_js,       "/pub/static/version1704626446/frontend/Foxhome/js/script.js");
+    path_negative!(fp_script_subpath,      "/merchant/script/welcome");
+    path_negative!(fp_script_tag_dash_js,  "/api/script-tag.js");
+    path_negative!(fp_manage_account,      "/account/manage");
+    path_negative!(fp_manage_user_subpath, "/gateway/api/users/712020:abc/manage/linked-accounts");
+    path_negative!(fp_manage_suppliers,    "/manage/c/suppliers");
+    // ...including recon tokens carried INSIDE decoded redirect/analytics
+    // params (GA4 `dl=`, Wix `ref=`) — the detector sees these decoded:
+    path_negative!(fp_ga_collect_manage_dl, "/g/collect?v=2&tid=G-X&dl=https://pro.houzz.com/manage/moodboards/208003397");
+    path_negative!(fp_wix_pa_manage_ref,    "/pa?src=76&ref=https://manage.wix.com/&url=https://koalaocbuu.wixsite.com/lk-shop");
+    path_negative!(fp_ga_collect_script_dl, "/g/collect?v=2&tid=G-X&dl=https://script.google.com/u/0/home/projects/abc/edit");
+
+    // (b) Tilde editor-backup token `~$` was anchored to the end of the
+    // whole path+query, so any URL whose query ends in `~` fired. Analytics
+    // pixels (GA `__utm.gif`, SHEIN tracking) must NOT fire:
+    path_negative!(fp_ga_utm_gif_tilde,    "/__utm.gif?utmwv=5.7.2&utmn=1239772308&utmu=6AAAAAAAAAAAAAAAAAAAAAAE~");
+    path_negative!(fp_shein_tracking_tilde,"/SHEIN-Top-p-2407558-cat-1733.html?scici=WomenHomePage~~ON_Banner~~7_4~~~~");
+
+    // (c) `/debug/` was too generic; narrowed to the Go pprof/vars surface.
+    // App debug routes + Chrome Privacy Sandbox debug endpoints must NOT fire:
+    path_negative!(fp_api_debug_logs,      "/api/v4/debug/logs");
+    path_negative!(fp_private_agg_debug,   "/.well-known/private-aggregation/debug/report-shared-storage");
+
+    // (d) `.env` is now segment-anchored — `.Env.` inside a JSONP callback
+    // (YUI.Env.JSONP) must NOT fire:
+    path_negative!(fp_yui_env_jsonp,       "/ajax/viewer?p=Wimbledon&callback=YUI.Env.JSONP.yui_3_8_0_1");
+
+    // (e) `web.config` is now segment-anchored — mid-filename `_web.Config…`
+    // must NOT fire:
+    path_negative!(fp_web_config_midword,  "/slipstream/grp/v1/custom/public/acorn/config_pre_page_landing/config_fare_families_web.ConfigPrePageLanding");
+
+    // (f) WordPress static front-end assets under /wp-admin/ loaded by every
+    // anonymous visitor must NOT fire the wp-admin panel probe:
+    path_negative!(fp_wp_admin_js_asset,   "/wp-admin/js/password-strength-meter.min.js?ver=6.0");
+
+    // ── Pins: real probes that MUST still fire after the anchoring ──────
+    path_positive!(jenkins_script_query,   "/script?a=1");
+    path_positive!(go_pprof_heap,          "/debug/pprof/heap");
+    path_positive!(env_in_subdir,          "/app/.env");
+    path_positive!(wp_admin_panel_probe,   "/wp-admin/");
 
     // UA-based positive tests.
     macro_rules! ua_positive {
