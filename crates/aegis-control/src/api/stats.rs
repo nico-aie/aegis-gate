@@ -42,6 +42,31 @@ const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(1);
 /// so a query at the boundary doesn't lose points.
 const TIMESERIES_RETENTION_SECS: i64 = 3700;
 
+/// Whether an audit `action` represents a terminal request decision that
+/// should count toward request volume (Requests/s + the per-second chart).
+///
+/// 2026-06-21 — this is an **allow-list** of terminal decisions, on purpose.
+/// Adjunct "shadow" detection events — `ddos_observed` / `ddos_blocked`,
+/// emitted ALONGSIDE a request's terminal decision when the DDoS gate runs in
+/// observe-only / log_only mode — must NOT count, or one request inflates the
+/// rate ~2× (it emits the shadow event AND its `allow` / `circuit_breaker`
+/// decision). A deny-list would let a future shadow action silently re-inflate
+/// the metric; an allow-list fails safe (an unknown action just doesn't count).
+/// Mirror the contract action strings in
+/// [`aegis_control::interop::headers::Action::as_str`] when adding a decision.
+fn counts_as_request(action: &str) -> bool {
+    matches!(
+        action,
+        "allow"
+            | "block"
+            | "challenge"
+            | "rate_limit"
+            | "timeout"
+            | "circuit_breaker"
+            | "websocket_frame_block"
+    )
+}
+
 /// Upstream-pool summary slot embedded in the stats response. The
 /// real data source is wired by D-M2-T2.3
 /// (`/api/upstreams/summary`); this module emits a placeholder so
@@ -149,12 +174,20 @@ impl StatsAggregator {
     pub fn record(&self, ev: &AuditEvent) {
         let now = Instant::now();
         let was_block = ev.action == "block";
+        // 2026-06-21 — count ONE event per request. Adjunct "shadow" detection
+        // events (`ddos_observed` / `ddos_blocked`) are emitted ALONGSIDE the
+        // request's terminal decision in observe/log_only mode; counting them
+        // ~doubled Requests/s + the per-second chart. Only terminal decisions
+        // contribute to request volume (see `counts_as_request`).
+        let is_request = counts_as_request(ev.action.as_str());
 
         let mut state = self.inner.lock().expect("stats mutex poisoned");
 
         // Append the event and prune anything outside the broader
         // retention window (max of the request and threat windows).
-        state.requests.push_back((now, was_block));
+        if is_request {
+            state.requests.push_back((now, was_block));
+        }
         let retention = REQUEST_WINDOW.max(THREAT_WINDOW);
         while let Some(&(t, _)) = state.requests.front() {
             if now.duration_since(t) > retention {
@@ -183,11 +216,15 @@ impl StatsAggregator {
         // Per-second bucket update for the timeseries endpoint
         // (D-M2-T2.2). Aligned to the event's wall-clock second so the
         // chart plots traffic at its actual time, not at ingest time.
+        // Same one-event-per-request rule as the rate above — shadow
+        // detection events don't bump the chart.
         let event_sec = ev.ts.timestamp();
-        let bucket = state.seconds.entry(event_sec).or_default();
-        bucket.total = bucket.total.saturating_add(1);
-        if was_block {
-            bucket.blocked = bucket.blocked.saturating_add(1);
+        if is_request {
+            let bucket = state.seconds.entry(event_sec).or_default();
+            bucket.total = bucket.total.saturating_add(1);
+            if was_block {
+                bucket.blocked = bucket.blocked.saturating_add(1);
+            }
         }
         let cutoff = event_sec - TIMESERIES_RETENTION_SECS;
         while let Some((&k, _)) = state.seconds.iter().next() {
@@ -508,6 +545,85 @@ mod tests {
             "expected 2.0/s, got {}",
             s.request_rate
         );
+    }
+
+    // 2026-06-21 — request-rate must count ONE event per request. In DDoS
+    // observe/log_only mode an inspected request emits a shadow detection event
+    // (`ddos_observed` / `ddos_blocked`) AND its terminal decision (`allow` /
+    // `circuit_breaker`). Counting both ~doubled Requests/s. Only terminal
+    // actions count toward request volume.
+    #[test]
+    fn ddos_observed_does_not_count_as_request() {
+        let agg = StatsAggregator::new();
+        // One logical request in observe mode: shadow event + terminal allow.
+        agg.record(&ev(AuditClass::Detection, "ddos_observed", "9.9.9.9", None));
+        agg.record(&allow("9.9.9.9"));
+        let s = agg.snapshot();
+        // 1 request / 10s window = 0.1/s — NOT 0.2 (would be double-count).
+        assert!(
+            (s.request_rate - 0.1).abs() < 1e-9,
+            "ddos_observed must not count as a request; got {}/s",
+            s.request_rate,
+        );
+    }
+
+    #[test]
+    fn ddos_blocked_shadow_does_not_count_as_request() {
+        let agg = StatsAggregator::new();
+        // log_only: shadow `ddos_blocked` + terminal allow.
+        agg.record(&ev(AuditClass::Detection, "ddos_blocked", "9.9.9.9", None));
+        agg.record(&allow("9.9.9.9"));
+        let s = agg.snapshot();
+        assert!(
+            (s.request_rate - 0.1).abs() < 1e-9,
+            "ddos_blocked shadow must not count as a request; got {}/s",
+            s.request_rate,
+        );
+    }
+
+    #[test]
+    fn enforced_ddos_block_still_counts_once() {
+        // Enforce mode emits a single terminal `block` — it MUST count (and as
+        // a block), so excluding the shadow actions can't regress block-rate.
+        let agg = StatsAggregator::new();
+        agg.record(&block("2.2.2.2"));
+        let s = agg.snapshot();
+        assert!((s.request_rate - 0.1).abs() < 1e-9, "block counts as 1 request");
+        assert_eq!(s.blocks_total, 1);
+        assert!((s.block_rate_pct - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn terminal_actions_all_count_as_requests() {
+        // Locks the terminal allow-list: every real decision counts as 1.
+        let agg = StatsAggregator::new();
+        agg.record(&ev(AuditClass::Access, "allow", "1.1.1.1", None));
+        agg.record(&ev(AuditClass::Detection, "block", "1.1.1.1", Some(80)));
+        agg.record(&ev(AuditClass::Detection, "challenge", "1.1.1.1", Some(50)));
+        agg.record(&ev(AuditClass::Detection, "rate_limit", "1.1.1.1", None));
+        agg.record(&ev(AuditClass::Detection, "timeout", "1.1.1.1", None));
+        agg.record(&ev(AuditClass::Detection, "circuit_breaker", "1.1.1.1", None));
+        let s = agg.snapshot();
+        // 6 terminal events / 10s = 0.6/s.
+        assert!(
+            (s.request_rate - 0.6).abs() < 1e-9,
+            "all terminal actions must count; got {}/s",
+            s.request_rate,
+        );
+    }
+
+    #[test]
+    fn timeseries_excludes_ddos_observed() {
+        let agg = StatsAggregator::new();
+        for _ in 0..3 {
+            agg.record(&allow("1.1.1.1"));
+        }
+        for _ in 0..2 {
+            agg.record(&ev(AuditClass::Detection, "ddos_observed", "9.9.9.9", None));
+        }
+        let ts = agg.timeseries(60, 1);
+        let total: u32 = ts.points.iter().map(|p| p.total).sum();
+        assert_eq!(total, 3, "per-second chart must not count shadow events");
     }
 
     #[test]
