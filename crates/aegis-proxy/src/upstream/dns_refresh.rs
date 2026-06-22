@@ -578,4 +578,135 @@ mod tests {
         assert_eq!(specs.len(), 1, "only the pool with a hostname is returned");
         assert_eq!(specs[0].0, "with-dns");
     }
+
+    // ---- reconcile core (BUG-dns-refresh-not-spawned-for-live-added-hostnames) ----
+
+    fn dns_pool(hosts: &[(&str, u16)]) -> PoolConfig {
+        let members = hosts
+            .iter()
+            .map(|(h, p)| host_member(h, *p, 1))
+            .collect();
+        base_pool(members)
+    }
+
+    #[test]
+    fn fingerprint_stable_for_identical_specs() {
+        let a = extract_spec(&dns_pool(&[("api.example.com", 443)]));
+        let b = extract_spec(&dns_pool(&[("api.example.com", 443)]));
+        assert_eq!(
+            spec_fingerprint(&a),
+            spec_fingerprint(&b),
+            "same hostname set must fingerprint identically (no churn)",
+        );
+    }
+
+    #[test]
+    fn fingerprint_changes_when_hostname_added() {
+        let one = extract_spec(&dns_pool(&[("api.example.com", 443)]));
+        let two = extract_spec(&dns_pool(&[
+            ("api.example.com", 443),
+            ("api2.example.com", 443),
+        ]));
+        assert_ne!(
+            spec_fingerprint(&one),
+            spec_fingerprint(&two),
+            "adding a hostname member must change the fingerprint so the task respawns",
+        );
+    }
+
+    #[test]
+    fn fingerprint_changes_when_refresh_seconds_changes() {
+        let mut a = extract_spec(&dns_pool(&[("api.example.com", 443)]));
+        let b_spec = {
+            let mut s = a.clone();
+            s.hostnames[0].refresh_seconds = Some(30);
+            s
+        };
+        a.hostnames[0].refresh_seconds = None;
+        assert_ne!(
+            spec_fingerprint(&a),
+            spec_fingerprint(&b_spec),
+            "changing refresh_seconds must change the fingerprint",
+        );
+    }
+
+    /// The case-3 repro at the unit level: a hostname pool that the
+    /// manager isn't tracking yet (e.g. added live via the dashboard
+    /// after boot) must be planned for a fresh refresh task.
+    #[test]
+    fn plan_spawns_live_added_hostname_pool() {
+        let tracked: HashMap<String, u64> = HashMap::new();
+        let fp = spec_fingerprint(&extract_spec(&dns_pool(&[("api.example.com", 443)])));
+        let desired = vec![("new-pool".to_string(), fp)];
+
+        let plan = plan_reconcile(&tracked, &desired);
+
+        assert_eq!(plan.spawn, vec!["new-pool".to_string()]);
+        assert!(plan.respawn.is_empty());
+        assert!(plan.stop.is_empty());
+        assert!(plan.keep.is_empty());
+    }
+
+    #[test]
+    fn plan_keeps_unchanged_pool() {
+        let fp = 0xABCD;
+        let mut tracked = HashMap::new();
+        tracked.insert("p".to_string(), fp);
+        let desired = vec![("p".to_string(), fp)];
+
+        let plan = plan_reconcile(&tracked, &desired);
+
+        assert_eq!(plan.keep, vec!["p".to_string()]);
+        assert!(plan.spawn.is_empty());
+        assert!(plan.respawn.is_empty());
+        assert!(plan.stop.is_empty());
+    }
+
+    #[test]
+    fn plan_respawns_changed_pool() {
+        let mut tracked = HashMap::new();
+        tracked.insert("p".to_string(), 1u64);
+        let desired = vec![("p".to_string(), 2u64)];
+
+        let plan = plan_reconcile(&tracked, &desired);
+
+        assert_eq!(plan.respawn, vec!["p".to_string()]);
+        assert!(plan.spawn.is_empty());
+        assert!(plan.keep.is_empty());
+        assert!(plan.stop.is_empty());
+    }
+
+    #[test]
+    fn plan_stops_removed_pool() {
+        let mut tracked = HashMap::new();
+        tracked.insert("gone".to_string(), 7u64);
+        let desired: Vec<(String, u64)> = Vec::new();
+
+        let plan = plan_reconcile(&tracked, &desired);
+
+        assert_eq!(plan.stop, vec!["gone".to_string()]);
+        assert!(plan.spawn.is_empty());
+        assert!(plan.respawn.is_empty());
+        assert!(plan.keep.is_empty());
+    }
+
+    #[test]
+    fn plan_mixed_spawn_keep_respawn_stop_is_sorted() {
+        let mut tracked = HashMap::new();
+        tracked.insert("keep".to_string(), 10u64);
+        tracked.insert("change".to_string(), 10u64);
+        tracked.insert("remove".to_string(), 10u64);
+        let desired = vec![
+            ("keep".to_string(), 10u64),
+            ("change".to_string(), 99u64),
+            ("add".to_string(), 5u64),
+        ];
+
+        let plan = plan_reconcile(&tracked, &desired);
+
+        assert_eq!(plan.spawn, vec!["add".to_string()]);
+        assert_eq!(plan.keep, vec!["keep".to_string()]);
+        assert_eq!(plan.respawn, vec!["change".to_string()]);
+        assert_eq!(plan.stop, vec!["remove".to_string()]);
+    }
 }
