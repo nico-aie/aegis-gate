@@ -35,6 +35,15 @@ pub mod stage {
     pub const RATE_LIMIT: &str = "rate_limit";
     pub const DETECT: &str = "detect";
     pub const RESPOND: &str = "respond";
+    /// Pre-handler scheduler wait: from `tcp.accept()` returning to the
+    /// spawned connection task's first poll. This is the tokio run-queue
+    /// dispatch delay — the blind spot the in-handler `TOTAL` clock can't
+    /// see, because that clock only starts once the handler is already
+    /// running. Under CPU saturation requests pile up here while the
+    /// in-handler stages stay sub-millisecond, which is why measured WAF
+    /// latency looks fast even as throughput collapses. Recorded once per
+    /// connection in the accept loop (see `aegis-proxy::accept`).
+    pub const QUEUE_WAIT: &str = "queue_wait";
     /// WAF processing cost, excluding the upstream backend round-trip
     /// (entry → just before the upstream forward; == `TOTAL` for
     /// blocked/early-exit requests that never forward).
@@ -292,6 +301,27 @@ mod tests {
     }
 
     #[test]
+    fn queue_wait_stage_records_independently() {
+        // F-T10 follow-up (2026-06-22): the `total` clock starts
+        // *inside* the request handler, so the tokio run-queue
+        // dispatch delay before the handler's first poll is invisible.
+        // Under CPU saturation that pre-handler wait is exactly where
+        // latency hides while the in-handler stages stay sub-
+        // millisecond — the "RPS drops but WAF latency looks fast"
+        // paradox. `queue_wait` exposes it as its own series so the
+        // perf panel stops reading deceptively fast under load.
+        let reg = MetricsRegistry::init();
+        let h = RequestStageHistogram::register(&reg).unwrap();
+        h.record(stage::QUEUE_WAIT, Duration::from_millis(40));
+        assert_eq!(h.sample_count(stage::QUEUE_WAIT), 1);
+        // Distinct series — queue_wait must not bleed into the
+        // in-handler stages (that would re-hide the blind spot).
+        assert_eq!(h.sample_count(stage::TOTAL), 0);
+        assert_eq!(h.sample_count(stage::WAF_OVERHEAD), 0);
+        assert_eq!(stage::QUEUE_WAIT, "queue_wait");
+    }
+
+    #[test]
     fn stage_constants_are_unique_strings() {
         // Each label value must be its own series; a duplicate
         // would silently merge measurements.
@@ -300,6 +330,7 @@ mod tests {
             stage::DETECT,
             stage::RESPOND,
             stage::TOTAL,
+            stage::QUEUE_WAIT,
         ];
         let mut sorted: Vec<&str> = labels.to_vec();
         sorted.sort();

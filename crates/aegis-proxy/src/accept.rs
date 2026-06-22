@@ -1520,6 +1520,14 @@ pub(crate) async fn accept_loop(
                 continue;
             }
         };
+        // Pre-handler scheduler-wait clock. Captured the instant
+        // `accept()` returns; read once inside the spawned task to record
+        // the `queue_wait` stage (tokio run-queue dispatch delay). This is
+        // the blind spot the in-handler `total` clock can't see — under CPU
+        // saturation requests queue here while in-handler stages stay fast,
+        // which is why measured WAF latency looks fast as RPS collapses.
+        // `Instant` is `Copy`, so it moves into the task for free.
+        let accept_t0 = std::time::Instant::now();
 
         // GAP 2 — accept-time connection cap (anti connection-exhaustion).
         // Acquire one permit BEFORE any per-connection work (TLS handshake,
@@ -1580,6 +1588,24 @@ pub(crate) async fn accept_loop(
             // are RAII and drop together on every exit path.
             let _conn_permit = conn_permit;
             let _admit = conn_inflight.admit();
+            // Record the run-queue dispatch delay: time from `accept()`
+            // returning to this task's first poll. Grows under CPU
+            // saturation while the in-handler stages stay sub-millisecond —
+            // surfacing the latency the `total` clock structurally misses.
+            // One sample per accepted connection; sub-µs cost.
+            let queue_wait = accept_t0.elapsed();
+            request_stage_hist.record(
+                aegis_control::metrics::request_duration::stage::QUEUE_WAIT,
+                queue_wait,
+            );
+            // Feed the same dispatch-delay sample into the load shedder so
+            // it actually opens under CPU starvation. `record_rtt` sees
+            // only WAF-inspection time (sub-ms even at 100% CPU), so
+            // without this the limit pins at max and the shedder never
+            // sheds when the box — not the backend — is the bottleneck.
+            if let Some(shedder) = upstream_ctx.load_shedder.get() {
+                shedder.record_queue_wait(queue_wait);
+            }
             // PROXY-T3 — the real LB transport hop, captured before a
             // trusted header rebinds `peer` to the client. `None` unless
             // an override happens; flows to the audit `proxy_via` field.
