@@ -2953,6 +2953,11 @@ function PageRuleManager() {
           </h1>
           <p className="page-subtitle">{merged.length} total · validate before apply · audit-chained</p>
         </div>
+        <div className="page-actions">
+          <button className="btn primary" onClick={() => setShowNew(true)} disabled={busy}>
+            <window.I.Plus /> New rule
+          </button>
+        </div>
       </div>
 
       {/* P3 tab bar — `chip active`/`chip` styling reuses the same
@@ -3019,9 +3024,6 @@ function PageRuleManager() {
                 ))}
               </div>
             </div>
-            <button className="btn primary" onClick={() => setShowNew(true)} disabled={busy}>
-              <window.I.Plus /> New rule
-            </button>
           </div>
         </div>
       )}
