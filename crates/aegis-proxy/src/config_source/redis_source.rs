@@ -79,6 +79,12 @@ pub struct ApplyTargets {
     /// rebuilds pools on every node.
     pub upstream_writer:
         Option<Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>>,
+    /// BUG-dns-refresh-not-spawned-for-live-added-hostnames — live
+    /// DNS-refresh task manager, so a config-plane upstream swap
+    /// reconciles per-pool refresh tasks for hostname members added or
+    /// changed after boot (not just node-local-until-restart). `None`
+    /// when the resolver failed to build at boot.
+    pub dns_refresh: Option<Arc<crate::upstream::dns_refresh::DnsRefreshManager>>,
     /// N1 (2026-06-11) — shared alert-receiver list, re-derived from
     /// `cfg.alerting.receivers` on each swap so a receiver configured on
     /// any node propagates to every node. `None` ⇒ not wired (the legacy
@@ -363,7 +369,12 @@ async fn apply_and_swap(
         targets.active_ruleset.as_ref(),
     );
     if let reload::UpstreamsReloadOutcome::Failed { reason } =
-        reload::apply_cfg_change_to_upstreams(new_cfg, targets.upstream_writer.as_ref()).await
+        reload::apply_cfg_change_to_upstreams(
+            new_cfg,
+            targets.upstream_writer.as_ref(),
+            targets.dns_refresh.as_ref(),
+        )
+        .await
     {
         tracing::error!(
             version,
@@ -740,6 +751,7 @@ mod tests {
             rules: None,
             active_ruleset: None,
             upstream_writer: None,
+            dns_refresh: None,
             receiver_writer: None,
             // The one target under test.
             client_auth: Some(trust),
