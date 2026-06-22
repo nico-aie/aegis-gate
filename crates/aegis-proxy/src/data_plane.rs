@@ -766,9 +766,17 @@ pub(crate) async fn handle_data_request_inner(
     // NAT'd IP with different (JA4, UA, session-cookie) shapes
     // get independent buckets, so legit user B isn't penalised
     // for attacker A's flood when they share an egress proxy.
+    // 2026-06-22 — operator enable toggle (DDoS-style). When the limiter is
+    // disabled we substitute an always-allow decision instead of calling
+    // `consume_*`, so a disabled gate tracks no buckets and never 429s. This is
+    // a separate axis from the `enforce` / `log_only` interop mode checked
+    // below (a disabled gate simply never reaches that mode check).
     let rate_t0 = std::time::Instant::now();
-    let rate_decision = ip_rate_limiter
-        .consume_with_key(build_risk_key(peer_ip, req.headers(), tls_fingerprint));
+    let rate_decision = if ip_rate_limiter.config().enabled {
+        ip_rate_limiter.consume_with_key(build_risk_key(peer_ip, req.headers(), tls_fingerprint))
+    } else {
+        aegis_security::rate_limit::IpRateDecision::bypassed()
+    };
     request_stage_hist.record(stages::RATE_LIMIT, rate_t0.elapsed());
     if !rate_decision.allowed {
         // 2026-05-18 (QC TLS-wiring batch — Phase E activation):
