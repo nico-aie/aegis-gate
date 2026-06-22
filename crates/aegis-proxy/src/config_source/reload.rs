@@ -472,6 +472,7 @@ pub enum UpstreamsReloadOutcome {
 pub async fn apply_cfg_change_to_upstreams(
     new_cfg: &WafConfig,
     writer: Option<&Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>>,
+    dns_refresh: Option<&Arc<crate::upstream::dns_refresh::DnsRefreshManager>>,
 ) -> UpstreamsReloadOutcome {
     let Some(writer) = writer else {
         return UpstreamsReloadOutcome::NoWriter;
@@ -491,7 +492,21 @@ pub async fn apply_cfg_change_to_upstreams(
     };
     let pools = resolved.len();
     match writer.apply(&resolved) {
-        Ok(()) => UpstreamsReloadOutcome::Applied { pools },
+        Ok(()) => {
+            // BUG-dns-refresh-not-spawned-for-live-added-hostnames —
+            // bring the background DNS-refresh tasks up to date with the
+            // operator-authored upstreams (pre-expansion `new_cfg.upstreams`,
+            // not the resolved IP literals). Spawns a task for a hostname
+            // pool added after boot, restarts one whose hostnames changed,
+            // stops one whose pool was removed. Runs *after* the registry
+            // apply so the new task's first-tick seed reflects the IPs we
+            // just installed. No-op when no manager is wired (resolver
+            // failed to build at boot) — same degraded mode as before.
+            if let Some(mgr) = dns_refresh {
+                mgr.reconcile(&new_cfg.upstreams);
+            }
+            UpstreamsReloadOutcome::Applied { pools }
+        }
         Err(e) => UpstreamsReloadOutcome::Failed {
             reason: e.to_string(),
         },
@@ -529,6 +544,11 @@ pub struct FoldedReloadTargets {
     pub active_ruleset: Option<Arc<aegis_security::RuleSet>>,
     pub upstream_writer:
         Option<Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>>,
+    /// BUG-dns-refresh-not-spawned-for-live-added-hostnames — the live
+    /// DNS-refresh task manager, so a file/etcd reload reconciles
+    /// per-pool refresh tasks for hostname members added/changed after
+    /// boot. `None` when the resolver failed to build at boot.
+    pub dns_refresh: Option<Arc<crate::upstream::dns_refresh::DnsRefreshManager>>,
     /// 2026-06-18 (runtime_gate_toggles_not_durable) — gate runtimes so a
     /// file/etcd reload re-derives them too (the shared-store watcher does
     /// via `ApplyTargets`). The DDoS runtime is `OnceCell`-installed at boot.
@@ -560,7 +580,9 @@ pub async fn apply_folded_stores(new_cfg: &WafConfig, t: &FoldedReloadTargets) {
     let _ = apply_cfg_change_to_response_filter(new_cfg, t.response_filter_writer.as_ref());
     let _ = apply_cfg_change_to_tiers(new_cfg, t.tiers.as_ref());
     let _ = apply_cfg_change_to_rules(new_cfg, t.rules.as_ref(), t.active_ruleset.as_ref());
-    let _ = apply_cfg_change_to_upstreams(new_cfg, t.upstream_writer.as_ref()).await;
+    let _ =
+        apply_cfg_change_to_upstreams(new_cfg, t.upstream_writer.as_ref(), t.dns_refresh.as_ref())
+            .await;
     let _ = apply_cfg_change_to_copilot(new_cfg).await;
     // 2026-06-18 — gate runtimes (ddos / risk thresholds + strikes + canary /
     // bots). File/etcd reload parity with the shared-store watcher.
@@ -1410,7 +1432,7 @@ rules:
     async fn upstreams_reload_no_writer_is_noop() {
         let cfg = parse(&yaml_with_sqli(true, &[]));
         assert_eq!(
-            apply_cfg_change_to_upstreams(&cfg, None).await,
+            apply_cfg_change_to_upstreams(&cfg, None, None).await,
             UpstreamsReloadOutcome::NoWriter,
         );
     }
@@ -1440,7 +1462,7 @@ rules:
         let writer: Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter> =
             recorder.clone();
 
-        let outcome = apply_cfg_change_to_upstreams(&cfg, Some(&writer)).await;
+        let outcome = apply_cfg_change_to_upstreams(&cfg, Some(&writer), None).await;
         assert_eq!(outcome, UpstreamsReloadOutcome::Applied { pools: 1 });
         let applied = recorder.0.lock().unwrap();
         assert!(applied.contains_key("default"), "cfg.upstreams.default rebuilt");
