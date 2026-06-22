@@ -3024,9 +3024,6 @@ function PageRuleManager() {
                 ))}
               </div>
             </div>
-            <button className="btn primary" onClick={() => setShowNew(true)} disabled={busy}>
-              <window.I.Plus /> New rule
-            </button>
           </div>
         </div>
       )}
