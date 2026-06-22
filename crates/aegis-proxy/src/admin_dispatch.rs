@@ -567,6 +567,13 @@ pub(crate) async fn handle_admin_request(
     if method == hyper::Method::GET && path == "/api/upstreams/probe" {
         return crate::admin_get::handle_upstream_probe(req, services).await;
     }
+    // Async so it can read this node's applied config-doc version from
+    // the state backend (the convergence signal the dashboard polls
+    // after a pool/route edit). Shadows the synchronous no-backend
+    // fallback arm in `admin_router`.
+    if method == hyper::Method::GET && path == "/api/config/version" {
+        return handle_config_version_get(services).await;
+    }
 
     admin_router(req, cfg, readiness, startup, metrics, services)
 }
@@ -613,6 +620,97 @@ async fn handle_config_get(
     json_body_response(200, body, "private, max-age=2")
 }
 
+/// Build the `/api/config/version` response body.
+///
+/// `audit_chain_len` is this node's local audit-chain counter — it
+/// increments *synchronously* when a mutation's PUT returns, so it is a
+/// progress ping, NOT a "config applied" signal. `applied_version` is
+/// this node's config-plane ACK: the config-doc version the watcher has
+/// actually applied in-process via `writer.apply()` (read from
+/// `config:waf:applied:<node>`). After a pool/route edit the dashboard
+/// must wait until `applied_version` reaches the doc version the PUT
+/// returned before reloading — otherwise it re-reads the live registry
+/// before the async watcher has swapped it in and the edit looks lost
+/// until a manual refresh.
+///
+/// `applied_version` is omitted (not zeroed) when no state backend /
+/// roster is wired (single-node, test bundles); the client then falls
+/// back to the legacy audit-chain wait. `now_ms` is injected so the
+/// body shape stays unit-testable.
+pub(crate) fn config_version_body(
+    audit_chain_len: u64,
+    applied_version: Option<u64>,
+    node: &str,
+    now_ms: i64,
+) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("audit_chain_len".into(), audit_chain_len.into());
+    obj.insert("applied_at_ms".into(), now_ms.into());
+    obj.insert("applied_on_node".into(), node.into());
+    if let Some(v) = applied_version {
+        obj.insert("applied_version".into(), v.into());
+    }
+    obj.insert(
+        "note".into(),
+        serde_json::Value::String(
+            "audit_chain_len = this node's local audit-chain length \
+             (increments per audit-mutation, synchronous with the PUT). \
+             applied_version = the cluster config-doc version this node has \
+             applied in-process; wait for it to reach the version a \
+             pool/route mutation returned before reloading. Full per-node \
+             applied roster: GET /api/config."
+                .into(),
+        ),
+    );
+    obj.insert(
+        "cluster_config_version_endpoint".into(),
+        "/api/config".into(),
+    );
+    serde_json::Value::Object(obj)
+}
+
+/// This node's applied config-doc version: the version the config-plane
+/// watcher last recorded after `writer.apply()` (`config:waf:applied:<node>`).
+/// `None` when no state backend / roster is wired (single-node, test
+/// bundles). Shared by `GET /api/config/version` and `GET /api/detectors`.
+async fn this_node_applied_version(
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Option<u64> {
+    match (
+        services.state_backend.as_ref(),
+        services.roster_view.as_ref(),
+    ) {
+        (Some(backend), Some(rv)) if !rv.our_node.is_empty() => {
+            let store =
+                crate::config_source::config_store::ConfigStore::new(backend.clone());
+            store.applied_version(&rv.our_node).await.ok()
+        }
+        _ => None,
+    }
+}
+
+/// `GET /api/config/version` — this node's audit-chain length plus its
+/// applied config-doc version (the async-apply convergence signal the
+/// dashboard polls after a pool/route mutation). `applied_version` field
+/// omitted when no backend/roster is wired.
+async fn handle_config_version_get(
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let node = services
+        .roster_view
+        .as_ref()
+        .map(|lv| lv.our_node.clone())
+        .unwrap_or_default();
+    let applied_version = this_node_applied_version(services).await;
+    let body = config_version_body(
+        services.mutate.chain_len() as u64,
+        applied_version,
+        &node,
+        chrono::Utc::now().timestamp_millis(),
+    );
+    json_body_response(200, body.to_string(), "private, no-store")
+}
+
 /// F7 (2026-06-11) — `GET /api/detectors` with the applied config
 /// version stamped on. The version is read from this node's ACK key
 /// (`config:waf:applied:<node>`), which the config-plane watcher
@@ -630,17 +728,7 @@ async fn handle_detectors_get(
         .as_ref()
         .map(|c| c.modes.clone())
         .unwrap_or_default();
-    let config_version = match (
-        services.state_backend.as_ref(),
-        services.roster_view.as_ref(),
-    ) {
-        (Some(backend), Some(rv)) if !rv.our_node.is_empty() => {
-            let store =
-                crate::config_source::config_store::ConfigStore::new(backend.clone());
-            store.applied_version(&rv.our_node).await.ok()
-        }
-        _ => None,
-    };
+    let config_version = this_node_applied_version(services).await;
     let body = aegis_control::api::detectors::render_get_versioned(
         &services.detector_mask,
         &modes,
@@ -1496,6 +1584,35 @@ pub(crate) fn handle_force_https_request(
 
 #[cfg(test)]
 mod tests {
+    use super::config_version_body;
+
+    // Pool/route edits land via the async apply pipeline, so the
+    // dashboard must wait on this node's *applied* config-doc version
+    // (the ACK the watcher records after `writer.apply()`), NOT the
+    // audit-chain length (which increments synchronously with the PUT
+    // and so races the apply). `config_version_body` carries both; these
+    // pin the contract the UI's `waitForApplied` polls against.
+    #[test]
+    fn config_version_body_includes_applied_version_when_known() {
+        let v = config_version_body(7, Some(42), "node-a", 1_700_000_000_000);
+        assert_eq!(v["audit_chain_len"], 7);
+        assert_eq!(v["applied_version"], 42);
+        assert_eq!(v["applied_on_node"], "node-a");
+        assert_eq!(v["applied_at_ms"], 1_700_000_000_000_i64);
+        assert_eq!(v["cluster_config_version_endpoint"], "/api/config");
+        assert!(v["note"].is_string());
+    }
+
+    #[test]
+    fn config_version_body_omits_applied_version_when_unknown() {
+        // No state backend / roster (single-node, test bundles): the
+        // field is omitted rather than emitted as a misleading 0, so the
+        // client falls back to the legacy audit-chain wait.
+        let v = config_version_body(3, None, "", 0);
+        assert_eq!(v["audit_chain_len"], 3);
+        assert!(v.get("applied_version").is_none());
+    }
+
     #[test]
     fn request_id_is_uuid_v4_shape() {
         // Sanity that the new uuid::Uuid::new_v4 form is the
