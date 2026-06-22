@@ -9135,8 +9135,21 @@ function PageUpstreams() {
   // skipped stayed stale until a manual refresh (e.g. removing a pool from
   // a route left the pool visibly attached until reload). One shared
   // reloader keeps every dependent view in sync after any mutation.
-  async function reloadAfterApply(before) {
-    if (before != null) await window.waitForVersion(before + 1, 10000);
+  async function reloadAfterApply(before, appliedTarget) {
+    // Prefer the applied-version signal: wait until THIS node has applied
+    // the config-doc version the mutation returned, so the reload reads
+    // the post-apply registry instead of racing the async watcher (the
+    // bug where an edit didn't show until a manual refresh). `before`'s
+    // audit-chain wait is the fallback when the node exposes no
+    // applied_version (no state backend / single-node).
+    if (appliedTarget != null) {
+      const res = await window.waitForApplied(appliedTarget, 10000);
+      if (res && res.noSignal && before != null) {
+        await window.waitForVersion(before + 1, 10000);
+      }
+    } else if (before != null) {
+      await window.waitForVersion(before + 1, 10000);
+    }
     cfgApi.reload && cfgApi.reload();
     summaryApi.reload && summaryApi.reload();
     routesApi.reload && routesApi.reload();
@@ -9150,7 +9163,7 @@ function PageUpstreams() {
       if (r.status === 200 && r.ok) {
         window.aegisToast(`Pool "${name}" saved`, 'ok');
         setEditor(null);
-        await reloadAfterApply(before);
+        await reloadAfterApply(before, r.version);
       } else {
         const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
         window.aegisToast(`Save failed: ${msg}`, 'err');
@@ -9174,7 +9187,7 @@ function PageUpstreams() {
       if (r.status === 200 && r.ok) {
         window.aegisToast(`Pool "${name}" removed`, 'ok');
         setDeleteModal(null);
-        await reloadAfterApply(before);
+        await reloadAfterApply(before, r.version);
       } else if (r.status === 409 && Array.isArray(r.referenced_by_routes)) {
         setDeleteModal({ name, refs: r.referenced_by_routes });
         window.aegisToast(`Pool "${name}" has ${r.referenced_by_routes.length} route reference(s)`, 'warn');
@@ -13938,8 +13951,9 @@ function RoutesTable({ poolNames, routesApi, pools, health, onEditPool, onDelete
         setEditor(null);
         // Refresh routes + pools + health together (reloadAfterApply waits
         // for the async config-plane apply first) so no dependent view is
-        // left stale until a manual refresh.
-        if (onMutated) await onMutated(before);
+        // left stale until a manual refresh. Pass the doc version this
+        // PUT produced so the wait keys on applied-version convergence.
+        if (onMutated) await onMutated(before, r.version);
       } else {
         const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
         setSaveError(`Save failed: ${msg}`);
@@ -13959,7 +13973,7 @@ function RoutesTable({ poolNames, routesApi, pools, health, onEditPool, onDelete
       if (r.status === 200 && r.ok) {
         window.aegisToast(`Route "${id}" removed`, 'ok');
         setDeleteModal(null);
-        if (onMutated) await onMutated(before);
+        if (onMutated) await onMutated(before, r.version);
       } else if (r.status === 409 && r.reason === 'last_catchall') {
         setDeleteModal({ id, blocker: r.message || 'last catch-all' });
         window.aegisToast(`Cannot delete "${id}": last catch-all`, 'warn');

@@ -318,25 +318,21 @@ pub(crate) fn admin_router(
         // chain_len 0 on a node that applied via propagation), which the
         // QC flagged. Renamed to say what it is.
         "/api/config/version" => {
-            let v = services.mutate.chain_len();
-            let body = serde_json::json!({
-                "audit_chain_len": v,
-                "applied_at_ms": chrono::Utc::now().timestamp_millis(),
-                "applied_on_node": services
-                    .roster_view
-                    .as_ref()
-                    .map(|lv| lv.our_node.clone())
-                    .unwrap_or_default(),
-                // F2 (2026-06-11) — self-describing so an external sweep
-                // doesn't read a removed `version` field as `undefined`.
-                // This is THIS node's local audit-chain length, NOT the
-                // shared cluster config-doc version (a different counter).
-                "note": "audit_chain_len = this node's local audit-chain length \
-                         (increments per audit-mutation); it is NOT the cluster \
-                         config-doc version. For the shared config version + the \
-                         per-node applied roster, GET /api/config.",
-                "cluster_config_version_endpoint": "/api/config",
-            });
+            // Synchronous no-backend fallback. The async dispatch path
+            // (`handle_config_version_get`) shadows this when a state
+            // backend is wired and adds `applied_version`; here it is
+            // omitted (no backend reachable from this sync context).
+            let node = services
+                .roster_view
+                .as_ref()
+                .map(|lv| lv.our_node.clone())
+                .unwrap_or_default();
+            let body = crate::admin_dispatch::config_version_body(
+                services.mutate.chain_len() as u64,
+                None,
+                &node,
+                chrono::Utc::now().timestamp_millis(),
+            );
             json_body_response(200, body.to_string(), "private, no-store")
         }
 

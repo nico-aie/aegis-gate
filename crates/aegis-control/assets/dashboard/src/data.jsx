@@ -1563,6 +1563,44 @@ async function waitForVersion(expectedVersion, timeoutMs = 10000) {
   return { applied: false, latencyMs: timeoutMs };
 }
 
+// Wait until THIS node has APPLIED the config-doc version a mutation
+// produced — the real async-apply convergence signal. `targetVersion`
+// is the `version` a pool/route PUT/DELETE returned (the config-doc
+// version this change bumped to). Config-plane edits land via the
+// watcher's apply pipeline, which records `applied_version` only after
+// `writer.apply()` swaps the live registry; polling that (not the
+// synchronous `audit_chain_len`) is what lets the table reload read the
+// POST-apply config instead of racing it.
+//
+// Resolves immediately with `{ noSignal: true }` when the node exposes
+// no `applied_version` (no state backend / single-node / test bundle),
+// so the caller can fall back to the legacy audit-chain wait rather than
+// stall for the full timeout.
+async function waitForApplied(targetVersion, timeoutMs = 10000) {
+  const target = Number(targetVersion);
+  if (!Number.isFinite(target) || target <= 0) return { applied: false, noSignal: true };
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const r = await fetch('/api/config/version', { credentials: 'same-origin', cache: 'no-store' });
+      if (r.ok) {
+        const j = await r.json();
+        if (j.applied_version === undefined || j.applied_version === null) {
+          // No convergence signal on this node — don't block the reload.
+          return { applied: false, noSignal: true };
+        }
+        const applied = Number(j.applied_version);
+        if (Number.isFinite(applied) && applied >= target) {
+          notifyConfigConvergence();
+          return { applied: true, latencyMs: Date.now() - start, version: applied, node: j.applied_on_node };
+        }
+      }
+    } catch (_) { /* retry */ }
+    await new Promise(res => setTimeout(res, 250));
+  }
+  return { applied: false, latencyMs: timeoutMs };
+}
+
 // N2 (2026-06-11) — read the cluster config-doc version + per-node applied
 // roster from `/api/config` (ConfigStore). DISTINCT from
 // `/api/config/version` (the LOCAL audit-chain length, `audit_chain_len`):
@@ -1670,7 +1708,7 @@ Object.assign(window, {
   // TI-T — audit-mutated tier edits
   tierPut,
   useRoutesApi, useTiersApi,
-  rulesPost, rulesPut, rulesDelete, rulesToggle, rulesGenerate, waitForVersion, currentConfigVersion,
+  rulesPost, rulesPut, rulesDelete, rulesToggle, rulesGenerate, waitForVersion, waitForApplied, currentConfigVersion,
   fetchConfigState, notifyConfigConvergence,
   // CI-T6 — settings mutations
   useModeApi, settingsModePut,

@@ -71,6 +71,26 @@ plans/
   Analytics Query API + time-range dashboards + scheduled/compliance reports + cold
   Parquet tier. Cloudflare / AWS-WAF / GCP-Cloud-Armor parity. Designed-only; start at
   P0+P1. Not started.
+- **[`persistent-datastore-tracking-data.md`](./future/persistent-datastore-tracking-data.md)** —
+  the **"should we add PostgreSQL?"** infra decision, grounded in an audit of where WAF
+  data lives today (Redis hot tier / Redis config plane / local JSONL — no RDBMS). Verdict:
+  yes, **off the hot path only** — **ClickHouse** for the analytics firehose (shares the
+  analytics plan above) + **PostgreSQL** for durable control state that currently dies on
+  restart (`RiskTracker` strikes/trust, incident lifecycle). Feature-gated off by default.
+  Designed-only; start at P0+P1. Not started.
+- **[`redis-interim-durability.md`](./future/redis-interim-durability.md)** —
+  the **dependency-light bridge** to the plan above: reuse the Redis we already
+  ship to make the restart-fragile state durable *now* instead of standing up
+  ClickHouse+Postgres. Split: **control state + small lifetime counters → durable
+  `control:waf:*` Redis** (incidents, `RiskTracker` strikes/trust via debounced
+  off-path flush, `blocks_total`); **analytics rings/timeseries wait for
+  ClickHouse**. Hard prereqs: a mounted Redis data volume + reset-path wiring.
+  Hot path stays `DashMap`-only (no per-request I/O); RiskTracker flush is
+  coalesced + batched (pipelined `HSET`) and **strictly yields to enforcement**
+  (single-conn-skip so it can't starve the shared Redis pool under DDoS).
+  Acceptance gated on the existing `tests/load/` k6 suite (`risk-strikes`,
+  `ddos-burst`, `failover-burst`, `loadmode-degradation`) — persistence on-vs-off
+  must be latency-neutral. Designed-only; start at P0+P1. Not started.
 - **SSE / streaming support** — ✅ **SHIPPED 2026-06-14**, archived to
   [`archive/sse-streaming-support.md`](./archive/sse-streaming-support.md).
   Streams `text/event-stream` through the data plane instead of buffering
