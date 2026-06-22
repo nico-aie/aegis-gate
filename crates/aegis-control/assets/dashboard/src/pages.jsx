@@ -1653,7 +1653,7 @@ function PageAnalytics() {
           />
           {(() => {
             const stages = latency.data?.stages || {};
-            const stageOrder = ['total', 'waf_overhead', 'detect', 'rate_limit', 'respond'];
+            const stageOrder = ['total', 'queue_wait', 'waf_overhead', 'detect', 'rate_limit', 'respond'];
             const present = stageOrder.filter(s => stages[s]);
             if (present.length === 0) {
               return (
