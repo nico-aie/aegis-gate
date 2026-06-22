@@ -7257,6 +7257,7 @@ state:
             rules: None,
             active_ruleset: None,
             upstream_writer: None,
+            dns_refresh: None,
             receiver_writer: None,
             client_auth: None,
             ddos: None,

@@ -74,7 +74,12 @@ pub const DEFAULT_REFRESH: Duration = Duration::from_secs(60);
 /// One hostname-shaped member from the operator's config. The
 /// refresh task holds the original spec (not the expanded IP
 /// members) so it knows what to re-resolve.
-#[derive(Clone, Debug)]
+///
+/// `PartialEq`/`Eq`/`Hash` back the reconcile fingerprint
+/// ([`spec_fingerprint`]): two specs whose hostname members are
+/// identical fingerprint the same, so the manager keeps the
+/// running task instead of churning it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HostnameSpec {
     pub host: String,
     pub port: u16,
@@ -406,6 +411,224 @@ pub fn extract_specs(
         .collect()
 }
 
+/// Fingerprint of a refresh spec's *re-resolution surface* — the
+/// ordered hostname members. The manager compares this against the
+/// fingerprint of the running task to decide whether an operator
+/// edit changed what needs resolving (host/port/refresh_seconds/
+/// weight/zone/host_header) and the task must respawn.
+///
+/// Base-only pool edits (e.g. `lb` strategy with no hostname change)
+/// don't move the fingerprint — they don't change resolution
+/// behaviour, and the live `PoolRegistry::apply` already carries
+/// them. This matches how a boot-spawned task behaves today.
+pub fn spec_fingerprint(spec: &DnsRefreshSpec) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    spec.hostnames.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The reconcile decision for one apply: which pools need a fresh
+/// refresh task, which need restarting (spec changed), which to
+/// stop (pool gone or all hostnames removed), and which are
+/// unchanged. Pure — see [`plan_reconcile`].
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ReconcilePlan {
+    /// Tracked nowhere yet — spawn a new task. This is the case-3
+    /// fix: a hostname pool added after boot lands here.
+    pub spawn: Vec<String>,
+    /// Tracked, but the desired fingerprint differs — stop the old
+    /// task and spawn a fresh one off the new spec.
+    pub respawn: Vec<String>,
+    /// Tracked but no longer desired — abort the task.
+    pub stop: Vec<String>,
+    /// Tracked and unchanged — leave the running task alone.
+    pub keep: Vec<String>,
+}
+
+/// Diff the currently-tracked refresh tasks (`name -> fingerprint`)
+/// against the desired set of hostname pools (`name -> fingerprint`,
+/// already filtered to pools that have ≥1 hostname member) and
+/// classify each pool. Pure and deterministic: every bucket is
+/// sorted so logs and tests are stable.
+pub fn plan_reconcile(
+    tracked: &HashMap<String, u64>,
+    desired: &[(String, u64)],
+) -> ReconcilePlan {
+    let mut plan = ReconcilePlan::default();
+    let desired_names: HashSet<&str> = desired.iter().map(|(n, _)| n.as_str()).collect();
+
+    for (name, fp) in desired {
+        match tracked.get(name) {
+            None => plan.spawn.push(name.clone()),
+            Some(tracked_fp) if tracked_fp == fp => plan.keep.push(name.clone()),
+            Some(_) => plan.respawn.push(name.clone()),
+        }
+    }
+    for name in tracked.keys() {
+        if !desired_names.contains(name.as_str()) {
+            plan.stop.push(name.clone());
+        }
+    }
+
+    plan.spawn.sort();
+    plan.respawn.sort();
+    plan.stop.sort();
+    plan.keep.sort();
+    plan
+}
+
+/// Extract the DNS-managed subset of a pool's currently applied IPs
+/// so a freshly-spawned refresh task can compare against it on the
+/// first tick (and skip a redundant apply + audit when the
+/// resolution matches what's already live).
+///
+/// We can't tell DNS-resolved members from operator-pinned IPs
+/// perfectly (both end up as `MemberAddrSpec::Ip` after Phase 1's
+/// expansion); the heuristic is "any IP member whose `host_header`
+/// matches a hostname in the spec was resolved from that hostname."
+/// That's accurate for the common case (Phase 1's expansion sets
+/// `host_header` to the hostname); the edge case where an operator
+/// pinned an IP with `host_header: api.example.com` *and* also listed
+/// `addr: api.example.com:443` would treat those pinned IPs as
+/// DNS-managed — which is the right answer anyway (operators who do
+/// this want the refresh task to maintain the IP set).
+pub(crate) fn derive_applied_seed(
+    registry: &PoolRegistry,
+    pool_name: &str,
+    spec: &DnsRefreshSpec,
+) -> HashSet<IpAddr> {
+    let pool = match registry.current_pools().get(pool_name) {
+        Some(p) => p.clone(),
+        None => return HashSet::new(),
+    };
+    let hostnames: HashSet<&str> = spec.hostnames.iter().map(|h| h.host.as_str()).collect();
+    pool.members
+        .iter()
+        .filter_map(|m| {
+            let host = m.host_header.as_deref()?;
+            if !hostnames.contains(host) {
+                return None;
+            }
+            match m.addr {
+                MemberAddrSpec::Ip(sa) => Some(sa.ip()),
+                MemberAddrSpec::Hostname { .. } => None,
+            }
+        })
+        .collect()
+}
+
+struct TrackedTask {
+    handle: tokio::task::JoinHandle<()>,
+    fingerprint: u64,
+}
+
+/// Owns the live per-pool DNS refresh tasks and keeps them in sync
+/// with the operator-authored upstream config.
+///
+/// PR-DNS-2 Phase 2 spawned-and-forgot one task per hostname pool
+/// **at boot only**, so a pool that gained a hostname member after
+/// boot (dashboard PUT, cluster convergence) never got a refresh
+/// task and stayed pinned to its PUT-time IPs until the process
+/// restarted (BUG-dns-refresh-not-spawned-for-live-added-hostnames,
+/// "case-3"). [`reconcile`](Self::reconcile) lets *every* config
+/// apply — boot and reload alike — bring the task set up to date.
+pub struct DnsRefreshManager {
+    registry: Arc<PoolRegistry>,
+    resolver: Arc<TokioResolver>,
+    bus: AuditBus,
+    tasks: std::sync::Mutex<HashMap<String, TrackedTask>>,
+}
+
+impl DnsRefreshManager {
+    pub fn new(
+        registry: Arc<PoolRegistry>,
+        resolver: Arc<TokioResolver>,
+        bus: AuditBus,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            registry,
+            resolver,
+            bus,
+            tasks: std::sync::Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Count of live refresh tasks — diagnostic / test aid.
+    pub fn tracked_len(&self) -> usize {
+        self.tasks.lock().expect("dns_refresh tasks lock").len()
+    }
+
+    /// Reconcile running refresh tasks against `upstreams`
+    /// (operator-authored config, *before* Phase 1's hostname
+    /// expansion). Spawns a task for each newly-appearing hostname
+    /// pool, restarts a task whose hostname members changed, and
+    /// stops a task whose pool was removed or lost all its hostname
+    /// members. Idempotent: re-running with the same config is a
+    /// no-op (every pool lands in `keep`), so calling it on every
+    /// config apply is cheap.
+    pub fn reconcile(&self, upstreams: &HashMap<String, PoolConfig>) {
+        let desired_specs = extract_specs(upstreams);
+        let desired_fps: Vec<(String, u64)> = desired_specs
+            .iter()
+            .map(|(name, spec)| (name.clone(), spec_fingerprint(spec)))
+            .collect();
+
+        let mut tasks = self.tasks.lock().expect("dns_refresh tasks lock");
+        let tracked_fps: HashMap<String, u64> = tasks
+            .iter()
+            .map(|(name, t)| (name.clone(), t.fingerprint))
+            .collect();
+        let plan = plan_reconcile(&tracked_fps, &desired_fps);
+
+        if plan.spawn.is_empty() && plan.respawn.is_empty() && plan.stop.is_empty() {
+            return;
+        }
+
+        // Stop tasks that are gone or are being replaced.
+        for name in plan.stop.iter().chain(plan.respawn.iter()) {
+            if let Some(t) = tasks.remove(name) {
+                t.handle.abort();
+            }
+        }
+
+        // Spawn the newcomers and the replacements.
+        let spec_by_name: HashMap<&str, &DnsRefreshSpec> =
+            desired_specs.iter().map(|(n, s)| (n.as_str(), s)).collect();
+        let fp_by_name: HashMap<&str, u64> =
+            desired_fps.iter().map(|(n, f)| (n.as_str(), *f)).collect();
+        for name in plan.spawn.iter().chain(plan.respawn.iter()) {
+            let Some(spec) = spec_by_name.get(name.as_str()).map(|s| (*s).clone()) else {
+                continue;
+            };
+            let seed = derive_applied_seed(&self.registry, name, &spec);
+            let handle = spawn_pool_refresh(
+                name.clone(),
+                spec,
+                self.registry.clone(),
+                self.resolver.clone(),
+                self.bus.clone(),
+                seed,
+            );
+            tasks.insert(
+                name.clone(),
+                TrackedTask {
+                    handle,
+                    fingerprint: fp_by_name.get(name.as_str()).copied().unwrap_or_default(),
+                },
+            );
+        }
+
+        tracing::info!(
+            spawned = plan.spawn.len(),
+            respawned = plan.respawn.len(),
+            stopped = plan.stop.len(),
+            kept = plan.keep.len(),
+            "dns_refresh: reconciled per-pool refresh tasks",
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -577,5 +800,175 @@ mod tests {
         let specs = extract_specs(&upstreams);
         assert_eq!(specs.len(), 1, "only the pool with a hostname is returned");
         assert_eq!(specs[0].0, "with-dns");
+    }
+
+    // ---- reconcile core (BUG-dns-refresh-not-spawned-for-live-added-hostnames) ----
+
+    fn dns_pool(hosts: &[(&str, u16)]) -> PoolConfig {
+        let members = hosts
+            .iter()
+            .map(|(h, p)| host_member(h, *p, 1))
+            .collect();
+        base_pool(members)
+    }
+
+    #[test]
+    fn fingerprint_stable_for_identical_specs() {
+        let a = extract_spec(&dns_pool(&[("api.example.com", 443)]));
+        let b = extract_spec(&dns_pool(&[("api.example.com", 443)]));
+        assert_eq!(
+            spec_fingerprint(&a),
+            spec_fingerprint(&b),
+            "same hostname set must fingerprint identically (no churn)",
+        );
+    }
+
+    #[test]
+    fn fingerprint_changes_when_hostname_added() {
+        let one = extract_spec(&dns_pool(&[("api.example.com", 443)]));
+        let two = extract_spec(&dns_pool(&[
+            ("api.example.com", 443),
+            ("api2.example.com", 443),
+        ]));
+        assert_ne!(
+            spec_fingerprint(&one),
+            spec_fingerprint(&two),
+            "adding a hostname member must change the fingerprint so the task respawns",
+        );
+    }
+
+    #[test]
+    fn fingerprint_changes_when_refresh_seconds_changes() {
+        let mut a = extract_spec(&dns_pool(&[("api.example.com", 443)]));
+        let b_spec = {
+            let mut s = a.clone();
+            s.hostnames[0].refresh_seconds = Some(30);
+            s
+        };
+        a.hostnames[0].refresh_seconds = None;
+        assert_ne!(
+            spec_fingerprint(&a),
+            spec_fingerprint(&b_spec),
+            "changing refresh_seconds must change the fingerprint",
+        );
+    }
+
+    /// The case-3 repro at the unit level: a hostname pool that the
+    /// manager isn't tracking yet (e.g. added live via the dashboard
+    /// after boot) must be planned for a fresh refresh task.
+    #[test]
+    fn plan_spawns_live_added_hostname_pool() {
+        let tracked: HashMap<String, u64> = HashMap::new();
+        let fp = spec_fingerprint(&extract_spec(&dns_pool(&[("api.example.com", 443)])));
+        let desired = vec![("new-pool".to_string(), fp)];
+
+        let plan = plan_reconcile(&tracked, &desired);
+
+        assert_eq!(plan.spawn, vec!["new-pool".to_string()]);
+        assert!(plan.respawn.is_empty());
+        assert!(plan.stop.is_empty());
+        assert!(plan.keep.is_empty());
+    }
+
+    #[test]
+    fn plan_keeps_unchanged_pool() {
+        let fp = 0xABCD;
+        let mut tracked = HashMap::new();
+        tracked.insert("p".to_string(), fp);
+        let desired = vec![("p".to_string(), fp)];
+
+        let plan = plan_reconcile(&tracked, &desired);
+
+        assert_eq!(plan.keep, vec!["p".to_string()]);
+        assert!(plan.spawn.is_empty());
+        assert!(plan.respawn.is_empty());
+        assert!(plan.stop.is_empty());
+    }
+
+    #[test]
+    fn plan_respawns_changed_pool() {
+        let mut tracked = HashMap::new();
+        tracked.insert("p".to_string(), 1u64);
+        let desired = vec![("p".to_string(), 2u64)];
+
+        let plan = plan_reconcile(&tracked, &desired);
+
+        assert_eq!(plan.respawn, vec!["p".to_string()]);
+        assert!(plan.spawn.is_empty());
+        assert!(plan.keep.is_empty());
+        assert!(plan.stop.is_empty());
+    }
+
+    #[test]
+    fn plan_stops_removed_pool() {
+        let mut tracked = HashMap::new();
+        tracked.insert("gone".to_string(), 7u64);
+        let desired: Vec<(String, u64)> = Vec::new();
+
+        let plan = plan_reconcile(&tracked, &desired);
+
+        assert_eq!(plan.stop, vec!["gone".to_string()]);
+        assert!(plan.spawn.is_empty());
+        assert!(plan.respawn.is_empty());
+        assert!(plan.keep.is_empty());
+    }
+
+    #[test]
+    fn plan_mixed_spawn_keep_respawn_stop_is_sorted() {
+        let mut tracked = HashMap::new();
+        tracked.insert("keep".to_string(), 10u64);
+        tracked.insert("change".to_string(), 10u64);
+        tracked.insert("remove".to_string(), 10u64);
+        let desired = vec![
+            ("keep".to_string(), 10u64),
+            ("change".to_string(), 99u64),
+            ("add".to_string(), 5u64),
+        ];
+
+        let plan = plan_reconcile(&tracked, &desired);
+
+        assert_eq!(plan.spawn, vec!["add".to_string()]);
+        assert_eq!(plan.keep, vec!["keep".to_string()]);
+        assert_eq!(plan.respawn, vec!["change".to_string()]);
+        assert_eq!(plan.stop, vec!["remove".to_string()]);
+    }
+
+    /// End-to-end manager bookkeeping for the case-3 fix: a hostname
+    /// pool added after the manager was created (i.e. live, not at
+    /// boot) gets a refresh task; re-reconciling the same config does
+    /// not churn; removing the pool stops its task. `tracked_len` is
+    /// updated synchronously in `reconcile`, so this needs no network —
+    /// the spawned task's first resolution attempt soft-fails and the
+    /// task is aborted by the final reconcile.
+    #[tokio::test]
+    async fn manager_reconcile_spawns_then_stops_live_added_pool() {
+        use crate::upstream::registry::PoolRegistry;
+
+        let registry = Arc::new(PoolRegistry::empty());
+        let resolver = Arc::new(
+            hickory_resolver::TokioResolver::builder_tokio()
+                .and_then(|b| b.build())
+                .expect("build tokio resolver"),
+        );
+        let manager = DnsRefreshManager::new(registry, resolver, AuditBus::new(16));
+        assert_eq!(manager.tracked_len(), 0, "no tasks before any reconcile");
+
+        // A hostname pool added live (after boot) must get a task.
+        let mut upstreams: HashMap<String, PoolConfig> = HashMap::new();
+        upstreams.insert("api".into(), dns_pool(&[("api.example.com", 443)]));
+        manager.reconcile(&upstreams);
+        assert_eq!(
+            manager.tracked_len(),
+            1,
+            "live-added hostname pool spawns a refresh task (case-3 fix)",
+        );
+
+        // Re-reconciling the identical config is idempotent.
+        manager.reconcile(&upstreams);
+        assert_eq!(manager.tracked_len(), 1, "unchanged config does not churn tasks");
+
+        // Removing the pool stops its task.
+        manager.reconcile(&HashMap::new());
+        assert_eq!(manager.tracked_len(), 0, "removed pool stops its refresh task");
     }
 }

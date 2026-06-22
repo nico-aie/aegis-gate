@@ -140,9 +140,14 @@ pub async fn run(
     // retry any hostname that didn't resolve at boot — Phase 1's
     // strict abort is still used by the dashboard PUT path so
     // operators catch typos at config-set time.
-    let dns_refresh_specs = {
+    // BUG-dns-refresh-not-spawned-for-live-added-hostnames — capture the
+    // operator-authored upstreams (pre Phase-1 hostname expansion) so the
+    // DNS-refresh manager can reconcile per-pool refresh tasks at boot and
+    // again on every later config apply (dashboard PUT / cluster
+    // convergence), not just at boot.
+    let boot_authored_upstreams = {
         let raw = cfg_swap.load_full();
-        crate::upstream::dns_refresh::extract_specs(&raw.upstreams)
+        raw.upstreams.clone()
     };
     {
         let raw = cfg_swap.load_full();
@@ -941,47 +946,42 @@ pub async fn run(
     // for the process lifetime and tokio keeps them alive on the
     // runtime regardless of handle ownership. Mirrors the
     // `config-watcher` pattern below.
-    if !dns_refresh_specs.is_empty() {
-        let resolver = hickory_resolver::TokioResolver::builder_tokio().and_then(|b| b.build());
-        match resolver {
+    // Build the DNS-refresh manager and reconcile the initial per-pool
+    // task set from the boot config. The manager is threaded into both
+    // config watchers (below), so a later upstream apply (dashboard PUT /
+    // cluster convergence) reconciles tasks too — a hostname pool added
+    // after boot now gets a refresh task instead of staying pinned to its
+    // PUT-time IPs until the next process restart
+    // (BUG-dns-refresh-not-spawned-for-live-added-hostnames). The handles
+    // live for the process lifetime inside the manager; tokio keeps the
+    // tasks alive regardless of handle ownership.
+    let dns_refresh_manager: Option<Arc<crate::upstream::dns_refresh::DnsRefreshManager>> =
+        match hickory_resolver::TokioResolver::builder_tokio().and_then(|b| b.build()) {
             Ok(resolver) => {
-                let resolver = Arc::new(resolver);
-                for (pool_name, spec) in dns_refresh_specs {
-                    // Seed the applied-IP set from the registry's
-                    // current view of this pool so the first
-                    // refresh tick skips a no-op audit event when
-                    // the resolution matches what Phase 1 already
-                    // applied at boot.
-                    let seed = derive_applied_dns_seed(&upstream_ctx.pools, &pool_name, &spec);
-                    let handle = crate::upstream::dns_refresh::spawn_pool_refresh(
-                        pool_name.clone(),
-                        spec,
-                        // PoolRegistry is internally Arc-cloneable,
-                        // so handing the task a fresh `Arc` of the
-                        // same registry keeps the live store in
-                        // lock-step with everything else.
-                        Arc::new(upstream_ctx.pools.clone()),
-                        resolver.clone(),
-                        bus.clone(),
-                        seed,
-                    );
-                    std::mem::drop(handle);
-                }
+                let manager = crate::upstream::dns_refresh::DnsRefreshManager::new(
+                    // PoolRegistry is internally Arc-cloneable, so a fresh
+                    // `Arc` of the same registry keeps the manager's store
+                    // in lock-step with everything else.
+                    Arc::new(upstream_ctx.pools.clone()),
+                    Arc::new(resolver),
+                    bus.clone(),
+                );
+                manager.reconcile(&boot_authored_upstreams);
+                Some(manager)
             }
             Err(e) => {
                 // Builder failure means we couldn't parse
-                // /etc/resolv.conf (or registry on Windows). Phase 1
-                // boot resolution used the system stub anyway, so
-                // the pools still have live members — we just
-                // can't refresh in the background. Loud-warn so
-                // operators see this in the log.
+                // /etc/resolv.conf (or registry on Windows). Phase 1 boot
+                // resolution used the system stub anyway, so the pools
+                // still have live members — we just can't refresh in the
+                // background. Loud-warn so operators see this in the log.
                 tracing::warn!(
                     error = %e,
                     "dns_refresh: failed to build hickory resolver; hostname members will not refresh in the background",
                 );
+                None
             }
-        }
-    }
+        };
 
     // 2026-05-09 BUG-DDOS-STUB Phase 1 — DDoS observe-only wire-up.
     // Build the runtime if `cfg.ddos.enabled = true` and install
@@ -1244,6 +1244,10 @@ pub async fn run(
         active_ruleset: Some(pipeline.rules_arc()),
         upstream_writer: Some(Arc::new(upstream_ctx.pools.clone())
             as Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>),
+        // BUG-dns-refresh-not-spawned-for-live-added-hostnames — reconcile
+        // DNS-refresh tasks on a file/etcd reload too (parity with the
+        // shared-store watcher's ApplyTargets below).
+        dns_refresh: dns_refresh_manager.clone(),
         // 2026-06-18 (runtime_gate_toggles_not_durable) — gate runtimes so a
         // file/etcd reload re-derives them too (parity with the shared-store
         // watcher's ApplyTargets below).
@@ -1371,6 +1375,11 @@ pub async fn run(
             active_ruleset: Some(pipeline.rules_arc()),
             upstream_writer: Some(Arc::new(upstream_ctx.pools.clone())
                 as Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>),
+            // BUG-dns-refresh-not-spawned-for-live-added-hostnames —
+            // reconcile DNS-refresh tasks on each config-plane swap so a
+            // hostname pool added/changed after boot gets a refresh task
+            // fleet-wide instead of staying node-local-until-restart.
+            dns_refresh: dns_refresh_manager.clone(),
             // N1 — re-derive the alert-receiver list on each swap.
             receiver_writer: Some(Arc::clone(&shared_receivers)),
             // A2 — re-derive the inbound mTLS trust store on each swap so a
@@ -2394,45 +2403,6 @@ mod challenge_key_tests {
         let deterministic_empty = *blake3::hash(b"aegis-pow-key-v1:").as_bytes();
         assert_ne!(blank, deterministic_empty);
     }
-}
-
-/// PR-DNS-2 — extract the DNS-managed subset of a pool's currently
-/// applied IPs so the refresh task can compare against it on the
-/// first tick. We can't tell DNS-resolved members from
-/// operator-pinned IPs perfectly (both end up as
-/// `MemberAddrSpec::Ip` after Phase 1's expansion); the heuristic
-/// is "any IP member whose `host_header` matches a hostname in
-/// the spec was resolved from that hostname." That's accurate for
-/// the common case (Phase 1's expansion sets `host_header` to the
-/// hostname); the edge case where an operator pinned an IP with
-/// `host_header: api.example.com` and ALSO listed
-/// `addr: api.example.com:443` would cause those pinned IPs to
-/// look DNS-managed, which is the right answer anyway (operators
-/// who do this want the refresh task to maintain the IP set).
-fn derive_applied_dns_seed(
-    registry: &crate::upstream::registry::PoolRegistry,
-    pool_name: &str,
-    spec: &crate::upstream::dns_refresh::DnsRefreshSpec,
-) -> std::collections::HashSet<std::net::IpAddr> {
-    use std::collections::HashSet;
-    let pool = match registry.current_pools().get(pool_name) {
-        Some(p) => p.clone(),
-        None => return HashSet::new(),
-    };
-    let hostnames: HashSet<&str> = spec.hostnames.iter().map(|h| h.host.as_str()).collect();
-    pool.members
-        .iter()
-        .filter_map(|m| {
-            let host = m.host_header.as_deref()?;
-            if !hostnames.contains(host) {
-                return None;
-            }
-            match m.addr {
-                aegis_core::config::MemberAddrSpec::Ip(sa) => Some(sa.ip()),
-                aegis_core::config::MemberAddrSpec::Hostname { .. } => None,
-            }
-        })
-        .collect()
 }
 
 pub(crate) fn build_interop_runtime(
