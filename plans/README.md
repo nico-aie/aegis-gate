@@ -65,6 +65,12 @@ plans/
   deferred follow-up (3.2a) to the shipped *honest upstream badge* fix: derive
   member health from real traffic and feed the LB. Must ship with a fail-open
   LB change first (`LbStrategy::pick` currently fails closed). Not started.
+- **[`zone-aware-load-balancing.md`](./future/zone-aware-load-balancing.md)** —
+  locality routing: prefer healthy upstream members in the proxy node's own
+  zone, spilling cross-zone only when needed. The per-member `zone` field is
+  already plumbed as metadata but unused by the LB; needs a node self-zone
+  identity first and coordinates with `passive-upstream-health` (shared
+  `LbStrategy::pick` touchpoint + fail-open). Not started.
 - **[`security-analytics-and-reporting.md`](./future/security-analytics-and-reporting.md)** —
   enterprise **analytics + reporting**: durable, historical, queryable security-event
   store (today the dashboard analytics are a 15-min in-memory ring, lost on restart) +

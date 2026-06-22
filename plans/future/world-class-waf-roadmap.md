@@ -216,6 +216,12 @@ tiers:
 - [`passive-upstream-health.md`](./passive-upstream-health.md) — correctness:
   mark members down from real forward failures (not just active probes), feed
   the LB. Requires a fail-open `LbStrategy::pick` change first.
+- [`zone-aware-load-balancing.md`](./zone-aware-load-balancing.md) — locality
+  routing: prefer healthy upstream members in the proxy node's own zone with
+  safe cross-zone spillover, cutting inter-AZ latency + egress. The per-member
+  `zone` field is already plumbed as metadata but no LB logic reads it; needs a
+  node self-zone identity first, and shares the `LbStrategy::pick` touchpoint +
+  fail-open concern with `passive-upstream-health`. **M**, phased.
 - Wire-up backlog (`unwired-stubs-catalog.md`): ICAP content scanning,
   per-route quota enforcement, traffic mirroring, `dr.rs` runtime
   snapshot, JWT validator, OPA client, vendor CAPTCHA, threat-intel
