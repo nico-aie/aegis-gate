@@ -2,8 +2,9 @@
 
 - **Type:** BUG (upstream / DNS resolution lifecycle)
 - **Severity:** 🟠 MEDIUM-HIGH — a pool member added by hostname through the dashboard (or any post-boot config path) is resolved to an IP exactly once and then frozen. If the upstream remaps that hostname to a new server IP, traffic keeps going to the stale IP until the WAF process restarts. Boot-configured hostnames are unaffected (they auto-refresh on TTL).
-- **Status:** 🔴 Open
+- **Status:** 🟢 Fixed — branch `fix/dns-refresh-reconcile-live-hostnames` (TDD: RED `6d40403` → GREEN `fba3277`). Archive on merge.
 - **Found:** 2026-06-22, code review of the hostname-member resolution path
+- **Fixed:** 2026-06-22 — see [Resolution](#resolution).
 - **Area:** `crates/aegis-proxy/src/upstream/` — `dns_refresh` (Phase 2 background refresh) vs `dns_resolve` (Phase 1 one-shot); admin PUT + cluster-reload config paths.
 
 ## Summary
@@ -137,6 +138,45 @@ Restart the WAF process after adding a hostname member via the dashboard — boo
 the refresh task. Or pin the member as a literal `IP:port` if the upstream IP is stable and
 operators accept manual updates on remap. Neither is satisfactory for runtime operator edits;
 hence the bug.
+
+## Resolution
+
+Implemented on `fix/dns-refresh-reconcile-live-hostnames` (TDD). Rather than
+spawn-and-forget at boot, a new **`DnsRefreshManager`**
+(`crates/aegis-proxy/src/upstream/dns_refresh.rs`) owns the per-pool refresh
+tasks and reconciles them against the operator-authored upstreams on **every**
+config apply:
+
+- `spec_fingerprint(&DnsRefreshSpec)` — hashes the spec's hostname members
+  (host/port/refresh_seconds/weight/zone/host_header), the re-resolution surface.
+- `plan_reconcile(tracked, desired)` — pure, fully unit-tested planner returning
+  `spawn` / `respawn` / `stop` / `keep`. A desired hostname pool not currently
+  tracked → `spawn` (the case-3 fix); changed hostname members → `respawn`
+  (covers the "add a 2nd hostname to an existing pool" sibling case); removed →
+  `stop`; unchanged → `keep` (idempotent, no churn).
+- `DnsRefreshManager::reconcile(&upstreams)` — applies the plan (spawn via the
+  existing `spawn_pool_refresh`, abort handles on stop/respawn).
+
+Wired through the **existing** `reload::apply_cfg_change_to_upstreams` (new
+optional manager arg), reconciling *after* the registry apply so the new task's
+first-tick seed reflects the freshly-installed IPs. Both watcher paths
+(redis config-plane `ApplyTargets`, file/etcd `FoldedReloadTargets`) already call
+that one helper, so the structural guard `apply_and_swap_invokes_every_reload_helper`
+stays satisfied without a new helper. Boot now calls `manager.reconcile` instead
+of the inline spawn loop; `derive_applied_dns_seed` moved into the module as
+`derive_applied_seed`. `None` manager (resolver failed to build at boot) preserves
+the prior degraded mode.
+
+**Tests** (`dns_refresh::tests`): fingerprint stability/change, the four plan
+buckets + a mixed/sorted case, and a manager end-to-end test asserting a
+live-added pool spawns a task, re-reconcile is idempotent, and removal stops it.
+Full `aegis-proxy` lib suite green (962 passed).
+
+**Out of scope (tracked separately):** a DNS rotation re-applies the task's
+captured `base` pool config (lb/health/cb/connection), so a base-only PUT made
+between rotations can be reverted on the next tick. The fingerprint deliberately
+ignores base-only edits (matches existing boot-task behaviour); fixing the
+base-clobber is a distinct follow-up.
 
 ## Related
 
