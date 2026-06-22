@@ -45,7 +45,7 @@ const NAV = [
     { id: 'traffic-gates', label: 'Traffic Gates',    icon: <window.I.Shield />,   badge: null },
     { id: 'access-lists',  label: 'Access Lists',     icon: <window.I.Ban />,      badge: null },
     { id: 'detectors',     label: 'Detectors & Tiers', icon: <window.I.Cluster />, badge: null },
-    { id: 'rules',         label: 'Rules',            icon: <window.I.Layers />,   badge: null },
+    { id: 'rules',         label: 'Rules',            icon: <window.I.Layers />,   badge: 'Beta', tone: 'warn' },
     { id: 'zero-trust',    label: 'Zero Trust',       icon: <window.I.Shield />,   badge: 'Beta', tone: 'warn' },
   ]},
   { group: 'Observability', items: [
