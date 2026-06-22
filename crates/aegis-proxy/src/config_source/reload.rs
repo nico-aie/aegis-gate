@@ -620,7 +620,12 @@ pub async fn apply_cfg_change_to_copilot(new_cfg: &WafConfig) -> bool {
 /// and the watchers (hot-reload) so the selection rule stays
 /// in one place.
 pub fn derive_ip_rate_cfg(cfg: &WafConfig) -> IpRateLimitConfig {
-    cfg.rate_limit
+    // 2026-06-22 — `enabled` is a feature-level flag on `rate_limit`, applied
+    // regardless of whether a `global/ip` bucket is configured: an operator can
+    // disable the gate while leaving the bucket definition in place (or with no
+    // bucket at all, where limit/window fall back to the library default).
+    let mut derived = cfg
+        .rate_limit
         .buckets
         .iter()
         .find(|b| {
@@ -630,8 +635,11 @@ pub fn derive_ip_rate_cfg(cfg: &WafConfig) -> IpRateLimitConfig {
         .map(|b| IpRateLimitConfig {
             limit: b.limit.min(u32::MAX as u64) as u32,
             window: b.window,
+            enabled: cfg.rate_limit.enabled,
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    derived.enabled = cfg.rate_limit.enabled;
+    derived
 }
 
 /// Derive the live `DdosRuntime` config from a `WafConfig`, mirroring the
@@ -1855,6 +1863,70 @@ state:
         apply_cfg_change_to_rate_limit(&new_cfg, Some(&limiter));
         // Per-IP state intact.
         assert_eq!(limiter.tracked(), tracked_before);
+    }
+
+    // ---- rate-limit enable toggle (2026-06-22) ----
+
+    fn yaml_rate_limit_enabled(enabled: bool, limit: u64, window_secs: u64) -> String {
+        format!(
+            r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+rate_limit:
+  enabled: {enabled}
+  buckets:
+    - id: ip-global
+      scope: global
+      key: ip
+      algo: sliding_window
+      limit: {limit}
+      window: {window_secs}s
+"#
+        )
+    }
+
+    #[test]
+    fn derive_ip_rate_cfg_defaults_enabled_true_when_omitted() {
+        // The stock builder omits `rate_limit.enabled` → serde default `true`.
+        let cfg = parse(&yaml_with_rate_limit(100, 60));
+        assert!(derive_ip_rate_cfg(&cfg).enabled);
+    }
+
+    #[test]
+    fn derive_ip_rate_cfg_reads_disabled_flag() {
+        let cfg = parse(&yaml_rate_limit_enabled(false, 100, 60));
+        let derived = derive_ip_rate_cfg(&cfg);
+        assert!(!derived.enabled);
+        // Disabling does not erase the configured limit/window.
+        assert_eq!(derived.limit, 100);
+        assert_eq!(derived.window.as_secs(), 60);
+    }
+
+    #[test]
+    fn rate_limit_reload_applies_enabled_only_flip() {
+        // Same limit/window, only `enabled` changes — must still re-apply (the
+        // flag is part of the `Eq` identity), not short-circuit to Unchanged.
+        let initial = parse(&yaml_rate_limit_enabled(true, 100, 60));
+        let limiter = Arc::new(IpRateLimiter::new(derive_ip_rate_cfg(&initial)));
+        assert!(limiter.config().enabled);
+
+        let disabled = parse(&yaml_rate_limit_enabled(false, 100, 60));
+        let outcome = apply_cfg_change_to_rate_limit(&disabled, Some(&limiter));
+        assert!(matches!(outcome, RateLimitReloadOutcome::Applied { .. }));
+        assert!(!limiter.config().enabled, "limiter must observe the disable");
     }
 
     // ---- apply_cfg_change_to_tls ----

@@ -3615,10 +3615,29 @@ fn default_max_rule_count() -> u32 {
 // Rate limit
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Deserialize, Default)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct RateLimitConfig {
+    /// 2026-06-22 — operator enable toggle (DDoS-style on/off). Default
+    /// `true`: the per-IP volumetric gate runs unless explicitly disabled.
+    /// Disabling skips the gate entirely (no bucket tracking, no `429`); it is
+    /// orthogonal to the `enforce` / `log_only` interop mode for `rate_limit`.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     #[serde(default)]
     pub buckets: Vec<RateLimitRule>,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        // Hand-rolled (not `#[derive(Default)]`) so an omitted `rate_limit:`
+        // block defaults `enabled` to `true`, matching the serde default —
+        // `derive(Default)` would have made it `false` and silently disabled
+        // the gate whenever the config block was absent.
+        Self {
+            enabled: true,
+            buckets: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]

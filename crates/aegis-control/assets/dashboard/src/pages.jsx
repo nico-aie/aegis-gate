@@ -12540,6 +12540,34 @@ function RateLimitGateCard() {
   const rl = window.useApi ? window.useApi('/api/rate-limit', { intervalMs: 10000, fallback: null }) : { data: null };
   const cfg = rl.data;
   const [editing, setEditing] = useStateP(false);
+  const [busy, setBusy] = useStateP(false);
+
+  // 2026-06-22 — inline enable/disable toggle (DDoS-parity). PUTs the flipped
+  // `enabled` alongside the current limit/window so the durable config doc and
+  // the live limiter converge on the next request. Disabling skips the gate
+  // entirely (no 429s); orthogonal to the enforce/log_only interop mode.
+  const enabled = cfg ? cfg.enabled !== false : true;
+  async function toggleEnabled() {
+    if (!cfg || busy) return;
+    setBusy(true);
+    try {
+      const r = await window.csrfMutate('/api/rate-limit', {
+        method: 'PUT',
+        body: { enabled: !enabled, limit: cfg.limit, window_seconds: cfg.window_seconds },
+      });
+      if (r && r.ok !== false && (r.status === undefined || (r.status >= 200 && r.status < 300))) {
+        window.aegisToast && window.aegisToast(`Rate limit ${!enabled ? 'enabled' : 'disabled'}`, 'ok');
+        rl.reload && rl.reload();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r?.status ?? '?'}`;
+        window.aegisToast && window.aegisToast(`Rate-limit toggle failed: ${msg}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast && window.aegisToast(`Rate-limit toggle failed: ${e.message || e}`, 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div id="rate-limit-card" className="card" style={{ marginBottom: 12 }}>
@@ -12552,7 +12580,18 @@ function RateLimitGateCard() {
           <div style={{ fontSize: 12, color: 'var(--ink-dim)', fontStyle: 'italic' }}>Loading…</div>
         ) : (
           <>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, marginBottom: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span className={`pill ${enabled ? 'ok' : 'neutral'}`} style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.5 }}>
+                  {enabled ? 'ENABLED' : 'DISABLED'}
+                </span>
+                <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+                  {enabled ? 'gate active' : 'gate off — no 429s, no bucket tracking'}
+                </span>
+              </div>
+              <MaskSwitch on={enabled} busy={busy} onToggle={toggleEnabled} label="Toggle rate-limit gate" />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, marginBottom: 12, opacity: enabled ? 1 : 0.5 }}>
               <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
                 <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Limit</div>
                 <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>{cfg.limit}</div>
@@ -12598,6 +12637,7 @@ function RateLimitGateCard() {
 }
 
 function RateLimitEditModal({ current, onClose, onSaved }) {
+  const [enabled, setEnabled] = useStateP(current?.enabled !== false);
   const [limit, setLimit] = useStateP(current?.limit ?? 1000);
   const [windowSeconds, setWindowSeconds] = useStateP(current?.window_seconds ?? 60);
   const [busy, setBusy] = useStateP(false);
@@ -12608,7 +12648,7 @@ function RateLimitEditModal({ current, onClose, onSaved }) {
     try {
       const r = await window.csrfMutate('/api/rate-limit', {
         method: 'PUT',
-        body: { limit: parseInt(limit, 10), window_seconds: parseInt(windowSeconds, 10) },
+        body: { enabled, limit: parseInt(limit, 10), window_seconds: parseInt(windowSeconds, 10) },
       });
       if (r && r.ok !== false && (r.status === undefined || (r.status >= 200 && r.status < 300))) {
         window.aegisToast && window.aegisToast('Rate limit updated', 'ok');
@@ -12632,16 +12672,20 @@ function RateLimitEditModal({ current, onClose, onSaved }) {
           <button className="btn btn-sm" onClick={onClose}>×</button>
         </div>
         <div className="modal-body" style={{ display: 'grid', gap: 12 }}>
-          <label style={{ fontSize: 12 }}>
+          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} disabled={busy} />
+            <span><strong>Enabled</strong> — uncheck to skip the gate entirely (no 429s, no per-bucket tracking).</span>
+          </label>
+          <label style={{ fontSize: 12, opacity: enabled ? 1 : 0.5 }}>
             Limit (requests per window)
             <input className="input" type="number" min="1" value={limit}
-              onChange={e => setLimit(e.target.value)} disabled={busy}
+              onChange={e => setLimit(e.target.value)} disabled={busy || !enabled}
               style={{ marginTop: 4, width: '100%' }} />
           </label>
-          <label style={{ fontSize: 12 }}>
+          <label style={{ fontSize: 12, opacity: enabled ? 1 : 0.5 }}>
             Window (seconds)
             <input className="input" type="number" min="1" value={windowSeconds}
-              onChange={e => setWindowSeconds(e.target.value)} disabled={busy}
+              onChange={e => setWindowSeconds(e.target.value)} disabled={busy || !enabled}
               style={{ marginTop: 4, width: '100%' }} />
           </label>
           <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
