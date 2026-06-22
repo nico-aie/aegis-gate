@@ -1601,6 +1601,92 @@ async function waitForApplied(targetVersion, timeoutMs = 10000) {
   return { applied: false, latencyMs: timeoutMs };
 }
 
+// ---- Optimistic overlay for list-style config pages ----------------
+// Pools, routes and rules all mutate via the async config-plane apply
+// pipeline (the watcher swaps the in-process registry on its next poll),
+// so a reload fired right after the PUT can read pre-apply data — the
+// "edit didn't show until I clicked Refresh" bug. Rather than block on
+// convergence, mirror the Detectors mask card: stage the change locally
+// so the UI reflects it INSTANTLY, then drop the staged entry once the
+// server state catches up (reconcile). The internal ref is the
+// synchronous mirror so back-to-back edits merge correctly before a
+// reload lands.
+//
+// overlay shape: { [key]: { value } }  (upsert — shallow-merged / appended)
+//             or  { [key]: { tombstone: true } }  (removal — hidden)
+function useOptimisticOverlay() {
+  const [overlay, setOverlay] = useState({});
+  const ref = useRef({});
+  const apply = (next) => { ref.current = next; setOverlay(next); };
+  // Stage an upsert: `value` shallow-merges onto the matching server
+  // item, or is appended as a new item if the key isn't present yet.
+  const stageUpsert = (key, value) => apply({ ...ref.current, [String(key)]: { value } });
+  // Stage a removal: the item is hidden until the server drops it.
+  const stageRemoval = (key) => apply({ ...ref.current, [String(key)]: { tombstone: true } });
+  // Forget a staged entry without waiting for reconcile (e.g. rollback
+  // after the mutation failed).
+  const forget = (key) => { const n = { ...ref.current }; delete n[String(key)]; apply(n); };
+  // Drop staged entries the authoritative `serverList` has caught up to.
+  // `keyOf(item)` extracts a key; `matches(serverItem, stagedValue)`
+  // decides whether the server already reflects the staged change.
+  const reconcile = (serverList, keyOf, matches) => {
+    const byKey = new Map((serverList || []).map(it => [String(keyOf(it)), it]));
+    let changed = false;
+    const next = {};
+    for (const [k, entry] of Object.entries(ref.current)) {
+      const server = byKey.get(k);
+      const caughtUp = entry.tombstone
+        ? server === undefined
+        : (server !== undefined && matches(server, entry.value));
+      if (caughtUp) changed = true; else next[k] = entry;
+    }
+    if (changed) apply(next);
+  };
+  return { overlay, stageUpsert, stageRemoval, forget, reconcile };
+}
+
+// Merge an optimistic overlay onto a server-provided ARRAY for display:
+// staged upserts shallow-merge onto matching items, removals are hidden,
+// and staged items with no server match are appended (flagged
+// `__optimistic` so a row can show a subtle "saving…" affordance).
+function applyOverlayList(serverList, overlay, keyOf) {
+  const out = [];
+  const seen = new Set();
+  for (const it of (serverList || [])) {
+    const k = String(keyOf(it));
+    seen.add(k);
+    const entry = overlay[k];
+    if (entry && entry.tombstone) continue;
+    out.push(entry && entry.value ? { ...it, ...entry.value } : it);
+  }
+  for (const [k, entry] of Object.entries(overlay)) {
+    if (!entry || entry.tombstone || seen.has(k)) continue;
+    out.push({ ...entry.value, __optimistic: true });
+  }
+  return out;
+}
+
+// Same idea for a server-provided OBJECT keyed by name (pools/upstreams).
+function applyOverlayMap(serverMap, overlay) {
+  const out = { ...(serverMap || {}) };
+  for (const [k, entry] of Object.entries(overlay)) {
+    if (!entry) continue;
+    if (entry.tombstone) { delete out[k]; continue; }
+    const isNew = out[k] === undefined;
+    out[k] = { ...(out[k] || {}), ...entry.value };
+    if (isNew) out[k].__optimistic = true;
+  }
+  return out;
+}
+
+// Default "has the server caught up?" test: every staged field now
+// equals the server's (deep-equal via JSON — config values are plain
+// JSON). `__optimistic` is a display-only marker, never compared.
+function overlayMatches(serverItem, stagedValue) {
+  return Object.keys(stagedValue).every(
+    k => k === '__optimistic' || JSON.stringify(serverItem[k]) === JSON.stringify(stagedValue[k]));
+}
+
 // N2 (2026-06-11) — read the cluster config-doc version + per-node applied
 // roster from `/api/config` (ConfigStore). DISTINCT from
 // `/api/config/version` (the LOCAL audit-chain length, `audit_chain_len`):
@@ -1710,6 +1796,8 @@ Object.assign(window, {
   useRoutesApi, useTiersApi,
   rulesPost, rulesPut, rulesDelete, rulesToggle, rulesGenerate, waitForVersion, waitForApplied, currentConfigVersion,
   fetchConfigState, notifyConfigConvergence,
+  // Optimistic overlay (instant UI + reconcile) for rules/pools/routes
+  useOptimisticOverlay, applyOverlayList, applyOverlayMap, overlayMatches,
   // CI-T6 — settings mutations
   useModeApi, settingsModePut,
   // CI-T12 — risk thresholds (read + audit-mutated PUT)

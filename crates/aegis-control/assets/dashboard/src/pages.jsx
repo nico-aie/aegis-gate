@@ -2778,7 +2778,14 @@ function PageRuleManager() {
     ? rulesApi.data.rules
     : [];
 
-  const merged = apiRules.map(r => ({
+  // Optimistic overlay (instant create/edit/toggle/delete, like the
+  // Detectors mask card). Rule mutations apply via the async config-
+  // plane pipeline, so the server list lags a beat; staged changes show
+  // immediately and are dropped once a post-apply reload reflects them.
+  const ruleOverlay = window.useOptimisticOverlay();
+  const overlaidRules = window.applyOverlayList(apiRules, ruleOverlay.overlay, r => r.id);
+
+  const merged = overlaidRules.map(r => ({
     id: r.id,
     name: r.id,
     kind: 'custom',
@@ -2825,36 +2832,54 @@ function PageRuleManager() {
   const filtered = merged.filter(r => !search || r.id.includes(search) || r.name.toLowerCase().includes(search.toLowerCase()));
   const selected = merged.find(r => r.id === selectedId) || merged[0] || null;
 
-  // 2026-06-21 — the RuleStore reflects a config activation a beat after
-  // /api/config/version advances, so a single immediate reload raced the update
-  // (create/edit/delete/toggle all "needed a manual reload"). Re-fetch a few
-  // times over ~3s so every mutation reflects without operator action.
-  function settleReload() {
-    const go = () => rulesApi.reload && rulesApi.reload();
-    go();
-    [800, 1800, 3200].forEach(ms => setTimeout(go, ms));
+  // Reconcile: when a fresh /api/rules load arrives, drop any staged
+  // optimistic entry the server now reflects. Self-correcting like the
+  // Detectors card — a pre-apply reload won't match yet, so it never
+  // reverts an optimistic row before the change has actually landed.
+  useEffectP(() => {
+    ruleOverlay.reconcile(apiRules, r => r.id, window.overlayMatches);
+  }, [rulesApi.data]);
+
+  // Re-sync when the config plane applies a change anywhere in the fleet
+  // (config_reload SSE, re-broadcast by data.jsx) — no manual reload.
+  useEffectP(() => {
+    const onReload = () => { rulesApi.reload && rulesApi.reload(); };
+    window.addEventListener('aegis:config-reload', onReload);
+    return () => window.removeEventListener('aegis:config-reload', onReload);
+  }, [rulesApi.reload]);
+
+  // After a successful mutation, reload once THIS node has applied the
+  // version the PUT produced (non-blocking) so the reconcile effect sees
+  // post-apply data and drops the optimistic entry. The trailing
+  // forget(key) bounds any lingering overlay if the server canonicalizes
+  // a body so the field-match never fires.
+  function settleAfterApply(version, key) {
+    (async () => {
+      if (typeof version === 'number') await window.waitForApplied(version, 10000);
+      rulesApi.reload && rulesApi.reload();
+      if (key != null) setTimeout(() => ruleOverlay.forget(key), 3000);
+    })();
   }
 
-  // Run a mutation, wait for /api/config/version to advance, then toast.
-  async function runMutation(label, fn) {
+  // Run a mutation with an instant optimistic update: `opt.stage()` flips
+  // the UI before the PUT, `opt.rollback()` reverts it on failure. No
+  // blocking wait — the optimistic layer already shows the result.
+  async function runMutation(label, fn, opt) {
     if (busy) return;
     setBusy(true);
+    if (opt && opt.stage) opt.stage();
     try {
-      const before = await fetchCurrentVersion();
       const result = await fn();
       if (result && result.ok) {
-        const v = await window.waitForVersion(before + 1, 10000);
-        if (v.applied) {
-          window.aegisToast(`${label} · applied in ${v.latencyMs} ms`, 'ok');
-        } else {
-          window.aegisToast(`${label} · pending after 10 s`, 'warn');
-        }
-        settleReload();
+        window.aegisToast(label, 'ok');
+        settleAfterApply(result.version, opt && opt.key);
       } else {
+        if (opt && opt.rollback) opt.rollback();
         const msg = (result && (result.message || result.error || result.reason)) || 'unknown error';
         window.aegisToast(`${label} failed: ${msg}`, 'err');
       }
     } catch (err) {
+      if (opt && opt.rollback) opt.rollback();
       window.aegisToast(`${label} error: ${err.message || err}`, 'err');
     } finally {
       setBusy(false);
@@ -2871,15 +2896,21 @@ function PageRuleManager() {
 
   async function saveEdit() {
     if (!selected) return;
-    await runMutation(`Rule ${selected.id} updated`,
-      () => window.rulesPut(selected.id, { body: editBody, enabled: selected.enabled }));
+    const id = selected.id;
+    const value = { body: editBody, enabled: selected.enabled };
     setEditing(false);
+    await runMutation(`Rule ${id} updated`,
+      () => window.rulesPut(id, value),
+      { key: id, stage: () => ruleOverlay.stageUpsert(id, value), rollback: () => ruleOverlay.forget(id) });
   }
 
   async function toggleSelected() {
     if (!selected) return;
-    const label = selected.enabled ? `Rule ${selected.id} disabled` : `Rule ${selected.id} enabled`;
-    await runMutation(label, () => window.rulesToggle(selected.id));
+    const id = selected.id;
+    const next = !selected.enabled;
+    const label = next ? `Rule ${id} enabled` : `Rule ${id} disabled`;
+    await runMutation(label, () => window.rulesToggle(id),
+      { key: id, stage: () => ruleOverlay.stageUpsert(id, { enabled: next }), rollback: () => ruleOverlay.forget(id) });
   }
 
   function deleteSelected() {
@@ -2889,23 +2920,10 @@ function PageRuleManager() {
 
   async function confirmDeleteSelected() {
     if (!selected) return;
+    const id = selected.id;
     setShowDeleteModal(false);
-    await runMutation(`Rule ${selected.id} deleted`, () => window.rulesDelete(selected.id));
-  }
-
-  // P2 (2026-06-21) — config activation propagates asynchronously, so the
-  // rule store can lag a beat behind a successful POST. Poll /api/rules until
-  // the new id is live (bounded) so the row appears without a manual reload.
-  async function waitForRuleVisible(id) {
-    for (let i = 0; i < 6; i++) {
-      try {
-        const r = await fetch('/api/rules', { credentials: 'same-origin', cache: 'no-store' });
-        const j = await r.json();
-        if (Array.isArray(j.rules) && j.rules.some(x => x.id === id)) break;
-      } catch (_) { /* keep polling */ }
-      await new Promise(res => setTimeout(res, 700));
-    }
-    rulesApi.reload && rulesApi.reload();
+    await runMutation(`Rule ${id} deleted`, () => window.rulesDelete(id),
+      { key: id, stage: () => ruleOverlay.stageRemoval(id), rollback: () => ruleOverlay.forget(id) });
   }
 
   async function createNew() {
@@ -2914,13 +2932,17 @@ function PageRuleManager() {
     // P1 — force the body's `id:` to match the form id (engine matches body id;
     // the backend rejects a mismatch).
     const body = syncRuleBodyId(newBody, id);
-    await runMutation(`Rule ${id} created`,
-      () => window.rulesPost({ id, body, enabled: newEnabled }));
+    const value = { id, body, enabled: newEnabled };
     setShowNew(false);
     setNewId('');
     setNewBody(defaultRuleBody('my-rule-001'));
     setNewEnabled(true);
-    await waitForRuleVisible(id);
+    // Optimistic create: the row appears instantly (appended by the
+    // overlay) and is reconciled away once the server load includes it —
+    // no waitForRuleVisible poll-loop needed.
+    await runMutation(`Rule ${id} created`,
+      () => window.rulesPost({ id, body, enabled: newEnabled }),
+      { key: id, stage: () => ruleOverlay.stageUpsert(id, value), rollback: () => ruleOverlay.forget(id) });
     setSelectedId(id);
   }
 
@@ -9084,10 +9106,25 @@ function PageUpstreams() {
   const cfgApi = window.useUpstreamsConfigApi();
   const summaryApi = window.useUpstreamsApi();
   const routesApi = window.useRoutesApi();
-  const pools = cfgApi.data?.pools || {};
+  // Optimistic overlays (instant pool/route edits, like the Detectors
+  // card): staged changes show immediately and reconcile away once a
+  // post-apply reload reflects them.
+  const poolOverlay = window.useOptimisticOverlay();
+  const routeOverlay = window.useOptimisticOverlay();
+  const pools = window.applyOverlayMap(cfgApi.data?.pools || {}, poolOverlay.overlay);
   const names = Object.keys(pools).sort();
   const summary = summaryApi.data?.pools || [];
-  const routes = routesApi.data?.routes || [];
+  const routes = window.applyOverlayList(routesApi.data?.routes || [], routeOverlay.overlay, r => r.id);
+
+  // Drop staged entries once a fresh load reflects them (self-correcting:
+  // a pre-apply reload won't match yet, so it never reverts early).
+  useEffectP(() => {
+    const serverPools = Object.entries(cfgApi.data?.pools || {}).map(([name, cfg]) => ({ name, ...cfg }));
+    poolOverlay.reconcile(serverPools, p => p.name, window.overlayMatches);
+  }, [cfgApi.data]);
+  useEffectP(() => {
+    routeOverlay.reconcile(routesApi.data?.routes || [], r => r.id, window.overlayMatches);
+  }, [routesApi.data]);
 
   // routing-upstream #1 — index the live health summary by pool name so
   // the routes table + pool rows can show per-pool / per-member health.
@@ -9157,6 +9194,9 @@ function PageUpstreams() {
 
   async function savePool({ name, body }) {
     setBusy(true);
+    // Optimistic: the pool card reflects the edit instantly; rolled back
+    // if the PUT fails, and reconciled away once the reload lands.
+    poolOverlay.stageUpsert(name, body);
     try {
       const before = await window.currentConfigVersion();
       const r = await window.poolUpsert(name, body);
@@ -9164,10 +9204,15 @@ function PageUpstreams() {
         window.aegisToast(`Pool "${name}" saved`, 'ok');
         setEditor(null);
         await reloadAfterApply(before, r.version);
+        setTimeout(() => poolOverlay.forget(name), 3000);
       } else {
+        poolOverlay.forget(name);
         const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
         window.aegisToast(`Save failed: ${msg}`, 'err');
       }
+    } catch (e) {
+      poolOverlay.forget(name);
+      window.aegisToast(`Save failed: ${e.message || e}`, 'err');
     } finally {
       setBusy(false);
     }
@@ -9185,9 +9230,12 @@ function PageUpstreams() {
       const before = await window.currentConfigVersion();
       const r = await window.poolDelete(name);
       if (r.status === 200 && r.ok) {
+        // Hide the pool instantly; reconciled once the reload drops it.
+        poolOverlay.stageRemoval(name);
         window.aegisToast(`Pool "${name}" removed`, 'ok');
         setDeleteModal(null);
         await reloadAfterApply(before, r.version);
+        setTimeout(() => poolOverlay.forget(name), 3000);
       } else if (r.status === 409 && Array.isArray(r.referenced_by_routes)) {
         setDeleteModal({ name, refs: r.referenced_by_routes });
         window.aegisToast(`Pool "${name}" has ${r.referenced_by_routes.length} route reference(s)`, 'warn');
@@ -9283,6 +9331,7 @@ function PageUpstreams() {
         onDeletePool={(n) => setDeleteModal({ name: n, refs: pools[n]?.referenced_by_routes || [] })}
         onMutated={reloadAfterApply}
         cfgReload={cfgApi.reload}
+        routeOverlay={routeOverlay}
       />
 
       {/* SC-1 — per-upstream smart-cache stats (L1 in-process today). */}
@@ -13858,8 +13907,13 @@ function computeShadowMap(allRoutes) {
   return shadow;
 }
 
-function RoutesTable({ poolNames, routesApi, pools, health, onEditPool, onDeletePool, onMutated, cfgReload }) {
-  const routes = routesApi.data?.routes || [];
+function RoutesTable({ poolNames, routesApi, pools, health, onEditPool, onDeletePool, onMutated, cfgReload, routeOverlay }) {
+  // Optimistic overlay (instant route add/edit/delete): staged changes
+  // show before the async config-plane apply lands; the parent reconciles
+  // them away on the next post-apply reload.
+  const routes = routeOverlay
+    ? window.applyOverlayList(routesApi.data?.routes || [], routeOverlay.overlay, r => r.id)
+    : (routesApi.data?.routes || []);
   // routing-upstream #3 — map of shadowed route id → the higher-priority
   // route that already matches its traffic (computed over ALL routes, not
   // just the filtered view).
@@ -13943,6 +13997,8 @@ function RoutesTable({ poolNames, routesApi, pools, health, onEditPool, onDelete
       // inline-backend path; if the operator wants to clean up an
       // unused pool they use "Pools without routes" → Delete.
       const body = routeBodyFromDraft(draft);
+      // Optimistic: the route row reflects the edit instantly.
+      if (routeOverlay) routeOverlay.stageUpsert(draft.id, { id: draft.id, ...body });
       const before = await window.currentConfigVersion();
       const r = await window.routeUpsert(draft.id, body);
       if (r.status === 200 && r.ok) {
@@ -13954,10 +14010,15 @@ function RoutesTable({ poolNames, routesApi, pools, health, onEditPool, onDelete
         // left stale until a manual refresh. Pass the doc version this
         // PUT produced so the wait keys on applied-version convergence.
         if (onMutated) await onMutated(before, r.version);
+        if (routeOverlay) setTimeout(() => routeOverlay.forget(draft.id), 3000);
       } else {
+        if (routeOverlay) routeOverlay.forget(draft.id);
         const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
         setSaveError(`Save failed: ${msg}`);
       }
+    } catch (e) {
+      if (routeOverlay) routeOverlay.forget(draft.id);
+      setSaveError(`Save failed: ${e.message || e}`);
     } finally {
       setBusy(false);
     }
@@ -13971,9 +14032,12 @@ function RoutesTable({ poolNames, routesApi, pools, health, onEditPool, onDelete
       const before = await window.currentConfigVersion();
       const r = await window.routeDelete(id);
       if (r.status === 200 && r.ok) {
+        // Hide the route instantly; reconciled once the reload drops it.
+        if (routeOverlay) routeOverlay.stageRemoval(id);
         window.aegisToast(`Route "${id}" removed`, 'ok');
         setDeleteModal(null);
         if (onMutated) await onMutated(before, r.version);
+        if (routeOverlay) setTimeout(() => routeOverlay.forget(id), 3000);
       } else if (r.status === 409 && r.reason === 'last_catchall') {
         setDeleteModal({ id, blocker: r.message || 'last catch-all' });
         window.aegisToast(`Cannot delete "${id}": last catch-all`, 'warn');
