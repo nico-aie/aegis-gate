@@ -820,6 +820,7 @@ pub(crate) fn admin_router(
                 Some(h) => {
                     let stages = [
                         stage::TOTAL,
+                        stage::QUEUE_WAIT,
                         stage::WAF_OVERHEAD,
                         stage::DETECT,
                         stage::RATE_LIMIT,

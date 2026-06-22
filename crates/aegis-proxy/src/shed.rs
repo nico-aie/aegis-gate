@@ -10,12 +10,29 @@ use std::time::Duration;
 
 use aegis_core::tier::Tier;
 
+/// Stress threshold for the run-queue dispatch delay (`queue_wait`),
+/// in microseconds. A *sustained* (EMA-smoothed) dispatch delay above
+/// this means the tokio runtime can't schedule its own connection tasks
+/// promptly — i.e. the WAF process is CPU-starved, not the backend.
+///
+/// Unlike WAF-inspection RTT (which varies by route and is tracked
+/// *relatively* against a recent-best `rtt_min`), dispatch delay has a
+/// hardware-independent *absolute* meaning: 5 ms of pure run-queue wait
+/// is severe worker starvation on any box, so an absolute threshold is
+/// both simpler and more defensible here.
+const QUEUE_WAIT_STRESS_US: u64 = 5_000;
+
 /// Gradient2-based load shedder.
 pub struct LoadShedder {
     /// Minimum observed RTT in microseconds.
     rtt_min_us: AtomicU64,
     /// Current smoothed RTT in microseconds.
     rtt_now_us: AtomicU64,
+    /// Current smoothed run-queue dispatch delay (`queue_wait`) in
+    /// microseconds. Fed from the accept loop, kept SEPARATE from the
+    /// WAF-inspection RTT gradient so the documented "WAF-inspection-
+    /// only" contract on [`LoadShedder::record_rtt`] stays intact.
+    qw_now_us: AtomicU64,
     /// Current concurrency limit.
     limit: AtomicU64,
     /// Current in-flight count.
@@ -34,6 +51,7 @@ impl LoadShedder {
         Self {
             rtt_min_us: AtomicU64::new(u64::MAX),
             rtt_now_us: AtomicU64::new(0),
+            qw_now_us: AtomicU64::new(0),
             limit: AtomicU64::new(initial_limit),
             inflight: AtomicU64::new(0),
             min_limit,
@@ -113,6 +131,65 @@ impl LoadShedder {
             };
             self.limit.store(new_limit, Ordering::Relaxed);
         }
+    }
+
+    /// Record one connection's **run-queue dispatch delay** (the
+    /// `queue_wait` stage: time from `accept()` returning to the
+    /// connection task's first poll) and, when it signals sustained CPU
+    /// starvation, shrink the concurrency limit so the shedder actually
+    /// opens under worker starvation.
+    ///
+    /// This is the missing half of the overload signal. [`record_rtt`]
+    /// sees only WAF-inspection time, which stays sub-millisecond even at
+    /// 100 % CPU — so on its own the shedder never opens when the box is
+    /// starved (the limit pins at `max_limit`). Dispatch delay is the
+    /// signal that *does* rise under CPU saturation. Crucially it is
+    /// genuine WAF-side back-pressure (the runtime can't schedule its own
+    /// tasks), NOT backend latency, so feeding it here does not
+    /// reintroduce the "slow backend looks like WAF overload" failure
+    /// mode that deliberately keeps upstream RTT out of [`record_rtt`].
+    ///
+    /// Shrink-only: a starvation spike lowers the limit; recovery is
+    /// owned by [`record_rtt`]'s additive-grow path (+1 per healthy
+    /// request), so a transient dispatch spike can't ratchet the limit to
+    /// `min_limit` forever.
+    ///
+    /// [`record_rtt`]: LoadShedder::record_rtt
+    pub fn record_queue_wait(&self, qw: Duration) {
+        let us = qw.as_micros() as u64;
+        if us == 0 {
+            return;
+        }
+
+        // EMA so a single transient dispatch spike (a momentary burst, a
+        // GC-like pause) doesn't trip the brake — `smoothed` has to stay
+        // elevated for the shrink to bite.
+        let alpha = 0.2f64;
+        let prev = self.qw_now_us.load(Ordering::Relaxed);
+        let smoothed = if prev == 0 {
+            us
+        } else {
+            (alpha * us as f64 + (1.0 - alpha) * prev as f64) as u64
+        };
+        self.qw_now_us.store(smoothed, Ordering::Relaxed);
+
+        // Only sustained dispatch delay above the starvation threshold
+        // shrinks the limit. Proportional shrink — the worse the
+        // starvation, the lower the limit — clamped to `min_limit` so the
+        // gate never fully closes. Healthy dispatch (microseconds) is far
+        // below the threshold and never sheds.
+        if smoothed > QUEUE_WAIT_STRESS_US {
+            let factor = QUEUE_WAIT_STRESS_US as f64 / smoothed as f64; // ∈ (0, 1)
+            let current_limit = self.limit.load(Ordering::Relaxed);
+            let shrunk = (current_limit as f64 * factor) as u64;
+            self.limit
+                .store(shrunk.max(self.min_limit), Ordering::Relaxed);
+        }
+    }
+
+    /// Current smoothed run-queue dispatch delay (`queue_wait`).
+    pub fn current_queue_wait(&self) -> Duration {
+        Duration::from_micros(self.qw_now_us.load(Ordering::Relaxed))
     }
 
     /// Try to acquire a slot for a request with the given tier.
@@ -326,6 +403,92 @@ mod tests {
         assert!(
             s.current_limit() <= 50,
             "grow must clamp to max_limit (initial_limit): got {}",
+            s.current_limit(),
+        );
+    }
+
+    #[test]
+    fn queue_wait_starvation_shrinks_limit() {
+        // CPU-saturation fix (2026-06-22): WAF-inspection RTT stays
+        // sub-millisecond at 100% CPU, so `record_rtt` alone never
+        // shrinks the limit and the shedder never opens under worker
+        // starvation. Run-queue dispatch delay (`queue_wait`) is the
+        // signal that DOES rise when the box is starved. Sustained high
+        // queue_wait must pull the concurrency limit down.
+        let s = LoadShedder::new(20_000, 100);
+        // Healthy dispatch (microseconds) must NOT shrink the limit.
+        for _ in 0..50 {
+            s.record_queue_wait(Duration::from_micros(20));
+        }
+        assert_eq!(
+            s.current_limit(),
+            20_000,
+            "healthy dispatch delay must not shed"
+        );
+        // Sustained worker starvation: tens of ms of pure run-queue wait.
+        for _ in 0..50 {
+            s.record_queue_wait(Duration::from_millis(50));
+        }
+        assert!(
+            s.current_limit() < 20_000,
+            "sustained dispatch delay must shrink the limit, got {}",
+            s.current_limit(),
+        );
+    }
+
+    #[test]
+    fn queue_wait_shrink_respects_min_limit() {
+        let s = LoadShedder::new(20_000, 7_000);
+        for _ in 0..100 {
+            s.record_queue_wait(Duration::from_secs(1)); // extreme starvation
+        }
+        assert!(
+            s.current_limit() >= 7_000,
+            "queue_wait shrink must floor at min_limit, got {}",
+            s.current_limit(),
+        );
+    }
+
+    #[test]
+    fn queue_wait_does_not_drive_rtt_gradient() {
+        // queue_wait feeds its own signal, NOT the WAF-inspection RTT
+        // gradient (whose contract is WAF-only). Recording queue_wait
+        // must leave the RTT gradient untouched (min_rtt unset).
+        let s = LoadShedder::new(100, 10);
+        s.record_queue_wait(Duration::from_millis(50));
+        assert!(
+            s.min_rtt().is_none(),
+            "queue_wait must not touch the RTT gradient"
+        );
+    }
+
+    #[test]
+    fn record_rtt_recovers_limit_after_queue_wait_starvation() {
+        // Shrink-only contract: queue_wait lowers the limit; the RTT
+        // additive-grow path restores it once starvation clears, so a
+        // dispatch-delay spike can't ratchet the limit to min_limit
+        // forever.
+        let s = LoadShedder::new(20_000, 100);
+        // Healthy RTT baseline (sets rtt_min low).
+        for _ in 0..10 {
+            s.record_rtt(Duration::from_millis(1));
+        }
+        // Starvation shrinks the limit.
+        for _ in 0..50 {
+            s.record_queue_wait(Duration::from_millis(50));
+        }
+        let after_starvation = s.current_limit();
+        assert!(
+            after_starvation < 20_000,
+            "starvation should have shrunk the limit, got {after_starvation}"
+        );
+        // Starvation clears; healthy requests grow the limit back.
+        for _ in 0..5_000 {
+            s.record_rtt(Duration::from_millis(1));
+        }
+        assert!(
+            s.current_limit() > after_starvation,
+            "RTT grow must recover the limit: {} > {after_starvation}",
             s.current_limit(),
         );
     }
