@@ -6149,22 +6149,30 @@ pub(crate) async fn handle_rate_limit_put(
     };
     let before_cfg = services.ip_rate_limiter.config_snapshot();
     let before_json = serde_json::json!({
+        "enabled": before_cfg.enabled,
         "limit": before_cfg.limit,
         "window_seconds": before_cfg.window.as_secs(),
     });
     let after_json = serde_json::json!({
+        "enabled": new_cfg.enabled,
         "limit": new_cfg.limit,
         "window_seconds": new_cfg.window.as_secs(),
     });
 
-    // Durability (2026-06-18): persist into the `rate_limit.buckets`
-    // global/ip entry that `derive_ip_rate_cfg` reads at boot, so the
-    // change survives restart (see runtime_gate_toggles_not_durable.md).
+    // Durability (2026-06-18): persist into the `rate_limit` block (the
+    // feature-level `enabled` flag + the `global/ip` bucket that
+    // `derive_ip_rate_cfg` reads at boot) so the change survives restart
+    // (see runtime_gate_toggles_not_durable.md).
     let (store, base_blob, expected) = match load_active_config_doc(services).await {
         Ok(t) => t,
         Err(resp) => return resp,
     };
-    let new_blob = match patch_rate_limit(&base_blob, new_cfg.limit, new_cfg.window.as_secs()) {
+    let new_blob = match patch_rate_limit(
+        &base_blob,
+        new_cfg.enabled,
+        new_cfg.limit,
+        new_cfg.window.as_secs(),
+    ) {
         Ok(b) => b,
         Err(e) => {
             return mutation_error_response(
@@ -6486,12 +6494,19 @@ fn patch_canary_paths(base: &str, paths: &[String]) -> Result<String, String> {
 }
 
 /// Patch the per-IP rate-limit. The live limiter is built by
-/// `derive_ip_rate_cfg`, which selects the `rate_limit.buckets` entry with
-/// `scope: global, key: ip`; so we update that bucket's `limit` + `window`
+/// `derive_ip_rate_cfg`, which reads the feature-level `rate_limit.enabled`
+/// flag and selects the `rate_limit.buckets` entry with `scope: global,
+/// key: ip`; so we write `enabled` and update that bucket's `limit` + `window`
 /// in place, appending a `global-ip` sliding-window bucket when none exists.
-fn patch_rate_limit(base: &str, limit: u32, window_secs: u64) -> Result<String, String> {
+fn patch_rate_limit(
+    base: &str,
+    enabled: bool,
+    limit: u32,
+    window_secs: u64,
+) -> Result<String, String> {
     let mut root = yaml_root(base)?;
     let rl = yaml_submap(&mut root, "rate_limit")?;
+    rl.insert(yaml_str("enabled"), serde_yaml::Value::Bool(enabled));
     let buckets = match rl
         .entry(yaml_str("buckets"))
         .or_insert_with(|| serde_yaml::Value::Sequence(Vec::new()))
@@ -6629,8 +6644,9 @@ mod gate_toggle_patch_tests {
         let base = format!(
             "{BASE}rate_limit:\n  buckets:\n    - {{ id: global-ip, scope: global, key: ip, algo: sliding_window, limit: 1000, window: \"1m\" }}\n"
         );
-        let out = patch_rate_limit(&base, 250, 30).unwrap();
+        let out = patch_rate_limit(&base, true, 250, 30).unwrap();
         let parsed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(parsed["rate_limit"]["enabled"].as_bool(), Some(true));
         let b = &parsed["rate_limit"]["buckets"][0];
         assert_eq!(b["limit"].as_u64(), Some(250));
         assert_eq!(b["window"].as_str(), Some("30s"));
@@ -6639,7 +6655,7 @@ mod gate_toggle_patch_tests {
 
     #[test]
     fn rate_limit_patch_appends_bucket_when_absent() {
-        let out = patch_rate_limit(BASE, 500, 60).unwrap();
+        let out = patch_rate_limit(BASE, true, 500, 60).unwrap();
         let parsed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
         let buckets = parsed["rate_limit"]["buckets"].as_sequence().unwrap();
         assert_eq!(buckets.len(), 1);
@@ -6647,6 +6663,20 @@ mod gate_toggle_patch_tests {
         assert_eq!(buckets[0]["key"].as_str(), Some("ip"));
         assert_eq!(buckets[0]["limit"].as_u64(), Some(500));
         assert_loads(&out);
+    }
+
+    #[test]
+    fn rate_limit_patch_writes_disabled_flag_and_round_trips() {
+        // BUG/feature 2026-06-22 — the enable toggle must persist into the
+        // config doc so it survives restart, and `derive_ip_rate_cfg` must read
+        // it back as disabled.
+        let out = patch_rate_limit(BASE, false, 500, 60).unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(parsed["rate_limit"]["enabled"].as_bool(), Some(false));
+        assert_loads(&out);
+        let cfg = aegis_core::load_config_str(&out).unwrap();
+        let derived = crate::config_source::reload::derive_ip_rate_cfg(&cfg);
+        assert!(!derived.enabled, "patched disable must derive enabled=false");
     }
 
     #[test]

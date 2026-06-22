@@ -246,6 +246,8 @@ pub fn render_get(runtime: Option<&Arc<DdosRuntime>>, effective_mode: &str) -> S
 ///   `block_ttl_s` seconds.
 #[derive(Debug, Serialize)]
 pub struct RateLimitView {
+    /// Operator enable toggle — `false` skips the per-IP gate entirely.
+    pub enabled: bool,
     /// Configured limit (max requests within the window).
     pub limit: u32,
     /// Configured window in seconds.
@@ -254,6 +256,12 @@ pub struct RateLimitView {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RateLimitPutBody {
+    /// 2026-06-22 — DDoS-style enable toggle. `#[serde(default = "default_true")]`
+    /// so older dashboard clients that PUT only `{ limit, window_seconds }`
+    /// keep the gate enabled instead of tripping a missing-field 400 / silently
+    /// disabling it.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     pub limit: u32,
     pub window_seconds: u64,
 }
@@ -273,6 +281,7 @@ impl RateLimitPutBody {
         Ok(IpRateLimitConfig {
             limit: self.limit,
             window: std::time::Duration::from_secs(self.window_seconds),
+            enabled: self.enabled,
         })
     }
 }
@@ -280,6 +289,7 @@ impl RateLimitPutBody {
 pub fn render_get_rate_limit(limiter: &Arc<IpRateLimiter>) -> String {
     let cfg = limiter.config_snapshot();
     let view = RateLimitView {
+        enabled: cfg.enabled,
         limit: cfg.limit,
         window_seconds: cfg.window.as_secs(),
     };
@@ -373,6 +383,38 @@ pub fn render_get_strikes(risk: &RiskTracker) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rate_limit_put_body_defaults_enabled_true_when_omitted() {
+        // Older dashboard clients PUT only `{ limit, window_seconds }`. The
+        // serde default keeps the gate enabled rather than disabling it.
+        let body: RateLimitPutBody =
+            serde_json::from_str(r#"{ "limit": 500, "window_seconds": 10 }"#).unwrap();
+        assert!(body.enabled);
+        let cfg = body.validate().unwrap();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.limit, 500);
+    }
+
+    #[test]
+    fn rate_limit_put_body_carries_explicit_disable() {
+        let body: RateLimitPutBody =
+            serde_json::from_str(r#"{ "enabled": false, "limit": 500, "window_seconds": 10 }"#)
+                .unwrap();
+        assert!(!body.enabled);
+        assert!(!body.validate().unwrap().enabled);
+    }
+
+    #[test]
+    fn rate_limit_put_body_still_validates_limit_and_window() {
+        let errs = serde_json::from_str::<RateLimitPutBody>(
+            r#"{ "enabled": true, "limit": 0, "window_seconds": 0 }"#,
+        )
+        .unwrap()
+        .validate()
+        .unwrap_err();
+        assert_eq!(errs.len(), 2);
+    }
 
     #[test]
     fn render_returns_disabled_shape_when_runtime_absent() {
@@ -564,14 +606,14 @@ mod tests {
 
     #[test]
     fn rate_limit_put_body_validates_bounds() {
-        let valid = RateLimitPutBody { limit: 100, window_seconds: 60 };
+        let valid = RateLimitPutBody { enabled: true, limit: 100, window_seconds: 60 };
         assert!(valid.validate().is_ok());
 
-        let zero = RateLimitPutBody { limit: 0, window_seconds: 60 };
+        let zero = RateLimitPutBody { enabled: true, limit: 0, window_seconds: 60 };
         let errs = zero.validate().unwrap_err();
         assert!(errs.iter().any(|e| e.contains("limit")));
 
-        let zero_w = RateLimitPutBody { limit: 100, window_seconds: 0 };
+        let zero_w = RateLimitPutBody { enabled: true, limit: 100, window_seconds: 0 };
         let errs = zero_w.validate().unwrap_err();
         assert!(errs.iter().any(|e| e.contains("window_seconds")));
     }

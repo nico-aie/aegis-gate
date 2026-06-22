@@ -222,6 +222,47 @@ pub struct AccessListEntry {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Trust granted by a matched WHITELIST entry, derived from its
+/// `bypass` field.
+///
+/// 2026-06-22 (BUG-whitelist-risk-gate) — the data plane consults this to
+/// decide how far a whitelist hit reaches. Previously a whitelist match only
+/// skipped the detector chain; the cumulative IP-risk gate ran regardless, so
+/// an IP that had already accumulated risk kept getting `risk-score` 403s even
+/// after being whitelisted (the operator's "trust this source" never took).
+/// `Full` trust now also exempts the IP from that gate, which is what makes the
+/// previously-inert `bypass` column actually change runtime behavior.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WhitelistTrust {
+    /// Empty `bypass` (the dashboard's default "Add to whitelist") or an
+    /// explicit `bypass: ["all"]`. Trust the source unconditionally: skip the
+    /// detector chain AND exempt it from the cumulative IP-risk gate.
+    Full,
+    /// Specific detector classes (e.g. `["sqli", "xss"]`). Suppress those
+    /// detectors, but the source is only partially trusted — the cumulative
+    /// IP-risk gate still enforces on accumulated reputation.
+    Detectors(Vec<String>),
+}
+
+impl WhitelistTrust {
+    /// Classify a whitelist entry's `bypass` list. Empty, or containing `all`
+    /// (case-insensitive), → [`WhitelistTrust::Full`]; any other non-empty list
+    /// → [`WhitelistTrust::Detectors`].
+    pub fn from_bypass(bypass: &[String]) -> Self {
+        if bypass.is_empty() || bypass.iter().any(|b| b.eq_ignore_ascii_case("all")) {
+            WhitelistTrust::Full
+        } else {
+            WhitelistTrust::Detectors(bypass.to_vec())
+        }
+    }
+
+    /// Whether this trust level exempts the IP from the cumulative IP-risk gate.
+    /// Only [`WhitelistTrust::Full`] does.
+    pub fn is_full(&self) -> bool {
+        matches!(self, WhitelistTrust::Full)
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ListResponse {
     pub entries: Vec<AccessListEntry>,
@@ -390,6 +431,37 @@ impl AccessListStore {
         peer: std::net::IpAddr,
         country_lookup: Option<&dyn AccessListCountryLookup>,
     ) -> Option<String> {
+        self.first_match(peer, country_lookup, |entry| entry.id.clone())
+    }
+
+    /// WHITELIST-only sibling of [`Self::matches`]: returns the matched entry's
+    /// [`WhitelistTrust`] classification instead of just its id, so the data
+    /// plane can decide whether the hit also exempts the IP from the cumulative
+    /// IP-risk gate (full trust) or only suppresses detectors (partial trust).
+    ///
+    /// Records the hit identically to `matches` — use one OR the other per
+    /// request, never both, or the entry's hit counter double-counts.
+    pub fn match_whitelist_trust(
+        &self,
+        peer: std::net::IpAddr,
+        country_lookup: Option<&dyn AccessListCountryLookup>,
+    ) -> Option<WhitelistTrust> {
+        self.first_match(peer, country_lookup, |entry| {
+            WhitelistTrust::from_bypass(&entry.bypass)
+        })
+    }
+
+    /// Shared hot-path match loop. Returns `project(entry)` for the FIRST
+    /// matching, non-expired entry — recording its hit before returning — or
+    /// `None` when nothing matched. Both [`Self::matches`] and
+    /// [`Self::match_whitelist_trust`] funnel through here so the kind/expiry
+    /// matching and hit-recording logic live in exactly one place.
+    fn first_match<R>(
+        &self,
+        peer: std::net::IpAddr,
+        country_lookup: Option<&dyn AccessListCountryLookup>,
+        project: impl Fn(&AccessListEntry) -> R,
+    ) -> Option<R> {
         let s = self.inner.lock().expect("access list poisoned");
         let now = chrono::Utc::now();
         // Cache the country lookup so we only resolve once per
@@ -424,11 +496,10 @@ impl AccessListStore {
                 _ => false,
             };
             if matched {
-                let id = entry.id.clone();
-                // P4 — record the hit inside `matches()` so callers
+                // P4 — record the hit inside the matcher so callers
                 // can't forget to increment.
-                self.hits.record(&id);
-                return Some(id);
+                self.hits.record(&entry.id);
+                return Some(project(entry));
             }
         }
         None
@@ -661,6 +732,84 @@ mod tests {
         e.expires_at = Some(chrono::Utc::now() - chrono::Duration::seconds(1));
         s.put(e).unwrap();
         assert_eq!(s.matches("1.1.1.1".parse().unwrap(), None), None);
+    }
+
+    // ---- BUG-whitelist-risk-gate (2026-06-22): WhitelistTrust ----
+
+    #[test]
+    fn whitelist_trust_full_for_empty_bypass() {
+        // The dashboard's default "Add to whitelist" sends `bypass: []`.
+        // That means "trust this source unconditionally" → Full.
+        assert_eq!(WhitelistTrust::from_bypass(&[]), WhitelistTrust::Full);
+        assert!(WhitelistTrust::from_bypass(&[]).is_full());
+    }
+
+    #[test]
+    fn whitelist_trust_full_for_all_keyword_case_insensitive() {
+        assert_eq!(
+            WhitelistTrust::from_bypass(&["all".to_string()]),
+            WhitelistTrust::Full,
+        );
+        assert_eq!(
+            WhitelistTrust::from_bypass(&["ALL".to_string()]),
+            WhitelistTrust::Full,
+        );
+        // `all` anywhere in the list wins (full trust dominates).
+        assert_eq!(
+            WhitelistTrust::from_bypass(&["sqli".to_string(), "All".to_string()]),
+            WhitelistTrust::Full,
+        );
+    }
+
+    #[test]
+    fn whitelist_trust_detectors_for_specific_list() {
+        let t = WhitelistTrust::from_bypass(&["sqli".to_string(), "xss".to_string()]);
+        assert_eq!(
+            t,
+            WhitelistTrust::Detectors(vec!["sqli".to_string(), "xss".to_string()]),
+        );
+        // Partial trust does NOT exempt the cumulative IP-risk gate.
+        assert!(!t.is_full());
+    }
+
+    #[test]
+    fn match_whitelist_trust_classifies_matched_entry() {
+        let s = AccessListStore::new();
+        // Full-trust entry (empty bypass) — the user's exact case.
+        s.put(entry("wl", "ip", "192.177.62.55")).unwrap();
+        let trust = s.match_whitelist_trust("192.177.62.55".parse().unwrap(), None);
+        assert_eq!(trust, Some(WhitelistTrust::Full));
+    }
+
+    #[test]
+    fn match_whitelist_trust_returns_detectors_for_partial_entry() {
+        let s = AccessListStore::new();
+        let mut e = entry("wl", "ip", "203.0.113.7");
+        e.bypass = vec!["sqli".to_string()];
+        s.put(e).unwrap();
+        let trust = s.match_whitelist_trust("203.0.113.7".parse().unwrap(), None);
+        assert_eq!(trust, Some(WhitelistTrust::Detectors(vec!["sqli".to_string()])));
+    }
+
+    #[test]
+    fn match_whitelist_trust_returns_none_on_miss() {
+        let s = AccessListStore::new();
+        s.put(entry("wl", "ip", "203.0.113.7")).unwrap();
+        assert_eq!(
+            s.match_whitelist_trust("203.0.113.8".parse().unwrap(), None),
+            None,
+        );
+    }
+
+    #[test]
+    fn match_whitelist_trust_records_hit_like_matches() {
+        // Parity with `matches`: a hit increments the entry's counter so the
+        // dashboard's "HITS · 1H" column reflects whitelist traffic.
+        let s = AccessListStore::new();
+        s.put(entry("wl", "ip", "203.0.113.7")).unwrap();
+        let _ = s.match_whitelist_trust("203.0.113.7".parse().unwrap(), None);
+        let counts = s.hit_counts(3600);
+        assert_eq!(counts.get("wl").copied(), Some(1));
     }
 
     #[test]

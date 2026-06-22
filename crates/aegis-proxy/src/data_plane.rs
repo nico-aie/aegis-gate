@@ -487,12 +487,27 @@ pub(crate) async fn handle_data_request_inner(
             return (resp, block_tag);
         }
     }
-    let on_whitelist = upstream_ctx
+    // 2026-06-22 (BUG-whitelist-risk-gate) — classify the whitelist hit so a
+    // FULL-trust entry (empty `bypass`, or `bypass: ["all"]`) also exempts the
+    // IP from the cumulative IP-risk gate below, not just the detector chain.
+    // Pre-fix, an operator who whitelisted an IP that had already accumulated
+    // risk kept seeing `risk-score` 403s because that gate ran regardless of
+    // the whitelist. A per-detector entry (`bypass: ["sqli","xss"]`) stays
+    // PARTIAL trust: detectors are skipped (as before) but the cumulative gate
+    // still enforces on accumulated reputation.
+    let whitelist_trust = upstream_ctx
         .whitelist
-        .matches(peer_ip, lookup_ref)
-        .is_some();
+        .match_whitelist_trust(peer_ip, lookup_ref);
+    let on_whitelist = whitelist_trust.is_some();
+    let whitelist_full_trust = whitelist_trust
+        .as_ref()
+        .is_some_and(aegis_control::api::blacklist::WhitelistTrust::is_full);
     if on_whitelist {
-        tracing::debug!(peer = %peer_ip, "access list: whitelist hit, skipping detectors");
+        tracing::debug!(
+            peer = %peer_ip,
+            full_trust = whitelist_full_trust,
+            "access list: whitelist hit, skipping detectors",
+        );
     }
 
     // P6 short-circuit: lifetime-strike block runs before any
@@ -751,9 +766,17 @@ pub(crate) async fn handle_data_request_inner(
     // NAT'd IP with different (JA4, UA, session-cookie) shapes
     // get independent buckets, so legit user B isn't penalised
     // for attacker A's flood when they share an egress proxy.
+    // 2026-06-22 — operator enable toggle (DDoS-style). When the limiter is
+    // disabled we substitute an always-allow decision instead of calling
+    // `consume_*`, so a disabled gate tracks no buckets and never 429s. This is
+    // a separate axis from the `enforce` / `log_only` interop mode checked
+    // below (a disabled gate simply never reaches that mode check).
     let rate_t0 = std::time::Instant::now();
-    let rate_decision = ip_rate_limiter
-        .consume_with_key(build_risk_key(peer_ip, req.headers(), tls_fingerprint));
+    let rate_decision = if ip_rate_limiter.config().enabled {
+        ip_rate_limiter.consume_with_key(build_risk_key(peer_ip, req.headers(), tls_fingerprint))
+    } else {
+        aegis_security::rate_limit::IpRateDecision::bypassed()
+    };
     request_stage_hist.record(stages::RATE_LIMIT, rate_t0.elapsed());
     if !rate_decision.allowed {
         // 2026-05-18 (QC TLS-wiring batch — Phase E activation):
@@ -1402,7 +1425,17 @@ pub(crate) async fn handle_data_request_inner(
     // surprised operators by effectively blocking at challenge_at — e.g.
     // a cumulative 60 blocking when block_at is 70.) A tier that wants a
     // hard block earlier should lower its `cumulative_block_at` instead.
-    let level = {
+    let level = if whitelist_full_trust {
+        // BUG-whitelist-risk-gate — a full-trust whitelist source is exempt
+        // from the cumulative IP-risk gate. Skip the lookup entirely and treat
+        // the level as Allow so reputation it accumulated BEFORE being
+        // whitelisted (or carried on a sibling IP that shares the composite
+        // bucket key) can no longer produce a `risk-score` block / challenge.
+        // The decay path above (`record_clean_with_key`) still drains the
+        // bucket over time, and the detector chain was already skipped, so a
+        // whitelisted source records no new malicious score.
+        aegis_security::risk::RiskLevel::Allow
+    } else {
         let lvl = risk.level_with_for_key(
             &build_risk_key(peer_ip, &parts.headers, tls_fingerprint),
             challenge_at,

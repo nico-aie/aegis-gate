@@ -76,6 +76,22 @@ pub struct RateDecision {
     pub retry_after_seconds: u32,
 }
 
+impl RateDecision {
+    /// Synthetic always-allow decision used when the limiter is disabled by
+    /// the operator enable toggle. The hot path substitutes this instead of
+    /// calling `consume_*`, so a disabled limiter consumes no bucket slot and
+    /// never produces a `429`. Counts are zeroed (the `!allowed` branch that
+    /// reads them is skipped).
+    pub fn bypassed() -> Self {
+        Self {
+            allowed: true,
+            count: 0,
+            limit: 0,
+            retry_after_seconds: 0,
+        }
+    }
+}
+
 /// Configuration for the per-IP limiter. Mirrors the
 /// `RateCap` shape used by the YAML schema so config →
 /// runtime mapping is trivial.
@@ -83,6 +99,12 @@ pub struct RateDecision {
 pub struct IpRateLimitConfig {
     pub limit: u32,
     pub window: Duration,
+    /// 2026-06-22 — operator enable toggle. When `false` the data-plane gate
+    /// skips bucket tracking and the `429` entirely (DDoS-style on/off,
+    /// orthogonal to the `enforce` / `log_only` interop mode). Part of the
+    /// `Eq` identity so a hot-reload that flips only `enabled` still counts as
+    /// a change and re-applies.
+    pub enabled: bool,
 }
 
 impl Default for IpRateLimitConfig {
@@ -90,6 +112,7 @@ impl Default for IpRateLimitConfig {
         Self {
             limit: DEFAULT_LIMIT,
             window: DEFAULT_WINDOW,
+            enabled: true,
         }
     }
 }
@@ -307,6 +330,7 @@ mod tests {
         IpRateLimiter::new(IpRateLimitConfig {
             limit,
             window: Duration::from_secs(window_secs),
+            enabled: true,
         })
     }
 
@@ -444,6 +468,30 @@ mod tests {
         let l = limiter(7, 30);
         assert_eq!(l.config().limit, 7);
         assert_eq!(l.config().window, Duration::from_secs(30));
+        // Default + helper limiters are enabled.
+        assert!(l.config().enabled);
+    }
+
+    #[test]
+    fn bypassed_decision_always_allows() {
+        // The data plane substitutes this when the operator disables the gate;
+        // it must read as allowed so the `!allowed` 429 branch is skipped.
+        let d = RateDecision::bypassed();
+        assert!(d.allowed);
+        assert_eq!(d.count, 0);
+    }
+
+    #[test]
+    fn enabled_flag_is_part_of_config_identity() {
+        // A reload that flips only `enabled` must compare unequal so the
+        // hot-reload helper re-applies instead of short-circuiting.
+        let on = IpRateLimitConfig {
+            limit: 100,
+            window: Duration::from_secs(60),
+            enabled: true,
+        };
+        let off = IpRateLimitConfig { enabled: false, ..on };
+        assert_ne!(on, off);
     }
 
     #[test]
@@ -478,6 +526,7 @@ mod tests {
         l.set_config(IpRateLimitConfig {
             limit: 10,
             window: Duration::from_secs(60),
+            enabled: true,
         });
 
         // 4th-10th now allowed (count_before = 3, limit = 10).
@@ -509,6 +558,7 @@ mod tests {
         l.set_config(IpRateLimitConfig {
             limit: 10,
             window: Duration::from_secs(60),
+            enabled: true,
         });
         assert_eq!(l.tracked(), tracked_before);
         assert_eq!(l.config().limit, 10);
@@ -526,6 +576,7 @@ mod tests {
         l.set_config(IpRateLimitConfig {
             limit: 30,
             window: Duration::from_secs(60),
+            enabled: true,
         });
         let d = l.consume_at(ip("10.0.0.99"), now);
         assert!(!d.allowed);
