@@ -2487,6 +2487,13 @@ pub(crate) fn build_interop_runtime(
                 // to Enforce). §2.5 requires hardcoded features appear.
                 "cookie_injection".into(),
                 "jwt_inspection".into(),
+                // Tier-1A — GraphQL query guard. Fires AND blocks (depth/
+                // complexity/introspection caps) and is mapped in
+                // `rule_to_feature` ("graphql"→rules_engine/graphql), so it
+                // must appear here for `capabilities` to surface it and for
+                // `set_profile {scope:policies, feature:rules_engine}` to
+                // flip it enforce↔log_only.
+                "graphql".into(),
             ],
         },
     );

@@ -26,6 +26,7 @@ upstreams:   { … }   # backend pools
 detectors:   { … }   # OWASP + Phase F detector toggles + per-tier mask
 ai:          { … }   # ONNX classifier
 bots:        { … }   # bot classifier gate (UA+ASN; observational; default off)
+graphql:     { … }   # GraphQL query guard — depth/complexity/introspection caps (default off)
 risk:        { … }   # cumulative-score + strike thresholds
 load_mode:   { … }   # auto-degradation triggers
 load_shedder:{ … }   # adaptive concurrency
@@ -55,7 +56,7 @@ are three tiers:
 
 | Tier | Fields | How |
 |------|--------|-----|
-| **Live on file-save** (watcher re-derives + atomic-swaps) | `detectors` (class enables), `routes`, `risk.thresholds` (incl. `enabled`), `rate_limit.buckets`, `tls.certificates`, `zero_trust.downstream` | edit `waf.yaml` → save → effect. Per-IP risk/rate state is preserved across the swap. Bad routes/certs keep the live value + emit `*_reload_failed`. |
+| **Live on file-save** (watcher re-derives + atomic-swaps) | `detectors` (class enables), `routes`, `risk.thresholds` (incl. `enabled`), `rate_limit.buckets`, `tls.certificates`, `zero_trust.downstream`, `graphql` (enable + caps) | edit `waf.yaml` → save → effect. Per-IP risk/rate state is preserved across the swap. Bad routes/certs keep the live value + emit `*_reload_failed`. |
 | **Live via UI / API only** (runtime atomic; file-save updates the snapshot but **not** live behaviour) | `bots.enabled`, `ddos.*` (gate toggles) | flip via Traffic Gates → `PUT /api/gates/bots` \| `/api/gates/ddos`. Editing the file changes what `/api/config` reports but does **not** re-arm the gate until restart. |
 | **Restart-only** (bound / initialised at boot) | `listeners.*` binds, `admin.bind`, `node`, `runtime` (workers / CPU pin), `state.backend` + Redis URLs, `interop.*` | stop + re-run the binary. |
 
@@ -474,6 +475,48 @@ Notes:
 - Hot-flippable via `PUT /api/gates/bots` (audit-mutated) or the
   Traffic Gates → "6. Bot classifier" toggle. See
   [`../docs/security/bot-management.md`](../docs/security/bot-management.md).
+
+---
+
+## `graphql`
+
+Tier-1A GraphQL query guard
+(`aegis-security/src/api_security/graphql.rs`, wired in
+`aegis-proxy/src/graphql_guard.rs`). On a `POST` to one of `paths`, the
+JSON `query` is extracted and checked against the depth / node-count /
+complexity caps and the introspection policy **before** the request is
+forwarded upstream. A violation is a hard `403` (audited as a `graphql`
+block); `set_profile` / a route in `log_only` downgrades it to a logged
+would-be block that still forwards.
+
+```yaml
+graphql:
+  enabled: false               # default; opt-in
+  paths: ["/graphql"]          # POST paths treated as GraphQL endpoints
+  max_depth: 10                # max `{`/`}` nesting depth
+  max_node_count: 500          # max field-node count
+  max_complexity: 1000         # max depth × node_count
+  allow_introspection: false   # reject `__schema` / `__type` probes
+```
+
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | When off, the guard is skipped entirely (no body parse). Omitting the block = `false`. |
+| `paths` | `["/graphql"]` | Exact request paths inspected. A `POST` to any of them is a candidate. Boot fails if `enabled: true` and `paths` is empty. |
+| `max_depth` | `10` | Query nesting depth ceiling. |
+| `max_node_count` | `500` | Field-node count ceiling. |
+| `max_complexity` | `1000` | `max_depth × node_count` ceiling. |
+| `allow_introspection` | `false` | `false` rejects introspection (`__schema` / `__type`) — the production-safe posture. |
+
+Notes:
+- **Fail-open by design** — only a request that is positively a parseable
+  GraphQL query on a configured path can be blocked. Non-`POST`, a path
+  that isn't in `paths`, a whitelisted / operator-`allow` source, or a
+  body that isn't `{"query": "..."}` all pass through untouched.
+- **Caps-only** — the `persisted_queries` allowlist and token/HMAC API
+  auth are out of scope here (the latter is a gateway concern, not WAF).
+- Hot-reloads fleet-wide via the config plane (edit `waf.yaml` → publish →
+  converge), same as detectors / routes / tiers.
 
 ---
 

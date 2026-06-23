@@ -783,6 +783,24 @@ pub fn apply_cfg_change_to_cache(
     GateReloadOutcome::Applied
 }
 
+/// Tier-1A — re-derive the GraphQL query guard from `new_cfg.graphql` and
+/// atomic-swap it into the live `ProxyContext.graphql_guard`. A converged
+/// doc that flipped `graphql.enabled` or tuned a limit then applies on
+/// every node, not just the one that handled the PUT — the same
+/// node-local-until-restart trap the structural guard test prevents.
+pub fn apply_cfg_change_to_graphql(
+    new_cfg: &WafConfig,
+    ctx: Option<&Arc<ProxyContext>>,
+) -> GateReloadOutcome {
+    let Some(ctx) = ctx else {
+        return GateReloadOutcome::NoHandle;
+    };
+    ctx.graphql_guard.store(Arc::new(
+        crate::graphql_guard::GraphqlGuard::from_config(&new_cfg.graphql),
+    ));
+    GateReloadOutcome::Applied
+}
+
 /// Outcome of [`apply_cfg_change_to_client_auth`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientAuthReloadOutcome {
@@ -1739,6 +1757,75 @@ state:
             .resolve("any", "/api/v2", &http::Method::GET)
             .unwrap();
         assert_eq!(r.route_id, "v2");
+    }
+
+    // ---- apply_cfg_change_to_graphql ----
+
+    fn yaml_with_graphql(enabled: bool, max_depth: u32) -> String {
+        format!(
+            r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+graphql:
+  enabled: {enabled}
+  max_depth: {max_depth}
+"#
+        )
+    }
+
+    #[test]
+    fn graphql_reload_no_ctx_returns_no_handle() {
+        let cfg = parse(&yaml_with_graphql(true, 10));
+        assert_eq!(
+            apply_cfg_change_to_graphql(&cfg, None),
+            GateReloadOutcome::NoHandle,
+        );
+    }
+
+    #[test]
+    fn graphql_reload_swaps_guard_atomically() {
+        use crate::graphql_guard::GraphqlGuardOutcome;
+        // A 13-deep query (over the default/cap of 10).
+        let deep = serde_json::json!({
+            "query": "{ a { b { c { d { e { f { g { h { i { j { k { l { m } } } } } } } } } } } } }"
+        })
+        .to_string();
+
+        // Boot with the guard OFF — a deep query is skipped (forwarded).
+        let ctx = boot_ctx(&yaml_with_graphql(false, 10));
+        assert_eq!(
+            ctx.graphql_guard
+                .load()
+                .check(&http::Method::POST, "/graphql", deep.as_bytes()),
+            GraphqlGuardOutcome::Skipped,
+        );
+
+        // Hot-reload to ON with a depth cap of 10 — now the same query is
+        // rejected on the live (un-rebuilt) context, proving the atomic swap.
+        let new_cfg = parse(&yaml_with_graphql(true, 10));
+        assert_eq!(
+            apply_cfg_change_to_graphql(&new_cfg, Some(&ctx)),
+            GateReloadOutcome::Applied,
+        );
+        assert!(matches!(
+            ctx.graphql_guard
+                .load()
+                .check(&http::Method::POST, "/graphql", deep.as_bytes()),
+            GraphqlGuardOutcome::Rejected { .. },
+        ));
     }
 
     // ---- apply_cfg_change_to_rate_limit ----

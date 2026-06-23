@@ -732,6 +732,10 @@ mod tests {
                     "open_redirect".into(),
                     "jwt_inspection".into(),
                     "cookie_injection".into(),
+                    // Tier-1A — GraphQL query guard (depth/complexity/
+                    // introspection caps). Toggleable so a global Dry-Run or
+                    // a targeted set_profile can move it enforce↔log_only.
+                    "graphql".into(),
                     // 2026-05-20 committee interop fix — Phase-F
                     // detectors. Keep in sync with build_interop_runtime.
                     "canary".into(),

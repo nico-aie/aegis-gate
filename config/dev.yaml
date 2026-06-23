@@ -245,6 +245,21 @@ bots:
   enabled: false
 
 # ---------------------------------------------------------------------------
+# GraphQL query guard (Tier-1A) — depth / node-count / complexity /
+# introspection caps on POSTs to the configured GraphQL path(s). Off by
+# default; opt-in. A cap violation is a hard 403 (or a logged would-be
+# block under set_profile/route `log_only`). A body that isn't a parseable
+# GraphQL query passes through untouched (fail-open).
+# ---------------------------------------------------------------------------
+graphql:
+  enabled: false
+  paths: ["/graphql"]
+  max_depth: 10
+  max_node_count: 500
+  max_complexity: 1000
+  allow_introspection: false
+
+# ---------------------------------------------------------------------------
 # Risk scoring — tuned for the P6 k6 scenario (`risk-strikes.js`)
 # ---------------------------------------------------------------------------
 risk:
