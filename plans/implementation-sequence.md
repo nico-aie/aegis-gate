@@ -17,6 +17,27 @@ Update the Status column (and flip to ✅ with a commit / date) as work lands.
 
 ---
 
+## ⏩ Resume here (as of 2026-06-23)
+
+**Wave 0 — ✅ complete.** **Wave 1 — nearly complete:** config H1·P0 (#74),
+config H1·P1+P2 dual-authority fix (#77), PREREQ-B LB fail-open (#78) all shipped.
+
+**Next up — one of:**
+1. **Tier-1A (GraphQL caps only)** — finish Wave 1. Wire the existing
+   `api_security/graphql.rs` depth/complexity/introspection guard onto the data
+   path. **Scope note:** the token/HMAC half of Tier-1A is *deprioritized* by the
+   WAF-vs-gateway boundary call ([[project_waf_vs_gateway_boundary]]) — do the
+   GraphQL half only.
+2. **Wave 2** — AI/LLM firewall (Tier 2, the splashy differentiator), or
+   `passive-upstream-health` / `zone-aware-load-balancing` (both unblocked now
+   that PREREQ-B shipped).
+
+**Config arc:** the near-term correctness work (H1) is done; the long-term
+structural split (H2a `BootstrapConfig`/`DynamicConfig`) and etcd (H2b) sit in
+Wave 3 / Wave 4 — not started.
+
+---
+
 ## 1. The two streams
 
 Work in `plans/` splits into two streams that proceed in parallel, each with its
