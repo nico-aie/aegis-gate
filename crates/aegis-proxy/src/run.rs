@@ -1408,6 +1408,18 @@ pub async fn run(
         let config_marker_path = config_yaml_path
             .as_ref()
             .map(|p| p.with_file_name(".aegis_last_applied_config.json"));
+        // FEAT-config-boot-seed-doc-v0 — eagerly publish the boot config as
+        // `config:waf:doc` v1 (genesis only) BEFORE the watcher spawns, so the
+        // versioned config plane is populated from the first moment instead of
+        // lazily on the first mutation. Genesis-gated on the absent marker so a
+        // cold boot after a store wipe is left to the revert detection below,
+        // not masked. Borrow now; `store` moves into `spawn_watcher` next.
+        let _ = crate::config_source::redis_source::seed_boot_config_if_genesis(
+            &store,
+            config_yaml_path.as_deref(),
+            config_marker_path.as_ref(),
+        )
+        .await;
         std::mem::drop(crate::config_source::redis_source::spawn_watcher(
             store,
             node_id,
