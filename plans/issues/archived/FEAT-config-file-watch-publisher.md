@@ -1,9 +1,9 @@
 # FEAT — file watcher becomes a publisher into `config:waf:doc` (end dual authority)
 
 - **Type:** FEAT (config plane / hot reload)
-- **Status:** 🟢 Implemented (TDD) on `feat/config-file-watch-publisher` — 2026-06-23.
-- **Wave:** Wave 1 of [`../implementation-sequence.md`](../implementation-sequence.md);
-  Horizon 1 · **P1+P2** of [`../future/config-single-source-of-truth.md`](../future/config-single-source-of-truth.md).
+- **Status:** 🟢 Shipped — PR #77, merged to `develop` 2026-06-23.
+- **Wave:** Wave 1 of [`../../implementation-sequence.md`](../../implementation-sequence.md);
+  Horizon 1 · **P1+P2** of [`../../future/config-single-source-of-truth.md`](../../future/config-single-source-of-truth.md).
 - **Effort:** M.
 - **Area:** `crates/aegis-core/src/config.rs` (`ConfigPlaneConfig` + `FileWatchMode`);
   `crates/aegis-proxy/src/supervisor.rs` (watcher rewrite); `crates/aegis-proxy/src/run.rs` (spawn wiring).
