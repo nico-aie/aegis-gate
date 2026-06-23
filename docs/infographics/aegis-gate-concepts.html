@@ -1219,6 +1219,125 @@
       <figcaption>Source: docs/security/zero-trust-mtls.md — "The two directions"</figcaption>
     </div>
 
+    <h3 style="margin:30px 0 6px;font-size:19px">The handshake — step by step, both directions</h3>
+    <p class="lead" style="margin-bottom:18px">mTLS adds a second certificate exchange to the normal TLS handshake: the side acting as <i>server</i> sends a <code style="font-family:var(--mono)">CertificateRequest</code>, and the side acting as <i>client</i> answers with its own cert plus a <code style="font-family:var(--mono)">CertificateVerify</code> (a signature proving it holds the private key).</p>
+
+    <div class="grid2">
+      <!-- DOWNSTREAM handshake -->
+      <div class="card">
+        <div class="svgwrap">
+        <svg viewBox="0 0 500 440" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+          <defs>
+            <marker id="d_r" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#36cfd1"/></marker>
+            <marker id="d_l" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#9aa7bd"/></marker>
+          </defs>
+          <text x="24" y="26" fill="#36cfd1" font-size="14" font-weight="800">① Downstream — Client → WAF</text>
+          <text x="24" y="44" fill="#67748c" font-size="11">WAF is the SERVER and validates the client's cert</text>
+
+          <!-- actors -->
+          <rect x="60" y="56" width="120" height="36" rx="9" fill="#151c2c" stroke="#26304a"/>
+          <text x="120" y="79" text-anchor="middle" fill="#e8edf6" font-size="12" font-weight="700">Client</text>
+          <rect x="320" y="56" width="120" height="36" rx="9" fill="#16122a" stroke="#4a3066"/>
+          <text x="380" y="79" text-anchor="middle" fill="#a779ff" font-size="12" font-weight="700">Aegis-Gate</text>
+          <!-- lifelines -->
+          <line x1="120" y1="92" x2="120" y2="410" stroke="#26304a" stroke-width="1.2" stroke-dasharray="4 4"/>
+          <line x1="380" y1="92" x2="380" y2="410" stroke="#26304a" stroke-width="1.2" stroke-dasharray="4 4"/>
+
+          <!-- 1 -->
+          <circle cx="34" cy="120" r="10" fill="#1c2233" stroke="#36cfd1"/><text x="34" y="124" text-anchor="middle" fill="#36cfd1" font-size="11" font-weight="700">1</text>
+          <text x="250" y="116" text-anchor="middle" fill="#cdd6e6" font-size="11">ClientHello</text>
+          <line x1="120" y1="124" x2="378" y2="124" stroke="#36cfd1" stroke-width="2" marker-end="url(#d_r)"/>
+
+          <!-- 2 -->
+          <circle cx="34" cy="170" r="10" fill="#1c2233" stroke="#a779ff"/><text x="34" y="174" text-anchor="middle" fill="#a779ff" font-size="11" font-weight="700">2</text>
+          <text x="250" y="150" text-anchor="middle" fill="#cdd6e6" font-size="11">ServerHello · WAF server cert</text>
+          <text x="250" y="164" text-anchor="middle" fill="#f5a524" font-size="11" font-weight="700">+ CertificateRequest</text>
+          <line x1="380" y1="174" x2="122" y2="174" stroke="#9aa7bd" stroke-width="2" marker-end="url(#d_l)"/>
+
+          <!-- 3 -->
+          <circle cx="34" cy="216" r="10" fill="#1c2233" stroke="#36cfd1"/><text x="34" y="220" text-anchor="middle" fill="#36cfd1" font-size="11" font-weight="700">3</text>
+          <text x="250" y="206" text-anchor="middle" fill="#cdd6e6" font-size="11">Client cert · CertificateVerify</text>
+          <line x1="120" y1="216" x2="378" y2="216" stroke="#36cfd1" stroke-width="2" marker-end="url(#d_r)"/>
+
+          <!-- 4 verify -->
+          <circle cx="34" cy="266" r="10" fill="#1c2233" stroke="#a779ff"/><text x="34" y="270" text-anchor="middle" fill="#a779ff" font-size="11" font-weight="700">4</text>
+          <rect x="232" y="246" width="208" height="56" rx="9" fill="#160f24" stroke="#4a3066"/>
+          <text x="246" y="266" fill="#a779ff" font-size="11" font-weight="700">WAF verifies client cert</text>
+          <text x="246" y="282" fill="#9aa7bd" font-size="10.5">→ ca_bundle chain</text>
+          <text x="246" y="296" fill="#9aa7bd" font-size="10.5">→ SAN allowlist (if set)</text>
+
+          <!-- 5 complete -->
+          <circle cx="34" cy="340" r="10" fill="#0f1a14" stroke="#36d399"/><text x="34" y="344" text-anchor="middle" fill="#36d399" font-size="11" font-weight="700">5</text>
+          <line x1="120" y1="336" x2="380" y2="336" stroke="#36d399" stroke-width="2"/>
+          <line x1="120" y1="344" x2="380" y2="344" stroke="#36d399" stroke-width="2"/>
+          <text x="250" y="362" text-anchor="middle" fill="#36d399" font-size="11" font-weight="700">✓ encrypted session established</text>
+
+          <text x="24" y="392" fill="#f4525f" font-size="10.5">mode: required → invalid / missing client cert = handshake refused</text>
+          <text x="24" y="408" fill="#67748c" font-size="10.5">disabled = no CertificateRequest · optional = request, allow if absent</text>
+        </svg>
+        </div>
+        <figcaption>Default posture: prod-strict ships <code style="font-family:var(--mono)">downstream.mode: required</code> (engine default is <code style="font-family:var(--mono)">disabled</code>).</figcaption>
+      </div>
+
+      <!-- UPSTREAM handshake -->
+      <div class="card">
+        <div class="svgwrap">
+        <svg viewBox="0 0 500 440" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+          <defs>
+            <marker id="u_r" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#a779ff"/></marker>
+            <marker id="u_l" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#9aa7bd"/></marker>
+          </defs>
+          <text x="24" y="26" fill="#a779ff" font-size="14" font-weight="800">② Upstream — WAF → Backend</text>
+          <text x="24" y="44" fill="#67748c" font-size="11">WAF is the CLIENT and presents the shared fleet cert</text>
+
+          <rect x="60" y="56" width="120" height="36" rx="9" fill="#16122a" stroke="#4a3066"/>
+          <text x="120" y="79" text-anchor="middle" fill="#a779ff" font-size="12" font-weight="700">Aegis-Gate</text>
+          <rect x="320" y="56" width="120" height="36" rx="9" fill="#151c2c" stroke="#26304a"/>
+          <text x="380" y="79" text-anchor="middle" fill="#e8edf6" font-size="12" font-weight="700">Backend</text>
+          <line x1="120" y1="92" x2="120" y2="410" stroke="#26304a" stroke-width="1.2" stroke-dasharray="4 4"/>
+          <line x1="380" y1="92" x2="380" y2="410" stroke="#26304a" stroke-width="1.2" stroke-dasharray="4 4"/>
+
+          <!-- 1 -->
+          <circle cx="34" cy="118" r="10" fill="#1f1830" stroke="#a779ff"/><text x="34" y="122" text-anchor="middle" fill="#a779ff" font-size="11" font-weight="700">1</text>
+          <text x="250" y="114" text-anchor="middle" fill="#cdd6e6" font-size="11">ClientHello</text>
+          <line x1="120" y1="122" x2="378" y2="122" stroke="#a779ff" stroke-width="2" marker-end="url(#u_r)"/>
+
+          <!-- 2 -->
+          <circle cx="34" cy="166" r="10" fill="#1c2233" stroke="#9aa7bd"/><text x="34" y="170" text-anchor="middle" fill="#cdd6e6" font-size="11" font-weight="700">2</text>
+          <text x="250" y="146" text-anchor="middle" fill="#cdd6e6" font-size="11">ServerHello · Server cert</text>
+          <text x="250" y="160" text-anchor="middle" fill="#f5a524" font-size="11" font-weight="700">+ CertificateRequest</text>
+          <line x1="380" y1="170" x2="122" y2="170" stroke="#9aa7bd" stroke-width="2" marker-end="url(#u_l)"/>
+
+          <!-- WAF verifies backend -->
+          <rect x="14" y="184" width="226" height="34" rx="8" fill="#0f1320" stroke="#2a3a66"/>
+          <text x="26" y="205" fill="#4f8cff" font-size="10.5" font-weight="700">WAF verifies backend cert → trust bundle</text>
+
+          <!-- 3 -->
+          <circle cx="34" cy="248" r="10" fill="#1f1830" stroke="#a779ff"/><text x="34" y="252" text-anchor="middle" fill="#a779ff" font-size="11" font-weight="700">3</text>
+          <text x="250" y="238" text-anchor="middle" fill="#cdd6e6" font-size="11">Fleet client cert · CertificateVerify</text>
+          <line x1="120" y1="252" x2="378" y2="252" stroke="#a779ff" stroke-width="2" marker-end="url(#u_r)"/>
+
+          <!-- 4 backend verifies -->
+          <circle cx="34" cy="294" r="10" fill="#1c2233" stroke="#9aa7bd"/><text x="34" y="298" text-anchor="middle" fill="#cdd6e6" font-size="11" font-weight="700">4</text>
+          <rect x="260" y="278" width="180" height="34" rx="8" fill="#11161f" stroke="#26304a"/>
+          <text x="272" y="299" fill="#e8edf6" font-size="10.5" font-weight="700">Backend verifies fleet cert</text>
+
+          <!-- 5 -->
+          <circle cx="34" cy="346" r="10" fill="#0f1a14" stroke="#36d399"/><text x="34" y="350" text-anchor="middle" fill="#36d399" font-size="11" font-weight="700">5</text>
+          <line x1="120" y1="342" x2="380" y2="342" stroke="#36d399" stroke-width="2"/>
+          <line x1="120" y1="350" x2="380" y2="350" stroke="#36d399" stroke-width="2"/>
+          <text x="250" y="368" text-anchor="middle" fill="#36d399" font-size="11" font-weight="700">✓ mutually-authenticated session</text>
+
+          <text x="24" y="398" fill="#f4525f" font-size="10.5">verify:true + unverifiable backend → that pool's dial FAILS CLOSED</text>
+          <text x="24" y="414" fill="#67748c" font-size="10.5">handshake paid once per pooled keep-alive conn · TLS 1.3 resumption</text>
+        </svg>
+        </div>
+        <figcaption>Source: zero-trust-mtls.md — both server-auth (trust bundle) and client-auth (fleet cert) in one handshake.</figcaption>
+      </div>
+    </div>
+
+    <div class="note dim"><div><b>Why two verifies in the upstream handshake.</b> Step 2 lets the WAF authenticate the <i>backend</i> (ordinary server-auth, against the <code style="font-family:var(--mono)">trust</code> bundle), and step 4 lets the backend authenticate the <i>WAF</i> (client-auth, against the WAF's CA). That mutual check is the whole point of "Zero Trust both directions" — neither side takes the other on faith.</div></div>
+
     <div class="grid3" style="margin-top:18px">
       <div class="card pad">
         <div class="tag" style="color:var(--red)">🔑 Crown-jewel key</div>
