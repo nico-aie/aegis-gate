@@ -30,7 +30,7 @@ use aegis_core::audit::{AuditBus, AuditClass, AuditEvent};
 use aegis_core::config::WafConfig;
 use aegis_core::fleet::FleetBus;
 
-use super::config_store::{ConfigStore, CONFIG_BUMP_CHANNEL};
+use super::config_store::{Activate, ConfigStore, CONFIG_BUMP_CHANNEL};
 use super::reload;
 
 /// Default poll cadence. Full-fleet convergence is ≤ one interval when the
@@ -524,6 +524,88 @@ fn is_store_revert(applied_version: u64, highest_seen: u64) -> bool {
     applied_version > 0 || highest_seen > 0
 }
 
+/// Outcome of the boot-time genesis seed. Returned (not just logged) so the
+/// decision is unit-testable; the caller in `run.rs` only logs it.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SeedOutcome {
+    /// Published the boot file as the first config version.
+    Seeded { version: u64 },
+    /// A version was applied before (marker present) — a normal restart, or a
+    /// post-wipe boot whose empty store is owned by the revert *detection*
+    /// (`is_store_revert`), not by a silent re-seed. Never seed once initialized.
+    SkippedAlreadyInitialized,
+    /// A peer activated between our marker check and our CAS — they won; we
+    /// stand down (no version bump).
+    SkippedConflict { current: u64 },
+    /// No boot file on disk to seed from (e.g. `ConfigReloadSource::None`).
+    SkippedNoFile,
+    /// Reading the file or writing the store failed; boot proceeds on the lazy
+    /// fallback (`load_active_config_doc` seeds from the file on first mutation).
+    Failed,
+}
+
+/// FEAT-config-boot-seed-doc-v0 — eagerly publish the boot YAML as config
+/// version 1 at startup so `config:waf:doc` is populated from the first moment,
+/// closing the boot↔first-mutation divergence window. **Genesis-only:** gated on
+/// an absent last-applied marker (`read_marker_version == 0`) so a cold boot
+/// after a shared-store wipe is left to the revert detection in `watch_loop`,
+/// never masked by a re-seed. Idempotent across restarts (marker present →
+/// skip) and safe on a multi-node cold start (CAS → exactly one winner).
+pub(crate) async fn seed_boot_config_if_genesis(
+    store: &ConfigStore,
+    config_yaml_path: Option<&std::path::Path>,
+    marker_path: Option<&PathBuf>,
+) -> SeedOutcome {
+    let Some(path) = config_yaml_path else {
+        return SeedOutcome::SkippedNoFile;
+    };
+
+    // Genesis gate: once any version has been applied (marker present), never
+    // seed again. A marker with an empty store is a *wipe* — owned by the
+    // revert detection in `watch_loop` (`is_store_revert`), not by a re-seed.
+    if read_marker_version(marker_path) > 0 {
+        return SeedOutcome::SkippedAlreadyInitialized;
+    }
+
+    // The boot file is already validated (the process booted from it), so the
+    // seed stores its verbatim text — the same single-validation surface the
+    // lazy fallback uses, preserving `${secret:...}` refs for load-time resolve.
+    let blob = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(), error = %e,
+                "config boot-seed: cannot read boot file; relying on the lazy fallback",
+            );
+            return SeedOutcome::Failed;
+        }
+    };
+
+    match store
+        .activate(0, blob, "boot-seed", "genesis seed of boot config")
+        .await
+    {
+        Ok(Activate::Applied { version }) => {
+            tracing::info!(version, "config plane seeded from boot file (genesis)");
+            SeedOutcome::Seeded { version }
+        }
+        Ok(Activate::Conflict { current }) => {
+            tracing::info!(
+                current,
+                "config plane already seeded (peer won the cold-start race); skipping boot-seed",
+            );
+            SeedOutcome::SkippedConflict { current }
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "config boot-seed activate failed; relying on the lazy fallback",
+            );
+            SeedOutcome::Failed
+        }
+    }
+}
+
 fn reload_event(action: &str, reason: String, node_id: &str, version: u64) -> AuditEvent {
     AuditEvent {
         schema_version: 1,
@@ -552,8 +634,100 @@ fn reload_event(action: &str, reason: String, node_id: &str, version: u64) -> Au
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::in_memory::InMemoryBackend;
     use std::time::Instant;
     use tokio::sync::mpsc;
+
+    // FEAT-config-boot-seed-doc-v0 — eager genesis seed of the boot config
+    // into `config:waf:doc` v1, gated so it never masks a wipe.
+
+    fn empty_store() -> ConfigStore {
+        ConfigStore::new(Arc::new(InMemoryBackend::new()))
+    }
+
+    #[tokio::test]
+    async fn seed_writes_v1_on_genesis() {
+        let store = empty_store();
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_path = dir.path().join("waf.yaml");
+        std::fs::write(&cfg_path, "listeners: {}\n# boot marker text").unwrap();
+        let marker = dir.path().join(".aegis_last_applied_config.json"); // absent → genesis
+
+        let outcome =
+            seed_boot_config_if_genesis(&store, Some(cfg_path.as_path()), Some(&marker)).await;
+
+        assert_eq!(outcome, SeedOutcome::Seeded { version: 1 });
+        let doc = store.load().await.unwrap().expect("doc should be seeded");
+        assert_eq!(doc.version, 1);
+        assert_eq!(doc.actor, "boot-seed");
+        assert!(doc.blob.contains("boot marker text"), "blob is the file text");
+    }
+
+    #[tokio::test]
+    async fn seed_skips_when_marker_present_so_a_wipe_is_left_for_detection() {
+        let store = empty_store();
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_path = dir.path().join("waf.yaml");
+        std::fs::write(&cfg_path, "x: 1").unwrap();
+        let marker = dir.path().join("marker.json");
+        write_marker_version(Some(&marker), 7); // we applied v7 before → not genesis
+
+        let outcome =
+            seed_boot_config_if_genesis(&store, Some(cfg_path.as_path()), Some(&marker)).await;
+
+        assert_eq!(outcome, SeedOutcome::SkippedAlreadyInitialized);
+        assert!(
+            store.load().await.unwrap().is_none(),
+            "empty store after a wipe must stay empty so the revert detector fires",
+        );
+    }
+
+    #[tokio::test]
+    async fn seed_skips_on_conflict_when_a_peer_already_seeded() {
+        let store = empty_store();
+        // A peer activated v1 already; our local marker is still absent.
+        store
+            .activate(0, "peer: true".into(), "peer", "")
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_path = dir.path().join("waf.yaml");
+        std::fs::write(&cfg_path, "ours: true").unwrap();
+        let marker = dir.path().join("marker.json"); // absent
+
+        let outcome =
+            seed_boot_config_if_genesis(&store, Some(cfg_path.as_path()), Some(&marker)).await;
+
+        assert_eq!(outcome, SeedOutcome::SkippedConflict { current: 1 });
+        let doc = store.load().await.unwrap().unwrap();
+        assert_eq!(doc.version, 1, "no version bump — the peer's v1 stands");
+        assert!(doc.blob.contains("peer"), "our blob did not overwrite the peer's");
+    }
+
+    #[tokio::test]
+    async fn seed_skips_without_a_config_path() {
+        let store = empty_store();
+        let outcome = seed_boot_config_if_genesis(&store, None, None).await;
+        assert_eq!(outcome, SeedOutcome::SkippedNoFile);
+        assert!(store.load().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn seed_fails_gracefully_on_unreadable_file() {
+        let store = empty_store();
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist.yaml");
+        let marker = dir.path().join("marker.json"); // absent → genesis path
+
+        let outcome =
+            seed_boot_config_if_genesis(&store, Some(missing.as_path()), Some(&marker)).await;
+
+        assert_eq!(outcome, SeedOutcome::Failed);
+        assert!(
+            store.load().await.unwrap().is_none(),
+            "a read failure must not partially write the store",
+        );
+    }
 
     // 2026-06-18 (runtime-config-lost-on-redis-data-loss report) — empty-store
     // revert detection + the local marker.

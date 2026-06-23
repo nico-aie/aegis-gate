@@ -22,6 +22,7 @@ plans/
 ├── README.md                  ← this file (entry point)
 ├── plan.md                    ← MAIN PLAN — assistant protocol + repo conventions
 ├── implementation-matrix.md   ← doc-by-doc Implemented / Partial / Designed / Deferred
+├── implementation-sequence.md ← LIVING EXECUTION TRACKER — what order to build next (waves)
 ├── future/
 │   ├── world-class-waf-roadmap.md         ← strategic ordering (Tiers 0–6)
 │   └── smart-caching.md                    ← only active forward track (Phase 4 open)
@@ -34,9 +35,13 @@ plans/
 
 1. **[`plan.md`](./plan.md)** — the main plan. Assistant protocol + repo
    conventions. Read this when picking up any task.
-2. **[`implementation-matrix.md`](./implementation-matrix.md)** — what's
+2. **[`implementation-sequence.md`](./implementation-sequence.md)** — the living
+   execution tracker: what to build next, in what order, and what blocks what
+   (dependency-ordered waves across both the capability tiers and the
+   operational/infra backlog).
+3. **[`implementation-matrix.md`](./implementation-matrix.md)** — what's
    actually shipped vs specified, per doc.
-3. **[`issues/README.md`](./issues/README.md)** + recent **git history** —
+4. **[`issues/README.md`](./issues/README.md)** + recent **git history** —
    the current state of play (open backlog, what shipped, by when). There
    is no hand-maintained progress snapshot; git + the issues board are the
    source of truth.
@@ -51,6 +56,13 @@ plans/
 - **[`smart-caching.md`](./future/smart-caching.md)** — the one feature track
   with work still open: Phases 1–3 shipped (per-upstream L1 + L2/Redis-Cluster
   cache); **Phase 4 remaining** (`stale-if-error`, ETag revalidation).
+- **[`config-single-source-of-truth.md`](./future/config-single-source-of-truth.md)** —
+  correctness/infra: end the YAML-file vs `config:waf:doc` **dual authority** on
+  the live data plane (the "I change one key and another key moves" report).
+  Demote the file to **bootstrap + publisher**, make the versioned doc the single
+  source of truth, with an explicit bootstrap-only / dynamic / partial config
+  split (Tier 1/2/3). Prerequisite to `config-auto-restore` + `config-etcd-source-of-truth`;
+  P0 (seed boot file → doc v0) is a standalone win. Not started.
 - **[`config-auto-restore.md`](./future/config-auto-restore.md)** — deferred
   follow-up to the shipped config-loss *detect+alert* fix: auto re-publish the
   last-known-good config after a Redis wipe. Blocked on a fleet split-brain

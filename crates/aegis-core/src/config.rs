@@ -148,6 +148,11 @@ pub struct WafConfig {
     /// single-node deploy pays nothing. See [`ClusterConfig`].
     #[serde(default)]
     pub cluster: ClusterConfig,
+    /// Config-plane behaviour (the versioned `config:waf:doc` source of
+    /// truth). Optional — defaults make the boot YAML a *publisher* into the
+    /// doc. See [`ConfigPlaneConfig`].
+    #[serde(default)]
+    pub config_plane: ConfigPlaneConfig,
     /// Tokio runtime tuning (Layer-1 worker scaling, post-HA).
     /// Surfaces the in-process knobs operators need to size the
     /// gateway against host CPU. Restart-only — tokio runtimes
@@ -1961,6 +1966,35 @@ pub enum WsInspectMode {
     /// requests are inspected without per-route opt-in.
     #[default]
     Enforce,
+}
+
+/// How the local boot YAML file relates to the versioned config plane
+/// (`config:waf:doc`) at runtime. The doc is the single source of truth for
+/// the live data plane; this knob sets the file's *authoring* role.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FileWatchMode {
+    /// **Default.** The file watcher is a *publisher*: on a file change it
+    /// validates the new config and activates it into `config:waf:doc`, and
+    /// the shared-store watcher (the single applier) swaps it into the live
+    /// data plane. Keeps the edit-the-file workflow while removing the old
+    /// dual-authority (file and doc both writing the live config).
+    #[default]
+    Publish,
+    /// Bootstrap-only (Envoy-style): the file is read once at boot and seeded
+    /// into the doc, but no file watcher runs — post-boot edits to the file do
+    /// nothing until restart. All live changes flow through the API / doc.
+    Off,
+}
+
+/// Config-plane behaviour knobs. Currently just the file-watch role; future
+/// fields (backend selection, auto-restore) slot here per the config plans.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ConfigPlaneConfig {
+    /// The boot file's authoring role relative to `config:waf:doc`.
+    /// Defaults to [`FileWatchMode::Publish`].
+    pub file_watch: FileWatchMode,
 }
 
 /// Per-route WebSocket message-inspection settings (WS-MSG).

@@ -1226,61 +1226,41 @@ pub async fn run(
         ConfigReloadSource::File(p) => Some(p.clone()),
         _ => None,
     };
-    // 2026-05-28 (Phase B fold parity) — the folded-store handles the
-    // file/etcd watchers re-derive on reload (AI / response-filter /
-    // tiers / rules / upstream pools), matching the redis config-plane
-    // watcher's ApplyTargets. Same handles, bundled once.
-    let folded_targets = crate::config_source::reload::FoldedReloadTargets {
-        detector_mask: Some(mask.clone()),
-        ai_toggle: ai_runtime_toggle.clone(),
-        // 2026-05-30 — propagate AI threshold via the file/etcd watchers
-        // too (the redis watcher gets it via ApplyTargets below).
-        ai_threshold: ai_runtime_threshold.clone(),
-        response_filter_writer: Some(
-            pipeline.clone() as Arc<dyn aegis_control::api::response_filter::ResponseFilterWriter>
-        ),
-        tiers: Some(tier_store.clone()),
-        rules: Some(rule_store.clone()),
-        active_ruleset: Some(pipeline.rules_arc()),
-        upstream_writer: Some(Arc::new(upstream_ctx.pools.clone())
-            as Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>),
-        // BUG-dns-refresh-not-spawned-for-live-added-hostnames — reconcile
-        // DNS-refresh tasks on a file/etcd reload too (parity with the
-        // shared-store watcher's ApplyTargets below).
-        dns_refresh: dns_refresh_manager.clone(),
-        // 2026-06-18 (runtime_gate_toggles_not_durable) — gate runtimes so a
-        // file/etcd reload re-derives them too (parity with the shared-store
-        // watcher's ApplyTargets below).
-        ddos: upstream_ctx.ddos.get().cloned(),
-        risk: Some(risk.clone()),
-        canary_paths: Some(canary_paths.clone()),
-        bots_enabled: Some(upstream_ctx.bots_enabled.clone()),
-    };
+    // config-single-source-of-truth H1·P1 — the file watcher is now a
+    // *publisher* into `config:waf:doc`, not a second applier. It validates a
+    // file change and activates it as a new version; the shared-store watcher
+    // below is the single applier that swaps it into the live data plane. This
+    // removes the old file-vs-doc dual authority. Gated on
+    // `config_plane.file_watch`: `publish` (default) spawns it; `off` is
+    // bootstrap-only (boot is seeded into the doc, no watcher).
     match reload_source {
         ConfigReloadSource::None => {
             tracing::info!("config reload watcher: disabled (ConfigReloadSource::None)");
         }
-        ConfigReloadSource::File(path) => {
-            tracing::info!(
-                path = %path.display(),
-                "config reload watcher: file",
-            );
-            // Drop the JoinHandle; the watcher runs for the
-            // lifetime of the proxy and tokio::spawn keeps the
-            // task alive regardless of handle ownership.
-            std::mem::drop(supervisor::spawn_config_watcher(
-                path,
-                cfg_swap.clone(),
-                bus.clone(),
-                Some(mask.clone()),
-                Some(upstream_ctx.clone()),
-                Some(ip_rate_limiter.clone()),
-                tls_resolver.clone(),
-                client_trust.clone(),
-                Some(risk.clone()),
-                folded_targets.clone(),
-            ));
-        }
+        ConfigReloadSource::File(path) => match cfg_swap.load().config_plane.file_watch {
+            aegis_core::config::FileWatchMode::Off => {
+                tracing::info!(
+                    path = %path.display(),
+                    "config reload watcher: file bootstrap-only (config_plane.file_watch = off)",
+                );
+            }
+            aegis_core::config::FileWatchMode::Publish => {
+                tracing::info!(
+                    path = %path.display(),
+                    "config reload watcher: file publisher → config:waf:doc",
+                );
+                let file_store =
+                    crate::config_source::config_store::ConfigStore::new(state.clone());
+                // Drop the JoinHandle; the watcher runs for the lifetime of the
+                // proxy and tokio::spawn keeps the task alive regardless of
+                // handle ownership.
+                std::mem::drop(supervisor::spawn_config_watcher(
+                    path,
+                    file_store,
+                    bus.clone(),
+                ));
+            }
+        },
     }
 
     // N2 (2026-06-11) — config-plane pub/sub nudge. A dedicated Redis
@@ -1408,6 +1388,18 @@ pub async fn run(
         let config_marker_path = config_yaml_path
             .as_ref()
             .map(|p| p.with_file_name(".aegis_last_applied_config.json"));
+        // FEAT-config-boot-seed-doc-v0 — eagerly publish the boot config as
+        // `config:waf:doc` v1 (genesis only) BEFORE the watcher spawns, so the
+        // versioned config plane is populated from the first moment instead of
+        // lazily on the first mutation. Genesis-gated on the absent marker so a
+        // cold boot after a store wipe is left to the revert detection below,
+        // not masked. Borrow now; `store` moves into `spawn_watcher` next.
+        let _ = crate::config_source::redis_source::seed_boot_config_if_genesis(
+            &store,
+            config_yaml_path.as_deref(),
+            config_marker_path.as_ref(),
+        )
+        .await;
         std::mem::drop(crate::config_source::redis_source::spawn_watcher(
             store,
             node_id,

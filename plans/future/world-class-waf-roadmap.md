@@ -79,6 +79,12 @@ secrets, SD, GDPR, snapshot) Aegis already has.
 Sequenced by **(market priority × compliance urgency × leverage from
 existing code) ÷ effort**. Effort: **S** ≤ ~3 d, **M** ~1–2 wk, **L** ~3 wk+.
 
+> **Execution order across both streams** (these capability tiers **and** the
+> operational/infra backlog in §"Operational / correctness backlog" below) is
+> arranged into dependency-ordered waves in
+> [`../implementation-sequence.md`](../implementation-sequence.md) — read it for
+> *what-blocks-what* and the recommended interleave.
+
 ### Tier 0 — Hygiene (do first, clears the runway) · S
 
 - **Fix the 2 pre-existing red tests** before stacking features on them:
@@ -202,6 +208,17 @@ tiers:
   opt-in response cache; serves repeats without an upstream round-trip, never
   caches CRITICAL tier, with Cache-Deception-Armor + poisoning-safe keys
   (2026-06-06 redesign; supersedes the archived per-tier draft).
+- [`config-single-source-of-truth.md`](./config-single-source-of-truth.md) —
+  correctness/infra: end the YAML-file vs `config:waf:doc` **dual authority** on
+  the live data plane (a stray file save or unrelated API edit silently clobbers
+  other keys). Demote the file to **bootstrap + publisher**, make the versioned
+  doc the single source of truth, with an explicit Tier-1 (bootstrap-only) /
+  Tier-2 (dynamic) / Tier-3 (partial) config split. **Prerequisite** to both
+  `config-auto-restore` and `config-etcd-source-of-truth` (one writer first,
+  then swap the store). P0 (seed boot file → doc v0) is a standalone win. Carries
+  a **long-term arc** (§10): structural `BootstrapConfig`/`DynamicConfig` type
+  split → etcd → a config control plane (canary rollout, GitOps reconcile,
+  multi-region). **S–M near-term, L+ long-term**, phased.
 - [`config-auto-restore.md`](./config-auto-restore.md) — durability: auto
   re-publish last-known-good config after a Redis data-loss wipe (the
   detect+alert half shipped 2026-06-18; auto-restore blocked on a fleet
