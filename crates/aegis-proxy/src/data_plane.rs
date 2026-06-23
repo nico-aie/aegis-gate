@@ -1102,6 +1102,57 @@ pub(crate) async fn handle_data_request_inner(
     // bypasses the detector chain.
     let bypass_detectors = on_whitelist || rule_allow;
 
+    // Tier-1A — GraphQL query guard. Runs on the buffered body for `POST`s
+    // to a configured GraphQL path BEFORE the detector chain, so an abusive
+    // query (excessive depth / node count / complexity, or a disabled-
+    // introspection probe) is rejected with a hard 403 rather than being
+    // forwarded upstream. A whitelist / operator-`allow` bypass skips it,
+    // the same trust contract the detector chain honors; a body that isn't
+    // a parseable GraphQL query passes through (fail-open, inside `check`).
+    // `set_profile` / route `log_only` downgrade the block to a logged
+    // intent, exactly like the detector and gate paths.
+    if !bypass_detectors {
+        let guard = upstream_ctx.graphql_guard.load();
+        // Fast path: skip the ArcSwap-loaded guard entirely when disabled
+        // (the common case). `check()` re-checks `enabled` internally, so
+        // this is purely an optimisation, not a correctness gate.
+        if guard.is_enabled() {
+            if let crate::graphql_guard::GraphqlGuardOutcome::Rejected { reason } =
+                guard.check(&parts.method, detector_uri.path(), &body_bytes)
+            {
+                let block_tag = DecisionTag::block("graphql").with_tier(tier);
+                let gql_mode = effective_mode(
+                    interop_modes
+                        .map(|m| {
+                            aegis_control::interop::rule_map::mode_for_rule(m, Some("graphql"))
+                        })
+                        .unwrap_or(aegis_control::interop::headers::Mode::Enforce),
+                    route_log_only,
+                );
+                // `blocked_response` emits the single `block` audit row and
+                // builds the 403; we then decide whether to send it or stash
+                // the intent and fall through (log-only).
+                let resp = blocked_response(
+                    peer,
+                    &format!("blocked by graphql guard: {reason}"),
+                    Some("graphql".into()),
+                    None,
+                    tier,
+                    &parts.uri,
+                    &parts.method,
+                    bus,
+                    None,
+                );
+                if gql_mode == aegis_control::interop::headers::Mode::LogOnly {
+                    log_only_intent = Some(block_tag);
+                    // fall through — audit recorded, no 403 sent.
+                } else {
+                    return (resp, block_tag);
+                }
+            }
+        }
+    }
+
     let effective = mask.resolve(Some(tier));
     let detect_t0 = std::time::Instant::now();
     let (signals, fired_classes) = if bypass_detectors {
@@ -5895,6 +5946,31 @@ mod log_only_enforce_tests {
         (status, body)
     }
 
+    /// Send one POST with a body and return the HTTP status code (raw, to
+    /// match the dependency-free style of [`get_status`]).
+    async fn post_status(
+        waf: std::net::SocketAddr,
+        path: &str,
+        content_type: &str,
+        body: &str,
+    ) -> u16 {
+        let mut s = tokio::net::TcpStream::connect(waf).await.unwrap();
+        let req = format!(
+            "POST {path} HTTP/1.1\r\nHost: any\r\nConnection: close\r\n\
+             Content-Type: {content_type}\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len(),
+        );
+        s.write_all(req.as_bytes()).await.unwrap();
+        let mut buf = Vec::new();
+        let _ = s.read_to_end(&mut buf).await;
+        String::from_utf8_lossy(&buf)
+            .lines()
+            .next()
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|c| c.parse().ok())
+            .unwrap_or(0)
+    }
+
     #[tokio::test]
     async fn set_profile_log_only_forwards_enforce_blocks() {
         let backend = spawn_upstream().await;
@@ -6009,6 +6085,134 @@ state: {{ backend: in_memory }}
         modes.set_feature("rules_engine", Mode::LogOnly);
         let feat = get_status(waf_addr, atk).await;
         assert_eq!(feat, 200, "rules_engine=log_only must forward");
+    }
+
+    // Tier-1A — end-to-end proof the GraphQL guard fires on the real data
+    // plane: an over-depth query POSTed to a configured GraphQL path is a
+    // hard 403; a valid query forwards (200); a non-GraphQL path is never
+    // touched; and `log_only` mode downgrades the block to a forward.
+    #[tokio::test]
+    async fn graphql_guard_blocks_deep_query_and_forwards_valid() {
+        let backend = spawn_upstream().await;
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: pool }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend}" }}] }}
+state: {{ backend: in_memory }}
+graphql:
+  enabled: true
+  paths: ["/graphql"]
+  max_depth: 4
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
+
+        // Shared ModeStore wired in like run.rs so we can flip to log_only.
+        let modes = Arc::new(ModeStore::new(Mode::Enforce));
+        ctx.interop_modes.set(modes.clone()).ok();
+
+        let metrics = aegis_control::metrics::MetricsRegistry::init();
+        let args = Arc::new(Args {
+            detectors: aegis_security::detectors::default_detectors(),
+            mask: aegis_security::detectors::SharedDetectorMask::from_config(&cfg.detectors),
+            risk: aegis_security::risk::RiskTracker::new(&cfg.risk),
+            ip_rl: aegis_security::rate_limit::IpRateLimiter::new(
+                crate::config_source::reload::derive_ip_rate_cfg(&cfg),
+            ),
+            load_gauge: aegis_core::LoadGauge::new(cfg.load_mode.clone()),
+            verbosity: aegis_core::SharedVerbosity::from_config(&cfg.logging),
+            rsh: aegis_control::metrics::request_duration::RequestStageHistogram::register(&metrics)
+                .unwrap(),
+            rlh: aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&metrics)
+                .unwrap(),
+            ra: aegis_control::metrics::route_activity::RouteActivityWindow::new(),
+            dlh: aegis_control::metrics::detector_latency::DetectorLatencyHistogram::register(
+                &metrics,
+            )
+            .unwrap(),
+            dhm: aegis_control::metrics::detector_hits::DetectorHitMetrics::register(&metrics)
+                .unwrap(),
+            bus: AuditBus::new(64),
+            ctx: ctx.clone(),
+        });
+
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let args_l = args.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, peer)) = waf.accept().await {
+                let args_c = args_l.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                        let a = args_c.clone();
+                        async move {
+                            let (resp, _tag) = super::handle_data_request(
+                                req,
+                                peer,
+                                None,
+                                &a.detectors,
+                                &a.mask,
+                                &a.risk,
+                                &a.ip_rl,
+                                &a.load_gauge,
+                                &a.verbosity,
+                                &a.rsh,
+                                &a.rlh,
+                                &a.ra,
+                                &a.dlh,
+                                &a.bus,
+                                &a.ctx,
+                                &a.dhm,
+                                &ClientIdentity::Anonymous,
+                                None,
+                            )
+                            .await;
+                            Ok::<_, Infallible>(resp)
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // 6-deep query (> max_depth 4).
+        let deep = serde_json::json!({
+            "query": "{ a { b { c { d { e { f { g } } } } } } }"
+        })
+        .to_string();
+        // Shallow, valid query (depth 2).
+        let ok = serde_json::json!({ "query": "query { user { name } }" }).to_string();
+
+        // ENFORCE: deep query on the GraphQL path → 403.
+        let blocked = post_status(waf_addr, "/graphql", "application/json", &deep).await;
+        assert_eq!(blocked, 403, "an over-depth GraphQL query must be blocked");
+
+        // ENFORCE: valid query → forwarded upstream (200).
+        let allowed = post_status(waf_addr, "/graphql", "application/json", &ok).await;
+        assert_eq!(allowed, 200, "a within-limits GraphQL query must forward");
+
+        // The same deep payload on a NON-GraphQL path is never inspected.
+        let other = post_status(waf_addr, "/api/other", "application/json", &deep).await;
+        assert_eq!(other, 200, "non-GraphQL path must not be guarded");
+
+        // LOG_ONLY: the would-be-blocked deep query is forwarded, not 403'd.
+        modes.set_all(Mode::LogOnly);
+        let logged = post_status(waf_addr, "/graphql", "application/json", &deep).await;
+        assert_eq!(
+            logged, 200,
+            "log_only must FORWARD the would-be-blocked GraphQL query (got {logged})",
+        );
     }
 
     // 2026-06-20 — an enforced DDoS block must emit exactly ONE audit

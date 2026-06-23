@@ -54,6 +54,11 @@ pub fn rule_to_feature(rule_id: &str) -> Option<(&'static str, &'static str)> {
         "recon" => ("rules_engine", "recon"),
         "brute_force" | "brute-force" => ("rules_engine", "brute_force"),
         "ai" => ("rules_engine", "ai"),
+        // Tier-1A — the GraphQL query guard can fire AND block, so the BTC
+        // must see it in `capabilities` and be able to flip it
+        // enforce↔log_only via `set_profile` (and a global Dry-Run must
+        // downgrade it like every other request-inspection policy).
+        "graphql" => ("rules_engine", "graphql"),
         "command_injection" | "cmdi" => ("rules_engine", "command_injection"),
         "template_injection" | "ssti" => ("rules_engine", "template_injection"),
         "nosql_injection" | "nosqli" => ("rules_engine", "nosql_injection"),
@@ -137,6 +142,20 @@ mod tests {
         // v2.3 §2.5 — AI must be a toggleable policy so the OC harness
         // can put it into log_only without a YAML edit + restart.
         assert_eq!(rule_to_feature("ai"), Some(("rules_engine", "ai")));
+    }
+
+    #[test]
+    fn graphql_maps_to_rules_engine() {
+        // Tier-1A — the GraphQL guard must be a toggleable policy so a
+        // global Dry-Run / set_profile can move it enforce↔log_only.
+        assert_eq!(rule_to_feature("graphql"), Some(("rules_engine", "graphql")));
+    }
+
+    #[test]
+    fn graphql_log_only_is_honoured() {
+        let modes = ModeStore::new(Mode::Enforce);
+        modes.set_all(Mode::LogOnly);
+        assert_eq!(mode_for_rule(&modes, Some("graphql")), Mode::LogOnly);
     }
 
     #[test]
