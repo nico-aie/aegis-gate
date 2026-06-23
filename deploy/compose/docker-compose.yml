@@ -21,6 +21,13 @@ services:
       interval: 2s
       timeout: 2s
       retries: 10
+    # PREREQ-A (redis-interim-durability P0): persist RDB+AOF on a named volume
+    # so the config plane (`config:waf:doc` + snapshots) and the durable
+    # `control:waf:*` keyspace survive `docker compose down`/restart. Without
+    # this mount the persistence flags above write to the ephemeral container
+    # layer and vanish on teardown.
+    volumes:
+      - redis-data:/data
     networks: [aegis]
 
   mock:
@@ -76,3 +83,7 @@ services:
 
 networks:
   aegis: {}
+
+volumes:
+  # Durable Redis data (RDB + AOF). See the redis service comment above.
+  redis-data: {}
