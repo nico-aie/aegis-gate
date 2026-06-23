@@ -79,9 +79,9 @@ pub fn spawn_health_checker(
 /// member's `observed` state (`Up`/`Down`).
 ///
 /// Crucially it does **not** touch `Member::healthy`, so it can never change
-/// load-balancer selection (no risk of evicting the last member and
-/// fail-closing the pool — `LbStrategy::pick` returns `None` when no member
-/// is healthy). It is purely an observability signal for the badge.
+/// load-balancer selection. (And since PREREQ-B, `LbStrategy::pick` fails open
+/// anyway — an all-unhealthy pool still routes rather than returning `None`.)
+/// It is purely an observability signal for the badge.
 pub fn spawn_tcp_observer(
     pool_name: String,
     members: Vec<Arc<Member>>,

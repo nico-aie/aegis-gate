@@ -15,7 +15,12 @@ pub enum LbStrategy {
 }
 
 impl LbStrategy {
-    /// Pick a healthy member from `members`.
+    /// Pick a member to forward to, preferring healthy members.
+    ///
+    /// **Fails open:** if no member is healthy, the full member set is used so
+    /// an all-down pool still attempts a forward (a real 502) rather than
+    /// refusing to route (a 503). `None` is returned only for a genuinely empty
+    /// pool (no members configured).
     ///
     /// `hash_key` is used only by `ConsistentHash`; other strategies ignore it.
     pub fn pick<'a>(
@@ -29,30 +34,40 @@ impl LbStrategy {
             .filter(|(_, m)| m.is_healthy())
             .collect();
 
-        if healthy.is_empty() {
-            return None;
-        }
+        // Fail open (PREREQ-B for passive-upstream-health): when no member is
+        // healthy, fall back to the FULL member set so the pool still attempts
+        // a forward (a real 502 from the attempt) instead of refusing to route
+        // (a 503). A genuinely empty pool — no members configured — still
+        // returns None, since there is nothing to attempt.
+        let candidates: Vec<(usize, &Arc<Member>)> = if healthy.is_empty() {
+            if members.is_empty() {
+                return None;
+            }
+            members.iter().enumerate().collect()
+        } else {
+            healthy
+        };
 
         match self {
             LbStrategy::RoundRobin(counter) => {
-                let idx = counter.fetch_add(1, Ordering::Relaxed) % healthy.len();
-                Some(healthy[idx].1)
+                let idx = counter.fetch_add(1, Ordering::Relaxed) % candidates.len();
+                Some(candidates[idx].1)
             }
             LbStrategy::WeightedRoundRobin(counter) => {
-                pick_weighted(&healthy, counter)
+                pick_weighted(&candidates, counter)
             }
             LbStrategy::LeastConn => {
-                healthy
+                candidates
                     .iter()
                     .min_by_key(|(_, m)| m.inflight.load(Ordering::Relaxed))
                     .map(|(_, m)| *m)
             }
             LbStrategy::P2c => {
-                pick_p2c(&healthy)
+                pick_p2c(&candidates)
             }
             LbStrategy::ConsistentHash => {
                 let key = hash_key.unwrap_or("");
-                pick_consistent_hash(&healthy, key)
+                pick_consistent_hash(&candidates, key)
             }
         }
     }
@@ -225,10 +240,28 @@ mod tests {
     }
 
     #[test]
-    fn round_robin_returns_none_all_unhealthy() {
+    fn round_robin_fails_open_when_all_unhealthy() {
+        // PREREQ-B: an all-unhealthy pool must still route — fall back to the
+        // full member set so the forward attempt yields a real 502, rather
+        // than returning None (a 503 refusal to route).
         let members = make_members(2);
         members[0].healthy.store(false, Ordering::Relaxed);
         members[1].healthy.store(false, Ordering::Relaxed);
+        let strategy = LbStrategy::RoundRobin(AtomicUsize::new(0));
+        let picked = strategy.pick(&members, None);
+        assert!(
+            picked.is_some(),
+            "all-unhealthy pool must fail open (route + 502), not refuse (503)",
+        );
+        let port = picked.unwrap().addr.port();
+        assert!(port == 3000 || port == 3001, "fallback picks a real member");
+    }
+
+    #[test]
+    fn pick_returns_none_for_genuinely_empty_pool() {
+        // No members configured at all → nothing to attempt → None (503 is the
+        // correct contract here; fail-open only covers all-*unhealthy*).
+        let members: Vec<Arc<Member>> = Vec::new();
         let strategy = LbStrategy::RoundRobin(AtomicUsize::new(0));
         assert!(strategy.pick(&members, None).is_none());
     }
