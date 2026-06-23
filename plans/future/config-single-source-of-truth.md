@@ -204,6 +204,12 @@ the file feeds the doc (Tier 1 stays file-authoritative by design — see §3).
 
 ## 5. Phases (Option B)
 
+> **Shipped:** P0 (boot-seed → doc v0) — PR #74, 2026-06-23.
+> **P1+P2 (file watcher → publisher; single applier; `config_plane.file_watch`
+> flag, default `publish`)** — 2026-06-23 (`FEAT-config-file-watch-publisher`).
+> The file watcher no longer writes the live config; it validates + activates
+> into `config:waf:doc` and the shared-store watcher is the sole applier.
+
 - **P0 — Auto-seed boot file → doc v0 (fixes C) + classify the split.** At
   startup, if `config:waf:doc` is absent and a boot file path exists,
   `activate(expected=None, blob=<boot file>, actor="boot-seed")`. Idempotent: an

@@ -92,7 +92,7 @@ foundation items run in parallel within a wave.
 | ✓ | Item | Stream | Effort | Why now |
 |---|---|---|---|---|
 | ☐ | Roadmap **Tier 1A** — wire existing API guards (`api_keys` + `hmac_sign` + GraphQL caps) onto the data path | Capability | S | Gartner #1 priority, code already exists, just unwired; lays the call-site for 1B–1D |
-| ☐ | **config-single-source-of-truth H1 · P1–P2** (invert file watcher → publisher; one applier; one guard) | Foundation | M | Kills the dual-authority bug class (the "one key moves another" report); converges the cluster for free |
+| ✅ | **config-single-source-of-truth H1 · P1–P2** (invert file watcher → publisher; one applier; one guard) — `config_plane.file_watch` flag (default `publish`), file watcher now publishes to `config:waf:doc`, shared-store watcher is sole applier | Foundation | M | Kills the dual-authority bug class (the "one key moves another" report); converges the cluster for free |
 | ☐ | **PREREQ-B**: make `LbStrategy::pick` fail open | Foundation | S | Tiny enabling change that unblocks two availability plans |
 
 > **Note on Tier 1A:** the WAF-vs-gateway boundary call ([[project_waf_vs_gateway_boundary]])
