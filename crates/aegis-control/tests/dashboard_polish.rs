@@ -110,7 +110,13 @@ fn bundle_under_documented_budget() {
     // after the P4 Zero Trust console: WAF-identity upload, backend-CA
     // trust-bundle upload/list/delete, the per-pool upstream-mTLS
     // drawer, and the upstream handshake-failure card.
-    const RAW_BUDGET_BYTES: usize = 780_000;
+    // Bumped 2026-06-23 from 780 → 840 KB — raw total reached 783.5 KB
+    // after the queue_wait latency-panel row + load-shedder wiring, the
+    // per-IP rate-limit enable/disable toggle, and the whitelist
+    // full-trust exemption UI. Feature surface only: the React UMD
+    // bundles are unchanged (10.8 + 131 KB) — no new deps. Headroom
+    // restored to ~7% per assets/dashboard/bundle-budget.md.
+    const RAW_BUDGET_BYTES: usize = 840_000;
     let mut total = 0usize;
     for path in ["index.html", "app.js", "aegis.css", "react.min.js", "react-dom.min.js", "i18n.json"] {
         let asset: EmbeddedAsset = lookup(path).unwrap_or_else(|| panic!("{path} must resolve"));
@@ -163,7 +169,12 @@ fn app_js_under_per_bundle_budget() {
     // per-pool upstream-mTLS edit drawer, and the upstream
     // handshake-failure histogram card. Still feature surface, not
     // dependency bloat (no new libs; React stays UMD-global).
-    const APP_JS_BUDGET: usize = 600_000;
+    // Bumped 2026-06-23 from 600 → 640 KB. app.js reached 597.7 KB (0.4%
+    // under the old cap) from the same 2026-06-23 feature growth:
+    // queue_wait latency panel, per-IP rate-limit enable/disable toggle,
+    // and the whitelist full-trust UI. No new libs (React stays
+    // UMD-global); restoring the documented ~7% headroom.
+    const APP_JS_BUDGET: usize = 640_000;
     let bytes = lookup("app.js").unwrap().bytes.len();
     assert!(
         bytes < APP_JS_BUDGET,
