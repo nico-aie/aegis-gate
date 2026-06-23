@@ -82,10 +82,10 @@ foundation items run in parallel within a wave.
 
 | ✓ | Item | Stream | Effort | Why now |
 |---|---|---|---|---|
-| ☐ | Roadmap **Tier 0** — fix 2 red tests (`state_select`, `dashboard_polish` bundle budget); confirm H3 stays gated | Capability | S | Branch must be green before stacking features |
-| ☐ | Verify/close the 2 open `issues/` (`BUG-dns-refresh…`, `BUG-whitelist…` — likely already fixed on `develop`) | Foundation | S | Close the books on the issue board |
+| ◐ | Roadmap **Tier 0** — `state_select` is **green** (stale note); only `dashboard_polish::bundle_under_documented_budget` is red, ~3.5 KB over (raw 783,530 > 780,000); confirm H3 stays gated | Capability | S | Branch must be green before stacking features |
+| ✅ | ~~Verify/close the 2 open `issues/`~~ — both archived (`BUG-dns-refresh`, `BUG-whitelist`) in `dc72211` | Foundation | S | Done |
 | ☐ | **PREREQ-A**: mount Redis data volume in both compose files (`redis-interim-durability` P0) | Foundation | S | Hard prereq for ALL durability work; pure ops, no behavior change |
-| ☐ | **config-single-source-of-truth H1 · P0** (seed boot file → doc v0) | Foundation | S | Standalone correctness win; closes the boot/first-edit divergence; unblocks the config arc |
+| ✅ | **config-single-source-of-truth H1 · P0** (seed boot file → doc v0) — shipped PR #74 (`2fd2316`); ticket archived | Foundation | S | Standalone correctness win; closes the boot/first-edit divergence; unblocks the config arc |
 
 ### Wave 1 — Highest-leverage capability + the dual-authority fix · ~2 wk
 
