@@ -19,18 +19,21 @@ Update the Status column (and flip to ✅ with a commit / date) as work lands.
 
 ## ⏩ Resume here (as of 2026-06-23)
 
-**Wave 0 — ✅ complete.** **Wave 1 — nearly complete:** config H1·P0 (#74),
-config H1·P1+P2 dual-authority fix (#77), PREREQ-B LB fail-open (#78) all shipped.
+**Wave 0 — ✅ complete.** **Wave 1 — ✅ complete:** config H1·P0 (#74),
+config H1·P1+P2 dual-authority fix (#77), PREREQ-B LB fail-open (#78), and
+Tier-1A GraphQL caps (#79) all shipped.
 
-**Next up — one of:**
-1. **Tier-1A (GraphQL caps only)** — finish Wave 1. Wire the existing
-   `api_security/graphql.rs` depth/complexity/introspection guard onto the data
-   path. **Scope note:** the token/HMAC half of Tier-1A is *deprioritized* by the
-   WAF-vs-gateway boundary call ([[project_waf_vs_gateway_boundary]]) — do the
-   GraphQL half only.
-2. **Wave 2** — AI/LLM firewall (Tier 2, the splashy differentiator), or
-   `passive-upstream-health` / `zone-aware-load-balancing` (both unblocked now
-   that PREREQ-B shipped).
+**Next up — Wave 2, one of:**
+1. **AI/LLM firewall** (Tier 2, the splashy differentiator — 2A prompt-injection,
+   2B response inspection, 2C cost-aware RL; reuses `ai` + `dlp`).
+2. **`passive-upstream-health`** + **`zone-aware-load-balancing`** (both unblocked
+   now that PREREQ-B shipped; share the `LbStrategy::pick` touchpoint — do
+   together to touch the LB once).
+3. **`ddos-cross-node-rps-aggregation`** (standalone; slot by capacity).
+
+> Tier-1A scope note (settled): the token/HMAC half stays *deprioritized* by the
+> WAF-vs-gateway boundary call ([[project_waf_vs_gateway_boundary]]); only the
+> GraphQL caps half shipped, which is uncontested WAF surface.
 
 **Config arc:** the near-term correctness work (H1) is done; the long-term
 structural split (H2a `BootstrapConfig`/`DynamicConfig`) and etcd (H2b) sit in
@@ -112,7 +115,7 @@ foundation items run in parallel within a wave.
 
 | ✓ | Item | Stream | Effort | Why now |
 |---|---|---|---|---|
-| ☐ | Roadmap **Tier 1A** — wire existing API guards (`api_keys` + `hmac_sign` + GraphQL caps) onto the data path | Capability | S | Gartner #1 priority, code already exists, just unwired; lays the call-site for 1B–1D |
+| ✅ | Roadmap **Tier 1A (GraphQL caps)** — `api_security::graphql` depth/complexity/introspection guard wired onto the data path (config-driven, hot-reloadable, log-only-aware) — shipped PR #79 (`1570de5`). `api_keys` + `hmac_sign` half deprioritized (gateway concern). | Capability | S | Gartner #1 priority; code existed, just unwired |
 | ✅ | **config-single-source-of-truth H1 · P1–P2** (invert file watcher → publisher; one applier; one guard) — `config_plane.file_watch` flag (default `publish`), file watcher now publishes to `config:waf:doc`, shared-store watcher is sole applier | Foundation | M | Kills the dual-authority bug class (the "one key moves another" report); converges the cluster for free |
 | ✅ | **PREREQ-B**: `LbStrategy::pick` fails open — an all-unhealthy pool falls back to the full member set (real 502 from the attempt) instead of returning `None`; `None` only for a genuinely empty pool | Foundation | S | Tiny enabling change that unblocks two availability plans |
 
