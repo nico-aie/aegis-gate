@@ -154,6 +154,12 @@ services:
       - "${REDIS_PASSWORD:-}"
     volumes:
       - ./redis/redis.conf:/etc/redis/redis.conf:ro
+      # PREREQ-A (redis-interim-durability P0): persist `/data` (redis.conf sets
+      # `dir /data` + RDB save points) on a named volume so the config plane and
+      # the durable `control:waf:*` keyspace survive a restart. Without it the
+      # RDB snapshot lives on the ephemeral container layer and is lost on
+      # `docker compose down`.
+      - aegis-redis-data:/data
     # Publish to LOOPBACK ONLY — never 0.0.0.0 (that exposure is what got the
     # prod Redis hijacked). Cross-host access in the real cluster goes over the
     # private network + firewall, not a published port.
@@ -248,6 +254,8 @@ services:
 volumes:
   etcd-data:
   grafana-data:
+  # PREREQ-A — durable Redis data (RDB). See the redis service comment above.
+  aegis-redis-data:
 
 networks:
   default:

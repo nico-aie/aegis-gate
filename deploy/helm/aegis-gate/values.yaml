@@ -70,6 +70,14 @@ config:
       # Operators typically wire this to an existing in-cluster
       # Redis (Bitnami chart, AWS ElastiCache, etc.). The chart
       # does NOT provision Redis itself.
+      #
+      # PREREQ-A (redis-interim-durability P0): the config plane
+      # (`config:waf:doc` + version snapshots) and the durable
+      # `control:waf:*` keyspace live in this Redis. Point it at a
+      # PERSISTENCE-ENABLED Redis — AOF/RDB on a durable volume (Bitnami
+      # `master.persistence.enabled=true`; ElastiCache with backups/AOF).
+      # A non-persistent Redis loses the active config + control state on
+      # restart (the empty-store revert the WAF then detects + alerts on).
       url: "redis://aegis-redis-master.redis:6379"
       # When set, the value is read from a Kubernetes Secret
       # rather than literal `url:` above.

@@ -84,7 +84,7 @@ foundation items run in parallel within a wave.
 |---|---|---|---|---|
 | ✅ | Roadmap **Tier 0** — `state_select` was already green (stale note); `dashboard_polish` bundle budgets bumped per policy (raw 780→840 KB, app.js 600→640 KB; feature growth, no new deps) → suite green. H3 stays `--features http3`-gated. | Capability | S | Branch must be green before stacking features |
 | ✅ | ~~Verify/close the 2 open `issues/`~~ — both archived (`BUG-dns-refresh`, `BUG-whitelist`) in `dc72211` | Foundation | S | Done |
-| ☐ | **PREREQ-A**: mount Redis data volume in both compose files (`redis-interim-durability` P0) | Foundation | S | Hard prereq for ALL durability work; pure ops, no behavior change |
+| ✅ | **PREREQ-A**: Redis data volume mounted on `/data` in both compose files + Helm persistence expectation documented (`redis-interim-durability` P0 infra half) | Foundation | S | Hard prereq for ALL durability work; pure ops, no behavior change |
 | ✅ | **config-single-source-of-truth H1 · P0** (seed boot file → doc v0) — shipped PR #74 (`2fd2316`); ticket archived | Foundation | S | Standalone correctness win; closes the boot/first-edit divergence; unblocks the config arc |
 
 ### Wave 1 — Highest-leverage capability + the dual-authority fix · ~2 wk
