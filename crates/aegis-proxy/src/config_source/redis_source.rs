@@ -417,6 +417,9 @@ async fn apply_and_swap(
     // converged doc so a dashboard "Response cache" enable/add/change/remove
     // applies fleet-wide without a restart (was node-local-until-restart).
     let _ = reload::apply_cfg_change_to_cache(new_cfg, targets.proxy_ctx.as_ref());
+    // Tier-1A — reconcile the GraphQL query guard from the converged doc so a
+    // graphql enable/disable or limit change applies on every node.
+    let _ = reload::apply_cfg_change_to_graphql(new_cfg, targets.proxy_ctx.as_ref());
 
     cfg.store(Arc::new(new_cfg.clone()));
 }

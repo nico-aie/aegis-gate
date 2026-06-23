@@ -43,6 +43,13 @@ the fail-open work below.
 
 ## 2. The blocking prerequisite: make the LB fail open
 
+> **✅ Shipped 2026-06-23 (PREREQ-B).** `LbStrategy::pick`
+> (`crates/aegis-proxy/src/upstream/lb.rs`) now falls back to the full member
+> set when the healthy set is empty, so an all-unhealthy pool attempts a forward
+> (real 502) instead of returning `None` (refuse-to-route). `None` is returned
+> only for a genuinely empty pool. The rest of this plan (passive marking of
+> `Member::healthy`) is now unblocked.
+
 Before any passive marking touches `Member::healthy`, change member selection
 so an all-unhealthy pool still routes:
 

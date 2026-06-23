@@ -1,0 +1,1383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aegis-Gate — Concept Infographics</title>
+<style>
+  :root{
+    --bg:#0b0f17; --bg2:#111726; --panel:#151c2c; --panel2:#1b2436;
+    --ink:#e8edf6; --muted:#9aa7bd; --faint:#67748c; --line:#26304a;
+    --blue:#4f8cff; --cyan:#36cfd1; --green:#36d399; --amber:#f5a524;
+    --orange:#ff8a3d; --red:#f4525f; --purple:#a779ff; --pink:#ff6fae;
+    --shadow:0 6px 24px rgba(0,0,0,.35);
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#16203a 0%,var(--bg) 55%);
+    color:var(--ink);font-family:var(--sans);line-height:1.55;-webkit-font-smoothing:antialiased}
+  a{color:var(--blue);text-decoration:none}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 22px}
+
+  header.hero{padding:56px 0 30px;border-bottom:1px solid var(--line)}
+  .badge{display:inline-flex;align-items:center;gap:8px;font:600 12px/1 var(--sans);
+    letter-spacing:.12em;text-transform:uppercase;color:var(--cyan);
+    background:rgba(54,207,209,.08);border:1px solid rgba(54,207,209,.25);
+    padding:7px 12px;border-radius:999px}
+  h1{font-size:40px;line-height:1.1;margin:18px 0 8px;letter-spacing:-.02em}
+  .sub{color:var(--muted);font-size:17px;max-width:680px}
+  .hero .meta{margin-top:18px;color:var(--faint);font-size:13px;font-family:var(--mono)}
+
+  nav.toc{position:sticky;top:0;z-index:20;background:rgba(11,15,23,.82);
+    backdrop-filter:blur(10px);border-bottom:1px solid var(--line);padding:12px 0}
+  nav.toc .wrap{display:flex;flex-wrap:wrap;gap:8px}
+  nav.toc a{font-size:12.5px;color:var(--muted);border:1px solid var(--line);
+    padding:6px 11px;border-radius:8px;background:var(--panel);transition:.15s}
+  nav.toc a:hover{color:var(--ink);border-color:var(--blue);background:var(--panel2)}
+
+  section{padding:54px 0;border-bottom:1px solid var(--line)}
+  .eyebrow{font:700 12px/1 var(--sans);letter-spacing:.14em;text-transform:uppercase;
+    color:var(--faint);margin-bottom:10px}
+  h2{font-size:28px;margin:0 0 10px;letter-spacing:-.01em}
+  .lead{color:var(--muted);font-size:16px;max-width:760px;margin:0 0 26px}
+
+  .card{background:linear-gradient(180deg,var(--panel) 0%,var(--bg2) 100%);
+    border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);overflow:hidden}
+  .card.pad{padding:22px}
+  figure{margin:0}
+  figcaption{color:var(--faint);font-size:12.5px;font-family:var(--mono);
+    padding:10px 16px;border-top:1px solid var(--line);background:rgba(0,0,0,.18)}
+  svg{display:block;width:100%;height:auto}
+
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  @media(max-width:820px){.grid2,.grid3{grid-template-columns:1fr}}
+
+  .note{display:flex;gap:12px;background:var(--panel2);border:1px solid var(--line);
+    border-left:3px solid var(--blue);border-radius:10px;padding:14px 16px;margin-top:18px;
+    font-size:14.5px;color:var(--muted)}
+  .note b{color:var(--ink)}
+  .note.warn{border-left-color:var(--amber)}
+  .note.dim{border-left-color:var(--faint)}
+
+  .tag{font-family:var(--mono);font-size:11.5px;padding:2px 7px;border-radius:6px;
+    border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+  .pill{display:inline-block;font:700 11px/1 var(--mono);padding:4px 8px;border-radius:6px}
+
+  footer{padding:40px 0 70px;color:var(--faint);font-size:13px}
+  footer code{font-family:var(--mono);color:var(--muted)}
+
+  ::-webkit-scrollbar{height:9px;width:9px}
+  ::-webkit-scrollbar-thumb{background:#283450;border-radius:9px}
+  .scrollx{overflow-x:auto}
+  .svgwrap{padding:18px 14px}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="badge">● Aegis-Gate &nbsp;·&nbsp; Operator Field Guide</span>
+    <h1>How the gate thinks</h1>
+    <p class="sub">Seven core concepts of the Aegis-Gate WAF, drawn as pictures. Built for SOC analysts and operators who need the whole mental model — request to decision — in one read.</p>
+    <div class="meta">source of truth: docs/security/security-engine.md · risk-scoring.md · ddos-protection.md · adaptive-load-shedding.md · challenge-engine.md</div>
+  </div>
+</header>
+
+<nav class="toc">
+  <div class="wrap">
+    <a href="#overview">0 · Architecture</a>
+    <a href="#lifecycle">1 · Request lifecycle</a>
+    <a href="#gates">2 · The 4 traffic gates</a>
+    <a href="#detectors">3 · Detector chain &amp; scores</a>
+    <a href="#risk">4 · Risk key &amp; score</a>
+    <a href="#challenge">5 · Challenge ladder</a>
+    <a href="#ddos">6 · DDoS protection</a>
+    <a href="#shed">7 · Load shedding</a>
+    <a href="#mtls">8 · Zero Trust mTLS</a>
+  </div>
+</nav>
+
+<!-- ============ 0. SYSTEM ARCHITECTURE ============ -->
+<section id="overview">
+  <div class="wrap">
+    <div class="eyebrow">00 — The big picture</div>
+    <h2>System architecture</h2>
+    <p class="lead">A single Rust binary that runs <b>two planes</b>. The <b>data plane</b> (public listeners) inspects and forwards traffic; the <b>control plane</b> (admin listener, loopback) runs the dashboard, API, and audit chain. The security invariant: the two planes bind distinct addresses and share <b>nothing</b> on the hot path except an <code style="font-family:var(--mono)">ArcSwap&lt;WafConfig&gt;</code> and the state-backend handle — so compromising one does not trivially reach the other.</p>
+
+    <div class="card">
+      <div class="svgwrap scrollx">
+      <svg viewBox="0 0 1040 640" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+        <defs>
+          <marker id="o_ar" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#67748c"/></marker>
+        </defs>
+
+        <!-- internet -->
+        <rect x="170" y="16" width="280" height="40" rx="10" fill="#1b2436" stroke="#26304a"/>
+        <text x="310" y="41" text-anchor="middle" fill="#e8edf6" font-size="13" font-weight="700">Internet — clients · bots · APIs</text>
+        <line x1="310" y1="56" x2="310" y2="78" stroke="#67748c" stroke-width="2" marker-end="url(#o_ar)"/>
+
+        <!-- DATA PLANE -->
+        <rect x="30" y="80" width="560" height="468" rx="16" fill="#0f1512" stroke="#1f5a45"/>
+        <text x="50" y="106" fill="#36d399" font-size="14" font-weight="800" letter-spacing=".06em">DATA PLANE — public listeners (:8080 / :8443)</text>
+
+        <g font-size="11.5">
+          <!-- stage rows -->
+          <rect x="48" y="116" width="524" height="38" rx="8" fill="#11161f" stroke="#26304a"/>
+          <text x="62" y="133" fill="#e8edf6" font-weight="700">Worker Supervisor</text>
+          <text x="62" y="148" fill="#9aa7bd">SO_REUSEPORT · N workers · graceful drain · FD-pass hot reload</text>
+
+          <rect x="48" y="158" width="524" height="38" rx="8" fill="#11161f" stroke="#26304a"/>
+          <text x="62" y="175" fill="#e8edf6" font-weight="700">TLS / SNI / ACME / OCSP</text>
+          <text x="62" y="190" fill="#9aa7bd">rustls 0.23 · hot-swap cert store · optional downstream mTLS</text>
+
+          <rect x="48" y="200" width="524" height="38" rx="8" fill="#11161f" stroke="#26304a"/>
+          <text x="62" y="217" fill="#e8edf6" font-weight="700">Protocol layer</text>
+          <text x="62" y="232" fill="#9aa7bd">h1 · h2 (ALPN) · h3/QUIC (feature) · WebSocket upgrade · gRPC</text>
+
+          <rect x="48" y="242" width="524" height="38" rx="8" fill="#1a1510" stroke="#5a4520"/>
+          <text x="62" y="259" fill="#f5a524" font-weight="700">Admission controller  →  §7 load shedding</text>
+          <text x="62" y="274" fill="#9aa7bd">adaptive concurrency (Gradient2) · priority queue · CRITICAL never shed</text>
+
+          <rect x="48" y="284" width="524" height="38" rx="8" fill="#11161f" stroke="#26304a"/>
+          <text x="62" y="301" fill="#e8edf6" font-weight="700">Route table  →  §1 lifecycle</text>
+          <text x="62" y="316" fill="#9aa7bd">host (exact/wildcard/regex) → path trie → tier + upstream pool</text>
+
+          <rect x="48" y="326" width="524" height="58" rx="8" fill="#160f1d" stroke="#4a3066"/>
+          <text x="62" y="343" fill="#a779ff" font-weight="700">Security pipeline (tiered)  →  §2–§5</text>
+          <text x="62" y="358" fill="#9aa7bd">traffic gates → detectors (OWASP) → rule engine → risk + tier gate</text>
+          <text x="62" y="373" fill="#9aa7bd">+ fingerprint (JA3/JA4/h2) · bot · API guard · DLP in · challenge ladder</text>
+
+          <rect x="48" y="388" width="524" height="34" rx="8" fill="#11161f" stroke="#26304a"/>
+          <text x="62" y="404" fill="#e8edf6" font-weight="700">Origin auth</text>
+          <text x="380" y="404" fill="#9aa7bd">ForwardAuth · JWT · Basic · IP</text>
+
+          <rect x="48" y="426" width="524" height="34" rx="8" fill="#11161f" stroke="#26304a"/>
+          <text x="62" y="442" fill="#e8edf6" font-weight="700">Transforms</text>
+          <text x="380" y="442" fill="#9aa7bd">headers · CORS · rewrite · quotas</text>
+
+          <rect x="48" y="464" width="524" height="38" rx="8" fill="#11161f" stroke="#1f5a45"/>
+          <text x="62" y="481" fill="#36d399" font-weight="700">Upstream pool manager  →  §8 mTLS</text>
+          <text x="62" y="496" fill="#9aa7bd">5 LB strategies · health · circuit breaker · retry · shadow · upstream mTLS</text>
+
+          <rect x="48" y="506" width="524" height="34" rx="8" fill="#11161f" stroke="#26304a"/>
+          <text x="62" y="522" fill="#e8edf6" font-weight="700">Response filter</text>
+          <text x="380" y="522" fill="#9aa7bd">header harden · scrub · DLP out</text>
+        </g>
+
+        <!-- arrow to backends -->
+        <line x1="310" y1="548" x2="310" y2="572" stroke="#67748c" stroke-width="2" marker-end="url(#o_ar)"/>
+        <rect x="170" y="574" width="280" height="40" rx="10" fill="#0f1a14" stroke="#1f5a45"/>
+        <text x="310" y="599" text-anchor="middle" fill="#36d399" font-size="13" font-weight="700">Backend pools</text>
+
+        <!-- CONTROL PLANE -->
+        <rect x="620" y="80" width="390" height="270" rx="16" fill="#0f1320" stroke="#2a3a66"/>
+        <text x="640" y="106" fill="#4f8cff" font-size="14" font-weight="800" letter-spacing=".06em">CONTROL PLANE — admin listener</text>
+        <text x="640" y="123" fill="#67748c" font-size="11">loopback / IP-allowlisted · binds a distinct address</text>
+        <g font-size="11.5">
+          <rect x="638" y="134" width="354" height="34" rx="8" fill="#11161f" stroke="#26304a"/>
+          <text x="652" y="155" fill="#e8edf6">Aegis Console — React SPA (CSP, no CDN)</text>
+          <rect x="638" y="172" width="354" height="34" rx="8" fill="#11161f" stroke="#26304a"/>
+          <text x="652" y="193" fill="#e8edf6">Admin REST + SSE live feed · /metrics · /healthz</text>
+          <rect x="638" y="210" width="354" height="50" rx="8" fill="#11161f" stroke="#26304a"/>
+          <text x="652" y="228" fill="#e8edf6">Auth (defense-in-depth):</text>
+          <text x="652" y="245" fill="#9aa7bd" font-family="monospace" font-size="10.5">IP→mTLS→argon2id→TOTP→HMAC session→CSRF</text>
+          <rect x="638" y="264" width="354" height="34" rx="8" fill="#11161f" stroke="#26304a"/>
+          <text x="652" y="285" fill="#e8edf6">Audit chain — SHA-256 hash-chained NDJSON</text>
+          <text x="640" y="320" fill="#67748c" font-size="11">every config change → audited · CSRF-gated · hot-swap</text>
+          <text x="640" y="338" fill="#67748c" font-size="11">no restart (notify watcher ~100 ms)</text>
+        </g>
+
+        <!-- bridge between planes -->
+        <line x1="590" y1="355" x2="620" y2="355" stroke="#a779ff" stroke-width="2" stroke-dasharray="5 4"/>
+        <rect x="620" y="362" width="390" height="58" rx="10" fill="#160f24" stroke="#4a3066"/>
+        <text x="638" y="384" fill="#a779ff" font-size="12" font-weight="800">Shared on the hot path — ONLY:</text>
+        <text x="638" y="402" fill="#9aa7bd" font-size="11" font-family="monospace">ArcSwap&lt;WafConfig&gt;  +  state-backend handle</text>
+        <text x="638" y="415" fill="#67748c" font-size="10.5">plane compromise does not trivially cross over</text>
+
+        <!-- shared services bar -->
+        <rect x="620" y="432" width="390" height="182" rx="16" fill="#11141d" stroke="#26304a"/>
+        <text x="640" y="457" fill="#9aa7bd" font-size="13" font-weight="800" letter-spacing=".05em">SHARED SERVICES / SIDE CHANNELS</text>
+        <g font-size="11" fill="#cdd6e6">
+          <text x="640" y="480">▪ State backend — in-memory · or Redis (cluster-wide)</text>
+          <text x="640" y="500">▪ SIEM sinks — JSON · Syslog · CEF · LEEF · OCSF · Kafka · HEC</text>
+          <text x="640" y="520">▪ Audit witness export + CLI verifier</text>
+          <text x="640" y="540">▪ Secrets — env · file · Vault · AWS · GCP · Azure</text>
+          <text x="640" y="560">▪ Config source — local file + GitOps / config plane</text>
+          <text x="640" y="580">▪ Threat intel — STIX/TAXII · MaxMind GeoIP</text>
+          <text x="640" y="600">▪ Tracing — OTLP → SigNoz / Jaeger (feature)</text>
+        </g>
+      </svg>
+      </div>
+      <figcaption>Source: Architecture.md §1 (Binary Topology) + the two-plane invariant. Stage links (§n) jump to the detailed panels below.</figcaption>
+    </div>
+
+    <!-- crate map -->
+    <div class="card" style="margin-top:18px">
+      <div class="svgwrap scrollx">
+      <svg viewBox="0 0 1040 320" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+        <text x="24" y="30" fill="#e8edf6" font-size="15" font-weight="700">Five-crate workspace</text>
+
+        <!-- aegis-bin top -->
+        <rect x="24" y="46" width="992" height="48" rx="12" fill="#1b2436" stroke="#26304a"/>
+        <text x="40" y="68" fill="#e8edf6" font-size="13" font-weight="700">aegis-bin</text>
+        <text x="40" y="84" fill="#9aa7bd" font-size="11">the `waf` binary — CLI dispatch (run / validate / audit / snapshot) + crate wiring</text>
+
+        <!-- middle three -->
+        <rect x="24" y="106" width="320" height="120" rx="12" fill="#0f1512" stroke="#1f5a45"/>
+        <text x="40" y="128" fill="#36d399" font-size="13" font-weight="700">aegis-proxy</text>
+        <text x="40" y="146" fill="#9aa7bd" font-size="10.5">DATA PLANE</text>
+        <text x="40" y="166" fill="#cdd6e6" font-size="10.5" font-family="monospace">tls · proto · route</text>
+        <text x="40" y="182" fill="#cdd6e6" font-size="10.5" font-family="monospace">upstream · state · shed</text>
+        <text x="40" y="198" fill="#cdd6e6" font-size="10.5" font-family="monospace">sd (discovery) · dr</text>
+
+        <rect x="360" y="106" width="320" height="120" rx="12" fill="#160f1d" stroke="#4a3066"/>
+        <text x="376" y="128" fill="#a779ff" font-size="13" font-weight="700">aegis-security</text>
+        <text x="376" y="146" fill="#9aa7bd" font-size="10.5">SECURITY PIPELINE</text>
+        <text x="376" y="166" fill="#cdd6e6" font-size="10.5" font-family="monospace">rules · detectors · risk</text>
+        <text x="376" y="182" fill="#cdd6e6" font-size="10.5" font-family="monospace">ratelimit · ddos · fingerprint</text>
+        <text x="376" y="198" fill="#cdd6e6" font-size="10.5" font-family="monospace">bot · apiguard · dlp · challenge</text>
+
+        <rect x="696" y="106" width="320" height="120" rx="12" fill="#0f1320" stroke="#2a3a66"/>
+        <text x="712" y="128" fill="#4f8cff" font-size="13" font-weight="700">aegis-control</text>
+        <text x="712" y="146" fill="#9aa7bd" font-size="10.5">CONTROL PLANE</text>
+        <text x="712" y="166" fill="#cdd6e6" font-size="10.5" font-family="monospace">admin · dashboard · audit</text>
+        <text x="712" y="182" fill="#cdd6e6" font-size="10.5" font-family="monospace">siem · observability</text>
+        <text x="712" y="198" fill="#cdd6e6" font-size="10.5" font-family="monospace">compliance · gitops</text>
+
+        <!-- core bottom -->
+        <rect x="24" y="238" width="992" height="62" rx="12" fill="#11141d" stroke="#26304a"/>
+        <text x="40" y="262" fill="#e8edf6" font-size="13" font-weight="700">aegis-core — foundation</text>
+        <text x="40" y="282" fill="#9aa7bd" font-size="11">shared types · config schema · ClientIdentity / RiskKey · pipeline traits — depended on by all four crates above</text>
+      </svg>
+      </div>
+      <figcaption>Source: Architecture.md §2 (Module Layout) — the 5-crate split.</figcaption>
+    </div>
+
+    <div class="grid3" style="margin-top:18px">
+      <div class="card pad">
+        <div class="tag" style="color:var(--green)">Layer 1 · in-node</div>
+        <p style="font-size:13.5px;color:var(--muted);margin:8px 0 0">Tokio worker threads (multi-thread runtime, optional CPU affinity). Knob: <code style="font-family:var(--mono)">runtime.workers</code> / <code style="font-family:var(--mono)">cpu_affinity</code>.</p>
+      </div>
+      <div class="card pad">
+        <div class="tag" style="color:var(--blue)">Layer 2 · across nodes</div>
+        <p style="font-size:13.5px;color:var(--muted);margin:8px 0 0">N peers behind one VIP + an LB. Knob: <code style="font-family:var(--mono)">node.id</code> + Redis-shared rate-limit &amp; leader lease.</p>
+      </div>
+      <div class="card pad">
+        <div class="tag" style="color:var(--purple)">Layer 3 · state</div>
+        <p style="font-size:13.5px;color:var(--muted);margin:8px 0 0">Redis-backed shared state — counters, leases, block lists. Knob: <code style="font-family:var(--mono)">state.backend: redis</code>.</p>
+      </div>
+    </div>
+
+    <div class="note dim"><div><b>How to read the rest of this guide.</b> The data-plane stack above is the spine; each numbered section that follows zooms into one stage — the request lifecycle (§1), the gates and detectors inside the security pipeline (§2–§4), the challenge ladder (§5), DDoS (§6), the admission controller's load shedding (§7), and upstream mTLS (§8).</div></div>
+  </div>
+</section>
+
+<!-- ============ 1. REQUEST LIFECYCLE ============ -->
+<section id="lifecycle">
+  <div class="wrap">
+    <div class="eyebrow">01 — Workflow</div>
+    <h2>The request lifecycle</h2>
+    <p class="lead">Every request is <b>routed first</b>, then runs a <b>fixed pipeline of gates</b>. Each gate either short-circuits the request (block, challenge, 429, 503) or adds <b>score</b> to a running risk total. After all gates run, the total is compared to the route's tier threshold: above the line it blocks, otherwise it forwards upstream.</p>
+
+    <div class="card">
+      <div class="svgwrap scrollx">
+      <svg viewBox="0 0 1040 1210" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+        <defs>
+          <marker id="ar" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="#67748c"/>
+          </marker>
+          <marker id="arR" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="#f4525f"/>
+          </marker>
+          <marker id="arA" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="#36d399"/>
+          </marker>
+        </defs>
+
+        <!-- spine arrows -->
+        <g stroke="#67748c" stroke-width="2" marker-end="url(#ar)" fill="none">
+          <line x1="360" y1="78"  x2="360" y2="104"/>
+          <line x1="360" y1="170" x2="360" y2="196"/>
+          <line x1="360" y1="262" x2="360" y2="288"/>
+          <line x1="360" y1="468" x2="360" y2="494"/>
+          <line x1="360" y1="624" x2="360" y2="650"/>
+          <line x1="360" y1="780" x2="360" y2="806"/>
+          <line x1="360" y1="900" x2="360" y2="926"/>
+          <line x1="360" y1="992" x2="360" y2="1018"/>
+          <line x1="360" y1="1084" x2="360" y2="1110"/>
+        </g>
+
+        <!-- 1 client -->
+        <g>
+          <rect x="230" y="20" width="260" height="58" rx="12" fill="#1b2436" stroke="#26304a"/>
+          <text x="360" y="46" text-anchor="middle" fill="#e8edf6" font-size="16" font-weight="700">Client</text>
+          <text x="360" y="66" text-anchor="middle" fill="#9aa7bd" font-size="12">browser · bot · API caller</text>
+        </g>
+
+        <!-- 2 listener -->
+        <g>
+          <rect x="190" y="104" width="340" height="66" rx="12" fill="#151c2c" stroke="#26304a"/>
+          <text x="360" y="130" text-anchor="middle" fill="#e8edf6" font-size="15" font-weight="700">Listener + TLS termination</text>
+          <text x="360" y="150" text-anchor="middle" fill="#9aa7bd" font-size="12">:8080 plain · :8443 TLS 1.2+ · SNI cert pick · ALPN h2 · h3 (QUIC, opt-in)</text>
+          <text x="360" y="164" text-anchor="middle" fill="#67748c" font-size="11">nothing gated yet — request not parsed</text>
+        </g>
+
+        <!-- 3 route -->
+        <g>
+          <rect x="190" y="196" width="340" height="66" rx="12" fill="#151c2c" stroke="#26304a"/>
+          <text x="360" y="222" text-anchor="middle" fill="#e8edf6" font-size="15" font-weight="700">Route resolution</text>
+          <text x="360" y="242" text-anchor="middle" fill="#9aa7bd" font-size="12">host + path + method · first-match-wins</text>
+          <text x="360" y="256" text-anchor="middle" fill="#36cfd1" font-size="11.5" font-family="monospace">→ resolves route's TIER + UPSTREAM pool</text>
+        </g>
+
+        <!-- 4 access gate (the 4 traffic gates) -->
+        <g>
+          <rect x="150" y="288" width="420" height="180" rx="14" fill="#191120" stroke="#5a2230"/>
+          <text x="170" y="312" fill="#ff8a3d" font-size="13" font-weight="800" letter-spacing=".06em">ACCESS GATE — runs BEFORE detectors</text>
+          <text x="170" y="328" fill="#67748c" font-size="11">short-circuits the pipeline · reads shared cluster state</text>
+          <!-- gate rows -->
+          <g font-size="12">
+            <rect x="168" y="338" width="384" height="24" rx="6" fill="#20131a" stroke="#3a2330"/>
+            <text x="178" y="354" fill="#e8edf6">1 · Blacklist  IP/CIDR/ASN/country</text>
+            <text x="544" y="354" text-anchor="end" fill="#f4525f" font-weight="700">403</text>
+
+            <rect x="168" y="366" width="384" height="24" rx="6" fill="#20131a" stroke="#3a2330"/>
+            <text x="178" y="382" fill="#e8edf6">2 · Whitelist + bypass-scope  ·  3 · Trusted-proxy XFF</text>
+            <text x="544" y="382" text-anchor="end" fill="#36d399" font-weight="700">bypass</text>
+
+            <rect x="168" y="394" width="384" height="24" rx="6" fill="#20131a" stroke="#3a2330"/>
+            <text x="178" y="410" fill="#e8edf6">4 · Strike gate  cumulative risk ≥ threshold</text>
+            <text x="544" y="410" text-anchor="end" fill="#f4525f" font-weight="700">403</text>
+
+            <rect x="168" y="422" width="384" height="24" rx="6" fill="#20131a" stroke="#3a2330"/>
+            <text x="178" y="438" fill="#e8edf6">5 · Rate limit  sliding window / token bucket</text>
+            <text x="544" y="438" text-anchor="end" fill="#f5a524" font-weight="700">429</text>
+
+            <rect x="168" y="450" width="384" height="22" rx="6" fill="#20131a" stroke="#3a2330"/>
+            <text x="178" y="465" fill="#e8edf6">6 · DDoS gate  per-IP burst / spike mode</text>
+            <text x="544" y="465" text-anchor="end" fill="#f4525f" font-weight="700">403</text>
+          </g>
+        </g>
+
+        <!-- 5 detector chain -->
+        <g>
+          <rect x="170" y="494" width="380" height="130" rx="14" fill="#101a18" stroke="#1f5a45"/>
+          <text x="190" y="518" fill="#36d399" font-size="13" font-weight="800" letter-spacing=".06em">DETECTOR CHAIN</text>
+          <text x="190" y="535" fill="#9aa7bd" font-size="11.5">every detector in the mask runs · pure fn over request</text>
+          <text x="190" y="556" fill="#e8edf6" font-size="11.5" font-family="monospace">sqli · xss · path_traversal · ssrf · cmdi</text>
+          <text x="190" y="572" fill="#e8edf6" font-size="11.5" font-family="monospace">header_inj · body_abuse · recon · brute_force</text>
+          <text x="190" y="588" fill="#e8edf6" font-size="11.5" font-family="monospace">ssti · nosql · open_redirect · canary</text>
+          <text x="190" y="604" fill="#a779ff" font-size="11.5" font-family="monospace">ai ⟵ fallback, only if no signature fired</text>
+          <text x="190" y="619" fill="#67748c" font-size="10.5">detectors never block alone — they add score</text>
+        </g>
+
+        <!-- 6 rule engine -->
+        <g>
+          <rect x="170" y="650" width="380" height="130" rx="14" fill="#0f1626" stroke="#2a3a66"/>
+          <text x="190" y="674" fill="#4f8cff" font-size="13" font-weight="800" letter-spacing=".06em">RULE ENGINE</text>
+          <text x="190" y="691" fill="#9aa7bd" font-size="11.5">operator DSL · priority-ordered · scope-filtered</text>
+          <text x="190" y="707" fill="#67748c" font-size="11">global → tier → route → session</text>
+          <text x="190" y="730" fill="#e8edf6" font-size="11.5">actions: Allow · Block · Challenge · RaiseRisk(Δ)</text>
+          <text x="190" y="746" fill="#e8edf6" font-size="11.5">RateLimit · LogOnly · Transform</text>
+          <text x="190" y="768" fill="#f5a524" font-size="11.5" font-weight="700">first terminal action wins</text>
+        </g>
+
+        <!-- 7 risk + tier gate -->
+        <g>
+          <rect x="150" y="806" width="420" height="94" rx="14" fill="#1a1322" stroke="#4a3066"/>
+          <text x="170" y="830" fill="#a779ff" font-size="13" font-weight="800" letter-spacing=".06em">RISK + TIER GATE</text>
+          <text x="170" y="850" fill="#e8edf6" font-size="11.5" font-family="monospace">score = Σ detector signals + Σ rule Δ + reputation + bot</text>
+          <text x="170" y="872" fill="#9aa7bd" font-size="12">if score ≥ <tspan fill="#a779ff" font-weight="700">tier.risk_threshold</tspan> → BLOCK</text>
+          <text x="170" y="890" fill="#9aa7bd" font-size="12">else → forward · cumulative bucket also updated (decays)</text>
+          <text x="544" y="850" text-anchor="end" fill="#f4525f" font-weight="700" font-size="12">403</text>
+        </g>
+
+        <!-- 8 upstream -->
+        <g>
+          <rect x="190" y="926" width="340" height="66" rx="12" fill="#101a18" stroke="#1f5a45"/>
+          <text x="360" y="952" text-anchor="middle" fill="#36d399" font-size="14" font-weight="700">Forward to upstream pool ✓</text>
+          <text x="360" y="972" text-anchor="middle" fill="#9aa7bd" font-size="12">LB picks member · upstream responds</text>
+          <text x="360" y="986" text-anchor="middle" fill="#67748c" font-size="11">round_robin · least_conn · p2c · consistent_hash · weighted</text>
+        </g>
+
+        <!-- 9 response filter -->
+        <g>
+          <rect x="190" y="1018" width="340" height="66" rx="12" fill="#151c2c" stroke="#26304a"/>
+          <text x="360" y="1044" text-anchor="middle" fill="#e8edf6" font-size="14" font-weight="700">Response filter</text>
+          <text x="360" y="1064" text-anchor="middle" fill="#9aa7bd" font-size="12">security headers · stack-trace scrub · DLP outbound</text>
+        </g>
+
+        <!-- 10 audit -->
+        <g>
+          <rect x="190" y="1110" width="340" height="66" rx="12" fill="#11161f" stroke="#26304a"/>
+          <text x="360" y="1136" text-anchor="middle" fill="#e8edf6" font-size="14" font-weight="700">Audit + metrics</text>
+          <text x="360" y="1156" text-anchor="middle" fill="#9aa7bd" font-size="12">one hash-chained NDJSON event · one Prometheus bucket</text>
+        </g>
+
+        <!-- exit lines to the right column -->
+        <g font-size="11.5" font-family="monospace">
+          <!-- block exits -->
+          <line x1="570" y1="378" x2="660" y2="378" stroke="#f4525f" stroke-width="2" marker-end="url(#arR)"/>
+          <rect x="664" y="350" width="300" height="58" rx="10" fill="#1c1014" stroke="#5a2230"/>
+          <text x="680" y="372" fill="#f4525f" font-weight="700">403 / 429 — short-circuit</text>
+          <text x="680" y="390" fill="#9aa7bd">access gate blocks BEFORE any detector runs</text>
+          <text x="680" y="403" fill="#67748c">X-WAF-Action: block | rate_limit</text>
+
+          <line x1="570" y1="848" x2="660" y2="848" stroke="#f4525f" stroke-width="2" marker-end="url(#arR)"/>
+          <rect x="664" y="820" width="300" height="58" rx="10" fill="#1c1014" stroke="#5a2230"/>
+          <text x="680" y="842" fill="#f4525f" font-weight="700">403 — over tier threshold</text>
+          <text x="680" y="860" fill="#9aa7bd">composite score crossed the line</text>
+          <text x="680" y="873" fill="#67748c">or rule engine returned Block / Challenge</text>
+
+          <!-- challenge from rule/risk -->
+          <line x1="570" y1="730" x2="660" y2="730" stroke="#f5a524" stroke-width="2" marker-end="url(#ar)"/>
+          <rect x="664" y="704" width="300" height="52" rx="10" fill="#1d1810" stroke="#5a4520"/>
+          <text x="680" y="726" fill="#f5a524" font-weight="700">Challenge ladder</text>
+          <text x="680" y="744" fill="#9aa7bd">JS → PoW → CAPTCHA → block  (see §5)</text>
+
+          <!-- allow note -->
+          <line x1="530" y1="959" x2="660" y2="959" stroke="#36d399" stroke-width="2" marker-end="url(#arA)"/>
+          <rect x="664" y="934" width="300" height="50" rx="10" fill="#0f1a14" stroke="#1f5a45"/>
+          <text x="680" y="956" fill="#36d399" font-weight="700">ALLOW path</text>
+          <text x="680" y="974" fill="#9aa7bd">detected-but-under-threshold = forwarded + logged</text>
+        </g>
+      </svg>
+      </div>
+      <figcaption>Source: docs/security/security-engine.md — "The picture" + "How a request becomes a decision"</figcaption>
+    </div>
+
+    <div class="note dim"><div><b>Why the order matters.</b> The access gate's four checks run <i>before</i> the detector chain, so a known-bad IP or a volumetric burst is rejected without spending CPU on regex inspection. The AI detector is deliberately last and only fires when no cheaper signature detector already matched.</div></div>
+  </div>
+</section>
+<!-- ============ 2. THE 4 TRAFFIC GATES ============ -->
+<section id="gates">
+  <div class="wrap">
+    <div class="eyebrow">02 — Request-flow gates</div>
+    <h2>The four traffic gates</h2>
+    <p class="lead">Four gates sit in the same architectural tier — <b>before</b> the detector chain. They all read the same shared cluster state and decide block-or-pass directly. They do <b>not</b> emit risk signals; they short-circuit the request. This is why a volumetric attacker is cheap to reject.</p>
+
+    <div class="card">
+      <div class="svgwrap scrollx">
+      <svg viewBox="0 0 1040 300" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+        <defs>
+          <marker id="g_ar" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#67748c"/></marker>
+        </defs>
+        <text x="20" y="30" fill="#9aa7bd" font-size="13">Request enters →</text>
+        <line x1="130" y1="80" x2="990" y2="80" stroke="#26304a" stroke-width="2" marker-end="url(#g_ar)"/>
+
+        <!-- gate 1 -->
+        <g>
+          <rect x="40" y="48" width="210" height="64" rx="12" fill="#151c2c" stroke="#3a2330"/>
+          <text x="56" y="72" fill="#e8edf6" font-size="14" font-weight="700">1 · Access list</text>
+          <text x="56" y="92" fill="#9aa7bd" font-size="11">IP / CIDR / ASN / country</text>
+          <text x="56" y="106" fill="#f4525f" font-size="11" font-weight="700" font-family="monospace">403 block</text>
+        </g>
+        <!-- gate 2 -->
+        <g>
+          <rect x="270" y="48" width="210" height="64" rx="12" fill="#151c2c" stroke="#3a2330"/>
+          <text x="286" y="72" fill="#e8edf6" font-size="14" font-weight="700">2 · Strike-block</text>
+          <text x="286" y="92" fill="#9aa7bd" font-size="11">lifetime strikes ≥ block_at</text>
+          <text x="286" y="106" fill="#f4525f" font-size="11" font-weight="700" font-family="monospace">403 block</text>
+        </g>
+        <!-- gate 3 -->
+        <g>
+          <rect x="500" y="48" width="210" height="64" rx="12" fill="#151c2c" stroke="#5a2230"/>
+          <text x="516" y="72" fill="#e8edf6" font-size="14" font-weight="700">3 · DDoS</text>
+          <text x="516" y="92" fill="#9aa7bd" font-size="11">per-IP burst / spike mode</text>
+          <text x="516" y="106" fill="#f4525f" font-size="11" font-weight="700" font-family="monospace">403 block</text>
+        </g>
+        <!-- gate 4 -->
+        <g>
+          <rect x="730" y="48" width="210" height="64" rx="12" fill="#151c2c" stroke="#5a4520"/>
+          <text x="746" y="72" fill="#e8edf6" font-size="14" font-weight="700">4 · Rate-limit</text>
+          <text x="746" y="92" fill="#9aa7bd" font-size="11">token bucket exceeded</text>
+          <text x="746" y="106" fill="#f5a524" font-size="11" font-weight="700" font-family="monospace">429 rate_limit</text>
+        </g>
+
+        <text x="965" y="84" fill="#36d399" font-size="13" font-weight="700">→ detectors</text>
+
+        <!-- shared state bar -->
+        <rect x="40" y="170" width="900" height="74" rx="14" fill="#0f1626" stroke="#2a3a66"/>
+        <text x="60" y="198" fill="#4f8cff" font-size="13" font-weight="800">Shared StateBackend  (in_memory · or redis cluster-wide)</text>
+        <text x="60" y="220" fill="#9aa7bd" font-size="12">sliding-window counters · token buckets · strike scores · auto-block keyspace · leader leases</text>
+        <text x="60" y="237" fill="#67748c" font-size="11">all four gates read/write here → a block written on one node takes effect across every node</text>
+
+        <g stroke="#2a3a66" stroke-width="1.5" stroke-dasharray="4 4">
+          <line x1="145" y1="112" x2="145" y2="170"/>
+          <line x1="375" y1="112" x2="375" y2="170"/>
+          <line x1="605" y1="112" x2="605" y2="170"/>
+          <line x1="835" y1="112" x2="835" y2="170"/>
+        </g>
+      </svg>
+      </div>
+      <figcaption>Source: docs/security/ddos-protection.md — "What DDoS is — and isn't" gate-tier table</figcaption>
+    </div>
+
+    <div class="grid2" style="margin-top:18px">
+      <div class="card pad">
+        <h3 style="margin:0 0 6px;font-size:16px;color:var(--green)">Rate-limit vs DDoS — the key distinction</h3>
+        <p style="color:var(--muted);font-size:14.5px;margin:0">
+          <b style="color:var(--ink)">Rate-limit</b> enforces a <i>steady per-request budget</i> (token/leaky bucket) → <span class="pill" style="background:rgba(245,165,36,.12);color:var(--amber)">429 Too Many Requests</span> with <code style="font-family:var(--mono)">Retry-After</code>.<br><br>
+          <b style="color:var(--ink)">DDoS</b> handles a <i>sustained burst → temporary block</i> (sliding-window auto-block) → <span class="pill" style="background:rgba(244,82,95,.12);color:var(--red)">403</span> for <code style="font-family:var(--mono)">block_ttl_s</code> seconds. The two are complementary — operators run both.
+        </p>
+      </div>
+      <div class="card pad">
+        <h3 style="margin:0 0 6px;font-size:16px;color:var(--blue)">Never <code style="font-family:var(--mono);font-size:14px">circuit_breaker</code></h3>
+        <p style="color:var(--muted);font-size:14.5px;margin:0">Per the interop contract, volumetric abuse from a single source may answer with <code style="font-family:var(--mono)">rate_limit</code> or <code style="font-family:var(--mono)">block</code> — never <code style="font-family:var(--mono)">circuit_breaker</code>. That action is reserved for <b style="color:var(--ink)">upstream</b> protection (the pool's own breaker), not source-rate management. The DDoS gate only ever emits <code style="font-family:var(--mono)">block</code>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- ============ 3. DETECTOR CHAIN + SCORES ============ -->
+<section id="detectors">
+  <div class="wrap">
+    <div class="eyebrow">03 — Detection</div>
+    <h2>Detector chain &amp; the score ladder</h2>
+    <p class="lead">Each detector is a pure function over the request. A hit emits a <code style="font-family:var(--mono)">Signal {tag, score}</code>. The per-request gate sums the signals and compares to the matched <b>tier threshold</b>. Read this chart top-down: a detector chip blocks a single request at any tier whose dashed line sits <b>below</b> it.</p>
+
+    <div class="card">
+      <div class="svgwrap scrollx">
+      <svg viewBox="0 0 1040 600" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+        <!-- score axis -->
+        <text x="34" y="50" fill="#67748c" font-size="11" text-anchor="middle">score</text>
+        <line x1="70" y1="55" x2="70" y2="545" stroke="#26304a" stroke-width="1.5"/>
+        <g fill="#67748c" font-size="11" text-anchor="end" font-family="monospace">
+          <text x="60" y="64">100</text><line x1="65" y1="60" x2="70" y2="60" stroke="#26304a"/>
+          <text x="60" y="160">80</text>
+          <text x="60" y="208">70</text>
+          <text x="60" y="256">60</text>
+          <text x="60" y="304">50</text>
+          <text x="60" y="376">35</text>
+          <text x="60" y="400">30</text>
+          <text x="60" y="424">25</text>
+          <text x="60" y="544">0</text>
+        </g>
+
+        <!-- tier threshold lines -->
+        <g font-family="monospace" font-size="11" font-weight="700">
+          <line x1="70" y1="156" x2="870" y2="156" stroke="#36d399" stroke-width="1.6" stroke-dasharray="6 5"/>
+          <text x="878" y="160" fill="#36d399">LOW  ≥ 80</text>
+          <line x1="70" y1="204" x2="870" y2="204" stroke="#f5a524" stroke-width="1.6" stroke-dasharray="6 5"/>
+          <text x="878" y="208" fill="#f5a524">MEDIUM ≥ 70</text>
+          <line x1="70" y1="252" x2="870" y2="252" stroke="#ff8a3d" stroke-width="1.6" stroke-dasharray="6 5"/>
+          <text x="878" y="256" fill="#ff8a3d">HIGH ≥ 60</text>
+          <line x1="70" y1="300" x2="870" y2="300" stroke="#f4525f" stroke-width="1.6" stroke-dasharray="6 5"/>
+          <text x="878" y="304" fill="#f4525f">CRITICAL ≥ 50</text>
+        </g>
+
+        <!-- chips. helper geometry done by hand -->
+        <!-- 100: canary -->
+        <g font-size="11.5" text-anchor="middle">
+          <rect x="110" y="48" width="220" height="26" rx="7" fill="#2a1030" stroke="#a779ff"/>
+          <text x="220" y="65" fill="#e8edf6" font-weight="700">★ Canary honeypot — 100</text>
+        </g>
+        <!-- 80: rce ceiling -->
+        <g font-size="11.5" text-anchor="middle">
+          <rect x="110" y="144" width="180" height="26" rx="7" fill="#2a1014" stroke="#f4525f"/>
+          <text x="200" y="161" fill="#e8edf6" font-weight="700">Log4Shell / JNDI — 80</text>
+          <rect x="300" y="144" width="120" height="26" rx="7" fill="#2a1014" stroke="#f4525f"/>
+          <text x="360" y="161" fill="#e8edf6" font-weight="700">XXE — 80</text>
+          <text x="436" y="161" fill="#67748c" text-anchor="start" font-size="10.5">RCE ceiling · blocks every tier (incl. low)</text>
+        </g>
+        <!-- 70 row: 8 chips -->
+        <g font-size="11" text-anchor="middle" fill="#e8edf6" font-weight="600">
+          <rect x="110" y="192" width="88" height="26" rx="7" fill="#1c2233" stroke="#36cfd1"/><text x="154" y="209">SQLi</text>
+          <rect x="205" y="192" width="88" height="26" rx="7" fill="#1c2233" stroke="#36cfd1"/><text x="249" y="209">XSS</text>
+          <rect x="300" y="192" width="88" height="26" rx="7" fill="#1c2233" stroke="#36cfd1"/><text x="344" y="209">Path-trav</text>
+          <rect x="395" y="192" width="88" height="26" rx="7" fill="#1c2233" stroke="#36cfd1"/><text x="439" y="209">SSRF</text>
+          <rect x="490" y="192" width="88" height="26" rx="7" fill="#1c2233" stroke="#36cfd1"/><text x="534" y="209">Cmd-inj</text>
+          <rect x="585" y="192" width="88" height="26" rx="7" fill="#1c2233" stroke="#36cfd1"/><text x="629" y="209">SSTI</text>
+          <rect x="680" y="192" width="88" height="26" rx="7" fill="#1c2233" stroke="#36cfd1"/><text x="724" y="209">NoSQL</text>
+          <rect x="775" y="192" width="88" height="26" rx="7" fill="#1c2233" stroke="#36cfd1"/><text x="819" y="209">CRLF</text>
+        </g>
+        <!-- 60 row -->
+        <g font-size="11" text-anchor="middle" fill="#e8edf6" font-weight="600">
+          <rect x="110" y="240" width="180" height="26" rx="7" fill="#231a10" stroke="#ff8a3d"/><text x="200" y="257">Mass assignment — 60</text>
+        </g>
+        <!-- 50 row: 6 chips -->
+        <g font-size="10.5" text-anchor="middle" fill="#e8edf6" font-weight="600">
+          <rect x="110" y="288" width="118" height="26" rx="7" fill="#221a14" stroke="#f5a524"/><text x="169" y="305">XFH poison</text>
+          <rect x="236" y="288" width="118" height="26" rx="7" fill="#221a14" stroke="#f5a524"/><text x="295" y="305">Proto pollution</text>
+          <rect x="362" y="288" width="118" height="26" rx="7" fill="#221a14" stroke="#f5a524"/><text x="421" y="305">Open redirect</text>
+          <rect x="488" y="288" width="118" height="26" rx="7" fill="#221a14" stroke="#f5a524"/><text x="547" y="305">Recon tool</text>
+          <rect x="614" y="288" width="118" height="26" rx="7" fill="#221a14" stroke="#f5a524"/><text x="673" y="305">Brute force</text>
+          <rect x="740" y="288" width="118" height="26" rx="7" fill="#1f1830" stroke="#a779ff"/><text x="799" y="305">AI verdict</text>
+        </g>
+        <!-- 35 -->
+        <g font-size="11" text-anchor="middle" fill="#9aa7bd">
+          <rect x="110" y="362" width="150" height="24" rx="7" fill="#161c2b" stroke="#33405e"/><text x="185" y="378">Deep nesting — 35</text>
+        </g>
+        <!-- 30 -->
+        <g font-size="11" text-anchor="middle" fill="#9aa7bd">
+          <rect x="280" y="362" width="150" height="24" rx="7" fill="#161c2b" stroke="#33405e"/><text x="355" y="378">Oversize body — 30</text>
+        </g>
+        <!-- 25 -->
+        <g font-size="11" text-anchor="middle" fill="#9aa7bd">
+          <rect x="450" y="362" width="170" height="24" rx="7" fill="#161c2b" stroke="#33405e"/><text x="535" y="378">Recon probe path — 25</text>
+        </g>
+        <text x="110" y="420" fill="#67748c" font-size="11">↑ weak / probing signals — stay below every line, must accumulate before blocking</text>
+
+        <!-- AI short-circuit callout -->
+        <rect x="110" y="450" width="760" height="86" rx="12" fill="#160f24" stroke="#4a3066"/>
+        <text x="128" y="474" fill="#a779ff" font-size="13" font-weight="800">AI detector — short-circuit (signatures win)</text>
+        <text x="128" y="495" fill="#9aa7bd" font-size="12">Deferred to the end of the chain. Runs ONLY when no signature detector fired on this request.</text>
+        <text x="128" y="513" fill="#9aa7bd" font-size="12">Fewer false positives (no double-counting a high-confidence regex hit) + lower cost (ONNX is the priciest step).</text>
+        <text x="128" y="529" fill="#67748c" font-size="11">A lone AI verdict (50) blocks only on CRITICAL; elsewhere it must stack with another detector.</text>
+      </svg>
+      </div>
+      <figcaption>Source: docs/security/risk-scoring.md "Score reference" — single source of truth: crates/aegis-security/src/detectors/scores.rs</figcaption>
+    </div>
+
+    <div class="note"><div><b>Per-request sum vs cumulative max.</b> The per-request block gate sums all signals on <i>this</i> request. The separate cumulative IP bucket adds only <code style="font-family:var(--mono)">max(signal)</code> per request (rule SEC-M003) — so one request hitting three detectors doesn't triple-count against an IP's long-term reputation.</div></div>
+  </div>
+</section>
+<!-- ============ 4. RISK KEY & SCORE ============ -->
+<section id="risk">
+  <div class="wrap">
+    <div class="eyebrow">04 — Identity &amp; reputation</div>
+    <h2>Risk key &amp; risk score</h2>
+    <p class="lead">Risk is tracked per <b>composite key</b>, not per bare IP. Two browsers behind one NAT each carry their own bucket. Every request's score accrues to that bucket, decays over time, and drives the allow / challenge / block decision.</p>
+
+    <div class="grid2">
+      <!-- panel A: the key -->
+      <div class="card">
+        <div class="svgwrap">
+        <svg viewBox="0 0 500 400" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+          <text x="24" y="34" fill="#e8edf6" font-size="15" font-weight="700">The composite key</text>
+          <rect x="24" y="48" width="452" height="120" rx="12" fill="#0f1626" stroke="#2a3a66"/>
+          <text x="40" y="72" fill="#4f8cff" font-size="12" font-family="monospace" font-weight="700">struct RiskKey {</text>
+          <g font-family="monospace" font-size="12">
+            <text x="56" y="96" fill="#e8edf6">ip: IpAddr</text>
+            <text x="300" y="96" fill="#36d399">always present (post-XFF)</text>
+            <text x="56" y="120" fill="#e8edf6">device_fp: Option&lt;…&gt;</text>
+            <text x="300" y="120" fill="#9aa7bd">TLS only · blake3(JA4‖UA)</text>
+            <text x="56" y="144" fill="#e8edf6">session: Option&lt;…&gt;</text>
+            <text x="300" y="144" fill="#9aa7bd">session cookie · else None</text>
+          </g>
+          <text x="40" y="162" fill="#4f8cff" font-size="12" font-family="monospace" font-weight="700">}</text>
+
+          <!-- NAT scenario -->
+          <text x="24" y="206" fill="#e8edf6" font-size="14" font-weight="700">One NAT'd IP → two buckets</text>
+          <rect x="24" y="220" width="150" height="48" rx="10" fill="#151c2c" stroke="#26304a"/>
+          <text x="99" y="240" text-anchor="middle" fill="#e8edf6" font-size="12" font-weight="700">203.0.113.7</text>
+          <text x="99" y="256" text-anchor="middle" fill="#67748c" font-size="10.5">shared office IP</text>
+
+          <line x1="174" y1="244" x2="220" y2="300" stroke="#67748c" stroke-width="1.5"/>
+          <line x1="174" y1="244" x2="220" y2="356" stroke="#67748c" stroke-width="1.5"/>
+
+          <rect x="224" y="282" width="252" height="36" rx="9" fill="#0f1a14" stroke="#1f5a45"/>
+          <text x="236" y="305" fill="#36d399" font-size="11.5">bucket A · fp=a1b2 · session=u9 → 0</text>
+          <rect x="224" y="338" width="252" height="36" rx="9" fill="#1c1014" stroke="#5a2230"/>
+          <text x="236" y="361" fill="#f4525f" font-size="11.5">bucket B · fp=c3d4 · session=z2 → 95</text>
+        </svg>
+        </div>
+        <figcaption>Source: docs/security/risk-scoring.md — "Composite identity"</figcaption>
+      </div>
+
+      <!-- panel B: score timeline -->
+      <div class="card">
+        <div class="svgwrap">
+        <svg viewBox="0 0 500 400" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+          <text x="24" y="34" fill="#e8edf6" font-size="15" font-weight="700">Cumulative score over time</text>
+          <!-- axes -->
+          <line x1="60" y1="60" x2="60" y2="330" stroke="#26304a" stroke-width="1.5"/>
+          <line x1="60" y1="330" x2="470" y2="330" stroke="#26304a" stroke-width="1.5"/>
+          <g fill="#67748c" font-size="10.5" text-anchor="end" font-family="monospace">
+            <text x="52" y="64">100</text>
+            <text x="52" y="123">80</text>
+            <text x="52" y="200">40</text>
+            <text x="52" y="333">0</text>
+          </g>
+          <text x="265" y="356" fill="#67748c" font-size="11" text-anchor="middle">time →</text>
+          <!-- thresholds -->
+          <line x1="60" y1="119" x2="470" y2="119" stroke="#f4525f" stroke-width="1.4" stroke-dasharray="6 5"/>
+          <text x="466" y="114" fill="#f4525f" font-size="10.5" text-anchor="end" font-family="monospace">block_at 80</text>
+          <line x1="60" y1="196" x2="470" y2="196" stroke="#f5a524" stroke-width="1.4" stroke-dasharray="6 5"/>
+          <text x="466" y="191" fill="#f5a524" font-size="10.5" text-anchor="end" font-family="monospace">challenge_at 40</text>
+
+          <!-- score path: T0 sqli 70, T10 xss ->100 sat, then decay -->
+          <polyline fill="none" stroke="#36cfd1" stroke-width="2.5"
+            points="60,330 110,330 110,196 175,196 175,138 240,138 240,60 470,143"/>
+          <!-- event dots -->
+          <circle cx="110" cy="196" r="4" fill="#36cfd1"/>
+          <circle cx="175" cy="138" r="4" fill="#36cfd1"/>
+          <circle cx="240" cy="60" r="4" fill="#f4525f"/>
+          <!-- event labels -->
+          <text x="112" y="186" fill="#9aa7bd" font-size="10">T0 sqli +70</text>
+          <text x="150" y="128" fill="#9aa7bd" font-size="10">T10 xss</text>
+          <text x="200" y="52" fill="#f4525f" font-size="10" font-weight="700">saturate → block</text>
+          <text x="350" y="135" fill="#36d399" font-size="10">trust recovery −30/hr</text>
+
+          <text x="60" y="386" fill="#67748c" font-size="10.5">prod-balanced: challenge_at 40 · block_at 80 · max 100 · decay half-life ~5m</text>
+        </svg>
+        </div>
+        <figcaption>Source: docs/security/risk-scoring.md — "Worked example: SQLi probe lifecycle"</figcaption>
+      </div>
+    </div>
+
+    <div class="grid3" style="margin-top:18px">
+      <div class="card pad">
+        <div class="tag" style="color:var(--cyan)">A · detector signals</div>
+        <p style="font-size:13.5px;color:var(--muted);margin:8px 0 0">Hardcoded per class (scores.rs). 25→100. The authoritative content signal.</p>
+      </div>
+      <div class="card pad">
+        <div class="tag" style="color:var(--amber)">B · identity / behaviour</div>
+        <p style="font-size:13.5px;color:var(--muted);margin:8px 0 0">YAML-tunable, default <b style="color:var(--ink)">10</b> each: bad ASN, bad JA4, failed auth, bot-unknown, repeat offender.</p>
+      </div>
+      <div class="card pad">
+        <div class="tag" style="color:var(--purple)">C · rules &amp; special</div>
+        <p style="font-size:13.5px;color:var(--muted);margin:8px 0 0">Rule <code style="font-family:var(--mono)">RaiseRisk(Δ)</code>, canary route → instant max, threat-intel feed hits.</p>
+      </div>
+    </div>
+
+    <div class="note warn"><div><b>DDoS stays per-IP by design.</b> The Strike-block, cumulative-risk, and rate-limit buckets are per-<code style="font-family:var(--mono)">RiskKey</code>. The DDoS gate is the deliberate exception — volumetric protection must fire fast regardless of session or fingerprint.</div></div>
+  </div>
+</section>
+<!-- ============ 5. CHALLENGE LADDER ============ -->
+<section id="challenge">
+  <div class="wrap">
+    <div class="eyebrow">05 — Friction, escalated</div>
+    <h2>The challenge ladder</h2>
+    <p class="lead">Instead of a hard block, suspicious-but-not-certain clients climb a ladder of increasing friction. The level is chosen from <code style="font-family:var(--mono)">(risk_score, human_confidence, bot_class, tier)</code> and is <b>monotone</b> — a client can't downgrade within the cookie TTL to fish for the cheapest level.</p>
+
+    <div class="card">
+      <div class="svgwrap scrollx">
+      <svg viewBox="0 0 1040 420" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+        <defs>
+          <marker id="c_ar" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#f5a524"/></marker>
+        </defs>
+
+        <!-- staircase steps -->
+        <!-- None -->
+        <g>
+          <rect x="40" y="320" width="170" height="64" rx="12" fill="#0f1a14" stroke="#1f5a45"/>
+          <text x="125" y="346" text-anchor="middle" fill="#36d399" font-size="15" font-weight="700">None</text>
+          <text x="125" y="366" text-anchor="middle" fill="#9aa7bd" font-size="11">clean traffic · pass</text>
+        </g>
+        <!-- JS -->
+        <g>
+          <rect x="240" y="250" width="170" height="134" rx="12" fill="#101a26" stroke="#2a3a66"/>
+          <text x="325" y="276" text-anchor="middle" fill="#4f8cff" font-size="15" font-weight="700">JS challenge</text>
+          <text x="325" y="296" text-anchor="middle" fill="#9aa7bd" font-size="11">trivial JS sets cookie</text>
+          <text x="325" y="310" text-anchor="middle" fill="#9aa7bd" font-size="11">+ reloads · ~0 cost</text>
+          <text x="325" y="332" text-anchor="middle" fill="#67748c" font-size="10.5">trigger:</text>
+          <text x="325" y="346" text-anchor="middle" fill="#e8edf6" font-size="10.5">new identity, low risk</text>
+          <text x="325" y="372" text-anchor="middle" fill="#36d399" font-size="11" font-family="monospace" font-weight="700">grant +10</text>
+        </g>
+        <!-- PoW -->
+        <g>
+          <rect x="440" y="180" width="170" height="204" rx="12" fill="#1a1510" stroke="#5a4520"/>
+          <text x="525" y="206" text-anchor="middle" fill="#f5a524" font-size="15" font-weight="700">Proof-of-work</text>
+          <text x="525" y="226" text-anchor="middle" fill="#9aa7bd" font-size="11">SHA-256 loop in a</text>
+          <text x="525" y="240" text-anchor="middle" fill="#9aa7bd" font-size="11">Web Worker · 20 bits</text>
+          <text x="525" y="262" text-anchor="middle" fill="#67748c" font-size="10.5">trigger:</text>
+          <text x="525" y="276" text-anchor="middle" fill="#e8edf6" font-size="10.5">known grey bot,</text>
+          <text x="525" y="290" text-anchor="middle" fill="#e8edf6" font-size="10.5">medium risk</text>
+          <text x="525" y="316" text-anchor="middle" fill="#f5a524" font-size="11" font-family="monospace" font-weight="700">grant +30</text>
+        </g>
+        <!-- CAPTCHA -->
+        <g>
+          <rect x="640" y="110" width="170" height="274" rx="12" fill="#1c1410" stroke="#6a4a20"/>
+          <text x="725" y="136" text-anchor="middle" fill="#ff8a3d" font-size="15" font-weight="700">CAPTCHA</text>
+          <text x="725" y="156" text-anchor="middle" fill="#9aa7bd" font-size="11">Turnstile · hCaptcha</text>
+          <text x="725" y="170" text-anchor="middle" fill="#9aa7bd" font-size="11">reCAPTCHA v3</text>
+          <text x="725" y="192" text-anchor="middle" fill="#67748c" font-size="10.5">trigger:</text>
+          <text x="725" y="206" text-anchor="middle" fill="#e8edf6" font-size="10.5">known-bad ASN or</text>
+          <text x="725" y="220" text-anchor="middle" fill="#e8edf6" font-size="10.5">repeated failures</text>
+          <text x="725" y="246" text-anchor="middle" fill="#ff8a3d" font-size="11" font-family="monospace" font-weight="700">grant +60</text>
+        </g>
+        <!-- Block -->
+        <g>
+          <rect x="840" y="40" width="170" height="344" rx="12" fill="#1c1014" stroke="#5a2230"/>
+          <text x="925" y="66" text-anchor="middle" fill="#f4525f" font-size="15" font-weight="700">Block</text>
+          <text x="925" y="86" text-anchor="middle" fill="#9aa7bd" font-size="11">403 · terminal</text>
+          <text x="925" y="108" text-anchor="middle" fill="#67748c" font-size="10.5">trigger:</text>
+          <text x="925" y="122" text-anchor="middle" fill="#e8edf6" font-size="10.5">CAPTCHA failed twice</text>
+        </g>
+
+        <!-- escalation arrows -->
+        <g stroke="#f5a524" stroke-width="2" fill="none" marker-end="url(#c_ar)">
+          <line x1="210" y1="330" x2="236" y2="318"/>
+          <line x1="410" y1="300" x2="436" y2="288"/>
+          <line x1="610" y1="240" x2="636" y2="228"/>
+          <line x1="810" y1="170" x2="836" y2="158"/>
+        </g>
+        <text x="40" y="28" fill="#67748c" font-size="12">escalating friction →   <tspan fill="#9aa7bd">level-monotone: never downgrades within cookie TTL</tspan></text>
+      </svg>
+      </div>
+      <figcaption>Source: docs/security/challenge-engine.md — "Escalation ladder" + level grants</figcaption>
+    </div>
+
+    <div class="note"><div><b>Challenges are opt-in per tier.</b> Each tier carries a <code style="font-family:var(--mono)">challenges_enabled</code> toggle that defaults to <b>false</b> — so admin / payment / machine-only API tiers can run pure hard allow/block semantics (no PoW puzzle) without affecting other tiers.</div></div>
+  </div>
+</section>
+<!-- ============ 6. DDoS ============ -->
+<section id="ddos">
+  <div class="wrap">
+    <div class="eyebrow">06 — Volumetric defense</div>
+    <h2>How DDoS protection works</h2>
+    <p class="lead">A request-flow gate (not a detector) with two mechanisms: a <b>per-IP burst gate</b> that auto-blocks a single abuser, and an <b>EWMA spike ticker</b> that detects a fleet-wide surge. Both coordinate through the shared state backend, so a block on one node holds across the cluster. Secure by default: <code style="font-family:var(--mono)">enabled: true, observe_only: false</code>.</p>
+
+    <div class="grid2">
+      <!-- per-IP burst gate -->
+      <div class="card">
+        <div class="svgwrap">
+        <svg viewBox="0 0 500 380" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+          <text x="24" y="32" fill="#e8edf6" font-size="15" font-weight="700">Per-IP burst gate</text>
+          <text x="24" y="52" fill="#9aa7bd" font-size="12">sliding window · counts requests per IP</text>
+
+          <!-- window of requests -->
+          <text x="24" y="86" fill="#67748c" font-size="11" font-family="monospace">window = per_ip_window_s (10s)</text>
+          <g>
+            <rect x="24" y="96" width="380" height="40" rx="8" fill="#11161f" stroke="#26304a"/>
+            <!-- ticks representing requests -->
+            <g fill="#36cfd1">
+              <rect x="34" y="106" width="5" height="20" rx="2"/><rect x="46" y="106" width="5" height="20" rx="2"/>
+              <rect x="58" y="106" width="5" height="20" rx="2"/><rect x="70" y="106" width="5" height="20" rx="2"/>
+              <rect x="82" y="106" width="5" height="20" rx="2"/><rect x="94" y="106" width="5" height="20" rx="2"/>
+              <rect x="106" y="106" width="5" height="20" rx="2"/><rect x="118" y="106" width="5" height="20" rx="2"/>
+              <rect x="130" y="106" width="5" height="20" rx="2"/><rect x="142" y="106" width="5" height="20" rx="2"/>
+            </g>
+            <g fill="#f4525f">
+              <rect x="160" y="106" width="5" height="20" rx="2"/><rect x="172" y="106" width="5" height="20" rx="2"/>
+              <rect x="184" y="106" width="5" height="20" rx="2"/><rect x="196" y="106" width="5" height="20" rx="2"/>
+              <rect x="208" y="106" width="5" height="20" rx="2"/><rect x="220" y="106" width="5" height="20" rx="2"/>
+              <rect x="232" y="106" width="5" height="20" rx="2"/><rect x="244" y="106" width="5" height="20" rx="2"/>
+            </g>
+            <text x="270" y="120" fill="#f4525f" font-size="12" font-weight="700">› per_ip_limit !</text>
+          </g>
+
+          <!-- arrow down -->
+          <line x1="120" y1="146" x2="120" y2="176" stroke="#67748c" stroke-width="2" marker-end="url(#g_ar)"/>
+          <rect x="24" y="180" width="280" height="44" rx="10" fill="#1c1014" stroke="#5a2230"/>
+          <text x="40" y="200" fill="#f4525f" font-size="12.5" font-weight="700">auto-block written</text>
+          <text x="40" y="216" fill="#9aa7bd" font-size="11">StateBackend::auto_block(ip, block_ttl_s)</text>
+
+          <!-- cluster fanout -->
+          <line x1="160" y1="224" x2="160" y2="252" stroke="#67748c" stroke-width="2" marker-end="url(#g_ar)"/>
+          <text x="24" y="270" fill="#4f8cff" font-size="12" font-weight="700">every node consults the same keyspace</text>
+          <g font-size="11" text-anchor="middle">
+            <rect x="24" y="282" width="140" height="40" rx="9" fill="#0f1626" stroke="#2a3a66"/><text x="94" y="306" fill="#e8edf6">node 1 → 403</text>
+            <rect x="180" y="282" width="140" height="40" rx="9" fill="#0f1626" stroke="#2a3a66"/><text x="250" y="306" fill="#e8edf6">node 2 → 403</text>
+            <rect x="336" y="282" width="140" height="40" rx="9" fill="#0f1626" stroke="#2a3a66"/><text x="406" y="306" fill="#e8edf6">node 3 → 403</text>
+          </g>
+          <text x="24" y="350" fill="#67748c" font-size="11">block holds for block_ttl_s (300s default), cluster-wide via redis</text>
+        </svg>
+        </div>
+        <figcaption>Source: docs/security/ddos-protection.md — "Per-IP burst gate" + "Cluster-wide auto-block list"</figcaption>
+      </div>
+
+      <!-- EWMA spike -->
+      <div class="card">
+        <div class="svgwrap">
+        <svg viewBox="0 0 500 380" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+          <text x="24" y="32" fill="#e8edf6" font-size="15" font-weight="700">EWMA spike-mode ticker</text>
+          <text x="24" y="52" fill="#9aa7bd" font-size="12">fires when current_rps &gt; 3× baseline (&amp; baseline&gt;10)</text>
+          <!-- axes -->
+          <line x1="50" y1="80" x2="50" y2="300" stroke="#26304a" stroke-width="1.5"/>
+          <line x1="50" y1="300" x2="470" y2="300" stroke="#26304a" stroke-width="1.5"/>
+          <text x="44" y="84" fill="#67748c" font-size="10" text-anchor="end">RPS</text>
+          <text x="265" y="326" fill="#67748c" font-size="11" text-anchor="middle">time →</text>
+
+          <!-- baseline EWMA (smooth low) -->
+          <polyline fill="none" stroke="#4f8cff" stroke-width="2.5"
+            points="50,270 110,266 170,264 230,262 290,260 350,258 410,256 470,255"/>
+          <text x="120" y="284" fill="#4f8cff" font-size="11">baseline_rps (EWMA)</text>
+
+          <!-- spike threshold = 3x baseline -->
+          <polyline fill="none" stroke="#f5a524" stroke-width="1.6" stroke-dasharray="6 5"
+            points="50,210 470,196"/>
+          <text x="320" y="190" fill="#f5a524" font-size="10.5" font-family="monospace">spike_multiplier × baseline</text>
+
+          <!-- current rps spiking -->
+          <polyline fill="none" stroke="#36cfd1" stroke-width="2.5"
+            points="50,272 100,268 150,260 200,255 250,250 280,150 310,110 340,130 370,200 410,255 470,258"/>
+          <text x="250" y="246" fill="#36cfd1" font-size="11">current_rps</text>
+
+          <!-- spike region shading -->
+          <rect x="262" y="80" width="92" height="220" fill="#f5a52416"/>
+          <text x="308" y="98" fill="#f5a524" font-size="11" font-weight="700" text-anchor="middle">spike_active</text>
+
+          <text x="24" y="352" fill="#67748c" font-size="11">spike mode tightens per-IP caps + mandatory challenges on new sessions</text>
+        </svg>
+        </div>
+        <figcaption>Source: docs/security/ddos-protection.md — "EWMA spike-mode ticker"</figcaption>
+      </div>
+    </div>
+
+    <!-- profile posture -->
+    <div class="card pad" style="margin-top:18px">
+      <h3 style="margin:0 0 12px;font-size:16px">Posture per shipped profile</h3>
+      <div class="scrollx">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:560px">
+        <thead><tr style="color:var(--faint);text-align:left;font-family:var(--mono);font-size:11.5px">
+          <th style="padding:6px 8px">profile</th><th>per_ip_limit</th><th>window_s</th><th>block_ttl_s</th><th>spike_×</th><th>tightened_rps</th>
+        </tr></thead>
+        <tbody style="font-family:var(--mono)">
+          <tr style="border-top:1px solid var(--line)"><td style="padding:7px 8px;color:var(--ink)">dev / prod-balanced</td><td>1000</td><td>10</td><td>300</td><td>3.0</td><td>20</td></tr>
+          <tr style="border-top:1px solid var(--line)"><td style="padding:7px 8px;color:var(--green)">prod-strict</td><td>200</td><td>10</td><td>600</td><td>2.0</td><td>10</td></tr>
+          <tr style="border-top:1px solid var(--line)"><td style="padding:7px 8px;color:var(--amber)">prod-high-throughput</td><td>5000</td><td>10</td><td>180</td><td>4.0</td><td>100</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p style="color:var(--faint);font-size:12px;margin:12px 0 0">Two ways to run without blocking: config <code style="font-family:var(--mono)">observe_only: true</code> (reports upstream action) or interop <code style="font-family:var(--mono)">set_profile log_only</code> (reports the intended <code style="font-family:var(--mono)">block</code>). <code style="font-family:var(--mono)">enforce</code> requires both mode=enforce AND observe_only=false.</p>
+    </div>
+  </div>
+</section>
+<!-- ============ 7. LOAD SHEDDING ============ -->
+<section id="shed">
+  <div class="wrap">
+    <div class="eyebrow">07 — Stay alive under pressure</div>
+    <h2>Adaptive load shedding</h2>
+    <p class="lead">Under saturation the WAF sheds its <b>lowest-tier traffic first</b> so CRITICAL routes keep serving. The concurrency ceiling is found automatically with the <b>Gradient2</b> algorithm — no static limit that's wrong 99% of the time. Shed requests get an immediate <span class="pill" style="background:rgba(245,165,36,.12);color:var(--amber)">503 + Retry-After</span>, with zero pipeline or upstream cost.</p>
+
+    <div class="grid2">
+      <!-- shed priority -->
+      <div class="card">
+        <div class="svgwrap">
+        <svg viewBox="0 0 500 360" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+          <text x="24" y="32" fill="#e8edf6" font-size="15" font-weight="700">Shed order (reverse priority)</text>
+          <text x="24" y="52" fill="#9aa7bd" font-size="12">when in-flight &gt; current concurrency limit</text>
+
+          <!-- bars -->
+          <g font-size="12.5" font-weight="700">
+            <rect x="24" y="74" width="452" height="50" rx="10" fill="#1c1410" stroke="#5a4520"/>
+            <text x="40" y="104" fill="#f5a524">① LOW (catch-all)</text>
+            <text x="460" y="104" text-anchor="end" fill="#f5a524" font-size="11">shed first</text>
+
+            <rect x="24" y="132" width="452" height="50" rx="10" fill="#1c1610" stroke="#5a4a20"/>
+            <text x="40" y="162" fill="#ff8a3d">② MEDIUM</text>
+            <text x="460" y="162" text-anchor="end" fill="#ff8a3d" font-size="11">next</text>
+
+            <rect x="24" y="190" width="452" height="50" rx="10" fill="#1c1310" stroke="#6a3a20"/>
+            <text x="40" y="220" fill="#ff8a3d">③ HIGH</text>
+            <text x="460" y="220" text-anchor="end" fill="#9aa7bd" font-size="11">~10% headroom over med/low</text>
+
+            <rect x="24" y="248" width="452" height="58" rx="10" fill="#0f1a14" stroke="#1f5a45"/>
+            <text x="40" y="274" fill="#36d399">④ CRITICAL</text>
+            <text x="40" y="294" fill="#9aa7bd" font-size="11" font-weight="400">never shed by the adaptive layer</text>
+            <text x="460" y="274" text-anchor="end" fill="#36d399" font-size="11">protected</text>
+          </g>
+          <text x="40" y="328" fill="#67748c" font-size="11">…only a real security decision can block CRITICAL traffic</text>
+        </svg>
+        </div>
+        <figcaption>Source: docs/data-plane/adaptive-load-shedding.md — "Shedding priority"</figcaption>
+      </div>
+
+      <!-- gradient2 -->
+      <div class="card">
+        <div class="svgwrap">
+        <svg viewBox="0 0 500 360" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+          <text x="24" y="32" fill="#e8edf6" font-size="15" font-weight="700">Gradient2 — adaptive limit (AIMD)</text>
+
+          <rect x="24" y="50" width="452" height="58" rx="10" fill="#0f1626" stroke="#2a3a66"/>
+          <text x="40" y="74" fill="#4f8cff" font-size="12.5" font-weight="700" font-family="monospace">g = RTT_min / RTT_now  ∈ (0,1]</text>
+          <text x="40" y="94" fill="#9aa7bd" font-size="11">fed WAF inspection latency only — never upstream round-trip</text>
+
+          <!-- healthy -->
+          <rect x="24" y="124" width="220" height="120" rx="12" fill="#0f1a14" stroke="#1f5a45"/>
+          <text x="134" y="150" text-anchor="middle" fill="#36d399" font-size="13" font-weight="700">g ≥ 0.9 · healthy</text>
+          <text x="134" y="176" text-anchor="middle" fill="#e8edf6" font-size="12" font-family="monospace">L += 1</text>
+          <text x="134" y="196" text-anchor="middle" fill="#9aa7bd" font-size="11">additive grow</text>
+          <text x="134" y="220" text-anchor="middle" fill="#67748c" font-size="10.5">clamped to initial_limit</text>
+          <text x="134" y="234" text-anchor="middle" fill="#67748c" font-size="10.5">(the grow ceiling)</text>
+
+          <!-- stressed -->
+          <rect x="256" y="124" width="220" height="120" rx="12" fill="#1c1014" stroke="#5a2230"/>
+          <text x="366" y="150" text-anchor="middle" fill="#f4525f" font-size="13" font-weight="700">g &lt; 0.9 · stressed</text>
+          <text x="366" y="176" text-anchor="middle" fill="#e8edf6" font-size="12" font-family="monospace">L *= g</text>
+          <text x="366" y="196" text-anchor="middle" fill="#9aa7bd" font-size="11">multiplicative shrink</text>
+          <text x="366" y="220" text-anchor="middle" fill="#67748c" font-size="10.5">floored at min_limit</text>
+          <text x="366" y="234" text-anchor="middle" fill="#67748c" font-size="10.5">(never sheds below)</text>
+
+          <rect x="24" y="262" width="452" height="74" rx="10" fill="#11161f" stroke="#26304a"/>
+          <text x="40" y="285" fill="#e8edf6" font-size="12" font-weight="700">Why WAF-latency only?</text>
+          <text x="40" y="305" fill="#9aa7bd" font-size="11">A slow backend would otherwise look like WAF overload, so a</text>
+          <text x="40" y="321" fill="#9aa7bd" font-size="11">healthy WAF would shed traffic it could comfortably serve.</text>
+        </svg>
+        </div>
+        <figcaption>Source: docs/data-plane/adaptive-load-shedding.md — "Gradient2" + "RTT is WAF-inspection latency only"</figcaption>
+      </div>
+    </div>
+
+    <!-- two signals + 5ms backstop -->
+    <div class="card" style="margin-top:18px">
+      <div class="svgwrap scrollx">
+      <svg viewBox="0 0 1040 360" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+        <text x="24" y="30" fill="#e8edf6" font-size="15" font-weight="700">Two overload signals feed the one limit</text>
+        <text x="24" y="50" fill="#9aa7bd" font-size="12">kept deliberately separate so a slow backend can never look like WAF overload</text>
+
+        <!-- signal 1 -->
+        <rect x="24" y="66" width="480" height="150" rx="12" fill="#0f1a14" stroke="#1f5a45"/>
+        <text x="44" y="92" fill="#36d399" font-size="13" font-weight="800">① record_rtt — WAF-inspection RTT</text>
+        <text x="44" y="113" fill="#9aa7bd" font-size="11.5">parse + detectors + gates only, at the upstream-forward boundary</text>
+        <text x="44" y="133" fill="#e8edf6" font-size="11.5" font-family="monospace">g = rtt_min / rtt_now   (relative, EMA α=0.2)</text>
+        <text x="44" y="153" fill="#9aa7bd" font-size="11.5">g ≥ 0.9 → grow +1 · g &lt; 0.9 → shrink ×g</text>
+        <text x="44" y="173" fill="#67748c" font-size="11">rtt_min decays upward ~0.2%/sample so one ultra-fast</text>
+        <text x="44" y="188" fill="#67748c" font-size="11">cache hit can't peg the gradient near zero forever</text>
+        <text x="44" y="208" fill="#36d399" font-size="11" font-weight="700">owns the GROW (recovery) path</text>
+
+        <!-- signal 2 -->
+        <rect x="536" y="66" width="480" height="150" rx="12" fill="#1c1014" stroke="#5a2230"/>
+        <text x="556" y="92" fill="#f4525f" font-size="13" font-weight="800">② record_queue_wait — run-queue delay</text>
+        <text x="556" y="113" fill="#9aa7bd" font-size="11.5">"queue_wait" = accept() → connection task's first poll</text>
+        <text x="556" y="133" fill="#e8edf6" font-size="11.5" font-family="monospace">QUEUE_WAIT_STRESS_US = 5_000 µs = 5 ms</text>
+        <text x="556" y="153" fill="#9aa7bd" font-size="11.5">EMA α=0.2 · if smoothed &gt; 5 ms → shrink ×(5ms/qw)</text>
+        <text x="556" y="173" fill="#67748c" font-size="11">absolute, hardware-independent: 5 ms of pure run-queue</text>
+        <text x="556" y="188" fill="#67748c" font-size="11">wait = severe worker starvation on any box (CPU-bound)</text>
+        <text x="556" y="208" fill="#f4525f" font-size="11" font-weight="700">SHRINK-only — the CPU-starvation backstop</text>
+
+        <!-- shed response strip -->
+        <rect x="24" y="234" width="992" height="100" rx="12" fill="#11161f" stroke="#26304a"/>
+        <text x="44" y="260" fill="#f5a524" font-size="13" font-weight="800">When a slot can't be granted → shed response</text>
+        <g font-family="monospace" font-size="12">
+          <text x="44" y="286" fill="#e8edf6">HTTP 503 Service Unavailable</text>
+          <text x="44" y="306" fill="#e8edf6">Retry-After: 1</text>
+          <text x="320" y="286" fill="#9aa7bd">{ "error":"load_shed", "tier":…, "retry_after_seconds":1 }</text>
+          <text x="320" y="306" fill="#9aa7bd">decision tag: circuit_breaker("load_shed")</text>
+        </g>
+        <text x="44" y="326" fill="#67748c" font-size="11">cheap path — shed runs BEFORE body buffering &amp; detectors, so a rejected request never adds load (no death-spiral fuel)</text>
+      </svg>
+      </div>
+      <figcaption>Source: crates/aegis-proxy/src/shed.rs (QUEUE_WAIT_STRESS_US, record_rtt, record_queue_wait) · data_plane.rs (503 + Retry-After: 1) · accept.rs (queue_wait sampling)</figcaption>
+    </div>
+
+    <!-- WORKED MODEL: same RPS, latency decides -->
+    <h3 style="margin:34px 0 6px;font-size:19px">Worked model — same RPS, latency decides everything</h3>
+    <p class="lead" style="margin-bottom:18px">Shedding is <b>not</b> triggered by RPS crossing a fixed number. It's triggered when <code style="font-family:var(--mono)">RPS × latency-drift</code> builds enough backlog that <code style="font-family:var(--mono)">queue_wait</code> exceeds 5 ms. So the <i>same</i> 200k RPS behaves completely differently depending on latency.</p>
+
+    <div class="card">
+      <div class="svgwrap scrollx">
+      <svg viewBox="0 0 1040 300" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+        <text x="24" y="30" fill="#e8edf6" font-size="15" font-weight="700">At 200,000 RPS:  concurrency = RPS × latency</text>
+        <text x="24" y="50" fill="#9aa7bd" font-size="12">all three sit far below the 5000 ceiling — RPS alone never sheds. What changes is the backlog.</text>
+
+        <!-- track from x=220 to x=980 = 0..5000 -->
+        <g>
+          <!-- ceiling track -->
+          <rect x="220" y="78" width="760" height="30" rx="6" fill="#11161f" stroke="#26304a"/>
+          <rect x="220" y="128" width="760" height="30" rx="6" fill="#11161f" stroke="#26304a"/>
+          <rect x="220" y="178" width="760" height="30" rx="6" fill="#11161f" stroke="#26304a"/>
+
+          <!-- min_limit marker x = 220 + 1000/5000*760 = 372 -->
+          <line x1="372" y1="70" x2="372" y2="222" stroke="#4f8cff" stroke-width="1.4" stroke-dasharray="5 4"/>
+          <text x="372" y="238" text-anchor="middle" fill="#4f8cff" font-size="10.5" font-family="monospace">min_limit 1000</text>
+          <!-- ceiling label -->
+          <line x1="980" y1="70" x2="980" y2="222" stroke="#36d399" stroke-width="1.4" stroke-dasharray="5 4"/>
+          <text x="975" y="238" text-anchor="end" fill="#36d399" font-size="10.5" font-family="monospace">initial_limit / ceiling 5000</text>
+        </g>
+
+        <!-- bars: 40 -> width 6 ; 200 -> 30 ; 2000 -> 304 -->
+        <g font-size="12">
+          <text x="200" y="98" text-anchor="end" fill="#e8edf6">latency 0.2 ms</text>
+          <rect x="220" y="80" width="6" height="26" rx="3" fill="#36d399"/>
+          <text x="236" y="98" fill="#9aa7bd" font-family="monospace">≈ 40 slots</text>
+
+          <text x="200" y="148" text-anchor="end" fill="#e8edf6">latency 1 ms</text>
+          <rect x="220" y="130" width="30" height="26" rx="3" fill="#36d399"/>
+          <text x="260" y="148" fill="#9aa7bd" font-family="monospace">≈ 200 slots</text>
+
+          <text x="200" y="198" text-anchor="end" fill="#e8edf6">latency 10 ms</text>
+          <rect x="220" y="180" width="304" height="26" rx="5" fill="#f5a524"/>
+          <text x="534" y="198" fill="#9aa7bd" font-family="monospace">≈ 2000 slots — backlog now builds</text>
+        </g>
+        <text x="24" y="278" fill="#67748c" font-size="11.5">0.2 ms → no shed · 2 ms → usually still fine · 20 ms → easily sheds, even though RPS never moved.</text>
+      </svg>
+      </div>
+      <figcaption>Little's law: concurrency = RPS × latency. Ceiling = initial_limit, floor = min_limit.</figcaption>
+    </div>
+
+    <div class="grid2" style="margin-top:18px">
+      <!-- queue_wait crossing 5ms -->
+      <div class="card">
+        <div class="svgwrap">
+        <svg viewBox="0 0 500 360" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+          <text x="24" y="30" fill="#e8edf6" font-size="15" font-weight="700">queue_wait crosses the 5 ms line</text>
+          <line x1="50" y1="60" x2="50" y2="300" stroke="#26304a" stroke-width="1.5"/>
+          <line x1="50" y1="300" x2="470" y2="300" stroke="#26304a" stroke-width="1.5"/>
+          <text x="44" y="64" fill="#67748c" font-size="10" text-anchor="end">ms</text>
+          <text x="265" y="326" fill="#67748c" font-size="11" text-anchor="middle">time (latency drift →)</text>
+
+          <!-- 5ms threshold -->
+          <line x1="50" y1="150" x2="470" y2="150" stroke="#f4525f" stroke-width="1.6" stroke-dasharray="6 5"/>
+          <text x="466" y="144" text-anchor="end" fill="#f4525f" font-size="10.5" font-family="monospace">5 ms threshold</text>
+
+          <!-- rising curve crossing at x=270 -->
+          <polyline fill="none" stroke="#36cfd1" stroke-width="2.5"
+            points="50,294 110,284 160,256 200,214 240,176 270,150 300,118 330,100 360,150 400,200 440,232"/>
+          <circle cx="270" cy="150" r="5" fill="#f4525f"/>
+          <text x="150" y="290" fill="#9aa7bd" font-size="10">0.2 → 2 → 4 ms (no shed)</text>
+          <text x="282" y="138" fill="#f4525f" font-size="11" font-weight="700">shed starts</text>
+          <text x="300" y="92" fill="#9aa7bd" font-size="10">503 · Retry-After: 1</text>
+          <text x="372" y="180" fill="#36d399" font-size="10">limit drops → backlog clears</text>
+        </svg>
+        </div>
+        <figcaption>Shedding begins once smoothed queue_wait &gt; 5 ms (CPU-starvation backstop).</figcaption>
+      </div>
+
+      <!-- AIMD sawtooth + floor -->
+      <div class="card">
+        <div class="svgwrap">
+        <svg viewBox="0 0 500 360" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+          <text x="24" y="30" fill="#e8edf6" font-size="15" font-weight="700">AIMD limit response &amp; the floor</text>
+          <line x1="60" y1="50" x2="60" y2="310" stroke="#26304a" stroke-width="1.5"/>
+          <line x1="60" y1="310" x2="470" y2="310" stroke="#26304a" stroke-width="1.5"/>
+          <text x="265" y="336" fill="#67748c" font-size="11" text-anchor="middle">time →</text>
+
+          <!-- ceiling 5000 (y=60) and floor 1000 (y=300) -->
+          <line x1="60" y1="60" x2="470" y2="60" stroke="#36d399" stroke-width="1.4" stroke-dasharray="6 5"/>
+          <text x="466" y="54" text-anchor="end" fill="#36d399" font-size="10.5" font-family="monospace">5000 ceiling</text>
+          <line x1="60" y1="300" x2="470" y2="300" stroke="#4f8cff" stroke-width="1.4" stroke-dasharray="6 5"/>
+          <text x="466" y="294" text-anchor="end" fill="#4f8cff" font-size="10.5" font-family="monospace">min_limit 1000</text>
+
+          <!-- limit with floor: 5000->...->1000 then grow -->
+          <polyline fill="none" stroke="#f5a524" stroke-width="2.5"
+            points="60,60 150,60 180,120 210,168 240,210 270,264 300,300 330,300 390,288 440,262 470,250"/>
+          <text x="150" y="108" fill="#f5a524" font-size="10">×g shrink</text>
+          <text x="306" y="294" fill="#4f8cff" font-size="10">floor stops the bleed</text>
+          <text x="392" y="280" fill="#36d399" font-size="10">+1 grow (recovery)</text>
+
+          <!-- ghost: no-floor path -->
+          <polyline fill="none" stroke="#f4525f" stroke-width="1.6" stroke-dasharray="4 4" opacity="0.7"
+            points="270,264 300,300 330,322 360,336"/>
+          <text x="300" y="352" fill="#f4525f" font-size="9.5">without floor → keeps falling, legit traffic rejected</text>
+        </svg>
+        </div>
+        <figcaption>Shrink is multiplicative (×g), grow is additive (+1). min_limit guarantees ≥1000 slots survive.</figcaption>
+      </div>
+    </div>
+
+    <div class="note dim"><div><b>Full timeline.</b> <code style="font-family:var(--mono)">queue_wait 0.2ms → drift → 2ms → 4ms → 5ms (threshold) → shed starts + Retry-After:1 → AIMD shrinks limit → queue_wait falls to 3ms → AIMD grows +1/healthy-request → normal</code>. The floor (1000) means even an over-aggressive shrink leaves enough capacity to absorb legitimate traffic and climb back fast.</div></div>
+
+    <div class="note"><div><b>Sizing.</b> By Little's law, required concurrency ≈ <code style="font-family:var(--mono)">RPS × inspection-latency</code>. With sub-ms inspection a few hundred slots covers 10k RPS, so the limits leave headroom. Current config: <code style="font-family:var(--mono)">initial_limit 5000 / min_limit 1000</code> (shipped profiles default 20000 / 2000; high-throughput 40000 / 4000). <code style="font-family:var(--mono)">initial_limit</code> doubles as the grow ceiling — the AIMD grow path never pushes past it. The high floor matters as much as the ceiling: a transient RTT blip can't shrink the limit far enough to shed healthy load before the gradient recovers.</div></div>
+
+    <div class="note warn"><div><b>Two things to know about the client-facing "waiting time."</b> A shed request always gets <code style="font-family:var(--mono)">Retry-After: 1</code> (1 second, fixed — not adaptive). Don't confuse that with the internal <code style="font-family:var(--mono)">queue_wait</code> signal above: that's the WAF's own run-queue dispatch delay measured per connection, and its <b>5 ms</b> threshold is hardcoded in <code style="font-family:var(--mono)">shed.rs</code>, not configurable from YAML. The narrative doc <code style="font-family:var(--mono)">docs/data-plane/adaptive-load-shedding.md</code> still lists a "CPU-aware backstop" as <i>design intent — not implemented</i>; that's now stale — <code style="font-family:var(--mono)">record_queue_wait</code> is the implemented backstop.</div></div>
+  </div>
+</section>
+<!-- SECTIONS INSERTED BELOW -->
+
+<!-- ============ 8. ZERO TRUST mTLS ============ -->
+<section id="mtls">
+  <div class="wrap">
+    <div class="eyebrow">08 — Zero Trust</div>
+    <h2>Mutual TLS — both directions</h2>
+    <p class="lead">"The cert" is ambiguous, so Aegis names the two directions explicitly. <b>Downstream</b>: the WAF is the <i>server</i> and verifies the client's cert. <b>Upstream</b>: the WAF is the <i>client</i> — it presents one shared fleet identity and verifies each backend's server cert. Both default <b>off</b>; enabling one never affects the other or any unrelated pool.</p>
+
+    <div class="card">
+      <div class="svgwrap scrollx">
+      <svg viewBox="0 0 1040 430" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+        <defs>
+          <marker id="m_ar" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#36cfd1"/></marker>
+          <marker id="m_arP" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#a779ff"/></marker>
+        </defs>
+
+        <!-- client -->
+        <rect x="30" y="150" width="180" height="120" rx="14" fill="#151c2c" stroke="#26304a"/>
+        <text x="120" y="200" text-anchor="middle" fill="#e8edf6" font-size="15" font-weight="700">Client</text>
+        <text x="120" y="222" text-anchor="middle" fill="#9aa7bd" font-size="11">presents client cert</text>
+        <text x="120" y="240" text-anchor="middle" fill="#67748c" font-size="10.5">(svc, partner, mTLS user)</text>
+
+        <!-- WAF -->
+        <rect x="410" y="120" width="220" height="180" rx="16" fill="#16122a" stroke="#4a3066"/>
+        <text x="520" y="150" text-anchor="middle" fill="#a779ff" font-size="16" font-weight="800">Aegis-Gate</text>
+        <text x="520" y="176" text-anchor="middle" fill="#36cfd1" font-size="11.5" font-weight="700">← acts as SERVER</text>
+        <text x="520" y="192" text-anchor="middle" fill="#67748c" font-size="10.5">downstream side</text>
+        <line x1="430" y1="206" x2="610" y2="206" stroke="#2a2350" stroke-width="1"/>
+        <text x="520" y="232" text-anchor="middle" fill="#a779ff" font-size="11.5" font-weight="700">acts as CLIENT →</text>
+        <text x="520" y="248" text-anchor="middle" fill="#67748c" font-size="10.5">upstream side</text>
+        <text x="520" y="276" text-anchor="middle" fill="#e8edf6" font-size="10.5">holds the shared</text>
+        <text x="520" y="290" text-anchor="middle" fill="#f4525f" font-size="10.5" font-weight="700">fleet client key 🔑</text>
+
+        <!-- backend -->
+        <rect x="830" y="150" width="180" height="120" rx="14" fill="#151c2c" stroke="#26304a"/>
+        <text x="920" y="200" text-anchor="middle" fill="#e8edf6" font-size="15" font-weight="700">Backend pool</text>
+        <text x="920" y="222" text-anchor="middle" fill="#9aa7bd" font-size="11">presents server cert</text>
+        <text x="920" y="240" text-anchor="middle" fill="#67748c" font-size="10.5">trusts the WAF's CA</text>
+
+        <!-- downstream arrow client->WAF -->
+        <line x1="212" y1="186" x2="406" y2="186" stroke="#36cfd1" stroke-width="2.5" marker-end="url(#m_ar)"/>
+        <rect x="222" y="64" width="180" height="78" rx="10" fill="#0f1d22" stroke="#1f5a5a"/>
+        <text x="232" y="86" fill="#36cfd1" font-size="12" font-weight="800">① Downstream</text>
+        <text x="232" y="104" fill="#9aa7bd" font-size="10.5">verify client cert →</text>
+        <text x="232" y="118" fill="#e8edf6" font-size="10.5" font-family="monospace">ca_bundle + SAN allowlist</text>
+        <text x="232" y="132" fill="#67748c" font-size="10">mode: disabled|optional|required</text>
+
+        <!-- upstream arrow WAF->backend -->
+        <line x1="634" y1="220" x2="826" y2="220" stroke="#a779ff" stroke-width="2.5" marker-end="url(#m_arP)"/>
+        <rect x="636" y="300" width="374" height="92" rx="10" fill="#160f24" stroke="#4a3066"/>
+        <text x="648" y="322" fill="#a779ff" font-size="12" font-weight="800">② Upstream  (per-pool opt-in)</text>
+        <text x="648" y="340" fill="#9aa7bd" font-size="10.5">WAF presents fleet client cert  →  backend verifies us</text>
+        <text x="648" y="356" fill="#9aa7bd" font-size="10.5">WAF verifies backend server cert  →  trust bundle</text>
+        <text x="648" y="374" fill="#f4525f" font-size="10.5" font-weight="700">verify:true → unverifiable backend FAILS CLOSED (that pool only)</text>
+
+        <text x="30" y="416" fill="#67748c" font-size="11">Upload the backend's CA = trust anchor the WAF checks the backend against.  Download the WAF cert = our identity the backend checks us against.  Different keypairs, opposite ways.</text>
+      </svg>
+      </div>
+      <figcaption>Source: docs/security/zero-trust-mtls.md — "The two directions"</figcaption>
+    </div>
+
+    <h3 style="margin:30px 0 6px;font-size:19px">The handshake — step by step, both directions</h3>
+    <p class="lead" style="margin-bottom:18px">mTLS adds a second certificate exchange to the normal TLS handshake: the side acting as <i>server</i> sends a <code style="font-family:var(--mono)">CertificateRequest</code>, and the side acting as <i>client</i> answers with its own cert plus a <code style="font-family:var(--mono)">CertificateVerify</code> (a signature proving it holds the private key).</p>
+
+    <div class="grid2">
+      <!-- DOWNSTREAM handshake -->
+      <div class="card">
+        <div class="svgwrap">
+        <svg viewBox="0 0 500 440" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+          <defs>
+            <marker id="d_r" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#36cfd1"/></marker>
+            <marker id="d_l" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#9aa7bd"/></marker>
+          </defs>
+          <text x="24" y="26" fill="#36cfd1" font-size="14" font-weight="800">① Downstream — Client → WAF</text>
+          <text x="24" y="44" fill="#67748c" font-size="11">WAF is the SERVER and validates the client's cert</text>
+
+          <!-- actors -->
+          <rect x="60" y="56" width="120" height="36" rx="9" fill="#151c2c" stroke="#26304a"/>
+          <text x="120" y="79" text-anchor="middle" fill="#e8edf6" font-size="12" font-weight="700">Client</text>
+          <rect x="320" y="56" width="120" height="36" rx="9" fill="#16122a" stroke="#4a3066"/>
+          <text x="380" y="79" text-anchor="middle" fill="#a779ff" font-size="12" font-weight="700">Aegis-Gate</text>
+          <!-- lifelines -->
+          <line x1="120" y1="92" x2="120" y2="410" stroke="#26304a" stroke-width="1.2" stroke-dasharray="4 4"/>
+          <line x1="380" y1="92" x2="380" y2="410" stroke="#26304a" stroke-width="1.2" stroke-dasharray="4 4"/>
+
+          <!-- 1 -->
+          <circle cx="34" cy="120" r="10" fill="#1c2233" stroke="#36cfd1"/><text x="34" y="124" text-anchor="middle" fill="#36cfd1" font-size="11" font-weight="700">1</text>
+          <text x="250" y="116" text-anchor="middle" fill="#cdd6e6" font-size="11">ClientHello</text>
+          <line x1="120" y1="124" x2="378" y2="124" stroke="#36cfd1" stroke-width="2" marker-end="url(#d_r)"/>
+
+          <!-- 2 -->
+          <circle cx="34" cy="170" r="10" fill="#1c2233" stroke="#a779ff"/><text x="34" y="174" text-anchor="middle" fill="#a779ff" font-size="11" font-weight="700">2</text>
+          <text x="250" y="150" text-anchor="middle" fill="#cdd6e6" font-size="11">ServerHello · WAF server cert</text>
+          <text x="250" y="164" text-anchor="middle" fill="#f5a524" font-size="11" font-weight="700">+ CertificateRequest</text>
+          <line x1="380" y1="174" x2="122" y2="174" stroke="#9aa7bd" stroke-width="2" marker-end="url(#d_l)"/>
+
+          <!-- 3 -->
+          <circle cx="34" cy="216" r="10" fill="#1c2233" stroke="#36cfd1"/><text x="34" y="220" text-anchor="middle" fill="#36cfd1" font-size="11" font-weight="700">3</text>
+          <text x="250" y="206" text-anchor="middle" fill="#cdd6e6" font-size="11">Client cert · CertificateVerify</text>
+          <line x1="120" y1="216" x2="378" y2="216" stroke="#36cfd1" stroke-width="2" marker-end="url(#d_r)"/>
+
+          <!-- 4 verify -->
+          <circle cx="34" cy="266" r="10" fill="#1c2233" stroke="#a779ff"/><text x="34" y="270" text-anchor="middle" fill="#a779ff" font-size="11" font-weight="700">4</text>
+          <rect x="232" y="246" width="208" height="56" rx="9" fill="#160f24" stroke="#4a3066"/>
+          <text x="246" y="266" fill="#a779ff" font-size="11" font-weight="700">WAF verifies client cert</text>
+          <text x="246" y="282" fill="#9aa7bd" font-size="10.5">→ ca_bundle chain</text>
+          <text x="246" y="296" fill="#9aa7bd" font-size="10.5">→ SAN allowlist (if set)</text>
+
+          <!-- 5 complete -->
+          <circle cx="34" cy="340" r="10" fill="#0f1a14" stroke="#36d399"/><text x="34" y="344" text-anchor="middle" fill="#36d399" font-size="11" font-weight="700">5</text>
+          <line x1="120" y1="336" x2="380" y2="336" stroke="#36d399" stroke-width="2"/>
+          <line x1="120" y1="344" x2="380" y2="344" stroke="#36d399" stroke-width="2"/>
+          <text x="250" y="362" text-anchor="middle" fill="#36d399" font-size="11" font-weight="700">✓ encrypted session established</text>
+
+          <text x="24" y="392" fill="#f4525f" font-size="10.5">mode: required → invalid / missing client cert = handshake refused</text>
+          <text x="24" y="408" fill="#67748c" font-size="10.5">disabled = no CertificateRequest · optional = request, allow if absent</text>
+        </svg>
+        </div>
+        <figcaption>Default posture: prod-strict ships <code style="font-family:var(--mono)">downstream.mode: required</code> (engine default is <code style="font-family:var(--mono)">disabled</code>).</figcaption>
+      </div>
+
+      <!-- UPSTREAM handshake -->
+      <div class="card">
+        <div class="svgwrap">
+        <svg viewBox="0 0 500 440" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+          <defs>
+            <marker id="u_r" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#a779ff"/></marker>
+            <marker id="u_l" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#9aa7bd"/></marker>
+          </defs>
+          <text x="24" y="26" fill="#a779ff" font-size="14" font-weight="800">② Upstream — WAF → Backend</text>
+          <text x="24" y="44" fill="#67748c" font-size="11">WAF is the CLIENT and presents the shared fleet cert</text>
+
+          <rect x="60" y="56" width="120" height="36" rx="9" fill="#16122a" stroke="#4a3066"/>
+          <text x="120" y="79" text-anchor="middle" fill="#a779ff" font-size="12" font-weight="700">Aegis-Gate</text>
+          <rect x="320" y="56" width="120" height="36" rx="9" fill="#151c2c" stroke="#26304a"/>
+          <text x="380" y="79" text-anchor="middle" fill="#e8edf6" font-size="12" font-weight="700">Backend</text>
+          <line x1="120" y1="92" x2="120" y2="410" stroke="#26304a" stroke-width="1.2" stroke-dasharray="4 4"/>
+          <line x1="380" y1="92" x2="380" y2="410" stroke="#26304a" stroke-width="1.2" stroke-dasharray="4 4"/>
+
+          <!-- 1 -->
+          <circle cx="34" cy="118" r="10" fill="#1f1830" stroke="#a779ff"/><text x="34" y="122" text-anchor="middle" fill="#a779ff" font-size="11" font-weight="700">1</text>
+          <text x="250" y="114" text-anchor="middle" fill="#cdd6e6" font-size="11">ClientHello</text>
+          <line x1="120" y1="122" x2="378" y2="122" stroke="#a779ff" stroke-width="2" marker-end="url(#u_r)"/>
+
+          <!-- 2 -->
+          <circle cx="34" cy="166" r="10" fill="#1c2233" stroke="#9aa7bd"/><text x="34" y="170" text-anchor="middle" fill="#cdd6e6" font-size="11" font-weight="700">2</text>
+          <text x="250" y="146" text-anchor="middle" fill="#cdd6e6" font-size="11">ServerHello · Server cert</text>
+          <text x="250" y="160" text-anchor="middle" fill="#f5a524" font-size="11" font-weight="700">+ CertificateRequest</text>
+          <line x1="380" y1="170" x2="122" y2="170" stroke="#9aa7bd" stroke-width="2" marker-end="url(#u_l)"/>
+
+          <!-- WAF verifies backend -->
+          <rect x="14" y="184" width="226" height="34" rx="8" fill="#0f1320" stroke="#2a3a66"/>
+          <text x="26" y="205" fill="#4f8cff" font-size="10.5" font-weight="700">WAF verifies backend cert → trust bundle</text>
+
+          <!-- 3 -->
+          <circle cx="34" cy="248" r="10" fill="#1f1830" stroke="#a779ff"/><text x="34" y="252" text-anchor="middle" fill="#a779ff" font-size="11" font-weight="700">3</text>
+          <text x="250" y="238" text-anchor="middle" fill="#cdd6e6" font-size="11">Fleet client cert · CertificateVerify</text>
+          <line x1="120" y1="252" x2="378" y2="252" stroke="#a779ff" stroke-width="2" marker-end="url(#u_r)"/>
+
+          <!-- 4 backend verifies -->
+          <circle cx="34" cy="294" r="10" fill="#1c2233" stroke="#9aa7bd"/><text x="34" y="298" text-anchor="middle" fill="#cdd6e6" font-size="11" font-weight="700">4</text>
+          <rect x="260" y="278" width="180" height="34" rx="8" fill="#11161f" stroke="#26304a"/>
+          <text x="272" y="299" fill="#e8edf6" font-size="10.5" font-weight="700">Backend verifies fleet cert</text>
+
+          <!-- 5 -->
+          <circle cx="34" cy="346" r="10" fill="#0f1a14" stroke="#36d399"/><text x="34" y="350" text-anchor="middle" fill="#36d399" font-size="11" font-weight="700">5</text>
+          <line x1="120" y1="342" x2="380" y2="342" stroke="#36d399" stroke-width="2"/>
+          <line x1="120" y1="350" x2="380" y2="350" stroke="#36d399" stroke-width="2"/>
+          <text x="250" y="368" text-anchor="middle" fill="#36d399" font-size="11" font-weight="700">✓ mutually-authenticated session</text>
+
+          <text x="24" y="398" fill="#f4525f" font-size="10.5">verify:true + unverifiable backend → that pool's dial FAILS CLOSED</text>
+          <text x="24" y="414" fill="#67748c" font-size="10.5">handshake paid once per pooled keep-alive conn · TLS 1.3 resumption</text>
+        </svg>
+        </div>
+        <figcaption>Source: zero-trust-mtls.md — both server-auth (trust bundle) and client-auth (fleet cert) in one handshake.</figcaption>
+      </div>
+    </div>
+
+    <div class="note dim"><div><b>Why two verifies in the upstream handshake.</b> Step 2 lets the WAF authenticate the <i>backend</i> (ordinary server-auth, against the <code style="font-family:var(--mono)">trust</code> bundle), and step 4 lets the backend authenticate the <i>WAF</i> (client-auth, against the WAF's CA). That mutual check is the whole point of "Zero Trust both directions" — neither side takes the other on faith.</div></div>
+
+    <div class="grid3" style="margin-top:18px">
+      <div class="card pad">
+        <div class="tag" style="color:var(--red)">🔑 Crown-jewel key</div>
+        <p style="font-size:13.5px;color:var(--muted);margin:8px 0 0">The WAF client key can impersonate the whole fleet. It is <b style="color:var(--ink)">never logged, never returned by any API/metric, never uploaded</b>. Download/GET paths emit PUBLIC PEM only. In state mode the key stays a <code style="font-family:var(--mono)">key_ref</code> — only the public cert lives in the config plane. No envelope encryption (no hand-rolled crypto).</p>
+      </div>
+      <div class="card pad">
+        <div class="tag" style="color:var(--amber)">Fail closed, scoped</div>
+        <p style="font-size:13.5px;color:var(--muted);margin:8px 0 0"><code style="font-family:var(--mono)">enabled + verify:true</code> against an unverifiable backend fails <i>that pool's</i> dials with a clear reason — never falls back to trust-anything, never disturbs other pools. A <code style="font-family:var(--mono)">source: state</code> identity that's missing/corrupt <b style="color:var(--ink)">aborts boot</b> rather than dialing without client auth.</p>
+      </div>
+      <div class="card pad">
+        <div class="tag" style="color:var(--green)">Hot rotation (P5)</div>
+        <p style="font-size:13.5px;color:var(--muted);margin:8px 0 0">A 5 s reconcile tick watches the config plane. Store a new cert and the fleet presents it within a tick — the <b style="color:var(--ink)">next dial</b> builds a fresh client while in-flight requests finish on the old one. <b style="color:var(--ink)">Zero dropped connections</b>, no restart. A deleted/corrupt record keeps the last-good identity.</p>
+      </div>
+    </div>
+
+    <div class="grid2" style="margin-top:14px">
+      <div class="card pad">
+        <h3 style="margin:0 0 8px;font-size:15px;color:var(--cyan)">Handshake-failure reasons (observability)</h3>
+        <p style="font-size:13.5px;color:var(--muted);margin:0">Per-pool, per-reason histogram on the Zero Trust page:
+        <span class="tag" style="color:var(--muted)">untrusted_backend_cert</span>
+        <span class="tag" style="color:var(--muted)">san_mismatch</span>
+        <span class="tag" style="color:var(--muted)">cert_expired</span>
+        <span class="tag" style="color:var(--muted)">client_identity_error</span>
+        <span class="tag" style="color:var(--muted)">handshake_failed</span>.
+        Expiry shows as an amber badge inside 30 days.</p>
+      </div>
+      <div class="card pad">
+        <h3 style="margin:0 0 8px;font-size:15px;color:var(--blue)">Cost is paid once, not per request</h3>
+        <p style="font-size:13.5px;color:var(--muted);margin:0">Keep-alive is per pool, so the mTLS handshake is paid once per pooled connection. TLS 1.3 session resumption (tickets + 1.2 session IDs) lets a reconnect skip the full handshake. 0-RTT early data is <b style="color:var(--ink)">off</b> (replay risk). <code style="font-family:var(--mono)">verify</code> is a CA-chain check; the SAN gate is a cheap string compare.</p>
+      </div>
+    </div>
+
+    <div class="note warn"><div><b>Capability-gated.</b> All cert mutation is audited, CSRF-gated, and behind <code style="font-family:var(--mono)">admin.dashboard_auth.allow_ca_upload</code> (off by default) — the upload UI only renders when the flag is on. This supersedes the old <code style="font-family:var(--mono)">tls.client_auth</code> and per-pool <code style="font-family:var(--mono)">tls:{client_cert,…}</code> shapes with no back-compat alias: migrate existing YAML.</div></div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    Aegis-Gate concept infographics · generated from in-repo documentation · every number traceable to <code>crates/aegis-security/src/detectors/scores.rs</code> and the docs cited per panel.
+  </div>
+</footer>
+</body>
+</html>

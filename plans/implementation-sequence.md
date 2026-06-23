@@ -12,8 +12,37 @@ ship.** Distinct from its two neighbours:
 - [`future/world-class-waf-roadmap.md`](./future/world-class-waf-roadmap.md) — the
   *what & why* of the capability tiers; this file is the *what-order*.
 
-**Tracking legend:** ☐ not started · ◐ in progress · ✅ done · ⛔ blocked.
+**Tracking legend:** ☐ not started · ◐ in progress · ✅ done · ⛔ blocked · ⏸ deferred (research-gated).
 Update the Status column (and flip to ✅ with a commit / date) as work lands.
+
+---
+
+## ⏩ Resume here (as of 2026-06-23)
+
+**Wave 0 — ✅ complete.** **Wave 1 — ✅ complete:** config H1·P0 (#74),
+config H1·P1+P2 dual-authority fix (#77), PREREQ-B LB fail-open (#78), and
+Tier-1A GraphQL caps (#79) all shipped.
+
+**Next up — Wave 2 foundation first (capability Tier 2 deferred):**
+1. **`passive-upstream-health`** + **`zone-aware-load-balancing`** — do **together**
+   (both unblocked by PREREQ-B; they share the `LbStrategy::pick` touchpoint, so
+   touch the LB once). **Recommended next.**
+2. **`ddos-cross-node-rps-aggregation`** (standalone; slot by capacity).
+
+> **AI/LLM firewall (Tier 2) — deferred, research-gated** (decided 2026-06-23).
+> Architecture + 2A scope are settled in [[ai-llm-firewall]], but it needs
+> dedicated research first (signature corpus, FP calibration, the SSE
+> response-inspection decision, embeddings trigger — see that doc §8). Do the
+> foundation LB items above first; promote 2A to an active build once the
+> research resolves. **Not** the same as the existing `ai` ONNX detector.
+
+> Tier-1A scope note (settled): the token/HMAC half stays *deprioritized* by the
+> WAF-vs-gateway boundary call ([[project_waf_vs_gateway_boundary]]); only the
+> GraphQL caps half shipped, which is uncontested WAF surface.
+
+**Config arc:** the near-term correctness work (H1) is done; the long-term
+structural split (H2a `BootstrapConfig`/`DynamicConfig`) and etcd (H2b) sit in
+Wave 3 / Wave 4 — not started.
 
 ---
 
@@ -91,22 +120,22 @@ foundation items run in parallel within a wave.
 
 | ✓ | Item | Stream | Effort | Why now |
 |---|---|---|---|---|
-| ☐ | Roadmap **Tier 1A** — wire existing API guards (`api_keys` + `hmac_sign` + GraphQL caps) onto the data path | Capability | S | Gartner #1 priority, code already exists, just unwired; lays the call-site for 1B–1D |
+| ✅ | Roadmap **Tier 1A (GraphQL caps)** — `api_security::graphql` depth/complexity/introspection guard wired onto the data path (config-driven, hot-reloadable, log-only-aware) — shipped PR #79 (`1570de5`). `api_keys` + `hmac_sign` half deprioritized (gateway concern). | Capability | S | Gartner #1 priority; code existed, just unwired |
 | ✅ | **config-single-source-of-truth H1 · P1–P2** (invert file watcher → publisher; one applier; one guard) — `config_plane.file_watch` flag (default `publish`), file watcher now publishes to `config:waf:doc`, shared-store watcher is sole applier | Foundation | M | Kills the dual-authority bug class (the "one key moves another" report); converges the cluster for free |
-| ☐ | **PREREQ-B**: make `LbStrategy::pick` fail open | Foundation | S | Tiny enabling change that unblocks two availability plans |
+| ✅ | **PREREQ-B**: `LbStrategy::pick` fails open — an all-unhealthy pool falls back to the full member set (real 502 from the attempt) instead of returning `None`; `None` only for a genuinely empty pool | Foundation | S | Tiny enabling change that unblocks two availability plans |
 
 > **Note on Tier 1A:** the WAF-vs-gateway boundary call ([[project_waf_vs_gateway_boundary]])
 > deprioritized the token/HMAC half. Re-confirm scope before starting — the
 > GraphQL caps half is uncontested WAF surface and can go regardless.
 
-### Wave 2 — Differentiator capability + availability hardening · ~2–3 wk
+### Wave 2 — Availability hardening (foundation-first; capability Tier 2 deferred) · ~2–3 wk
 
 | ✓ | Item | Stream | Effort | Why now |
 |---|---|---|---|---|
-| ☐ | Roadmap **Tier 2** — AI/LLM firewall (2A prompt-injection, 2B response inspection, 2C cost-aware RL) | Capability | M | Splashy net-new differentiator; reuses `ai` + `dlp`; below market-novelty in lift |
-| ☐ | **passive-upstream-health** (after PREREQ-B) | Foundation | M | Real-failure member health → LB; correctness |
-| ☐ | **zone-aware-load-balancing** (after PREREQ-B + node self-zone) | Foundation | M | Locality routing; shares the `LbStrategy::pick` touchpoint with passive-health — do together to touch the LB once |
+| ☐ | **passive-upstream-health** (after PREREQ-B) — **next** | Foundation | M | Real-failure member health → LB; correctness |
+| ☐ | **zone-aware-load-balancing** (after PREREQ-B + node self-zone) — **do with passive-health** | Foundation | M | Locality routing; shares the `LbStrategy::pick` touchpoint with passive-health — do together to touch the LB once |
 | ☐ | **ddos-cross-node-rps-aggregation** | Foundation | M | Cluster-wide RPS; standalone; slot by capacity |
+| ⏸ | Roadmap **Tier 2** — AI/LLM firewall — **deferred, research-gated** → [[ai-llm-firewall]] | Capability | M | Net-new differentiator (2A prompt-injection first; 2B/2C behind the SSE decision). NOT the `ai` ONNX detector. Needs research (signature corpus / FP calibration / streaming decision) before build — see plan §8 |
 
 ### Wave 3 — Durability bridge + config structural cleanup · ~2–3 wk
 

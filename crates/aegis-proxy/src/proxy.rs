@@ -235,6 +235,13 @@ pub struct ProxyContext {
     /// bytes histograms). `None` for test bundles that don't wire a
     /// metrics registry; the boot path installs it once at registration.
     pub stream_metrics: Option<Arc<aegis_control::metrics::streaming::StreamingMetrics>>,
+    /// Tier-1A — live GraphQL query guard (depth / node-count / complexity
+    /// / introspection caps). Held behind an `ArcSwap` so the config plane
+    /// hot-swaps the whole limits struct fleet-wide with no restart (see
+    /// `config_source::reload::apply_cfg_change_to_graphql`). Built from
+    /// `cfg.graphql`; the data plane consults it for `POST`s to a
+    /// configured GraphQL path before the detector chain.
+    pub graphql_guard: Arc<arc_swap::ArcSwap<crate::graphql_guard::GraphqlGuard>>,
 }
 
 impl ProxyContext {
@@ -319,6 +326,9 @@ impl ProxyContext {
             )),
             stream_metrics: None,
             streaming: cfg.streaming.clone(),
+            graphql_guard: Arc::new(arc_swap::ArcSwap::from_pointee(
+                crate::graphql_guard::GraphqlGuard::from_config(&cfg.graphql),
+            )),
         })
     }
 

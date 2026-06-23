@@ -42,6 +42,7 @@ pub mod body;
 pub mod cache;
 mod data_plane;
 pub mod fleet_events;
+pub mod graphql_guard;
 mod responses;
 mod run;
 pub use run::{run, ConfigReloadSource};

@@ -271,6 +271,16 @@ pub struct WafConfig {
     /// enabled for `text/event-stream`.
     #[serde(default)]
     pub streaming: StreamingConfig,
+    /// Tier-1A — GraphQL query guard (depth / node-count / complexity /
+    /// introspection caps). Off by default; opt-in per deployment. When
+    /// `graphql.enabled: true`, a `POST` to any path in `graphql.paths`
+    /// has its JSON `query` extracted and checked against the limits
+    /// before forwarding upstream. A violation is a hard `403` (or a
+    /// logged would-be block under `log_only` mode). See
+    /// [`GraphqlGuardConfig`] and the runtime guard in
+    /// `aegis-proxy/src/graphql_guard.rs`.
+    #[serde(default)]
+    pub graphql: GraphqlGuardConfig,
 }
 
 /// SSE / streaming stream-through configuration (SSE plan §6).
@@ -350,6 +360,87 @@ impl Default for StreamingConfig {
             max_duration: None,
             max_concurrent: default_streaming_max_concurrent(),
             on_exhaustion: OnStreamExhaustion::Reject,
+        }
+    }
+}
+
+/// Tier-1A GraphQL query-guard configuration.
+///
+/// Drives the runtime guard (`aegis-proxy/src/graphql_guard.rs`) that
+/// rejects abusive GraphQL queries before they reach upstream. The guard
+/// only inspects `POST` requests whose path is in [`paths`](Self::paths);
+/// everything else passes through untouched (fail-open). A body that isn't
+/// a parseable `{"query": "..."}` object is also passed through — the
+/// guard never blocks on ambiguity.
+///
+/// Defaults mirror [`aegis_security::api_security::graphql::GraphqlConfig`]
+/// (depth 10 / nodes 500 / complexity 1000 / introspection off) so the
+/// boot file and the runtime struct stay in lockstep, with the whole
+/// feature gated off (`enabled: false`) until an operator opts in.
+///
+/// **Scope:** the guard inspects `POST` bodies only. GET-based GraphQL
+/// (query in the URL) is *not* guarded — it is read-only by spec and far
+/// rarer in practice; operators who must cover it should disable GET
+/// GraphQL at the origin.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct GraphqlGuardConfig {
+    /// Kill-switch. When `false` (the default) the guard is skipped
+    /// entirely — no body parsing, no checks.
+    #[serde(default = "default_graphql_enabled")]
+    pub enabled: bool,
+    /// Request paths treated as GraphQL endpoints. A `POST` whose path
+    /// exactly matches one of these is inspected. Default: `["/graphql"]`.
+    #[serde(default = "default_graphql_paths")]
+    pub paths: Vec<String>,
+    /// Maximum query nesting depth (counted by `{`/`}` balance).
+    #[serde(default = "default_graphql_max_depth")]
+    pub max_depth: u32,
+    /// Maximum number of field nodes in the query.
+    #[serde(default = "default_graphql_max_node_count")]
+    pub max_node_count: u32,
+    /// Maximum query complexity (`max_depth * node_count`).
+    #[serde(default = "default_graphql_max_complexity")]
+    pub max_complexity: u32,
+    /// Allow introspection queries (`__schema` / `__type`). Default
+    /// `false` — introspection is rejected, the production-safe posture.
+    #[serde(default = "default_graphql_allow_introspection")]
+    pub allow_introspection: bool,
+}
+
+fn default_graphql_enabled() -> bool {
+    false
+}
+
+fn default_graphql_paths() -> Vec<String> {
+    vec!["/graphql".to_string()]
+}
+
+fn default_graphql_max_depth() -> u32 {
+    10
+}
+
+fn default_graphql_max_node_count() -> u32 {
+    500
+}
+
+fn default_graphql_max_complexity() -> u32 {
+    1000
+}
+
+fn default_graphql_allow_introspection() -> bool {
+    false
+}
+
+impl Default for GraphqlGuardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_graphql_enabled(),
+            paths: default_graphql_paths(),
+            max_depth: default_graphql_max_depth(),
+            max_node_count: default_graphql_max_node_count(),
+            max_complexity: default_graphql_max_complexity(),
+            allow_introspection: default_graphql_allow_introspection(),
         }
     }
 }
@@ -1388,6 +1479,40 @@ impl WafConfig {
                      use `max` until a Phase B follow-up lands the fail-safe merge."
                         .into(),
                 ));
+            }
+        }
+        // Tier-1A — a GraphQL guard that's switched on but has no paths to
+        // match (or every path is blank) would inspect nothing: almost
+        // certainly a misconfig, so fail loud at boot rather than ship a
+        // silently-inert guard. Disabled guards skip this entirely.
+        if self.graphql.enabled {
+            let has_path = self
+                .graphql
+                .paths
+                .iter()
+                .any(|p| !p.trim().is_empty());
+            if !has_path {
+                return Err(crate::error::WafError::Config(
+                    "graphql.enabled is true but graphql.paths is empty — the guard \
+                     would inspect no requests. Set graphql.paths (e.g. [\"/graphql\"]) \
+                     or set graphql.enabled: false."
+                        .into(),
+                ));
+            }
+            // Paths are matched against the request's origin-form path, which
+            // always starts with `/`. An entry without a leading slash can
+            // never match, so an `enabled` guard with such a path would
+            // silently protect nothing — fail loud instead.
+            if let Some(bad) = self
+                .graphql
+                .paths
+                .iter()
+                .find(|p| !p.trim().is_empty() && !p.starts_with('/'))
+            {
+                return Err(crate::error::WafError::Config(format!(
+                    "graphql.paths entry '{bad}' must start with '/' (request paths are \
+                     origin-form, e.g. \"/graphql\") — it would never match as written."
+                )));
             }
         }
         Ok(())
@@ -5260,6 +5385,130 @@ state:
         assert_eq!(cfg.routes[0].id, "catch-all");
         assert!(cfg.upstreams.contains_key("default"));
         assert_eq!(cfg.state.backend, StateBackendKind::InMemory);
+    }
+
+    /// Minimal valid config body (used by the GraphQL-guard config tests
+    /// that need to drive `WafConfig::validate`).
+    fn base_config_yaml() -> &'static str {
+        r#"
+listeners:
+  data:
+    - bind: "0.0.0.0:443"
+  admin:
+    bind: "127.0.0.1:9443"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:8080"
+state:
+  backend: in_memory
+"#
+    }
+
+    #[test]
+    fn graphql_guard_default_matches_default_fns() {
+        // The hand-written Default must agree byte-for-byte with the serde
+        // default fns so an omitted block and an explicit empty block parse
+        // identically (the StreamingConfig convention).
+        let d = GraphqlGuardConfig::default();
+        assert!(!d.enabled);
+        assert_eq!(d.paths, vec!["/graphql".to_string()]);
+        assert_eq!(d.max_depth, 10);
+        assert_eq!(d.max_node_count, 500);
+        assert_eq!(d.max_complexity, 1000);
+        assert!(!d.allow_introspection);
+    }
+
+    #[test]
+    fn graphql_section_absent_uses_defaults() {
+        let cfg: WafConfig = serde_yaml::from_str(base_config_yaml()).unwrap();
+        assert_eq!(cfg.graphql, GraphqlGuardConfig::default());
+        assert!(!cfg.graphql.enabled);
+    }
+
+    #[test]
+    fn graphql_section_parses_overrides() {
+        let yaml = format!(
+            "{}graphql:\n  enabled: true\n  paths: [\"/graphql\", \"/api/graphql\"]\n  \
+             max_depth: 6\n  max_node_count: 200\n  max_complexity: 800\n  \
+             allow_introspection: true\n",
+            base_config_yaml()
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert!(cfg.graphql.enabled);
+        assert_eq!(cfg.graphql.paths, vec!["/graphql", "/api/graphql"]);
+        assert_eq!(cfg.graphql.max_depth, 6);
+        assert_eq!(cfg.graphql.max_node_count, 200);
+        assert_eq!(cfg.graphql.max_complexity, 800);
+        assert!(cfg.graphql.allow_introspection);
+    }
+
+    #[test]
+    fn graphql_partial_section_fills_defaults() {
+        // Only `enabled` set — every other field falls back to its default.
+        let yaml = format!("{}graphql:\n  enabled: true\n", base_config_yaml());
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert!(cfg.graphql.enabled);
+        assert_eq!(cfg.graphql.paths, vec!["/graphql".to_string()]);
+        assert_eq!(cfg.graphql.max_depth, 10);
+    }
+
+    #[test]
+    fn graphql_unknown_key_rejected() {
+        // deny_unknown_fields — a typo'd key must fail the parse, not vanish.
+        let yaml = format!(
+            "{}graphql:\n  enabled: true\n  max_dpeth: 6\n",
+            base_config_yaml()
+        );
+        let err = serde_yaml::from_str::<WafConfig>(&yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("max_dpeth")
+                || err.to_string().contains("unknown field"),
+            "expected unknown-field error, got: {err}",
+        );
+    }
+
+    #[test]
+    fn graphql_enabled_with_empty_paths_fails_validation() {
+        let yaml = format!(
+            "{}graphql:\n  enabled: true\n  paths: []\n",
+            base_config_yaml()
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("graphql.paths"),
+            "expected graphql.paths validation error, got: {err}",
+        );
+    }
+
+    #[test]
+    fn graphql_enabled_with_unslashed_path_fails_validation() {
+        let yaml = format!(
+            "{}graphql:\n  enabled: true\n  paths: [\"graphql\"]\n",
+            base_config_yaml()
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("must start with '/'"),
+            "expected leading-slash validation error, got: {err}",
+        );
+    }
+
+    #[test]
+    fn graphql_disabled_with_empty_paths_passes_validation() {
+        // The empty-paths guard only fires when the feature is on.
+        let yaml = format!(
+            "{}graphql:\n  enabled: false\n  paths: []\n",
+            base_config_yaml()
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]

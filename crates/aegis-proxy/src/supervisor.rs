@@ -410,11 +410,20 @@ state:
             f.sync_all().unwrap();
         }
 
-        // Wait for the debounced publish.
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
-        let doc = store.load().await.unwrap().expect("doc present");
-        assert_eq!(doc.version, 2, "a file change should publish a new version");
+        // Poll for the debounced publish rather than a single fixed sleep —
+        // the notify event + 100ms debounce can lag under parallel test load,
+        // which makes a one-shot sleep flaky.
+        let mut doc = None;
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if let Some(d) = store.load().await.unwrap() {
+                if d.version == 2 {
+                    doc = Some(d);
+                    break;
+                }
+            }
+        }
+        let doc = doc.expect("a file change should publish v2 within the timeout");
         assert!(doc.blob.contains("127.0.0.1:8888"));
 
         let mut saw_publish = false;

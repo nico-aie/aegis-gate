@@ -20,8 +20,13 @@
 **What Aegis-Gate already does well** (verified in code, not just docs):
 
 - **Data plane**: HTTP/1.1, HTTP/2 (+ rapid-reset cap in `proto/h2.rs`),
-  H2C, gRPC, WebSocket bridge, TCP CONNECT; routing, upstream pools with
-  LB / circuit-breaker / health-probe; per-route quotas.
+  WebSocket bridge, TCP CONNECT; routing, upstream pools with
+  LB / circuit-breaker / health-probe; per-route quotas. **gRPC is only
+  *partial*** — inbound h2-over-TLS + outbound h2 for `scheme: grpc|h2c` pools
+  work, but gRPC responses misclassify as `Buffered` so `grpc-status` trailers
+  are dropped, and the request body is buffered (client-streaming/bidi can't
+  work). h2c is **upstream-only** (the plaintext *listener* is h1-only). See the
+  correctness fix in [`grpc-aware-proxying.md`](./grpc-aware-proxying.md).
 - **Detectors** (`aegis-security/src/detectors/`): sqli, xss, path
   traversal, ssrf, command injection, nosql injection, open redirect,
   header injection, template injection, body abuse, recon/scanner,
@@ -230,6 +235,18 @@ tiers:
   recovers from). Ephemeral hot path (`g:*`, cache, leases) stays on Redis; it's
   a trait split, not a StateBackend port. Deferred — default stays Redis. **L**,
   phased.
+- [`grpc-aware-proxying.md`](./grpc-aware-proxying.md) — protocol correctness:
+  make gRPC a correct proxy target. Today gRPC responses misclassify as
+  `Buffered` and `collect()` drops the `grpc-status`/`grpc-message` trailers →
+  **every call looks like an internal error**; client-streaming/bidi deadlock on
+  the buffered request body; `proto/grpc.rs` (`is_grpc`, trailer-preserving
+  body) is built but dead. **P1 — force the streaming path for gRPC + verify
+  trailers survive — is a standalone S correctness win** (fixes unary +
+  server-streaming + `grpc-status`, makes `tests/protocols/05-grpc.sh` real).
+  **P2 — stream the request body** (the `Full<Bytes>` `PooledClient` is
+  client-type surgery) unblocks client/bidi and is a larger, flagged change;
+  P3–P6 (wire-up, method-aware policy, stream-level LB/h2c-in, protobuf+gRPC
+  health) are deferred. **S near-term (P1), M+ full arc**, phased.
 - [`passive-upstream-health.md`](./passive-upstream-health.md) — correctness:
   mark members down from real forward failures (not just active probes), feed
   the LB. Requires a fail-open `LbStrategy::pick` change first.
