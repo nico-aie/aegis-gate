@@ -261,7 +261,9 @@ pub struct WafConfig {
     ///
     /// Per-route `routes[].failure_mode` still wins when set;
     /// this is the tier-level default for routes that don't pin
-    /// their own. Schema only — consumer wiring lands in Phase E.
+    /// their own. Consumed by the DDoS runtime derivation
+    /// (`config_source::reload::derive_ddos_runtime_cfg`) — dynamic, applied on
+    /// every config swap via the tiers path. (Classified DYNAMIC by H2a.)
     #[serde(default)]
     pub fail_mode_by_tier: HashMap<Tier, FailureModeConfig>,
     /// SSE streaming (Server-Sent Events) stream-through support. When a
@@ -6188,6 +6190,47 @@ state:
         // dangling upstream ref must still be rejected via load_dynamic_str.
         let doc = minimal_yaml().replace("upstream: default", "upstream: ghost");
         assert!(super::load_dynamic_str(&doc).is_err());
+    }
+
+    /// Scrape the top-level `pub <field>:` names of a struct from this file's
+    /// source. Field types never contain `{}`, so "first `\n}` after the
+    /// header" reliably bounds the struct body.
+    fn struct_fields(src: &str, struct_name: &str) -> Vec<String> {
+        let header = format!("pub struct {struct_name} {{");
+        let start = src.find(&header).expect("struct header present") + header.len();
+        let body = &src[start..];
+        let end = body.find("\n}").expect("struct close brace");
+        body[..end]
+            .lines()
+            .filter_map(|l| {
+                let t = l.trim();
+                t.strip_prefix("pub ")
+                    .and_then(|r| r.split_once(':'))
+                    .map(|(name, _)| name.trim().to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn partition_guard_bootstrap_dynamic_cover_wafconfig_disjointly() {
+        // The structural guarantee: the two projections partition WafConfig
+        // exactly (disjoint + complete), and LEGACY_BOOTSTRAP_KEYS == the
+        // BootstrapConfig field set. A new WafConfig field that isn't
+        // classified — or a strip-list that drifts from BootstrapConfig —
+        // fails here, before it can brick the doc plane.
+        use std::collections::BTreeSet;
+        let src = include_str!("config.rs");
+        let waf: BTreeSet<String> = struct_fields(src, "WafConfig").into_iter().collect();
+        let boot: BTreeSet<String> = struct_fields(src, "BootstrapConfig").into_iter().collect();
+        let dynamic: BTreeSet<String> = struct_fields(src, "DynamicConfig").into_iter().collect();
+        let legacy: BTreeSet<String> =
+            super::LEGACY_BOOTSTRAP_KEYS.iter().map(|s| s.to_string()).collect();
+
+        assert_eq!(waf.len(), 34, "WafConfig field count drifted");
+        assert!(boot.is_disjoint(&dynamic), "a field is in BOTH halves");
+        let union: BTreeSet<String> = boot.union(&dynamic).cloned().collect();
+        assert_eq!(union, waf, "bootstrap+dynamic must cover WafConfig exactly");
+        assert_eq!(legacy, boot, "LEGACY_BOOTSTRAP_KEYS must equal the BootstrapConfig field set");
     }
 
     #[test]

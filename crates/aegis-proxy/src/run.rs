@@ -1414,10 +1414,18 @@ pub async fn run(
             config_marker_path.as_ref(),
         )
         .await;
+        // H2a — capture the immutable bootstrap half from the boot config.
+        // The watcher reconstructs the merged runtime config from each new
+        // DYNAMIC doc using this, so a doc can never change how the node came
+        // up (`WafConfig::from_parts`).
+        let boot = std::sync::Arc::new(aegis_core::BootstrapConfig::from(
+            cfg_swap.load().as_ref(),
+        ));
         std::mem::drop(crate::config_source::redis_source::spawn_watcher(
             store,
             node_id,
             cfg_swap.clone(),
+            boot,
             bus.clone(),
             targets,
             crate::config_source::redis_source::DEFAULT_POLL,
