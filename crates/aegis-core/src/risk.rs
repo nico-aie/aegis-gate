@@ -1,6 +1,12 @@
 use std::net::IpAddr;
 
-#[derive(Clone, Hash, Eq, PartialEq, Debug)]
+/// 2026-06-24 — `Serialize`/`Deserialize` added for the interim Redis
+/// durability bridge (`redis-interim-durability` P2): the key is the field
+/// of the durable `control:waf:risk` hash, encoded as canonical JSON
+/// (`serde_json::to_string`). Struct fields serialize in declaration order,
+/// so the encoding is deterministic — the same key always maps to the same
+/// field, making the flush an idempotent overwrite rather than a duplicate.
+#[derive(Clone, Hash, Eq, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RiskKey {
     pub ip: IpAddr,
     pub device_fp: Option<String>,

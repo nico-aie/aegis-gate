@@ -874,14 +874,20 @@ pub async fn run(
     let state: Arc<dyn aegis_core::state::StateBackend> = Arc::new(
         aegis_control::metrics::state_ops::MeteredStateBackend::new(state, state_op_metrics),
     );
-    // 2026-06-24 (redis-interim-durability A0) — attach the resolved state
-    // backend to the risk tracker so the P2 durability flush/hydrate (A2)
+    // 2026-06-24 (redis-interim-durability A0/A2) — attach the resolved
+    // state backend to the risk tracker so the P2 durability flush/hydrate
     // can persist lifetime strikes to `control:waf:risk`. The tracker was
     // built above (before the backend existed), so this is a
     // post-construction setter — it propagates to every clone via the
-    // shared inner. Gated on `redis`; inert in A0 (no read path yet).
+    // shared inner. Gated on `redis`.
     #[cfg(feature = "redis")]
-    risk.attach_backend(state.clone());
+    {
+        risk.attach_backend(state.clone());
+        // A2 — spawn the background hydrate (boot, non-blocking) + the
+        // periodic dirty-set flush. Hot path stays DashMap-only; persistence
+        // runs entirely off the request path.
+        risk.spawn_persistence();
+    }
     // PROM-T3 — audit event counter `waf_audit_events_total{class}`.
     // Recorded by a metrics-only AuditBus subscriber spawned
     // alongside the existing dashboard SSE drain. Cost = one
@@ -1602,6 +1608,24 @@ pub async fn run(
                     }
                 })
             }));
+        // 2026-06-24 (redis-interim-durability P2, A2) — durable risk strikes
+        // are now persisted, so `reset_state` must also UNLINK the
+        // `control:waf:risk` hash, or struck IPs resurrect on the next boot
+        // (durability plan §4). reset_all() (sync, above) already clears the
+        // in-memory map + dirty set; this is the async durable half. O(1) —
+        // a single-hash UNLINK, so it doesn't stall the bench reset (§9
+        // invariant 3). No-op without a backend.
+        #[cfg(feature = "redis")]
+        {
+            let risk_for_durable_reset = risk.clone();
+            rt.control
+                .register_async_reset_callback(std::sync::Arc::new(move || {
+                    let risk = risk_for_durable_reset.clone();
+                    Box::pin(async move {
+                        risk.unlink_durable().await;
+                    })
+                }));
+        }
 
         // C-1 (multi-node consistency) — cluster-native control plane.
         // On a shared backend (Redis), install the state handle so
