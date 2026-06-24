@@ -24,7 +24,11 @@ pub mod verbosity;
 pub use audit::{AuditBus, AuditClass, AuditEvent};
 pub use cache::{CacheKey, CacheProvider, CachedResponse};
 pub use cluster::{ClusterMembership, Lease, LeaseHandle, LeaseStore, NodeId, NodeInfo};
-pub use config::{load_config, load_config_str, ConfigBroadcast, ConfigEvent, WafConfig};
+pub use config::{
+    load_config, load_config_str, load_dynamic_str, strip_legacy_bootstrap_keys,
+    yaml_has_legacy_bootstrap_keys, BootstrapConfig, ConfigBroadcast, ConfigEvent,
+    DynamicConfig, WafConfig, LEGACY_BOOTSTRAP_KEYS,
+};
 pub use context::{ClientInfo, FieldValue, RequestCtx, RouteCtx, TlsFingerprint};
 pub use decision::{Action, ChallengeLevel, Decision};
 pub use error::{Result, WafError};

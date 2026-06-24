@@ -283,6 +283,264 @@ pub struct WafConfig {
     pub graphql: GraphqlGuardConfig,
 }
 
+// ---------------------------------------------------------------------------
+// H2a — bootstrap / dynamic structural split (config-single-source-of-truth)
+// ---------------------------------------------------------------------------
+//
+// `WafConfig` stays the *merged runtime carrier* and the *file* parse type.
+// Two projections govern the config-plane BOUNDARIES so a Tier-1 "bootstrap"
+// field can never live in the dynamic doc:
+//
+//   - [`BootstrapConfig`] — file/env only, read once at boot, immutable. The
+//     sections with NO reload helper that define how the node comes up.
+//   - [`DynamicConfig`] — the versioned `config:waf:doc` blob (SSOT),
+//     hot-swappable. Everything a reload helper applies.
+//
+// Two safety properties fall out: (1) a bootstrap field can't be STORED in the
+// doc — the doc is validated as `DynamicConfig`, which has no bootstrap fields;
+// (2) the doc can't OVERRIDE a bootstrap field at runtime — the merged carrier
+// takes bootstrap values from the immutable `BootstrapConfig`, never the doc
+// (see [`WafConfig::from_parts`]).
+
+/// Top-level field names that are bootstrap-only (file/env). Used to STRIP a
+/// pre-H2a full-`WafConfig` doc blob down to its dynamic projection so it still
+/// parses under `DynamicConfig`'s `deny_unknown_fields`. MUST stay in sync with
+/// the [`BootstrapConfig`] field set — the structural guard test enforces this.
+pub const LEGACY_BOOTSTRAP_KEYS: &[&str] = &[
+    "listeners",
+    "state",
+    "admin",
+    "node",
+    "cluster",
+    "config_plane",
+    "runtime",
+    "interop",
+    "geoip",
+    "proxy",
+    "load_shedder",
+    "load_mode",
+    "logging",
+];
+
+/// File/env-only bootstrap config (13 sections). Immutable after boot.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BootstrapConfig {
+    pub listeners: Listeners,
+    pub state: StateConfig,
+    #[serde(default)]
+    pub admin: AdminConfig,
+    #[serde(default)]
+    pub node: NodeConfig,
+    #[serde(default)]
+    pub cluster: ClusterConfig,
+    #[serde(default)]
+    pub config_plane: ConfigPlaneConfig,
+    #[serde(default)]
+    pub runtime: RuntimeConfig,
+    #[serde(default)]
+    pub interop: InteropConfig,
+    #[serde(default)]
+    pub geoip: GeoIpConfig,
+    #[serde(default)]
+    pub proxy: ProxyConfig,
+    #[serde(default)]
+    pub load_shedder: LoadShedderConfig,
+    #[serde(default)]
+    pub load_mode: crate::load_mode::LoadModeConfig,
+    #[serde(default)]
+    pub logging: crate::verbosity::LoggingConfig,
+}
+
+/// The hot-swappable dynamic config (21 sections) — the `config:waf:doc` blob.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DynamicConfig {
+    pub routes: Vec<RouteConfig>,
+    pub upstreams: HashMap<String, PoolConfig>,
+    #[serde(default)]
+    pub tls: Option<TlsConfig>,
+    #[serde(default)]
+    pub zero_trust: Option<ZeroTrustConfig>,
+    #[serde(default)]
+    pub rules: RulesConfig,
+    #[serde(default)]
+    pub rate_limit: RateLimitConfig,
+    #[serde(default)]
+    pub risk: RiskConfig,
+    #[serde(default)]
+    pub detectors: DetectorsConfig,
+    #[serde(default)]
+    pub bots: BotConfig,
+    #[serde(default)]
+    pub dlp: DlpConfig,
+    #[serde(default)]
+    pub response_filter: ResponseFilterConfig,
+    #[serde(default)]
+    pub observability: ObservabilityConfig,
+    #[serde(default)]
+    pub audit: AuditConfig,
+    #[serde(default)]
+    pub compliance: Option<ComplianceProfile>,
+    #[serde(default)]
+    pub tiers: TiersConfig,
+    #[serde(default)]
+    pub alerting: Option<AlertingConfig>,
+    #[serde(default)]
+    pub ai: AiConfig,
+    #[serde(default)]
+    pub ddos: DdosConfig,
+    #[serde(default)]
+    pub fail_mode_by_tier: HashMap<Tier, FailureModeConfig>,
+    #[serde(default)]
+    pub streaming: StreamingConfig,
+    #[serde(default)]
+    pub graphql: GraphqlGuardConfig,
+}
+
+impl From<&WafConfig> for BootstrapConfig {
+    fn from(c: &WafConfig) -> Self {
+        Self {
+            listeners: c.listeners.clone(),
+            state: c.state.clone(),
+            admin: c.admin.clone(),
+            node: c.node.clone(),
+            cluster: c.cluster.clone(),
+            config_plane: c.config_plane.clone(),
+            runtime: c.runtime.clone(),
+            interop: c.interop.clone(),
+            geoip: c.geoip.clone(),
+            proxy: c.proxy.clone(),
+            load_shedder: c.load_shedder.clone(),
+            load_mode: c.load_mode.clone(),
+            logging: c.logging.clone(),
+        }
+    }
+}
+
+impl From<&WafConfig> for DynamicConfig {
+    fn from(c: &WafConfig) -> Self {
+        Self {
+            routes: c.routes.clone(),
+            upstreams: c.upstreams.clone(),
+            tls: c.tls.clone(),
+            zero_trust: c.zero_trust.clone(),
+            rules: c.rules.clone(),
+            rate_limit: c.rate_limit.clone(),
+            risk: c.risk.clone(),
+            detectors: c.detectors.clone(),
+            bots: c.bots.clone(),
+            dlp: c.dlp.clone(),
+            response_filter: c.response_filter.clone(),
+            observability: c.observability.clone(),
+            audit: c.audit.clone(),
+            compliance: c.compliance.clone(),
+            tiers: c.tiers.clone(),
+            alerting: c.alerting.clone(),
+            ai: c.ai.clone(),
+            ddos: c.ddos.clone(),
+            fail_mode_by_tier: c.fail_mode_by_tier.clone(),
+            streaming: c.streaming.clone(),
+            graphql: c.graphql.clone(),
+        }
+    }
+}
+
+impl WafConfig {
+    /// Reconstruct the merged runtime config from the immutable bootstrap half
+    /// + a freshly-applied dynamic doc. Bootstrap values ALWAYS come from
+    /// `boot` (the file/env), so a stray bootstrap key in the doc can never
+    /// override how the node came up — the data plane's bootstrap posture is
+    /// fixed for the process lifetime.
+    pub fn from_parts(boot: &BootstrapConfig, dynamic: DynamicConfig) -> Self {
+        Self {
+            // bootstrap half (immutable, from the file)
+            listeners: boot.listeners.clone(),
+            state: boot.state.clone(),
+            admin: boot.admin.clone(),
+            node: boot.node.clone(),
+            cluster: boot.cluster.clone(),
+            config_plane: boot.config_plane.clone(),
+            runtime: boot.runtime.clone(),
+            interop: boot.interop.clone(),
+            geoip: boot.geoip.clone(),
+            proxy: boot.proxy.clone(),
+            load_shedder: boot.load_shedder.clone(),
+            load_mode: boot.load_mode.clone(),
+            logging: boot.logging.clone(),
+            // dynamic half (from the doc)
+            routes: dynamic.routes,
+            upstreams: dynamic.upstreams,
+            tls: dynamic.tls,
+            zero_trust: dynamic.zero_trust,
+            rules: dynamic.rules,
+            rate_limit: dynamic.rate_limit,
+            risk: dynamic.risk,
+            detectors: dynamic.detectors,
+            bots: dynamic.bots,
+            dlp: dynamic.dlp,
+            response_filter: dynamic.response_filter,
+            observability: dynamic.observability,
+            audit: dynamic.audit,
+            compliance: dynamic.compliance,
+            tiers: dynamic.tiers,
+            alerting: dynamic.alerting,
+            ai: dynamic.ai,
+            ddos: dynamic.ddos,
+            fail_mode_by_tier: dynamic.fail_mode_by_tier,
+            streaming: dynamic.streaming,
+            graphql: dynamic.graphql,
+        }
+    }
+}
+
+/// `true` if a doc blob still carries any legacy bootstrap key (pre-H2a full
+/// `WafConfig` shape). The boot migration uses this as its idempotency
+/// predicate: once a blob is stripped, this is `false` and a re-run is a no-op.
+pub fn yaml_has_legacy_bootstrap_keys(yaml: &str) -> bool {
+    match serde_yaml::from_str::<serde_yaml::Value>(yaml) {
+        Ok(serde_yaml::Value::Mapping(map)) => LEGACY_BOOTSTRAP_KEYS
+            .iter()
+            .any(|k| map.contains_key(serde_yaml::Value::String((*k).to_string()))),
+        _ => false,
+    }
+}
+
+/// Strip the legacy bootstrap top-level keys from a YAML config blob so a
+/// pre-H2a full-`WafConfig` doc parses cleanly as a [`DynamicConfig`]. Shared
+/// by [`load_dynamic_str`] (read-time backstop) and the boot doc migration so
+/// the two can never diverge. Unknown NON-bootstrap keys are left intact so
+/// `DynamicConfig`'s `deny_unknown_fields` still catches dynamic-field typos.
+pub fn strip_legacy_bootstrap_keys(yaml: &str) -> crate::Result<String> {
+    let mut value: serde_yaml::Value = serde_yaml::from_str(yaml)
+        .map_err(|e| crate::error::WafError::Config(format!("invalid config yaml: {e}")))?;
+    if let serde_yaml::Value::Mapping(map) = &mut value {
+        for k in LEGACY_BOOTSTRAP_KEYS {
+            map.remove(serde_yaml::Value::String((*k).to_string()));
+        }
+    }
+    serde_yaml::to_string(&value)
+        .map_err(|e| crate::error::WafError::Config(format!("config re-encode failed: {e}")))
+}
+
+/// Load + validate the DYNAMIC config from a doc blob (the config-plane
+/// validation boundary). Pre-strips legacy bootstrap keys so an un-migrated
+/// pre-H2a doc still applies, then extracts via figment (same deserializer as
+/// [`load_config_str`], for the audit-sink enum map-form — see that fn) with
+/// `deny_unknown_fields` intact.
+pub fn load_dynamic_str(yaml: &str) -> crate::Result<DynamicConfig> {
+    use figment::providers::{Format, Yaml};
+    use figment::Figment;
+
+    let stripped = strip_legacy_bootstrap_keys(yaml)?;
+    let cfg: DynamicConfig = Figment::new()
+        .merge(Yaml::string(&stripped))
+        .extract()
+        .map_err(|e| crate::error::WafError::Config(format!("invalid config: {e}")))?;
+    cfg.validate()?;
+    Ok(cfg)
+}
+
 /// SSE / streaming stream-through configuration (SSE plan §6).
 ///
 /// Streamed responses are delivered frame-by-frame with no buffer cap
@@ -1208,12 +1466,22 @@ fn default_stack_size_kb() -> usize {
 
 impl WafConfig {
     /// Validate semantic invariants that serde alone cannot enforce.
+    ///
+    /// 2026-06-24 (H2a) — delegates to the two config halves so the file path
+    /// and the config-plane doc path share exactly one validation surface per
+    /// field. A dynamic check added to [`DynamicConfig::validate`] is enforced
+    /// on BOTH paths automatically (no drift between boot and the doc).
     pub fn validate(&self) -> crate::Result<()> {
-        if self.listeners.data.is_empty() {
-            return Err(crate::error::WafError::Config(
-                "listeners.data must contain at least one entry".into(),
-            ));
-        }
+        BootstrapConfig::from(self).validate()?;
+        DynamicConfig::from(self).validate()?;
+        Ok(())
+    }
+}
+
+impl DynamicConfig {
+    /// Validate the dynamic (doc) invariants — routes/upstreams referential
+    /// integrity, TLS/Zero-Trust hardening, per-tier bounds, GraphQL guard.
+    pub fn validate(&self) -> crate::Result<()> {
         if self.routes.is_empty() {
             return Err(crate::error::WafError::Config(
                 "routes must contain at least one route".into(),
@@ -1312,6 +1580,24 @@ impl WafConfig {
         // Zero Trust: validate per-pool upstream (WAF-as-client) mTLS
         // against the shared identity (cross-references upstreams + zero_trust).
         validate_upstream_mtls(&self.upstreams, self.zero_trust.as_ref())?;
+        // 2026-05-23 — per-tier block-score bounds (<= 100).
+        self.tiers.validate()?;
+        // Tier-1A — GraphQL guard sanity (enabled ⇒ non-empty, leading-slash
+        // paths) so an `enabled` guard can never silently inspect nothing.
+        validate_graphql_guard(&self.graphql)?;
+        Ok(())
+    }
+}
+
+impl BootstrapConfig {
+    /// Validate the bootstrap (file/env) invariants — listener / proxy / admin
+    /// bring-up coherence and the not-yet-implemented state-backend rejections.
+    pub fn validate(&self) -> crate::Result<()> {
+        if self.listeners.data.is_empty() {
+            return Err(crate::error::WafError::Config(
+                "listeners.data must contain at least one entry".into(),
+            ));
+        }
         // GAP 2: a zero connection cap would reject every connection at
         // accept — a deny-all footgun. Reject it at boot rather than going
         // live with a black-hole listener.
@@ -1407,8 +1693,6 @@ impl WafConfig {
         // Layer-1: runtime sizing constraints (workers >= 2, sane
         // blocking-pool size, sane stack).
         self.runtime.validate()?;
-        // 2026-05-23 — per-tier block-score bounds (<= 100).
-        self.tiers.validate()?;
         // 2026-05-11 CORE-09 / CTL-08 — reject not-implemented
         // state-backend + reconcile-mode values at lint time
         // instead of letting them pass `validate()` and then
@@ -1481,42 +1765,40 @@ impl WafConfig {
                 ));
             }
         }
-        // Tier-1A — a GraphQL guard that's switched on but has no paths to
-        // match (or every path is blank) would inspect nothing: almost
-        // certainly a misconfig, so fail loud at boot rather than ship a
-        // silently-inert guard. Disabled guards skip this entirely.
-        if self.graphql.enabled {
-            let has_path = self
-                .graphql
-                .paths
-                .iter()
-                .any(|p| !p.trim().is_empty());
-            if !has_path {
-                return Err(crate::error::WafError::Config(
-                    "graphql.enabled is true but graphql.paths is empty — the guard \
-                     would inspect no requests. Set graphql.paths (e.g. [\"/graphql\"]) \
-                     or set graphql.enabled: false."
-                        .into(),
-                ));
-            }
-            // Paths are matched against the request's origin-form path, which
-            // always starts with `/`. An entry without a leading slash can
-            // never match, so an `enabled` guard with such a path would
-            // silently protect nothing — fail loud instead.
-            if let Some(bad) = self
-                .graphql
-                .paths
-                .iter()
-                .find(|p| !p.trim().is_empty() && !p.starts_with('/'))
-            {
-                return Err(crate::error::WafError::Config(format!(
-                    "graphql.paths entry '{bad}' must start with '/' (request paths are \
-                     origin-form, e.g. \"/graphql\") — it would never match as written."
-                )));
-            }
-        }
         Ok(())
     }
+}
+
+/// Tier-1A GraphQL-guard sanity (shared by [`DynamicConfig::validate`]). An
+/// `enabled` guard with no usable path would silently inspect nothing — fail
+/// loud at the config boundary instead. Disabled guards pass trivially.
+fn validate_graphql_guard(graphql: &GraphqlGuardConfig) -> crate::Result<()> {
+    if !graphql.enabled {
+        return Ok(());
+    }
+    let has_path = graphql.paths.iter().any(|p| !p.trim().is_empty());
+    if !has_path {
+        return Err(crate::error::WafError::Config(
+            "graphql.enabled is true but graphql.paths is empty — the guard \
+             would inspect no requests. Set graphql.paths (e.g. [\"/graphql\"]) \
+             or set graphql.enabled: false."
+                .into(),
+        ));
+    }
+    // Paths are matched against the request's origin-form path, which always
+    // starts with `/`. An entry without a leading slash can never match, so an
+    // `enabled` guard with such a path would silently protect nothing.
+    if let Some(bad) = graphql
+        .paths
+        .iter()
+        .find(|p| !p.trim().is_empty() && !p.starts_with('/'))
+    {
+        return Err(crate::error::WafError::Config(format!(
+            "graphql.paths entry '{bad}' must start with '/' (request paths are \
+             origin-form, e.g. \"/graphql\") — it would never match as written."
+        )));
+    }
+    Ok(())
 }
 
 impl RuntimeConfig {
@@ -5823,6 +6105,89 @@ upstreams:
 state:
   backend: in_memory
 "#
+    }
+
+    // ---- 2026-06-24 H2a bootstrap/dynamic split (C1) ------------------
+
+    #[test]
+    fn load_dynamic_str_strips_legacy_bootstrap_keys() {
+        // A full pre-H2a doc (has listeners + state) parses as DynamicConfig
+        // after the strip, and the dynamic projection is populated.
+        let dynamic = super::load_dynamic_str(minimal_yaml()).expect("strips + parses");
+        assert_eq!(dynamic.routes.len(), 1);
+        assert!(dynamic.upstreams.contains_key("default"));
+    }
+
+    #[test]
+    fn load_dynamic_str_covers_every_legacy_key() {
+        // Each legacy bootstrap key, injected into a doc, must be stripped (not
+        // rejected) — proves the strip list covers the whole bootstrap set.
+        // Base off the stripped (dynamic-only) form so we don't duplicate the
+        // `listeners`/`state` keys minimal_yaml already carries.
+        let base = super::strip_legacy_bootstrap_keys(minimal_yaml()).unwrap();
+        for key in super::LEGACY_BOOTSTRAP_KEYS {
+            let doc = format!("{base}{key}:\n  bogus: 1\n");
+            super::load_dynamic_str(&doc)
+                .unwrap_or_else(|e| panic!("legacy key '{key}' not stripped: {e}"));
+        }
+    }
+
+    #[test]
+    fn load_dynamic_str_rejects_a_dynamic_typo() {
+        // deny_unknown_fields is preserved for dynamic fields: a typo'd
+        // dynamic key still fails loudly (F-CRITICAL-013 intact).
+        let doc = format!("{}detctors:\n  enabled: true\n", minimal_yaml());
+        assert!(super::load_dynamic_str(&doc).is_err());
+    }
+
+    #[test]
+    fn load_dynamic_str_rejects_unknown_nonlegacy_key() {
+        let doc = format!("{}totally_bogus_section:\n  x: 1\n", minimal_yaml());
+        assert!(super::load_dynamic_str(&doc).is_err());
+    }
+
+    #[test]
+    fn yaml_legacy_predicate_flips_after_strip() {
+        assert!(super::yaml_has_legacy_bootstrap_keys(minimal_yaml()));
+        let stripped = super::strip_legacy_bootstrap_keys(minimal_yaml()).unwrap();
+        assert!(!super::yaml_has_legacy_bootstrap_keys(&stripped), "strip is complete");
+        // Idempotent: a second strip is a no-op on the predicate.
+        let twice = super::strip_legacy_bootstrap_keys(&stripped).unwrap();
+        assert!(!super::yaml_has_legacy_bootstrap_keys(&twice));
+    }
+
+    #[test]
+    fn from_parts_takes_bootstrap_from_boot_never_the_doc() {
+        // The merged carrier takes bootstrap values from `boot`; a dynamic doc
+        // (which structurally has no bootstrap fields) can never override them.
+        let boot_cfg = super::load_config_str(minimal_yaml()).unwrap();
+        let boot = super::BootstrapConfig::from(&boot_cfg);
+
+        // A dynamic doc that adds a second route.
+        let doc_yaml = format!(
+            "{}\nrules:\n  inline: []\n",
+            minimal_yaml().replace(
+                "  - id: catch-all\n    path: \"/\"\n    upstream: default",
+                "  - id: catch-all\n    path: \"/\"\n    upstream: default\n  - id: api\n    path: \"/api\"\n    upstream: default",
+            )
+        );
+        let dynamic = super::load_dynamic_str(&doc_yaml).unwrap();
+        assert_eq!(dynamic.routes.len(), 2, "doc carries the dynamic change");
+
+        let merged = super::WafConfig::from_parts(&boot, dynamic);
+        // Dynamic half applied:
+        assert_eq!(merged.routes.len(), 2);
+        // Bootstrap half preserved from boot, not the doc:
+        assert_eq!(merged.state.backend, boot.state.backend);
+        assert_eq!(merged.listeners.data.len(), boot.listeners.data.len());
+    }
+
+    #[test]
+    fn dynamic_validate_still_enforces_route_upstream_refs() {
+        // The dynamic validation surface moved to DynamicConfig::validate; a
+        // dangling upstream ref must still be rejected via load_dynamic_str.
+        let doc = minimal_yaml().replace("upstream: default", "upstream: ghost");
+        assert!(super::load_dynamic_str(&doc).is_err());
     }
 
     #[test]
