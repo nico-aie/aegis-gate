@@ -7313,6 +7313,7 @@ state:
             store_b,
             "waf-2".to_string(),
             cfg_b.clone(),
+            std::sync::Arc::new(aegis_core::BootstrapConfig::from(&boot_cfg)),
             AuditBus::new(64),
             targets_b,
             Duration::from_millis(50),

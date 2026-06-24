@@ -127,6 +127,9 @@ pub fn spawn_watcher(
     store: ConfigStore,
     node_id: String,
     cfg: Arc<ArcSwap<WafConfig>>,
+    // H2a — immutable bootstrap half, used to reconstruct the merged runtime
+    // config from each new DYNAMIC doc (see `WafConfig::from_parts`).
+    boot: Arc<aegis_core::BootstrapConfig>,
     bus: AuditBus,
     targets: ApplyTargets,
     poll_interval: Duration,
@@ -139,6 +142,7 @@ pub fn spawn_watcher(
             store,
             node_id,
             cfg,
+            boot,
             bus,
             targets,
             poll_interval,
@@ -155,6 +159,7 @@ async fn watch_loop(
     store: ConfigStore,
     node_id: String,
     cfg: Arc<ArcSwap<WafConfig>>,
+    boot: Arc<aegis_core::BootstrapConfig>,
     bus: AuditBus,
     targets: ApplyTargets,
     poll_interval: Duration,
@@ -202,8 +207,15 @@ async fn watch_loop(
                     // No change — re-stamp our ACK so the roster stays fresh.
                     let _ = store.record_applied(&node_id, applied_version).await;
                 } else {
-                    match aegis_core::load_config_str(&doc.blob) {
-                        Ok(new_cfg) => {
+                    // H2a — the doc blob is the DYNAMIC config. Validate it as
+                    // such (strips any legacy bootstrap keys from a pre-H2a
+                    // doc), then reconstruct the merged runtime config taking
+                    // the bootstrap half from the immutable boot config — the
+                    // doc can never override how this node came up.
+                    match aegis_core::load_dynamic_str(&doc.blob) {
+                        Ok(dynamic) => {
+                            let new_cfg =
+                                aegis_core::WafConfig::from_parts(&boot, dynamic);
                             apply_and_swap(&new_cfg, &cfg, &bus, &targets, doc.version).await;
                             applied_version = doc.version;
                             highest_seen = highest_seen.max(doc.version);
@@ -912,6 +924,7 @@ mod tests {
             Arc::new(InMemoryBackend::new());
         let boot = aegis_core::load_config_str(&zero_trust_yaml(&path_b)).unwrap();
         let cfg_swap = Arc::new(ArcSwap::from_pointee(boot.clone()));
+        let boot_half = Arc::new(aegis_core::BootstrapConfig::from(&boot));
 
         let bus = AuditBus::new(64);
         let mut rx = bus.subscribe();
@@ -943,6 +956,7 @@ mod tests {
             store_w,
             "waf-zt".to_string(),
             cfg_swap.clone(),
+            boot_half,
             bus.clone(),
             targets,
             Duration::from_millis(50),
