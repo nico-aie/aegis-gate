@@ -1,5 +1,18 @@
 # MANAGED BY ANSIBLE — do not edit on the node; change deploy/ansible/templates/waf.yaml.j2
 # Aegis-Gate node config (./waf.yaml). Contract v2.3/2.5 §8. node.id MUST be unique.
+# -----------------------------------------------------------------------------
+# CONFIG LAYOUT  (H2a -- see config/README.md "Bootstrap vs Dynamic")
+#   BOOTSTRAP -- file/env only, edit here + REDEPLOY (restart) to change:
+#     node, listeners, proxy, state, admin, interop, geoip, logging,
+#     config_plane, cluster, runtime
+#   DYNAMIC   -- live-editable via dashboard/API; config:waf:doc is the source
+#                of truth and this file only SEEDS + publishes it on change:
+#     routes, upstreams, tls, zero_trust, risk, ddos, detectors, ai,
+#     observability, audit, graphql, rules, rate_limit
+#   NB: state.backend (Redis) is ALWAYS required for the data plane, and the
+#       fleet enforcement mode lives in control:waf:modes (NOT this file) —
+#       set via /__waf_control/set_profile, verify with x-waf-mode.
+# -----------------------------------------------------------------------------
 node:
   id: "{{ node_id }}"
 
