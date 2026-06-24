@@ -694,7 +694,34 @@ pub(crate) async fn admin_accept_loop(
         rt.control.register_reset_callback(std::sync::Arc::new(move || {
             agg_for_reset.reset();
         }));
+
+        // 2026-06-24 (redis-interim-durability P1, A1) — incidents are now
+        // durable, so `reset_state` must clear BOTH the in-memory overlay
+        // (sync) and the durable `control:waf:incidents` hash (async UNLINK),
+        // or a reset would leave the operator overlay to resurrect on the
+        // next boot (durability plan §4). The async-half is a no-op without
+        // a backend, matching the StateBackend ephemeral wipe pattern.
+        let incidents_local_reset = services.incidents.clone();
+        rt.control.register_reset_callback(std::sync::Arc::new(move || {
+            incidents_local_reset.clear_local();
+        }));
+        let incidents_durable_reset = services.incidents.clone();
+        rt.control
+            .register_async_reset_callback(std::sync::Arc::new(move || {
+                let incidents = incidents_durable_reset.clone();
+                Box::pin(async move {
+                    incidents.unlink_durable().await;
+                })
+            }));
     }
+
+    // 2026-06-24 (redis-interim-durability P1, A1) — hydrate the durable
+    // incident overlay into the in-memory read cache before serving so an
+    // ack/snooze/resolve survives a restart. No-op without a durable backend
+    // (single-node / no-Redis). The overlay is tiny (per-admin-action), so a
+    // brief await at boot is acceptable — unlike the large risk hash (A2),
+    // which hydrates in the background.
+    services.incidents.hydrate().await;
 
     // CI-T5 — seed `services.routes` from `cfg.routes` so
     // /api/routes returns the live routing trie. Hot-reload
