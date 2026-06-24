@@ -165,6 +165,46 @@ know reload took effect. SLA: ≤ 10 s (Hackathon WAF-FE §2 #5).
 
 ---
 
+## Bootstrap vs Dynamic — which edits take effect live
+
+Every top-level section is one of two kinds (H2a — the split is
+compiler-enforced; the authoritative list is `LEGACY_BOOTSTRAP_KEYS` in
+[`crates/aegis-core/src/config.rs`](../crates/aegis-core/src/config.rs)):
+
+- **BOOTSTRAP — file/env only · edit + RESTART to change.** Defines how the
+  node comes up (binds, where the state store is, identity, runtime sizing).
+  These are read once at boot and can never be changed from the running doc —
+  editing them in the API/dashboard is rejected; editing them in the file takes
+  effect on the next restart.
+
+  > `listeners` · `state` · `node` · `cluster` · `config_plane` · `runtime` ·
+  > `admin` · `interop` · `geoip` · `proxy` · `load_shedder` · `load_mode` ·
+  > `logging`
+
+- **DYNAMIC — live-editable · the doc is the source of truth.** Hot-reloads
+  with no restart. **The file is only a SEED + publisher:** at boot it seeds the
+  versioned config doc (`config:waf:doc`), and a later file edit is *published*
+  into that doc — but the running source of truth is the doc, so a dashboard/API
+  edit and a file edit converge through the same single applier (and across the
+  whole cluster).
+
+  > `routes` · `upstreams` · `tls` · `zero_trust` · `rules` · `rate_limit` ·
+  > `risk` · `detectors` · `bots` · `dlp` · `response_filter` · `observability` ·
+  > `audit` · `compliance` · `tiers` · `alerting` · `ai` · `ddos` ·
+  > `fail_mode_by_tier` · `streaming` · `graphql`
+
+The config doc holds the **dynamic half only** — a bootstrap key can never be
+stored in it (it's stripped on write; the bootstrap half always comes from the
+file/env). Each shipped config file carries this legend as a header banner.
+
+> **`state.backend: redis` is ALWAYS required** for the data plane —
+> rate-limit counters, per-IP risk, replay nonces, auto-blocks, the smart-cache
+> L2, and the durable control state all live there. A future option
+> (`config_plane.store: shared_state | etcd`, H2b) can relocate *only the config
+> document* to etcd; it does **not** remove Redis.
+
+---
+
 ## Section reference (what's in each YAML)
 
 > **Looking for a per-block walkthrough?** Open

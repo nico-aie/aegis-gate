@@ -1,14 +1,47 @@
 # Config source-of-truth: Redis → etcd — durable config plane on a real KV/watch store
 
-**Status:** Future / deferred design (not scheduled)
-**Filed:** 2026-06-20
+**Status:** Designed · prerequisites SHIPPED · build gated behind a default-off
+cargo feature (constraint-respecting). Not yet scheduled for cutover.
+**Filed:** 2026-06-20 · **Updated:** 2026-06-24
 **Origin:** Resource-constrained hackathon shortcut — Redis was reused as the
 config store to avoid a second infra dependency. This plan revisits that once
 the constraint lifts.
-**Related:** [`config-auto-restore.md`](./config-auto-restore.md) (the
-durability follow-up this would subsume), [`world-class-waf-roadmap.md`](./world-class-waf-roadmap.md),
-[[project_config_plane_doc_vs_file]], [[project_api_mode_no_cluster_publish]],
-[[project_apply_and_swap_helper_guard]]
+**Related:** [`config-single-source-of-truth.md`](./config-single-source-of-truth.md)
+(H1/H2a — the prerequisites, now shipped), [`config-auto-restore.md`](./config-auto-restore.md)
+(the durability follow-up this would subsume),
+[`world-class-waf-roadmap.md`](./world-class-waf-roadmap.md),
+[[project_config_plane_doc_vs_file]], [[project_config_h2a_split_progress]],
+[[project_api_mode_no_cluster_publish]], [[project_apply_and_swap_helper_guard]]
+
+## Decisions (2026-06-24)
+
+1. **Prerequisites are done.** H1 (single writer) and **H2a (the
+   `BootstrapConfig`/`DynamicConfig` split)** shipped. The config doc now holds
+   the **dynamic config only** (`DynamicConfig` YAML — bootstrap is stripped on
+   write and reconstructed at runtime via `WafConfig::from_parts(boot, dynamic)`).
+   etcd stores that **same dynamic blob**; only the transport (KV/Txn/Watch/Lease)
+   changes. The file-vs-doc authority model is resolved, so the etcd cutover
+   inherits one applier + one source of truth, exactly as this plan assumed.
+2. **Build it behind a default-off cargo `etcd` feature** (mirrors the existing
+   `redis` feature). The default binary pulls in **no etcd client / dependency**,
+   so the "one external dependency" constraint is respected at the *shipped
+   default*; the code can still be built + tested under `--features etcd` now,
+   and the gate lifts by shipping that build when a second dependency is
+   acceptable. The runtime knob is validated to **reject `etcd` on a binary built
+   without the feature** (loud, like the `ai` / `raft` guards).
+3. **The runtime knob is `config_plane.store: shared_state | etcd`** (default
+   `shared_state`), **NOT** `backend: redis | etcd`. Rationale: the word "redis"
+   on a config-plane knob wrongly implies a global Redis-vs-etcd choice, but
+   **Redis is never optional** — `state.backend: redis` always backs the data
+   plane (rate-limit / risk / nonce / auto-block / smart-cache L2 / Track-A
+   durability). `shared_state` = the config doc rides the existing data-plane
+   state backend (today's behavior); `etcd` = the config doc lives in a dedicated
+   etcd cluster. etcd is **additive for config durability**, never a Redis
+   replacement.
+
+> Anchor note: the file:line references below predate H1/H2a and have drifted
+> (the structural guard was rewritten in H2a; `ConfigStore`, `state_select`, and
+> the run.rs nudge wiring moved). Re-verify against current code at build time.
 
 ## Problem
 
@@ -131,12 +164,17 @@ tonic/gRPC, etcd v3 API — KV, Txn, Watch, Lease):
 - Immutable version snapshots `config:waf:v:{n}` → plain `put`; etcd's MVCC
   also gives us historical revisions for free as a backstop.
 
-**4. Wire backend selection.** Add an etcd arm to
-`crates/aegis-bin/src/state_select.rs:32-57` and the nudge-bus construction in
-`crates/aegis-proxy/src/run.rs:1282-1410`. Config: a new
-`config_plane.backend: redis | etcd` knob (default `redis`) plus etcd endpoint
-/ TLS / auth settings. The ephemeral `StateBackend` selection is **untouched** —
-Redis stays mandatory for the hot path regardless of config backend.
+**4. Wire config-store selection (feature-gated).** Add an etcd arm to the
+config-plane wiring (the `state_select` / `run.rs` nudge construction). Config:
+a new **`config_plane.store: shared_state | etcd`** knob (default
+`shared_state`) plus an `config_plane.etcd: { endpoints, tls, auth }` block
+consulted only when `store: etcd`. The `EtcdBackend` impl + the `etcd-client`
+dependency live behind a **default-off cargo `etcd` feature**, so the default
+build has no etcd code or dependency; `store: etcd` on a binary built without
+the feature is a loud boot error. The ephemeral `StateBackend` selection
+(`state.backend`) is **untouched** — Redis stays mandatory for the hot path
+regardless of where the config doc lives. `shared_state` means "the config doc
+rides `state.backend`" (today's behavior, zero change).
 
 **5. Control plane rides the same seam.** `cluster_sync` /`control` use
 `cas_set` / `incrby` on `control:waf:*`
@@ -151,11 +189,13 @@ stays on Redis — audit during P3.)
   `StateBackend`/`FleetBus` onto the new narrow traits, still implemented by
   `RedisBackend`. No behavior change; all existing tests stay green, including
   the apply-helper structural guard.
-- **P2 — `EtcdBackend` + `EtcdWatch` behind `config_plane.backend: etcd`,
-  default off.** Implement the etcd KV/Txn/Watch/Lease impl. Add a **shadow /
-  dual-read** mode: read from Redis (authoritative), mirror-write to etcd, and
-  compare, to validate parity under real traffic before any cutover.
-- **P3 — Cutover.** Flip `config_plane.backend` to etcd as the authoritative
+- **P2 — `EtcdBackend` + `EtcdWatch` behind the `etcd` cargo feature +
+  `config_plane.store: etcd`, default off.** Implement the etcd KV/Txn/Watch/
+  Lease impl under `#[cfg(feature = "etcd")]`. Add a **shadow / dual-read** mode:
+  read from the shared-state store (authoritative), mirror-write to etcd, and
+  compare, to validate parity under real traffic before any cutover. The doc
+  payload is the H2a `DynamicConfig` blob unchanged.
+- **P3 — Cutover.** Flip `config_plane.store` to `etcd` as the authoritative
   store for both config and control planes. Provide a one-shot **migration**
   that copies the live `config:waf:doc` + `config:waf:v:*` + `control:waf:*`
   into etcd and verifies the active version. Keep a documented rollback to
