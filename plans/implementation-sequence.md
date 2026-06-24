@@ -17,16 +17,27 @@ Update the Status column (and flip to ✅ with a commit / date) as work lands.
 
 ---
 
-## ⏩ Resume here (as of 2026-06-23)
+## ⏩ Resume here (as of 2026-06-24)
 
 **Wave 0 — ✅ complete.** **Wave 1 — ✅ complete:** config H1·P0 (#74),
 config H1·P1+P2 dual-authority fix (#77), PREREQ-B LB fail-open (#78), and
 Tier-1A GraphQL caps (#79) all shipped.
 
-**Next up — Wave 2 foundation first (capability Tier 2 deferred):**
+**Active — foundation/durability first (operator decision 2026-06-24):** pull the
+Wave-3 durability + config-structural work forward ahead of the Wave-2 capability/LB
+items. Planned + decisions locked:
+
+- **Track A — `redis-interim-durability` P1–P3** *(next — building)* →
+  [[redis-interim-durability]] §10. PR sequence: **A0** StateBackend hash-ops +
+  injection seam → **A1** P1 incidents → **A2** P2 RiskTracker (hot-path-safe, k6
+  gate) → **A3** P3 counters. Decisions: hash-ops layout; full P1+P2+P3.
+- **Track B — config H2a** (`BootstrapConfig`/`DynamicConfig` split) → after Track A.
+  [[config-single-source-of-truth]] §11. **B0** migration shim +
+  `fail_mode_by_tier` reclassify (fail-closed footgun) → **B1** the type split.
+
+**Still queued (Wave 2 capability/availability, after foundation):**
 1. **`passive-upstream-health`** + **`zone-aware-load-balancing`** — do **together**
-   (both unblocked by PREREQ-B; they share the `LbStrategy::pick` touchpoint, so
-   touch the LB once). **Recommended next.**
+   (share the `LbStrategy::pick` touchpoint; both unblocked by PREREQ-B).
 2. **`ddos-cross-node-rps-aggregation`** (standalone; slot by capacity).
 
 > **AI/LLM firewall (Tier 2) — deferred, research-gated** (decided 2026-06-23).
@@ -138,11 +149,12 @@ foundation items run in parallel within a wave.
 | ⏸ | Roadmap **Tier 2** — AI/LLM firewall — **deferred, research-gated** → [[ai-llm-firewall]] | Capability | M | Net-new differentiator (2A prompt-injection first; 2B/2C behind the SSE decision). NOT the `ai` ONNX detector. Needs research (signature corpus / FP calibration / streaming decision) before build — see plan §8 |
 
 ### Wave 3 — Durability bridge + config structural cleanup · ~2–3 wk
+*Pulled forward to active (2026-06-24) — foundation-first.*
 
 | ✓ | Item | Stream | Effort | Why now |
 |---|---|---|---|---|
-| ☐ | **redis-interim-durability P1–P3** (durable control state: incidents, RiskTracker strikes/trust, block counters) | Foundation | M | Makes restart-fragile state durable *now* on existing Redis; forward-compatible seams for the Postgres endgame |
-| ☐ | **config-single-source-of-truth H2a** (BootstrapConfig / DynamicConfig type split) | Foundation | M | Compiler-enforces the §3 split; retires the file-vs-doc staleness class for good; prereq for etcd |
+| ◐ | **redis-interim-durability P1–P3** — **Track A, building** (A0 hash-ops seam → A1 incidents → A2 RiskTracker → A3 counters) → [[redis-interim-durability]] §10 | Foundation | M | Makes restart-fragile state durable *now* on existing Redis; forward-compatible seams for the Postgres endgame. Decisions locked: hash-ops layout, full P1+P2+P3 |
+| ☐ | **config-single-source-of-truth H2a** (BootstrapConfig / DynamicConfig split) — **Track B, after A** → [[config-single-source-of-truth]] §11 | Foundation | M | Compiler-enforces the §3 split; retires the file-vs-doc staleness class for good; prereq for etcd. B0 migration shim (fail-closed footgun) → B1 split |
 | ☐ | **smart-caching Phase 4** (stale-if-error, ETag revalidation) | Foundation | S | Finishes a shipped feature; slot by capacity |
 | ☐ | Roadmap **Tier 3 / 4** (Page Shield if PCI deadline; else bot-classifier enforcement Tier 4A) | Capability | M/M-L | PCI jumps the queue if a tenant deadline is live; otherwise 4A is an S win on existing scaffolding |
 
