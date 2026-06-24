@@ -157,12 +157,24 @@ pub(crate) async fn publish_file_change(
         emit_file_audit(bus, path, "config_reload_failed", format!("{e}"));
         return PublishOutcome::Invalid;
     }
-    // Store the verbatim file text — the single validation surface the applier
-    // re-parses, and it preserves `${secret:...}` refs for load-time resolution.
-    let blob = match std::fs::read_to_string(path) {
+    // Store the file text as the DYNAMIC doc — H2a strips the bootstrap keys so
+    // the doc is canonical (bootstrap comes from the file at boot, never the
+    // doc). `${secret:...}` refs in dynamic sections are preserved for
+    // load-time resolution; bootstrap secret refs are resolved from the file
+    // directly, so dropping them from the doc is correct. Stripping here (not
+    // just at `activate`) keeps the unchanged-vs-active dedup below comparing
+    // dynamic-to-dynamic — otherwise every save would look "changed".
+    let raw = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(path = %path.display(), error = %e, "config file unreadable after change");
+            return PublishOutcome::Error;
+        }
+    };
+    let blob = match aegis_core::strip_legacy_bootstrap_keys(&raw) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("config file changed but could not project to dynamic doc: {e}");
             return PublishOutcome::Error;
         }
     };
@@ -321,7 +333,7 @@ state:
             .unwrap();
         let bus = AuditBus::new(8);
 
-        std::fs::write(&path, minimal_yaml().replace("127.0.0.1:8080", "127.0.0.1:8888")).unwrap();
+        std::fs::write(&path, minimal_yaml().replace("127.0.0.1:3000", "127.0.0.1:8888")).unwrap();
         let outcome = publish_file_change(&store, &path, &bus).await;
 
         assert_eq!(outcome, PublishOutcome::Published { version: 2 });
@@ -403,7 +415,7 @@ state:
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         // Mutate the file (change the bind address).
-        let updated = minimal_yaml().replace("127.0.0.1:8080", "127.0.0.1:8888");
+        let updated = minimal_yaml().replace("127.0.0.1:3000", "127.0.0.1:8888");
         {
             let mut f = std::fs::File::create(&config_path).unwrap();
             f.write_all(updated.as_bytes()).unwrap();

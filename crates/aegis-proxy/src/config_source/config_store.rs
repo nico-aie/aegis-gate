@@ -67,7 +67,8 @@ pub fn applied_key(node_id: &str) -> String {
 pub struct ConfigDoc {
     /// Monotonic version, bumped on every accepted activation.
     pub version: u64,
-    /// The full `WafConfig` as YAML.
+    /// The DYNAMIC config as YAML (H2a — bootstrap keys are stripped at
+    /// `activate`; the bootstrap half lives in the file/env, never the doc).
     pub blob: String,
     /// Who wrote this version (audit attribution).
     #[serde(default)]
@@ -163,6 +164,14 @@ impl ConfigStore {
         actor: &str,
         summary: &str,
     ) -> Result<Activate> {
+        // H2a — the config doc store holds the DYNAMIC config only. Strip any
+        // bootstrap keys before persisting (idempotent — a doc that's already
+        // dynamic-only passes through unchanged), so a bootstrap field can
+        // never be STORED in the doc regardless of which caller wrote it
+        // (handler patch, file publish, genesis seed, rollback). Both the doc
+        // and its rollback snapshot are written from this stripped blob.
+        let blob = aegis_core::strip_legacy_bootstrap_keys(&blob)
+            .map_err(|e| WafError::State(format!("config doc strip: {e}")))?;
         let current = self.load().await?;
         let cur_version = current.as_ref().map(|d| d.version).unwrap_or(0);
         if cur_version != expected_version {
@@ -238,6 +247,39 @@ impl ConfigStore {
             .map_err(|e| WafError::State(format!("snapshot not UTF-8: {e}")))?;
         let cur = self.current_version().await?;
         self.activate(cur, blob, actor, &format!("rollback to v{target_version}"))
+            .await
+    }
+
+    /// H2a one-shot migration — if the active doc still carries bootstrap keys
+    /// (a pre-H2a full-`WafConfig` doc), rewrite it IN PLACE as the dynamic
+    /// projection. Same version (no spurious bump / fleet re-apply), CAS-
+    /// guarded against a concurrent writer. Idempotent: a doc already
+    /// dynamic-only is left untouched (returns `Ok(false)`). Snapshots are not
+    /// rewritten eagerly — a rollback re-canonicalizes the target via
+    /// [`Self::activate`]'s strip, and the watcher tolerates a legacy snapshot
+    /// via `load_dynamic_str`. Returns `true` if a rewrite was applied.
+    pub async fn canonicalize_active_doc(&self) -> Result<bool> {
+        let Some(doc) = self.load().await? else {
+            return Ok(false);
+        };
+        if !aegis_core::yaml_has_legacy_bootstrap_keys(&doc.blob) {
+            return Ok(false);
+        }
+        let stripped = aegis_core::strip_legacy_bootstrap_keys(&doc.blob)
+            .map_err(|e| WafError::State(format!("canonicalize strip: {e}")))?;
+        let old_bytes = serde_json::to_vec(&doc)
+            .map_err(|e| WafError::State(format!("config doc encode: {e}")))?;
+        let new_doc = ConfigDoc {
+            version: doc.version,
+            blob: stripped,
+            actor: doc.actor.clone(),
+            ts: doc.ts.clone(),
+            summary: doc.summary.clone(),
+        };
+        let new_bytes = serde_json::to_vec(&new_doc)
+            .map_err(|e| WafError::State(format!("config doc encode: {e}")))?;
+        self.backend
+            .cas_set(DOC_KEY, Some(&old_bytes), &new_bytes, None)
             .await
     }
 
@@ -317,6 +359,55 @@ mod tests {
         assert_eq!(doc.version, 1);
         assert_eq!(doc.blob, "blob-a");
         assert_eq!(doc.actor, "alice");
+    }
+
+    // H2a — a realistic full-WafConfig blob (has bootstrap + dynamic keys).
+    const FULL_YAML: &str = "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\n  admin:\n    bind: \"127.0.0.1:9090\"\nstate:\n  backend: in_memory\nroutes:\n  - id: r\n    path: \"/\"\n    upstream: u\nupstreams:\n  u:\n    members:\n      - addr: \"127.0.0.1:3000\"\n";
+
+    #[tokio::test]
+    async fn activate_strips_bootstrap_keys_storing_dynamic_only() {
+        let s = store();
+        s.activate(0, FULL_YAML.into(), "u", "").await.unwrap();
+        let doc = s.load().await.unwrap().unwrap();
+        assert!(
+            !aegis_core::yaml_has_legacy_bootstrap_keys(&doc.blob),
+            "the stored doc must hold no bootstrap keys"
+        );
+        assert!(doc.blob.contains("upstream"), "dynamic content is preserved");
+    }
+
+    #[tokio::test]
+    async fn canonicalize_migrates_a_pre_h2a_full_doc_in_place_idempotently() {
+        let backend = Arc::new(InMemoryBackend::new());
+        let s = ConfigStore::new(backend.clone());
+        // Simulate a pre-H2a deployment: a FULL doc written directly, bypassing
+        // the strip that `activate` now applies.
+        let full = ConfigDoc {
+            version: 4,
+            blob: FULL_YAML.into(),
+            actor: "legacy".into(),
+            ts: "t".into(),
+            summary: "s".into(),
+        };
+        let bytes = serde_json::to_vec(&full).unwrap();
+        backend.cas_set(DOC_KEY, None, &bytes, None).await.unwrap();
+
+        let changed = s.canonicalize_active_doc().await.unwrap();
+        assert!(changed, "a legacy doc is migrated");
+        let doc = s.load().await.unwrap().unwrap();
+        assert_eq!(doc.version, 4, "migration is in place — no version bump");
+        assert!(!aegis_core::yaml_has_legacy_bootstrap_keys(&doc.blob), "now dynamic-only");
+        assert!(doc.blob.contains("upstream"), "dynamic content survives");
+        // Idempotent: a second run is a no-op.
+        assert!(!s.canonicalize_active_doc().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn canonicalize_is_noop_on_a_fresh_or_dynamic_store() {
+        let s = store();
+        assert!(!s.canonicalize_active_doc().await.unwrap(), "no doc → no-op");
+        s.activate(0, FULL_YAML.into(), "u", "").await.unwrap(); // stored dynamic
+        assert!(!s.canonicalize_active_doc().await.unwrap(), "already dynamic → no-op");
     }
 
     #[tokio::test]

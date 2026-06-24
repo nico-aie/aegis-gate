@@ -2660,6 +2660,33 @@ fn patch_route_remove(base: &str, id: &str) -> Result<String, String> {
 /// no doc has been activated yet. Handlers parse + patch the blob then
 /// activate. Existence / reference checks run against this doc (the
 /// source of truth), not the eventually-consistent local store.
+/// Synthetic minimal-valid bootstrap, merged into a dynamic doc when no boot
+/// file is readable (env-only nodes) so the handler's full-config validation
+/// still works. Safe because `validate()` has NO cross-half checks — validating
+/// the dynamic doc against ANY valid bootstrap is equivalent to validating it
+/// alone — and the bootstrap is stripped off again at `activate`, never stored.
+const VALIDATION_BOOTSTRAP: &str = "listeners:\n  data:\n    - bind: \"127.0.0.1:1\"\n  admin:\n    bind: \"127.0.0.1:2\"\nstate:\n  backend: in_memory\n";
+
+/// H2a — re-merge bootstrap keys into a stored DYNAMIC doc blob so a config-
+/// plane handler can patch + validate a COMPLETE `WafConfig` via
+/// `load_config_str`. The patched blob is stripped back to dynamic-only at
+/// `ConfigStore::activate`, so this is purely an in-memory, per-request view —
+/// the store never holds bootstrap keys, and the merged bootstrap is never
+/// persisted. Prefers the real boot file's bootstrap; falls back to
+/// [`VALIDATION_BOOTSTRAP`] so the path is robust on a node booted from env
+/// vars with no config file.
+fn full_doc_blob(
+    doc_blob: String,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> String {
+    let source = services
+        .config_yaml_path
+        .as_ref()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_else(|| VALIDATION_BOOTSTRAP.to_string());
+    aegis_core::merge_bootstrap_keys(&doc_blob, &source).unwrap_or(doc_blob)
+}
+
 async fn load_active_config_doc(
     services: &aegis_control::dashboard_services::DashboardServices,
 ) -> Result<(crate::config_source::config_store::ConfigStore, String, u64), Response<Full<Bytes>>> {
@@ -2673,7 +2700,7 @@ async fn load_active_config_doc(
     let store = crate::config_source::config_store::ConfigStore::new(backend.clone())
         .with_nudge(services.config_nudge.clone());
     match store.load().await {
-        Ok(Some(doc)) => Ok((store, doc.blob, doc.version)),
+        Ok(Some(doc)) => Ok((store, full_doc_blob(doc.blob, services), doc.version)),
         Ok(None) => match services.config_yaml_path.as_ref() {
             Some(path) => match std::fs::read_to_string(path) {
                 Ok(s) => Ok((store, s, 0u64)),
@@ -4036,7 +4063,7 @@ pub(crate) async fn handle_detectors_put(
         .with_nudge(services.config_nudge.clone());
 
     let (base_blob, current_version) = match store.load().await {
-        Ok(Some(doc)) => (doc.blob, doc.version),
+        Ok(Some(doc)) => (full_doc_blob(doc.blob, services), doc.version),
         Ok(None) => match services.config_yaml_path.as_ref() {
             Some(path) => match std::fs::read_to_string(path) {
                 Ok(s) => (s, 0u64),
@@ -4698,7 +4725,7 @@ pub(crate) async fn handle_tier_put(
         .with_nudge(services.config_nudge.clone());
 
     let (base_blob, expected) = match store.load().await {
-        Ok(Some(doc)) => (doc.blob, doc.version),
+        Ok(Some(doc)) => (full_doc_blob(doc.blob, services), doc.version),
         Ok(None) => match services.config_yaml_path.as_ref() {
             Some(path) => match std::fs::read_to_string(path) {
                 Ok(s) => (s, 0u64),
@@ -4927,7 +4954,7 @@ pub(crate) async fn handle_ai_enabled_put(
     // Without either (etcd-boot / no path), the operator must publish a
     // baseline via PUT /api/config first.
     let (base_blob, expected) = match store.load().await {
-        Ok(Some(doc)) => (doc.blob, doc.version),
+        Ok(Some(doc)) => (full_doc_blob(doc.blob, services), doc.version),
         Ok(None) => match services.config_yaml_path.as_ref() {
             Some(path) => match std::fs::read_to_string(path) {
                 Ok(s) => (s, 0u64),
@@ -5220,7 +5247,7 @@ pub(crate) async fn handle_ai_confidence_put(
         .with_nudge(services.config_nudge.clone());
 
     let (base_blob, expected) = match store.load().await {
-        Ok(Some(doc)) => (doc.blob, doc.version),
+        Ok(Some(doc)) => (full_doc_blob(doc.blob, services), doc.version),
         Ok(None) => match services.config_yaml_path.as_ref() {
             Some(path) => match std::fs::read_to_string(path) {
                 Ok(s) => (s, 0u64),
@@ -5435,7 +5462,7 @@ pub(crate) async fn handle_response_filter_put(
         .with_nudge(services.config_nudge.clone());
 
     let (base_blob, expected) = match store.load().await {
-        Ok(Some(doc)) => (doc.blob, doc.version),
+        Ok(Some(doc)) => (full_doc_blob(doc.blob, services), doc.version),
         Ok(None) => match services.config_yaml_path.as_ref() {
             Some(path) => match std::fs::read_to_string(path) {
                 Ok(s) => (s, 0u64),
@@ -7385,7 +7412,11 @@ state:
             .unwrap()
             .expect("activated config doc must be present");
         assert_eq!(doc.version, 1, "shared doc carries the bumped version");
-        let restarted_cfg = aegis_core::load_config_str(&doc.blob).unwrap();
+        // H2a — the doc is the DYNAMIC projection; reconstruct the merged
+        // config the way the watcher does (dynamic doc + immutable bootstrap).
+        let dynamic = aegis_core::load_dynamic_str(&doc.blob).unwrap();
+        let boot = aegis_core::BootstrapConfig::from(&boot_cfg);
+        let restarted_cfg = aegis_core::WafConfig::from_parts(&boot, dynamic);
         let restarted_table = crate::route::RouteTable::build(&restarted_cfg).unwrap();
         let r = restarted_table
             .resolve("any", "/sec", &http::Method::GET)
