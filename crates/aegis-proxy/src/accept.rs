@@ -713,6 +713,25 @@ pub(crate) async fn admin_accept_loop(
                     incidents.unlink_durable().await;
                 })
             }));
+
+        // 2026-06-24 (redis-interim-durability P3, A3) — lifetime stats
+        // counters (blocks_total, …) are now durable per-node, so
+        // `reset_state` must zero the in-memory counters (sync) AND drop this
+        // node's durable field (async HDEL). Mirrors the incidents pattern.
+        let stats_local_reset = services.stats_agg.clone();
+        rt.control.register_reset_callback(std::sync::Arc::new(move || {
+            stats_local_reset.reset_counters();
+        }));
+        let stats_durable_reset = services.stats_agg.clone();
+        let stats_reset_node = lease_store.self_id().as_str().to_string();
+        rt.control
+            .register_async_reset_callback(std::sync::Arc::new(move || {
+                let stats = stats_durable_reset.clone();
+                let node = stats_reset_node.clone();
+                Box::pin(async move {
+                    stats.forget_durable(&node).await;
+                })
+            }));
     }
 
     // 2026-06-24 (redis-interim-durability P1, A1) — hydrate the durable
@@ -722,6 +741,15 @@ pub(crate) async fn admin_accept_loop(
     // brief await at boot is acceptable — unlike the large risk hash (A2),
     // which hydrates in the background.
     services.incidents.hydrate().await;
+
+    // 2026-06-24 (redis-interim-durability P3, A3) — spawn the per-node stats
+    // counter durability: a background boot-hydrate (so the Overview top-line
+    // survives a restart) + a periodic flush. Off the request path entirely;
+    // no-op without a durable backend.
+    // Detached on purpose (fire-and-forget) — `let _` makes that explicit.
+    let _ = services
+        .stats_agg
+        .spawn_persistence(lease_store.self_id().as_str().to_string());
 
     // CI-T5 — seed `services.routes` from `cfg.routes` so
     // /api/routes returns the live routing trie. Hot-reload
