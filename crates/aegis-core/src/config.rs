@@ -516,13 +516,52 @@ pub fn yaml_has_legacy_bootstrap_keys(yaml: &str) -> bool {
 pub fn strip_legacy_bootstrap_keys(yaml: &str) -> crate::Result<String> {
     let mut value: serde_yaml::Value = serde_yaml::from_str(yaml)
         .map_err(|e| crate::error::WafError::Config(format!("invalid config yaml: {e}")))?;
+    let mut removed = false;
     if let serde_yaml::Value::Mapping(map) = &mut value {
         for k in LEGACY_BOOTSTRAP_KEYS {
-            map.remove(serde_yaml::Value::String((*k).to_string()));
+            if map
+                .remove(serde_yaml::Value::String((*k).to_string()))
+                .is_some()
+            {
+                removed = true;
+            }
         }
+    }
+    // Nothing to strip → return the input verbatim. Keeps the strip a true
+    // no-op for an already-dynamic doc (no reformat churn / version noise) and
+    // for non-config blobs the versioned store may hold in tests.
+    if !removed {
+        return Ok(yaml.to_string());
     }
     serde_yaml::to_string(&value)
         .map_err(|e| crate::error::WafError::Config(format!("config re-encode failed: {e}")))
+}
+
+/// Merge the legacy bootstrap top-level keys from `source` (a full config, the
+/// boot file) INTO `doc` (a dynamic-only doc blob), producing a full-config
+/// blob. The config-plane handlers use this so they can patch + validate a
+/// COMPLETE `WafConfig` via [`load_config_str`] even though the stored doc is
+/// dynamic-only — the bootstrap values come from the file (the authority),
+/// then [`strip_legacy_bootstrap_keys`] removes them again before the patched
+/// blob is persisted. Inverse of the strip. Keys already present in `doc` are
+/// overwritten by `source` (the file wins for bootstrap, by design).
+pub fn merge_bootstrap_keys(doc: &str, source: &str) -> crate::Result<String> {
+    let mut doc_val: serde_yaml::Value = serde_yaml::from_str(doc)
+        .map_err(|e| crate::error::WafError::Config(format!("invalid doc yaml: {e}")))?;
+    let src_val: serde_yaml::Value = serde_yaml::from_str(source)
+        .map_err(|e| crate::error::WafError::Config(format!("invalid source yaml: {e}")))?;
+    if let (serde_yaml::Value::Mapping(doc_map), serde_yaml::Value::Mapping(src_map)) =
+        (&mut doc_val, &src_val)
+    {
+        for k in LEGACY_BOOTSTRAP_KEYS {
+            let key = serde_yaml::Value::String((*k).to_string());
+            if let Some(v) = src_map.get(&key) {
+                doc_map.insert(key, v.clone());
+            }
+        }
+    }
+    serde_yaml::to_string(&doc_val)
+        .map_err(|e| crate::error::WafError::Config(format!("merge re-encode failed: {e}")))
 }
 
 /// Load + validate the DYNAMIC config from a doc blob (the config-plane
@@ -6190,6 +6229,19 @@ state:
         // dangling upstream ref must still be rejected via load_dynamic_str.
         let doc = minimal_yaml().replace("upstream: default", "upstream: ghost");
         assert!(super::load_dynamic_str(&doc).is_err());
+    }
+
+    #[test]
+    fn strip_then_merge_round_trips_to_a_loadable_full_config() {
+        // The handler flow: a stored dynamic doc (stripped) merged back with the
+        // boot file's bootstrap keys must re-parse as a full WafConfig.
+        let full = minimal_yaml();
+        let dynamic = super::strip_legacy_bootstrap_keys(full).unwrap();
+        assert!(!super::yaml_has_legacy_bootstrap_keys(&dynamic));
+        let merged = super::merge_bootstrap_keys(&dynamic, full).unwrap();
+        assert!(super::yaml_has_legacy_bootstrap_keys(&merged), "bootstrap re-merged");
+        // The merged blob is a complete, loadable WafConfig again.
+        super::load_config_str(&merged).expect("merged blob is a full valid config");
     }
 
     /// Scrape the top-level `pub <field>:` names of a struct from this file's

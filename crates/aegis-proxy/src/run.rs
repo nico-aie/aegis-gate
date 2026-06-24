@@ -1414,6 +1414,19 @@ pub async fn run(
             config_marker_path.as_ref(),
         )
         .await;
+        // H2a — one-shot migration of a pre-split doc: strip the stored active
+        // doc down to its dynamic projection (in place, same version) so the
+        // config plane holds no bootstrap keys. Idempotent + CAS-safe; a
+        // dynamic-only doc (fresh deploy or already-migrated) is a no-op.
+        match store.canonicalize_active_doc().await {
+            Ok(true) => {
+                tracing::info!("config plane: migrated active doc to dynamic-only (H2a)")
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "config plane: H2a doc canonicalization skipped")
+            }
+        }
         // H2a — capture the immutable bootstrap half from the boot config.
         // The watcher reconstructs the merged runtime config from each new
         // DYNAMIC doc using this, so a doc can never change how the node came
