@@ -16,6 +16,19 @@
 # Bring-up:
 #   target/release/waf run --config config/cluster-proxy.yaml &
 
+# -----------------------------------------------------------------------------
+# CONFIG LAYOUT  (H2a -- see config/README.md "Bootstrap vs Dynamic")
+#   BOOTSTRAP  -- file/env only, edit + RESTART to change:
+#     listeners, state, node, cluster, config_plane, runtime, admin,
+#     interop, geoip, proxy, load_shedder, load_mode, logging
+#   DYNAMIC    -- live-editable via API/dashboard; the doc is the source of
+#                 truth and this file only SEEDS + publishes it:
+#     routes, upstreams, tls, zero_trust, rules, rate_limit, risk, detectors,
+#     bots, dlp, response_filter, observability, audit, compliance, tiers,
+#     alerting, ai, ddos, fail_mode_by_tier, streaming, graphql
+#   NB: state.backend (Redis) is ALWAYS required for the data plane.
+# -----------------------------------------------------------------------------
+
 node:
   id: "waf-proxy"
 

@@ -665,7 +665,13 @@ mod tests {
         let store = empty_store();
         let dir = tempfile::tempdir().unwrap();
         let cfg_path = dir.path().join("waf.yaml");
-        std::fs::write(&cfg_path, "listeners: {}\n# boot marker text").unwrap();
+        // H2a — the seed activates through the store, which strips bootstrap
+        // keys; the doc holds the DYNAMIC projection (no `listeners`/`state`).
+        std::fs::write(
+            &cfg_path,
+            "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\n  admin:\n    bind: \"127.0.0.1:9090\"\nstate:\n  backend: in_memory\nroutes:\n  - id: marker-route\n    path: \"/\"\n    upstream: u\nupstreams:\n  u:\n    members:\n      - addr: \"127.0.0.1:3000\"\n",
+        )
+        .unwrap();
         let marker = dir.path().join(".aegis_last_applied_config.json"); // absent → genesis
 
         let outcome =
@@ -675,7 +681,9 @@ mod tests {
         let doc = store.load().await.unwrap().expect("doc should be seeded");
         assert_eq!(doc.version, 1);
         assert_eq!(doc.actor, "boot-seed");
-        assert!(doc.blob.contains("boot marker text"), "blob is the file text");
+        assert!(doc.blob.contains("marker-route"), "dynamic content seeded");
+        assert!(!doc.blob.contains("listeners"), "bootstrap stripped from the doc");
+        assert!(!doc.blob.contains("in_memory"), "state stripped from the doc");
     }
 
     #[tokio::test]

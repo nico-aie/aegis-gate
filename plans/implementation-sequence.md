@@ -23,19 +23,19 @@ Update the Status column (and flip to ✅ with a commit / date) as work lands.
 config H1·P1+P2 dual-authority fix (#77), PREREQ-B LB fail-open (#78), and
 Tier-1A GraphQL caps (#79) all shipped.
 
-**Active — foundation/durability first (operator decision 2026-06-24):** pull the
-Wave-3 durability + config-structural work forward ahead of the Wave-2 capability/LB
-items. Planned + decisions locked:
+**Foundation/durability pulled forward (operator decision 2026-06-24) — ✅ DONE:**
 
-- **Track A — `redis-interim-durability` P1–P3** *(next — building)* →
-  [[redis-interim-durability]] §10. PR sequence: **A0** StateBackend hash-ops +
-  injection seam → **A1** P1 incidents → **A2** P2 RiskTracker (hot-path-safe, k6
-  gate) → **A3** P3 counters. Decisions: hash-ops layout; full P1+P2+P3.
-- **Track B — config H2a** (`BootstrapConfig`/`DynamicConfig` split) → after Track A.
-  [[config-single-source-of-truth]] §11. **B0** migration shim +
-  `fail_mode_by_tier` reclassify (fail-closed footgun) → **B1** the type split.
+- **Track A — `redis-interim-durability` P1–P3 — ✅ shipped** (#80 A0 hash-ops
+  seam + A1 incidents, #81 A2 RiskTracker, #82 A3 counters). Restart-fragile
+  control state (incidents / lifetime strikes / lifetime counters) is now durable
+  on the existing Redis under the `control:waf:*` keyspace; hot path unchanged.
+- **Track B — config H2a (`BootstrapConfig`/`DynamicConfig` split) — ✅ shipped**
+  (#83 the types + watcher reconstruction; doc-canonicalization PR = strip-on-
+  store + merge-on-load + boot migration). Both safety properties hold: a
+  bootstrap field can't be stored in the doc, and the doc can't override
+  bootstrap at runtime. [[project_config_h2a_split_progress]].
 
-**Still queued (Wave 2 capability/availability, after foundation):**
+**Active — next up (Wave 2 capability/availability, foundation now done):**
 1. **`passive-upstream-health`** + **`zone-aware-load-balancing`** — do **together**
    (share the `LbStrategy::pick` touchpoint; both unblocked by PREREQ-B).
 2. **`ddos-cross-node-rps-aggregation`** (standalone; slot by capacity).
@@ -59,9 +59,16 @@ items. Planned + decisions locked:
 > standalone Wave-3 win — prereq PREREQ-A ✅, no new datastore, **not blocked by
 > etcd** (rides the same StateBackend/config-doc seam). Slot by capacity.
 
-**Config arc:** the near-term correctness work (H1) is done; the long-term
-structural split (H2a `BootstrapConfig`/`DynamicConfig`) and etcd (H2b) sit in
-Wave 3 / Wave 4 — not started.
+**Config arc:** H1 (single-writer correctness) and **H2a (the structural
+`BootstrapConfig`/`DynamicConfig` split) are DONE** (2026-06-24). The doc now
+holds the dynamic config only. Remaining: **H2b — etcd source of truth**
+([[config-etcd-source-of-truth]]), constraint-gated but unblocked design-wise.
+Decided 2026-06-24: build it behind a **default-off cargo `etcd` feature** (so
+the shipped default keeps the single Redis dependency) with a runtime knob
+**`config_plane.store: shared_state | etcd`** (default `shared_state`) — etcd
+relocates only the config doc; Redis stays mandatory for the data plane. Small
+config-UX follow-ups (mark Tier-1/restart-only fields read-only in the API;
+config-file bootstrap/dynamic banners — banners shipped 2026-06-24).
 
 ---
 
@@ -166,8 +173,8 @@ foundation items run in parallel within a wave.
 
 | ✓ | Item | Stream | Effort | Why now |
 |---|---|---|---|---|
-| ◐ | **redis-interim-durability P1–P3** — **Track A, building** (A0 hash-ops seam → A1 incidents → A2 RiskTracker → A3 counters) → [[redis-interim-durability]] §10 | Foundation | M | Makes restart-fragile state durable *now* on existing Redis; forward-compatible seams for the Postgres endgame. Decisions locked: hash-ops layout, full P1+P2+P3 |
-| ☐ | **config-single-source-of-truth H2a** (BootstrapConfig / DynamicConfig split) — **Track B, after A** → [[config-single-source-of-truth]] §11 | Foundation | M | Compiler-enforces the §3 split; retires the file-vs-doc staleness class for good; prereq for etcd. B0 migration shim (fail-closed footgun) → B1 split |
+| ✅ | **redis-interim-durability P1–P3** — Track A shipped (#80 A0+A1, #81 A2, #82 A3): durable incidents / risk strikes / lifetime counters on `control:waf:*`, hot path unchanged → [[redis-interim-durability]] §10 | Foundation | M | Restart-fragile control state is durable *now* on existing Redis; forward-compatible seams for the Postgres endgame |
+| ✅ | **config-single-source-of-truth H2a** (BootstrapConfig / DynamicConfig split) — Track B shipped (#83 types + watcher reconstruction; doc-canonicalization PR strip-on-store + merge-on-load + boot migration) → [[config-single-source-of-truth]] §11, [[project_config_h2a_split_progress]] | Foundation | M | Compiler-enforces the split; doc holds dynamic-only; a bootstrap field can't be stored in or override from the doc. Prereq for etcd (H2b) |
 | ☐ | **smart-caching Phase 4** (stale-if-error, ETag revalidation) | Foundation | S | Finishes a shipped feature; slot by capacity |
 | ☐ | **admin-accounts-rbac-sso P1** (self-service hardening — wire dormant password/TOTP/session-revoke/recovery endpoints, fleet-wide rate-limit, remove committed default creds) → [[admin-accounts-rbac-sso]] | Foundation | S/M | Standalone enterprise-readiness win on the single-admin model; prereq PREREQ-A ✅; no new infra. P2–P5 (multi-user → RBAC → audit → OIDC SSO) follow by capacity |
 | ☐ | Roadmap **Tier 3 / 4** (Page Shield if PCI deadline; else bot-classifier enforcement Tier 4A) | Capability | M/M-L | PCI jumps the queue if a tenant deadline is live; otherwise 4A is an S win on existing scaffolding |
