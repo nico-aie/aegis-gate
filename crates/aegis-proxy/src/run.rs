@@ -874,6 +874,14 @@ pub async fn run(
     let state: Arc<dyn aegis_core::state::StateBackend> = Arc::new(
         aegis_control::metrics::state_ops::MeteredStateBackend::new(state, state_op_metrics),
     );
+    // 2026-06-24 (redis-interim-durability A0) — attach the resolved state
+    // backend to the risk tracker so the P2 durability flush/hydrate (A2)
+    // can persist lifetime strikes to `control:waf:risk`. The tracker was
+    // built above (before the backend existed), so this is a
+    // post-construction setter — it propagates to every clone via the
+    // shared inner. Gated on `redis`; inert in A0 (no read path yet).
+    #[cfg(feature = "redis")]
+    risk.attach_backend(state.clone());
     // PROM-T3 — audit event counter `waf_audit_events_total{class}`.
     // Recorded by a metrics-only AuditBus subscriber spawned
     // alongside the existing dashboard SSE drain. Cost = one

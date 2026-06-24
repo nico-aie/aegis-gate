@@ -31,9 +31,10 @@
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use aegis_core::config::{RiskConfig, RiskThresholds, StrikeConfig};
+use aegis_core::state::StateBackend;
 use dashmap::DashMap;
 
 use super::RiskLevel;
@@ -157,6 +158,16 @@ struct TrackerInner {
     /// time the idle-eviction pass ran. Mirrors
     /// `IpRateLimiter::last_sweep`.
     last_sweep: parking_lot::Mutex<Instant>,
+    /// 2026-06-24 — durable-store handle for the interim Redis durability
+    /// bridge (`redis-interim-durability` P2). `None` until
+    /// [`RiskTracker::attach_backend`] is called post-construction in
+    /// `run()` — the tracker is built (`run.rs:513`) BEFORE the state
+    /// backend exists (`run.rs:874`), so a constructor arg can't reach it;
+    /// the seam is a settable cell instead. `OnceLock` gives set-once
+    /// semantics with lock-free reads through the shared `Arc<TrackerInner>`
+    /// that every clone of the tracker points at. A0 only stores the handle
+    /// (inert); the flush / hydrate paths that read it land in A2.
+    backend: std::sync::OnceLock<Arc<dyn StateBackend>>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -182,8 +193,26 @@ impl RiskTracker {
                     cfg.strikes.clone().unwrap_or_default(),
                 ),
                 last_sweep: parking_lot::Mutex::new(Instant::now()),
+                backend: std::sync::OnceLock::new(),
             }),
         }
+    }
+
+    /// 2026-06-24 — attach the shared state backend post-construction so
+    /// the P2 durability flush/hydrate (A2) can persist lifetime strikes
+    /// to `control:waf:risk`. Called once from `run()` AFTER the backend
+    /// is resolved, under `#[cfg(feature = "redis")]`. Propagates to every
+    /// clone of the tracker (they share one `Arc<TrackerInner>`). A0 stores
+    /// the handle only — there is no read path yet, so this is inert.
+    /// Idempotent: a second call is ignored (the backend is fixed for the
+    /// process lifetime once resolved).
+    pub fn attach_backend(&self, backend: Arc<dyn StateBackend>) {
+        let _ = self.inner.backend.set(backend);
+    }
+
+    /// Test/A2 seam: the currently attached backend, if any.
+    pub fn backend(&self) -> Option<Arc<dyn StateBackend>> {
+        self.inner.backend.get().cloned()
     }
 
     /// 2026-05-20 — self-throttled idle eviction. Drops `Slot`s
@@ -665,6 +694,65 @@ fn slot_to_state(slot: Slot) -> RiskState {
     }
 }
 
+/// 2026-06-24 — durable wire shape for one risk slot, the value half of
+/// the `control:waf:risk` HASH (`redis-interim-durability` P2). A0 adds
+/// only the (de)serialization seam; the flush/hydrate that calls it lands
+/// in A2.
+///
+/// The live [`Slot::last_seen`] is a process-local [`Instant`], which is
+/// NOT serde-able and meaningless across a restart (a fresh process's
+/// monotonic clock has a different origin). We persist it as a wall-clock
+/// unix-millis timestamp instead, so a slot's *age* — what trust-decay and
+/// idle-eviction actually care about — survives the restart, downtime
+/// included (the wall clock advances while the process is down, correctly
+/// ageing strikes out).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub(crate) struct DurableSlot {
+    pub score: u32,
+    pub strikes: u32,
+    /// Wall-clock last-seen, unix milliseconds.
+    pub last_seen_unix_ms: u64,
+}
+
+/// Convert a live slot to its durable shape. `now_instant` / `now_wall`
+/// are the *current* monotonic + wall clocks (passed in so the function is
+/// pure and unit-testable); the slot's age is measured against the
+/// monotonic clock and re-expressed against the wall clock.
+fn slot_to_durable(slot: &Slot, now_instant: Instant, now_wall: SystemTime) -> DurableSlot {
+    let age = now_instant.saturating_duration_since(slot.last_seen);
+    let last_seen_wall = now_wall.checked_sub(age).unwrap_or(UNIX_EPOCH);
+    let last_seen_unix_ms = last_seen_wall
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or(0);
+    DurableSlot {
+        score: slot.score,
+        strikes: slot.strikes,
+        last_seen_unix_ms,
+    }
+}
+
+/// Rehydrate a durable slot back into a live [`Slot`], re-anchoring
+/// `last_seen` onto this process's monotonic clock. A slot whose wall-clock
+/// timestamp is in the future (clock skew) clamps to "just now".
+fn slot_from_durable(d: &DurableSlot, now_instant: Instant, now_wall: SystemTime) -> Slot {
+    // `checked_add` (not `+`): a corrupted / adversarial hash field with a
+    // huge `last_seen_unix_ms` must not panic `SystemTime` at hydrate time.
+    // An unrepresentable timestamp clamps to "now" (age 0) — fail-safe.
+    let last_seen_wall = UNIX_EPOCH
+        .checked_add(Duration::from_millis(d.last_seen_unix_ms))
+        .unwrap_or(now_wall);
+    let age = now_wall
+        .duration_since(last_seen_wall)
+        .unwrap_or(Duration::ZERO);
+    let last_seen = now_instant.checked_sub(age).unwrap_or(now_instant);
+    Slot {
+        score: d.score,
+        strikes: d.strikes,
+        last_seen,
+    }
+}
+
 /// 2026-06-21 — time-based decay applied on READ (decay-on-access). Returns a
 /// copy of `slot` with its score aged by the elapsed time since `last_seen` at
 /// the linear trust-recovery rate (`per_hour`). `last_seen` is preserved so the
@@ -725,6 +813,96 @@ mod tests {
         let t = RiskTracker::new(&cfg());
         assert!(t.snapshot(ip("1.1.1.1")).is_none());
         assert_eq!(t.level(ip("1.1.1.1")), RiskLevel::Allow);
+    }
+
+    // ---- 2026-06-24 durable risk-slot serde (P2 seam, A0) -------------
+
+    #[test]
+    fn durable_slot_round_trips_score_strikes_and_age_through_json() {
+        // A slot last seen 100s ago, serialized and rehydrated against the
+        // SAME clocks, must come back with identical score/strikes and a
+        // last_seen that is ~100s before "now" (within a few ms tolerance).
+        let now_instant = Instant::now();
+        let now_wall = SystemTime::now();
+        let slot = Slot {
+            score: 73,
+            strikes: 4,
+            last_seen: now_instant - Duration::from_secs(100),
+        };
+
+        let durable = slot_to_durable(&slot, now_instant, now_wall);
+        // Survives a real JSON hop (the actual on-wire path in A2).
+        let bytes = serde_json::to_vec(&durable).unwrap();
+        let decoded: DurableSlot = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decoded, durable);
+
+        let rehydrated = slot_from_durable(&decoded, now_instant, now_wall);
+        assert_eq!(rehydrated.score, 73);
+        assert_eq!(rehydrated.strikes, 4);
+        let recovered_age = now_instant.saturating_duration_since(rehydrated.last_seen);
+        let drift = recovered_age.as_millis().abs_diff(100_000);
+        assert!(drift < 50, "age drift {drift}ms exceeds tolerance");
+    }
+
+    #[test]
+    fn attach_backend_is_settable_and_idempotent() {
+        let t = RiskTracker::new(&cfg());
+        assert!(t.backend().is_none(), "no backend before attach");
+        t.attach_backend(Arc::new(NoopBackend) as Arc<dyn StateBackend>);
+        assert!(t.backend().is_some(), "backend present after attach");
+        // Idempotent — a second attach must not panic.
+        t.attach_backend(Arc::new(NoopBackend) as Arc<dyn StateBackend>);
+        assert!(t.backend().is_some());
+    }
+
+    /// Minimal stub: relies on the trait's default impls for everything
+    /// except the still-required (non-default) methods.
+    struct NoopBackend;
+    #[async_trait::async_trait]
+    impl StateBackend for NoopBackend {
+        async fn get(&self, _k: &str) -> aegis_core::Result<Option<Vec<u8>>> { Ok(None) }
+        async fn set(&self, _k: &str, _v: &[u8], _t: Duration) -> aegis_core::Result<()> { Ok(()) }
+        async fn del(&self, _k: &str) -> aegis_core::Result<()> { Ok(()) }
+        async fn incr_window(&self, _k: &str, _w: Duration, _l: u64) -> aegis_core::Result<aegis_core::SlidingWindowResult> {
+            Ok(aegis_core::SlidingWindowResult { count: 0, allowed: true, retry_after: None })
+        }
+        async fn token_bucket(&self, _k: &str, _r: u32, _b: u32) -> aegis_core::Result<bool> { Ok(true) }
+        async fn get_risk(&self, _key: &aegis_core::risk::RiskKey) -> aegis_core::Result<u32> { Ok(0) }
+        async fn add_risk(&self, _key: &aegis_core::risk::RiskKey, _d: i32, _m: u32) -> aegis_core::Result<u32> { Ok(0) }
+        async fn auto_block(&self, _ip: IpAddr, _t: Duration) -> aegis_core::Result<()> { Ok(()) }
+        async fn is_auto_blocked(&self, _ip: IpAddr) -> aegis_core::Result<bool> { Ok(false) }
+        async fn put_nonce(&self, _n: &str, _t: Duration) -> aegis_core::Result<bool> { Ok(true) }
+        async fn consume_nonce(&self, _n: &str) -> aegis_core::Result<bool> { Ok(true) }
+    }
+
+    #[test]
+    fn slot_from_durable_clamps_corrupt_timestamp_without_panicking() {
+        // A garbage/adversarial last_seen near u64::MAX must NOT panic
+        // SystemTime at hydrate — it clamps to "now" (age 0).
+        let corrupt = DurableSlot { score: 10, strikes: 1, last_seen_unix_ms: u64::MAX };
+        let now_instant = Instant::now();
+        let rehydrated = slot_from_durable(&corrupt, now_instant, SystemTime::now());
+        assert_eq!(rehydrated.strikes, 1);
+        let age = now_instant.saturating_duration_since(rehydrated.last_seen);
+        assert!(age < Duration::from_millis(50), "clamped to ~now");
+    }
+
+    #[test]
+    fn durable_slot_ages_further_across_simulated_downtime() {
+        // Persist "now", then rehydrate as if the wall clock advanced 1h
+        // (process was down). The rehydrated slot must be ~1h old so trust
+        // decay correctly claws the score back after a restart.
+        let persist_instant = Instant::now();
+        let persist_wall = SystemTime::now();
+        let slot = Slot { score: 50, strikes: 2, last_seen: persist_instant };
+        let durable = slot_to_durable(&slot, persist_instant, persist_wall);
+
+        let load_instant = Instant::now();
+        let load_wall = persist_wall + Duration::from_secs(3600);
+        let rehydrated = slot_from_durable(&durable, load_instant, load_wall);
+        let age = load_instant.saturating_duration_since(rehydrated.last_seen);
+        let drift = age.as_secs().abs_diff(3600);
+        assert!(drift <= 1, "expected ~3600s age, got {}s", age.as_secs());
     }
 
     // 2026-05-20 memory-leak audit — the map must not grow without

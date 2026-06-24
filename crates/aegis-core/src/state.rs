@@ -4,6 +4,33 @@ use std::time::Duration;
 use crate::error::Result;
 use crate::risk::RiskKey;
 
+// --- 2026-06-24 — durable, reset-exempt control-plane keys for the
+// `redis-interim-durability` bridge (P1–P3). Siblings of the cluster's
+// `control:waf:modes` / `:reset_epoch` convention
+// (`aegis-control::interop::cluster_sync`); they live HERE in aegis-core
+// rather than in that module because the producers span crates that can't
+// see aegis-control — `RiskTracker` (aegis-security) writes
+// [`CONTROL_RISK_KEY`], the incidents/stats trackers (aegis-control) write
+// the other two. All three are single Redis HASH keys so a `reset_state`
+// wipe is one `UNLINK`, not a million-key `SCAN`+`DEL` (see
+// `plans/future/redis-interim-durability.md` §9 invariant 3). They are
+// deliberately OUTSIDE the `g:*` ephemeral prefixes the standard
+// `reset_ephemeral` wipe touches — the durability plan opts these specific
+// keys back into reset wiring explicitly (§4). ---
+
+/// HASH `alert_id → IncidentState` JSON. Operator ack/snooze/resolve
+/// overlay survives restart (P1).
+pub const CONTROL_INCIDENTS_KEY: &str = "control:waf:incidents";
+
+/// HASH `RiskKey → {score, strikes, last_seen}` JSON. Lifetime strikes /
+/// "permanent block" survive restart (P2). Only `strikes > 0` /
+/// above-threshold slots are written so memory stays bounded.
+pub const CONTROL_RISK_KEY: &str = "control:waf:risk";
+
+/// HASH of small monotone lifetime totals (`blocks_total`, …) so the
+/// Overview top-line numbers survive restart (P3).
+pub const CONTROL_STATS_COUNTERS_KEY: &str = "control:waf:stats:counters";
+
 pub struct SlidingWindowResult {
     pub count: u64,
     pub allowed: bool,
@@ -217,6 +244,46 @@ pub trait StateBackend: Send + Sync + 'static {
         Err(crate::error::WafError::State(
             "cas_set unsupported by this backend".into(),
         ))
+    }
+
+    // --- 2026-06-24 — HASH primitives for the durable control-plane
+    // keyspace (`redis-interim-durability` P1–P3). The interim durability
+    // bridge stores three single HASH keys (incidents / risk / counters —
+    // see [`CONTROL_INCIDENTS_KEY`] et al.). A single hash per concern
+    // keeps `reset_state` an O(1) `UNLINK` instead of a million-key
+    // `SCAN`+`DEL` under bench churn. Default impls are inert no-ops so the
+    // many test-stub + out-of-tree backends keep compiling; the shipped
+    // `redis` / `in_memory` backends and the `Reconciling` / `Metered`
+    // wrappers override them. ---
+
+    /// Set (create or overwrite) one or more fields of the hash at `key`
+    /// in a single round-trip (`HSET key f1 v1 f2 v2 …`). The hash key is
+    /// durable — it never expires. An empty `fields` slice is a no-op.
+    async fn hset_multi(&self, _key: &str, _fields: &[(String, Vec<u8>)]) -> Result<()> {
+        Ok(())
+    }
+
+    /// Remove one or more fields from the hash at `key` (`HDEL`). Absent
+    /// fields are silently ignored; an empty slice is a no-op. Used by the
+    /// per-entry reset paths (per-IP risk reset, etc.).
+    async fn hdel(&self, _key: &str, _fields: &[String]) -> Result<()> {
+        Ok(())
+    }
+
+    /// Return every `(field, value)` pair of the hash at `key`. Concrete
+    /// backends iterate with a cursor (`HSCAN`) so boot hydration of a
+    /// large hash never blocks the server on one giant `HGETALL`. Default
+    /// returns empty so callers fall back to an empty rehydrate
+    /// (single-node / no durable store).
+    async fn hscan(&self, _key: &str) -> Result<Vec<(String, Vec<u8>)>> {
+        Ok(Vec::new())
+    }
+
+    /// Delete an entire key non-blockingly (`UNLINK`, falling back to
+    /// `DEL` on older servers). Used by the reset paths to wipe a whole
+    /// durable hash in O(1) wall-time. Absent key is not an error.
+    async fn unlink(&self, _key: &str) -> Result<()> {
+        Ok(())
     }
 
     /// 2026-05-20 — clear all EPHEMERAL state for
@@ -441,5 +508,18 @@ mod tests {
         assert_eq!(h.backend, "unknown");
         // 2026-05-11 CORE-06 — default is now `connected: true`.
         assert!(h.connected);
+
+        // 2026-06-24 — the new durable HASH ops also default to inert
+        // no-ops on a backend that doesn't override them: writes succeed
+        // silently and reads come back empty. This is what keeps every
+        // test-stub / out-of-tree backend compiling untouched, and what
+        // makes the no-Redis path behave exactly as before A0.
+        dummy
+            .hset_multi("control:waf:risk", &[("f".into(), b"v".to_vec())])
+            .await
+            .unwrap();
+        dummy.hdel("control:waf:risk", &["f".into()]).await.unwrap();
+        dummy.unlink("control:waf:risk").await.unwrap();
+        assert!(dummy.hscan("control:waf:risk").await.unwrap().is_empty());
     }
 }

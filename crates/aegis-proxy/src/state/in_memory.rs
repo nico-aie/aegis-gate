@@ -25,12 +25,21 @@ impl Entry {
 
 pub struct InMemoryBackend {
     kv: Arc<DashMap<String, Entry>>,
+    /// 2026-06-24 — durable HASH store for the `control:waf:*` keyspace
+    /// (`redis-interim-durability`). Kept separate from `kv` because hash
+    /// values are field-addressed and never expire (control state, not
+    /// ephemeral). Outer key = hash name; inner map = field → value. The
+    /// in-memory backend has no cross-restart durability of its own — this
+    /// mirror only exists so single-node / no-Redis builds exercise the
+    /// same `hset_multi`/`hscan`/`hdel`/`unlink` surface as Redis.
+    hashes: Arc<DashMap<String, std::collections::HashMap<String, Vec<u8>>>>,
 }
 
 impl InMemoryBackend {
     pub fn new() -> Self {
         Self {
             kv: Arc::new(DashMap::new()),
+            hashes: Arc::new(DashMap::new()),
         }
     }
 
@@ -380,6 +389,44 @@ impl StateBackend for InMemoryBackend {
         }
     }
 
+    // --- 2026-06-24 — durable HASH ops (`redis-interim-durability`). ---
+
+    async fn hset_multi(&self, key: &str, fields: &[(String, Vec<u8>)]) -> Result<()> {
+        if fields.is_empty() {
+            return Ok(());
+        }
+        let mut h = self.hashes.entry(key.to_string()).or_default();
+        for (f, v) in fields {
+            h.insert(f.clone(), v.clone());
+        }
+        Ok(())
+    }
+
+    async fn hdel(&self, key: &str, fields: &[String]) -> Result<()> {
+        if fields.is_empty() {
+            return Ok(());
+        }
+        if let Some(mut h) = self.hashes.get_mut(key) {
+            for f in fields {
+                h.remove(f);
+            }
+        }
+        Ok(())
+    }
+
+    async fn hscan(&self, key: &str) -> Result<Vec<(String, Vec<u8>)>> {
+        Ok(self
+            .hashes
+            .get(key)
+            .map(|h| h.iter().map(|(f, v)| (f.clone(), v.clone())).collect())
+            .unwrap_or_default())
+    }
+
+    async fn unlink(&self, key: &str) -> Result<()> {
+        self.hashes.remove(key);
+        Ok(())
+    }
+
     /// 2026-05-20 — `/__waf_control/reset_state` ephemeral wipe.
     /// The in-memory backend stores ONLY ephemeral state (risk
     /// keys, auto-block entries, nonces, rate-limit windows, and
@@ -387,6 +434,12 @@ impl StateBackend for InMemoryBackend {
     /// here (that lives in `WafConfig` / `ArcSwap`). So clearing
     /// the whole map is the correct ephemeral reset. Returns the
     /// number of entries dropped.
+    ///
+    /// NB: the durable `hashes` store is deliberately NOT cleared here —
+    /// `control:waf:*` is reset-exempt by design. The durability plan
+    /// (§4) wires the *specific* durable keys back into `reset_state` via
+    /// explicit `unlink`/`hdel` calls at the reset call sites (A1/A2),
+    /// not through this ephemeral broad wipe.
     async fn reset_ephemeral(&self) -> Result<u64> {
         let n = self.kv.len() as u64;
         self.kv.clear();
@@ -795,5 +848,114 @@ mod tests {
         // No expiry was set — still present after a beat.
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(b.get("persistent").await.unwrap(), Some(b"x".to_vec()));
+    }
+
+    // ---------------- 2026-06-24 durable HASH ops (P1–P3 seam) ----------------
+
+    /// Sort `hscan` output so assertions are order-independent (DashMap /
+    /// HashMap iteration order is unspecified).
+    fn sorted(mut v: Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>)> {
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    }
+
+    #[tokio::test]
+    async fn hset_multi_then_hscan_round_trips_all_fields() {
+        let b = backend();
+        b.hset_multi(
+            "control:waf:risk",
+            &[
+                ("1.2.3.4".into(), b"a".to_vec()),
+                ("5.6.7.8".into(), b"b".to_vec()),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            sorted(b.hscan("control:waf:risk").await.unwrap()),
+            vec![
+                ("1.2.3.4".to_string(), b"a".to_vec()),
+                ("5.6.7.8".to_string(), b"b".to_vec()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn hset_multi_merges_and_overwrites_fields() {
+        let b = backend();
+        b.hset_multi("h", &[("f1".into(), b"v1".to_vec())]).await.unwrap();
+        // New field merges in; existing field is overwritten in place.
+        b.hset_multi(
+            "h",
+            &[("f2".into(), b"v2".to_vec()), ("f1".into(), b"v1b".to_vec())],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            sorted(b.hscan("h").await.unwrap()),
+            vec![
+                ("f1".to_string(), b"v1b".to_vec()),
+                ("f2".to_string(), b"v2".to_vec()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn hdel_removes_only_named_fields() {
+        let b = backend();
+        b.hset_multi(
+            "h",
+            &[
+                ("f1".into(), b"v1".to_vec()),
+                ("f2".into(), b"v2".to_vec()),
+                ("f3".into(), b"v3".to_vec()),
+            ],
+        )
+        .await
+        .unwrap();
+        b.hdel("h", &["f1".into(), "absent".into()]).await.unwrap();
+        assert_eq!(
+            sorted(b.hscan("h").await.unwrap()),
+            vec![
+                ("f2".to_string(), b"v2".to_vec()),
+                ("f3".to_string(), b"v3".to_vec()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn unlink_drops_the_whole_hash() {
+        let b = backend();
+        b.hset_multi("h", &[("f1".into(), b"v1".to_vec())]).await.unwrap();
+        b.unlink("h").await.unwrap();
+        assert!(b.hscan("h").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn hscan_absent_key_is_empty_and_empty_writes_are_noops() {
+        let b = backend();
+        assert!(b.hscan("nope").await.unwrap().is_empty());
+        // Empty field slices must not create the key.
+        b.hset_multi("nope", &[]).await.unwrap();
+        b.hdel("nope", &[]).await.unwrap();
+        assert!(b.hscan("nope").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn reset_ephemeral_leaves_durable_hashes_intact() {
+        // control:waf:* is reset-exempt — a broad ephemeral wipe must NOT
+        // clear the durable hash store (durability plan §4).
+        let b = backend();
+        b.set("g:risk:1.2.3.4", b"x", Duration::from_secs(60)).await.unwrap();
+        b.hset_multi("control:waf:risk", &[("k".into(), b"v".to_vec())])
+            .await
+            .unwrap();
+        b.reset_ephemeral().await.unwrap();
+        assert!(b.get("g:risk:1.2.3.4").await.unwrap().is_none(), "ephemeral wiped");
+        assert_eq!(
+            b.hscan("control:waf:risk").await.unwrap(),
+            vec![("k".to_string(), b"v".to_vec())],
+            "durable hash survives reset_ephemeral"
+        );
     }
 }

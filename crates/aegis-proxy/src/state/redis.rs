@@ -297,10 +297,32 @@ mod backend {
         }
 
         async fn conn(&self) -> Result<deadpool_redis::Connection> {
-            self.pool
-                .get()
-                .await
-                .map_err(|e| WafError::State(format!("redis pool: {e}")))
+            // 2026-06-24 — bound pool *checkout* with the same per-call
+            // timeout used for ops. Without this, a connection acquisition
+            // can block as long as deadpool's own queue allows, which under
+            // a DDoS (pool saturated by hot `g:rl:*` enforcement ops) would
+            // let a background durability flush wait on a connection instead
+            // of yielding. The durability flush (A2) checks out via this
+            // path and treats a timeout as "skip this tick, keep the dirty
+            // set" — persistence must never compete with enforcement for the
+            // shared pool (redis-interim-durability §9 invariant 1).
+            //
+            // NB: we deliberately do NOT stamp `last_error_at` here. Pool
+            // saturation under a DDoS (every connection busy with hot
+            // enforcement ops) is exactly when a background checkout times
+            // out — but that is NOT Redis being unhealthy, and flagging the
+            // circuit "degraded" then would be a false signal precisely when
+            // operators need an accurate one. Real Redis op failures are
+            // still stamped by `with_timeout`; this preserves the pre-A0
+            // health behaviour (the old `conn()` never stamped).
+            match tokio::time::timeout(self.config.timeout, self.pool.get()).await {
+                Ok(Ok(c)) => Ok(c),
+                Ok(Err(e)) => Err(WafError::State(format!("redis pool: {e}"))),
+                Err(_) => Err(WafError::State(format!(
+                    "redis pool: checkout timeout after {:?}",
+                    self.config.timeout
+                ))),
+            }
         }
 
         /// Wrap an op in the per-call timeout from config. Records
@@ -683,6 +705,94 @@ mod backend {
             Ok(r == 1)
         }
 
+        // --- 2026-06-24 — durable HASH ops (`redis-interim-durability`
+        // P1–P3). Each is one round-trip on a single connection checked
+        // out via `conn()` (now bounded by the checkout timeout above), so
+        // a contended pool surfaces as a `State` error the caller treats
+        // as skip-this-tick rather than a stall. ---
+
+        async fn hset_multi(&self, key: &str, fields: &[(String, Vec<u8>)]) -> Result<()> {
+            if fields.is_empty() {
+                return Ok(());
+            }
+            let mut c = self.conn().await?;
+            let mut cmd = redis::cmd("HSET");
+            cmd.arg(key);
+            for (f, v) in fields {
+                cmd.arg(f).arg(v);
+            }
+            self.with_timeout::<i64, _>("hset_multi", cmd.query_async(&mut c))
+                .await?;
+            Ok(())
+        }
+
+        async fn hdel(&self, key: &str, fields: &[String]) -> Result<()> {
+            if fields.is_empty() {
+                return Ok(());
+            }
+            let mut c = self.conn().await?;
+            self.with_timeout::<i64, _>(
+                "hdel",
+                redis::cmd("HDEL").arg(key).arg(fields).query_async(&mut c),
+            )
+            .await?;
+            Ok(())
+        }
+
+        async fn hscan(&self, key: &str) -> Result<Vec<(String, Vec<u8>)>> {
+            // Cursor-based HSCAN so boot hydration of a large risk hash
+            // (up to ~MAX_TRACKED_KEYS entries) never blocks the server on
+            // one giant HGETALL (redis-interim-durability §9 invariant 4).
+            // HSCAN returns a flat [field, value, field, value, …] array
+            // per page; we pair them up.
+            //
+            // The connection is re-checked-out PER PAGE (not held across the
+            // whole cursor loop): a 50k-entry hash is ~100 pages, and pinning
+            // one pool connection for all of them would starve hot enforcement
+            // ops during boot hydration — the exact §9-invariant-1 hazard the
+            // checkout timeout exists to avoid. HSCAN's full-iteration
+            // guarantee survives connection changes between pages.
+            let mut out = Vec::new();
+            let mut cursor: u64 = 0;
+            loop {
+                let mut c = self.conn().await?;
+                let (next, flat): (u64, Vec<Vec<u8>>) = self
+                    .with_timeout(
+                        "hscan",
+                        redis::cmd("HSCAN")
+                            .arg(key)
+                            .arg(cursor)
+                            .arg("COUNT")
+                            .arg(512)
+                            .query_async(&mut c),
+                    )
+                    .await?;
+                drop(c);
+                let mut it = flat.into_iter();
+                while let (Some(f), Some(v)) = (it.next(), it.next()) {
+                    out.push((String::from_utf8_lossy(&f).into_owned(), v));
+                }
+                cursor = next;
+                if cursor == 0 {
+                    break;
+                }
+            }
+            Ok(out)
+        }
+
+        async fn unlink(&self, key: &str) -> Result<()> {
+            let mut c = self.conn().await?;
+            // UNLINK reclaims memory off the main thread — O(1) wall-time
+            // for the caller even on a million-field hash, which keeps
+            // `reset_state` non-blocking under bench churn (§9 invariant 3).
+            self.with_timeout::<i64, _>(
+                "unlink",
+                redis::cmd("UNLINK").arg(key).query_async(&mut c),
+            )
+            .await?;
+            Ok(())
+        }
+
         /// 2026-05-20 — `/__waf_control/reset_state` ephemeral wipe.
         ///
         /// SCAN + DEL scoped to the ephemeral key prefixes only:
@@ -908,6 +1018,39 @@ mod backend {
                 WafError::State(_) => {} // expected
                 other => panic!("expected State error, got {other:?}"),
             }
+        }
+
+        #[tokio::test]
+        async fn hash_ops_against_unreachable_server_surface_state_error() {
+            // The durable HASH ops must degrade to a `State` error (which
+            // the A2 flush treats as "skip this tick"), never panic — and
+            // the bounded `conn()` checkout timeout must fire rather than
+            // hang. Empty writes short-circuit to Ok without touching the
+            // pool; reads/non-empty writes surface the error.
+            let cfg = RedisConfig {
+                url: "redis://127.0.0.1:1".into(),
+                pool_size: 1,
+                timeout: Duration::from_millis(150),
+                cluster: false,
+            };
+            let backend = RedisBackend::connect(cfg).expect("pool builds");
+
+            // Empty inputs are no-ops — no connection attempted.
+            backend.hset_multi("control:waf:risk", &[]).await.unwrap();
+            backend.hdel("control:waf:risk", &[]).await.unwrap();
+
+            let writes = backend
+                .hset_multi("control:waf:risk", &[("f".into(), b"v".to_vec())])
+                .await;
+            assert!(matches!(writes, Err(WafError::State(_))));
+            assert!(matches!(
+                backend.hscan("control:waf:risk").await,
+                Err(WafError::State(_))
+            ));
+            assert!(matches!(
+                backend.unlink("control:waf:risk").await,
+                Err(WafError::State(_))
+            ));
         }
 
         // ---------------- SC-T1 helpers ----------------

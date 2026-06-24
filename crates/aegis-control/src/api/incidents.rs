@@ -22,8 +22,9 @@
 //! states whose `snoozed_until` has already passed.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use aegis_core::state::StateBackend;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -85,6 +86,15 @@ pub fn alert_id(a: &SloAlert) -> String {
 /// In-process incident state.
 pub struct IncidentTracker {
     state: Mutex<HashMap<String, IncidentState>>,
+    /// 2026-06-24 — durable-store handle for the interim Redis durability
+    /// bridge (`redis-interim-durability` P1). `None` on the no-Redis /
+    /// single-node path, which behaves exactly as before. A0 only stores
+    /// the handle (inert); the write-through on ack/snooze/resolve and the
+    /// boot hydrate that read it land in A1. Constructor-injected (unlike
+    /// `RiskTracker`'s setter) because the tracker is built late enough
+    /// (`dashboard_services::spawn_*`) that the backend already exists.
+    #[allow(dead_code)] // read by the A1 write-through / hydrate paths
+    backend: Option<Arc<dyn StateBackend>>,
 }
 
 impl Default for IncidentTracker {
@@ -95,8 +105,16 @@ impl Default for IncidentTracker {
 
 impl IncidentTracker {
     pub fn new() -> Self {
+        Self::with_backend(None)
+    }
+
+    /// Build a tracker with an optional durable backend. Pass `Some(..)`
+    /// (under `#[cfg(feature = "redis")]`) to enable P1 durability; `None`
+    /// is the in-memory-only path.
+    pub fn with_backend(backend: Option<Arc<dyn StateBackend>>) -> Self {
         Self {
             state: Mutex::new(HashMap::new()),
+            backend,
         }
     }
 

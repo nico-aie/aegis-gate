@@ -597,6 +597,21 @@ pub(crate) async fn admin_accept_loop(
         Some(Arc::clone(&roster_view)),
         Arc::clone(&tiers),
         Arc::clone(&rules),
+        // 2026-06-24 (redis-interim-durability A0) — hand the resolved
+        // state backend to the incidents (P1) / stats-counter (P3)
+        // trackers so they can persist to `control:waf:*`. Gated on the
+        // `redis` feature; `None` otherwise keeps the in-memory path. Inert
+        // in A0 (no write-through yet) — activated by A1/A3.
+        {
+            #[cfg(feature = "redis")]
+            {
+                Some(Arc::clone(&state_backend))
+            }
+            #[cfg(not(feature = "redis"))]
+            {
+                None
+            }
+        },
     );
     // Hand the interop Runtime to the admin control plane via
     // `services.interop`. Same Arc that the data-plane
