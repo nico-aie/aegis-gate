@@ -61,24 +61,41 @@ Phases are independently shippable; each replaces the model below it without a f
 **No new datastore.** Identity rides the seams that already exist; there are two,
 and the split matters:
 
-| Data | Lives in | Precedent | Mutation rate |
-| --- | --- | --- | --- |
-| **Declarative identity** — which users exist, roles, SSO config | versioned **config doc** (`config:waf:doc`) | `service_accounts` already live in `DashboardAuthConfig` (`config.rs:5203`) — users extend the exact same pattern: CAS, fleet-wide convergence, hot-reload | rare (admin edits) |
-| **Runtime auth state** — sessions, lockout/rate counters, recovery-code consumption, last-login | durable **`control:waf:*`** runtime namespace + existing session store | sessions already use `StateBackend` (`accept.rs:457`); `redis-interim-durability` puts incidents/risk in `control:waf:*` | frequent (per login) |
+Each datum is stored by **data class against a trait**, never against Redis
+directly — this is what makes the storage backend swappable and the etcd-order
+question a non-issue (see below):
 
-So adding users = extending an existing config struct + adding a few
-`control:waf:*` keys behind the `StateBackend` trait. No SQL, no second infra
+| Data | Class | Seam / trait | Precedent | Post-etcd home |
+| --- | --- | --- | --- | --- |
+| **Users, roles, SSO config** | declarative config | the **config doc** (`config:waf:doc`) via `ConfigStore` | `service_accounts` already live in `DashboardAuthConfig` (`config.rs:5203`) — users extend the exact same pattern: CAS, fleet-wide convergence, hot-reload | **etcd** (rides the config plane) |
+| **Recovery-code-consumed / per-user runtime flags** | durable, low-write | **`control:waf:*`** runtime namespace | `redis-interim-durability` puts incidents/risk here | **etcd** (low-write, fine) |
+| **Sessions** (TTL'd bearer records) | ephemeral w/ TTL | **`StateBackend`** | sessions already use it (`accept.rs:457`) | **stays Redis** |
+| **Login lockout / rate-limit counters** (P1) | ephemeral counters | **`StateBackend`** | mirrors `g:rl:*` | **stays Redis** |
+
+So adding users = extending an existing config struct + a few `control:waf:*`
+keys + reusing the session/counter `StateBackend`. No SQL, no second infra
 dependency — consistent with [[project_cache_l2_single_node]] and the
 "don't add infra until a tier outgrows it" stance across the `future/` plans.
 
-**Not blocked by [[config-etcd-source-of-truth]].** That plan swaps *one
-implementor of an existing trait* (`StateBackend` → a new `ConfigBackend`/etcd
-impl); it does not touch identity. Because this plan writes identity **through
-those same seams** (config doc + `StateBackend`), whatever backs them — Redis
-today, etcd later — the user store migrates with the rest of the durable plane
-at **zero extra cost**. etcd is orthogonal and additive, not a prerequisite.
-Honor the file-vs-doc authority rule [[project_config_plane_doc_vs_file]] and the
-apply-side reload guard [[project_apply_and_swap_helper_guard]] either way.
+**Not blocked by [[config-etcd-source-of-truth]], and order-independent either
+way.** That plan splits one trait into two — a narrow `ConfigBackend` (→ etcd:
+the config doc + `control:waf:*`) and the hot `StateBackend` (stays Redis) — and
+swaps *implementors*, not call-sites. Because identity is stored **through those
+seams by class** (config-class → config doc; ephemeral → `StateBackend`):
+
+- **etcd first:** the `ConfigBackend`/`StateBackend` split already exists at the
+  type level, so identity slots into pre-separated seams — the compiler enforces
+  config-class data onto `ConfigBackend`, ephemeral onto `StateBackend`. **No
+  rework; the easier direction.**
+- **this plan first:** identity lives *inside* `config:waf:doc`, so etcd's own
+  P1 trait-extraction and P3 doc-copy migration sweep users/roles along
+  automatically — nothing identity-specific to migrate. Sessions/counters were
+  already on `StateBackend`, which etcd doesn't touch.
+
+The one rule to hold in either order: **don't park high-frequency state on the
+config plane** — the data-class table above is the contract. Honor the
+file-vs-doc authority rule [[project_config_plane_doc_vs_file]] and the
+apply-side reload guard [[project_apply_and_swap_helper_guard]] regardless.
 
 **The real prerequisite is durability, and it's already met.** `PREREQ-A` (the
 Redis `/data` volume, shipped 2026-06-23 per `redis-interim-durability.md` §5) is
