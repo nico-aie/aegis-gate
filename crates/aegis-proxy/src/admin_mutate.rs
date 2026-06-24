@@ -3671,6 +3671,11 @@ pub(crate) async fn handle_risk_reset(
             Ok::<bool, String>(removed)
         },
     );
+    // 2026-06-24 (redis-interim-durability P2, A2) — also drop the durable
+    // copy so the strike doesn't resurrect on the next boot (§4). No-op
+    // without a backend; awaited so the 200 reflects a completed forget.
+    risk.forget_durable(&aegis_core::risk::RiskKey::from_ip(ip))
+        .await;
     match outcome {
         Ok(o) => json_body_response(
             200,
@@ -3795,6 +3800,10 @@ pub(crate) async fn handle_risk_reset_key(
         reason: "operator clears one composite-key risk bucket",
     };
     let risk = services.risk.clone();
+    // 2026-06-24 (redis-interim-durability P2, A2) — keep handles for the
+    // post-reset durable forget (the closure below moves `risk` + `key`).
+    let risk_for_forget = services.risk.clone();
+    let key_for_forget = key.clone();
     let outcome = services.mutate.apply(
         &req_ctx,
         before,
@@ -3804,6 +3813,9 @@ pub(crate) async fn handle_risk_reset_key(
             Ok::<bool, String>(removed)
         },
     );
+    // Drop the durable copy too so the bucket doesn't resurrect on the next
+    // boot (§4). No-op without a backend.
+    risk_for_forget.forget_durable(&key_for_forget).await;
     match outcome {
         Ok(o) => json_body_response(
             200,
@@ -7301,6 +7313,7 @@ state:
             store_b,
             "waf-2".to_string(),
             cfg_b.clone(),
+            std::sync::Arc::new(aegis_core::BootstrapConfig::from(&boot_cfg)),
             AuditBus::new(64),
             targets_b,
             Duration::from_millis(50),

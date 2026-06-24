@@ -22,7 +22,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use aegis_core::audit::AuditEvent;
-use serde::Serialize;
+use aegis_core::state::{StateBackend, CONTROL_STATS_COUNTERS_KEY};
+use serde::{Deserialize, Serialize};
+
+/// How often the background task persists the lifetime counters. Restart-only
+/// knob for now (promoted to the `persistence` config block with H2a). The
+/// flush does ZERO Redis I/O per audit event — it snapshots in memory and
+/// writes once per interval — so it can never add broadcast `Lagged` drops
+/// under a saturated audit bus (redis-interim-durability §9 invariant 5).
+const COUNTER_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Rolling window for the request rate KPI on the Overview page.
 const REQUEST_WINDOW: Duration = Duration::from_secs(10);
@@ -155,6 +163,13 @@ struct AggregatorState {
 pub struct StatsAggregator {
     inner: Arc<Mutex<AggregatorState>>,
     risk_threshold: u32,
+    /// 2026-06-24 — durable-store handle for the interim Redis durability
+    /// bridge (`redis-interim-durability` P3): persists the small monotone
+    /// lifetime counters (`blocks_total`, …) to `control:waf:stats:counters`
+    /// so the Overview top-line survives a restart. `None` on the no-Redis
+    /// path. A0 only stores the handle (inert); the separate interval flush
+    /// task + boot reload that read it land in A3.
+    backend: Option<Arc<dyn StateBackend>>,
 }
 
 impl StatsAggregator {
@@ -163,9 +178,21 @@ impl StatsAggregator {
     }
 
     pub fn with_risk_threshold(risk_threshold: u32) -> Self {
+        Self::build(risk_threshold, None)
+    }
+
+    /// Build an aggregator with an optional durable backend. Pass
+    /// `Some(..)` (under `#[cfg(feature = "redis")]`) to enable P3 counter
+    /// durability; `None` is the in-memory-only path.
+    pub fn with_backend(backend: Option<Arc<dyn StateBackend>>) -> Self {
+        Self::build(DEFAULT_RISK_THRESHOLD, backend)
+    }
+
+    fn build(risk_threshold: u32, backend: Option<Arc<dyn StateBackend>>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(AggregatorState::default())),
             risk_threshold,
+            backend,
         }
     }
 
@@ -336,6 +363,145 @@ impl StatsAggregator {
             points,
         }
     }
+
+    // --- 2026-06-24 (redis-interim-durability P3) — durable lifetime
+    // counters. Stored per-node (field = node id) in the
+    // `control:waf:stats:counters` hash as an ABSOLUTE snapshot, NOT a shared
+    // INCRBY: the fleet view already SUMS each node's local `blocks_total`
+    // (`fleet_snapshot::merge`), so a shared cross-node counter would
+    // double-count. Per-node single-writer → an idempotent overwrite is both
+    // correct and self-healing (the next tick re-writes the live value, so a
+    // reset that races a flush converges within one interval — no fence
+    // needed, unlike the append-semantics risk strikes in A2). ---
+
+    /// Snapshot the lifetime counters under the `Mutex`, release, then write
+    /// them to this node's field outside the lock (§9 invariant 5: never hold
+    /// the lock across Redis I/O). No-op without a backend.
+    pub async fn flush_counters(&self, node_id: &str) {
+        let Some(backend) = self.backend.as_ref() else {
+            return;
+        };
+        let counters = {
+            let state = self.inner.lock().expect("stats mutex poisoned");
+            DurableCounters {
+                blocks_total: state.blocks_total,
+            }
+        };
+        let json = match serde_json::to_vec(&counters) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::warn!(error = %e, "stats counter flush: encode failed");
+                return;
+            }
+        };
+        if let Err(e) = backend
+            .hset_multi(CONTROL_STATS_COUNTERS_KEY, &[(node_id.to_string(), json)])
+            .await
+        {
+            tracing::warn!(error = %e, "stats counter flush: write failed");
+        }
+    }
+
+    /// Boot reload (P3): seed the lifetime counters from this node's durable
+    /// field so the Overview top-line survives a restart. Seeds with `max` of
+    /// the durable and current values — it can only ever RAISE the counter,
+    /// never lower it, so a re-hydrate or a flush that somehow raced ahead
+    /// can't roll the total backward. In the normal post-restart case the
+    /// durable total dominates; any blocks that arrived in the brief warm-up
+    /// before this runs are absorbed into that (larger) total rather than
+    /// added — a small, bounded undercount that is acceptable for a
+    /// display-only counter. No-op without a backend; a corrupt field is
+    /// ignored.
+    pub async fn hydrate(&self, node_id: &str) {
+        let Some(backend) = self.backend.as_ref() else {
+            return;
+        };
+        let fields = match backend.hscan(CONTROL_STATS_COUNTERS_KEY).await {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!(error = %e, "stats counter hydrate: hscan failed");
+                return;
+            }
+        };
+        let Some((_, bytes)) = fields.into_iter().find(|(f, _)| f == node_id) else {
+            return; // this node has no persisted counters yet
+        };
+        let Ok(counters) = serde_json::from_slice::<DurableCounters>(&bytes) else {
+            tracing::warn!("stats counter hydrate: decode skipped");
+            return;
+        };
+        let mut state = self.inner.lock().expect("stats mutex poisoned");
+        state.blocks_total = state.blocks_total.max(counters.blocks_total);
+        if counters.blocks_total > 0 {
+            tracing::info!(
+                blocks_total = counters.blocks_total,
+                "stats counters hydrated from durable store"
+            );
+        }
+    }
+
+    /// Reset hook (sync half) — zero the lifetime counters. Paired with
+    /// [`forget_durable`] so `reset_state` gives a clean Overview slate that
+    /// doesn't resurrect on the next boot (§4). A flush racing this reset is
+    /// self-healing for the LIVE value: the next flush tick snapshots the
+    /// now-zero in-memory counter and overwrites any stale durable value
+    /// within one `COUNTER_FLUSH_INTERVAL`. The one residual window is a node
+    /// restart inside that interval, which would re-hydrate the stale total —
+    /// acceptable for a display-only counter, not an enforcement signal.
+    ///
+    /// [`forget_durable`]: Self::forget_durable
+    pub fn reset_counters(&self) {
+        let mut state = self.inner.lock().expect("stats mutex poisoned");
+        state.blocks_total = 0;
+    }
+
+    /// Reset hook (async half) — `HDEL` this node's durable counter field.
+    /// No-op without a backend.
+    pub async fn forget_durable(&self, node_id: &str) {
+        let Some(backend) = self.backend.as_ref() else {
+            return;
+        };
+        if let Err(e) = backend
+            .hdel(CONTROL_STATS_COUNTERS_KEY, &[node_id.to_string()])
+            .await
+        {
+            tracing::warn!(error = %e, "stats counter reset: durable hdel failed");
+        }
+    }
+
+    /// Spawn the background durability task: hydrate this node's counters
+    /// once, THEN run the periodic flush loop. Hydrate and flush share one
+    /// task (rather than two) so the flush can never run before the hydrate
+    /// completes — `tokio::time::interval`'s first tick fires immediately, so
+    /// a separate flush task could otherwise snapshot the near-zero warm-up
+    /// value and overwrite the durable total before it was ever read back.
+    /// No-op (spawns nothing) without a backend. Returns the task handle;
+    /// drop to detach (fire-and-forget).
+    pub fn spawn_persistence(&self, node_id: String) -> Option<tokio::task::JoinHandle<()>> {
+        self.backend.as_ref()?;
+        let this = self.clone();
+        Some(tokio::spawn(async move {
+            this.hydrate(&node_id).await;
+            let mut tick = tokio::time::interval(COUNTER_FLUSH_INTERVAL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // Consume the immediate first tick so the first flush is one full
+            // interval after hydrate, not back-to-back with it.
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                this.flush_counters(&node_id).await;
+            }
+        }))
+    }
+}
+
+/// Durable wire shape for one node's lifetime counters (value of its field in
+/// `control:waf:stats:counters`). A struct (not a bare `u64`) so more monotone
+/// totals can be added later without a migration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+struct DurableCounters {
+    #[serde(default)]
+    blocks_total: u64,
 }
 
 impl Default for StatsAggregator {
@@ -891,5 +1057,161 @@ mod tests {
         let body = h.render();
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["upstream"]["state"].as_str(), Some("Unknown"));
+    }
+
+    // ---------- 2026-06-24 P3 counter durability (A3) ------------------
+
+    /// Stateful in-test backend with real hash storage + a HASH-op call
+    /// counter (to prove the per-event path does zero Redis I/O).
+    #[derive(Clone, Default)]
+    struct MapHashBackend {
+        hashes: Arc<Mutex<HashMap<String, HashMap<String, Vec<u8>>>>>,
+        hash_ops: Arc<std::sync::atomic::AtomicU64>,
+    }
+    impl MapHashBackend {
+        fn hash_ops(&self) -> u64 {
+            self.hash_ops.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+    #[async_trait::async_trait]
+    impl StateBackend for MapHashBackend {
+        async fn get(&self, _k: &str) -> aegis_core::Result<Option<Vec<u8>>> { Ok(None) }
+        async fn set(&self, _k: &str, _v: &[u8], _t: Duration) -> aegis_core::Result<()> { Ok(()) }
+        async fn del(&self, _k: &str) -> aegis_core::Result<()> { Ok(()) }
+        async fn incr_window(&self, _k: &str, _w: Duration, _l: u64) -> aegis_core::Result<aegis_core::SlidingWindowResult> {
+            Ok(aegis_core::SlidingWindowResult { count: 0, allowed: true, retry_after: None })
+        }
+        async fn token_bucket(&self, _k: &str, _r: u32, _b: u32) -> aegis_core::Result<bool> { Ok(true) }
+        async fn get_risk(&self, _k: &aegis_core::risk::RiskKey) -> aegis_core::Result<u32> { Ok(0) }
+        async fn add_risk(&self, _k: &aegis_core::risk::RiskKey, _d: i32, _m: u32) -> aegis_core::Result<u32> { Ok(0) }
+        async fn auto_block(&self, _ip: std::net::IpAddr, _t: Duration) -> aegis_core::Result<()> { Ok(()) }
+        async fn is_auto_blocked(&self, _ip: std::net::IpAddr) -> aegis_core::Result<bool> { Ok(false) }
+        async fn put_nonce(&self, _n: &str, _t: Duration) -> aegis_core::Result<bool> { Ok(true) }
+        async fn consume_nonce(&self, _n: &str) -> aegis_core::Result<bool> { Ok(true) }
+        async fn hset_multi(&self, key: &str, fields: &[(String, Vec<u8>)]) -> aegis_core::Result<()> {
+            self.hash_ops.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut g = self.hashes.lock().unwrap();
+            let h = g.entry(key.to_string()).or_default();
+            for (f, v) in fields { h.insert(f.clone(), v.clone()); }
+            Ok(())
+        }
+        async fn hdel(&self, key: &str, fields: &[String]) -> aegis_core::Result<()> {
+            self.hash_ops.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if let Some(h) = self.hashes.lock().unwrap().get_mut(key) {
+                for f in fields { h.remove(f); }
+            }
+            Ok(())
+        }
+        async fn hscan(&self, key: &str) -> aegis_core::Result<Vec<(String, Vec<u8>)>> {
+            self.hash_ops.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(self.hashes.lock().unwrap().get(key)
+                .map(|h| h.iter().map(|(f, v)| (f.clone(), v.clone())).collect())
+                .unwrap_or_default())
+        }
+        async fn unlink(&self, key: &str) -> aegis_core::Result<()> {
+            self.hashes.lock().unwrap().remove(key);
+            Ok(())
+        }
+    }
+
+    fn be() -> Arc<MapHashBackend> {
+        Arc::new(MapHashBackend::default())
+    }
+    fn agg_with(be: &Arc<MapHashBackend>) -> StatsAggregator {
+        StatsAggregator::with_backend(Some(be.clone() as Arc<dyn StateBackend>))
+    }
+
+    #[tokio::test]
+    async fn blocks_total_flushes_and_survives_restart() {
+        let backend = be();
+        let agg = agg_with(&backend);
+        for _ in 0..5 {
+            agg.record(&block("9.9.9.9"));
+        }
+        assert_eq!(agg.snapshot().blocks_total, 5);
+        agg.flush_counters("node-a").await;
+
+        // Fresh aggregator (restart) hydrates this node's field.
+        let restarted = agg_with(&backend);
+        assert_eq!(restarted.snapshot().blocks_total, 0, "zero before hydrate");
+        restarted.hydrate("node-a").await;
+        assert_eq!(restarted.snapshot().blocks_total, 5, "counter survived restart");
+    }
+
+    #[tokio::test]
+    async fn record_does_zero_redis_io_per_event() {
+        // §9 invariant 5: the per-event path must never touch Redis (or it
+        // could add broadcast Lagged under a saturated audit bus). Only the
+        // interval flush/hydrate do hash I/O.
+        let backend = be();
+        let agg = agg_with(&backend);
+        for _ in 0..1000 {
+            agg.record(&block("1.2.3.4"));
+        }
+        assert_eq!(backend.hash_ops(), 0, "record() did no hash I/O");
+        agg.flush_counters("n").await;
+        assert_eq!(backend.hash_ops(), 1, "exactly one write per flush tick");
+    }
+
+    #[tokio::test]
+    async fn hydrate_takes_max_and_does_not_lose_live_increments() {
+        let backend = be();
+        // Persist 3 under node-a.
+        let seeder = agg_with(&backend);
+        for _ in 0..3 { seeder.record(&block("1.1.1.1")); }
+        seeder.flush_counters("node-a").await;
+
+        // A fresh aggregator already counted 10 live blocks before hydrate —
+        // the durable 3 must not clobber the larger live value.
+        let agg = agg_with(&backend);
+        for _ in 0..10 { agg.record(&block("2.2.2.2")); }
+        agg.hydrate("node-a").await;
+        assert_eq!(agg.snapshot().blocks_total, 10, "live (10) wins over durable (3)");
+    }
+
+    #[tokio::test]
+    async fn per_node_fields_are_isolated() {
+        let backend = be();
+        let a = agg_with(&backend);
+        let b = agg_with(&backend);
+        for _ in 0..2 { a.record(&block("1.1.1.1")); }
+        for _ in 0..7 { b.record(&block("2.2.2.2")); }
+        a.flush_counters("node-a").await;
+        b.flush_counters("node-b").await;
+
+        let a2 = agg_with(&backend);
+        a2.hydrate("node-a").await;
+        assert_eq!(a2.snapshot().blocks_total, 2, "node-a reads only its own field");
+        let b2 = agg_with(&backend);
+        b2.hydrate("node-b").await;
+        assert_eq!(b2.snapshot().blocks_total, 7, "node-b reads only its own field");
+    }
+
+    #[tokio::test]
+    async fn reset_zeros_in_memory_and_forgets_durable() {
+        let backend = be();
+        let agg = agg_with(&backend);
+        for _ in 0..4 { agg.record(&block("3.3.3.3")); }
+        agg.flush_counters("node-a").await;
+
+        agg.reset_counters();
+        agg.forget_durable("node-a").await;
+        assert_eq!(agg.snapshot().blocks_total, 0, "in-memory zeroed");
+        let restarted = agg_with(&backend);
+        restarted.hydrate("node-a").await;
+        assert_eq!(restarted.snapshot().blocks_total, 0, "durable field cleared");
+    }
+
+    #[tokio::test]
+    async fn no_backend_path_is_inert() {
+        let agg = StatsAggregator::new(); // no backend
+        for _ in 0..3 { agg.record(&block("4.4.4.4")); }
+        // Durable hooks no-op without panicking.
+        agg.flush_counters("n").await;
+        agg.hydrate("n").await;
+        agg.forget_durable("n").await;
+        assert_eq!(agg.snapshot().blocks_total, 3, "in-memory unchanged");
+        agg.reset_counters();
+        assert_eq!(agg.snapshot().blocks_total, 0);
     }
 }

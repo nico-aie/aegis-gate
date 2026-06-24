@@ -31,10 +31,12 @@
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use aegis_core::config::{RiskConfig, RiskThresholds, StrikeConfig};
-use dashmap::DashMap;
+use aegis_core::risk::RiskKey;
+use aegis_core::state::{StateBackend, CONTROL_RISK_KEY};
+use dashmap::{DashMap, DashSet};
 
 use super::RiskLevel;
 
@@ -72,6 +74,32 @@ const MAX_TRACKED_KEYS: usize = 1_000_000;
 /// inserts, so they are unaffected).
 #[cfg(test)]
 const MAX_TRACKED_KEYS: usize = 64;
+
+// --- 2026-06-24 — durable-flush tuning for the interim Redis durability
+// bridge (`redis-interim-durability` P2). Restart-only knobs for now;
+// promoted to a `persistence` config block when config H2a lands (§10.3).
+//
+/// How often the background task flushes the dirty set to Redis. Temporal
+/// coalescing: at most one durable write per key per interval, no matter how
+/// many strikes it took in between.
+const FLUSH_INTERVAL: Duration = Duration::from_secs(2);
+/// Max fields written per flush tick (highest-strike-first; the overflow is
+/// re-marked dirty and flushed next tick). Bounds the per-tick Redis work
+/// under an IP flood so persistence can never monopolise the shared pool.
+#[cfg(not(test))]
+const PER_TICK_FIELD_CAP: usize = 4096;
+/// Small in tests so the highest-strike-first overflow path is exercisable
+/// without thousands of inserts.
+#[cfg(test)]
+const PER_TICK_FIELD_CAP: usize = 4;
+/// Fields per `hset_multi` round-trip — network batching so a 4k-field tick
+/// is a handful of pipelined commands, not 4k.
+#[cfg(not(test))]
+const HSET_CHUNK: usize = 256;
+/// One field per chunk in tests so the per-chunk reset-fence abort path is
+/// exercisable with a handful of keys.
+#[cfg(test)]
+const HSET_CHUNK: usize = 1;
 
 /// Zero-value slots (score 0 AND no strikes — e.g. the clean-traffic cookie
 /// flood above) carry no security signal, so they are swept on a much shorter
@@ -157,6 +185,28 @@ struct TrackerInner {
     /// time the idle-eviction pass ran. Mirrors
     /// `IpRateLimiter::last_sweep`.
     last_sweep: parking_lot::Mutex<Instant>,
+    /// 2026-06-24 — durable-store handle for the interim Redis durability
+    /// bridge (`redis-interim-durability` P2). `None` until
+    /// [`RiskTracker::attach_backend`] is called post-construction in
+    /// `run()` — the tracker is built (`run.rs:513`) BEFORE the state
+    /// backend exists (`run.rs:874`), so a constructor arg can't reach it;
+    /// the seam is a settable cell instead. `OnceLock` gives set-once
+    /// semantics with lock-free reads through the shared `Arc<TrackerInner>`
+    /// that every clone of the tracker points at.
+    backend: std::sync::OnceLock<Arc<dyn StateBackend>>,
+    /// 2026-06-24 (P2) — keys mutated since the last durable flush. The hot
+    /// path only ever *inserts* a key here (a cheap concurrent-set op, no
+    /// I/O); the background flush task drains it. Populated ONLY when a
+    /// backend is attached AND the slot carries a strike, so the no-Redis
+    /// path stays empty and an IP flood of clean traffic never grows it
+    /// (§9 invariant 2).
+    dirty: DashSet<RiskKey>,
+    /// 2026-06-24 (P2) — monotonic reset fence. Bumped by every state-clearing
+    /// op (`reset_all`, `reset_with_key`). An in-flight `flush_once` captures
+    /// it at the start and aborts its remaining chunk writes if it changed —
+    /// so a flush can't re-write a strike that an operator/bench reset
+    /// (`HDEL` / `UNLINK`) removed mid-flush and resurrect it on the next boot.
+    reset_gen: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -182,7 +232,237 @@ impl RiskTracker {
                     cfg.strikes.clone().unwrap_or_default(),
                 ),
                 last_sweep: parking_lot::Mutex::new(Instant::now()),
+                backend: std::sync::OnceLock::new(),
+                dirty: DashSet::new(),
+                reset_gen: std::sync::atomic::AtomicU64::new(0),
             }),
+        }
+    }
+
+    /// 2026-06-24 — attach the shared state backend post-construction so
+    /// the P2 durability flush/hydrate (A2) can persist lifetime strikes
+    /// to `control:waf:risk`. Called once from `run()` AFTER the backend
+    /// is resolved, under `#[cfg(feature = "redis")]`. Propagates to every
+    /// clone of the tracker (they share one `Arc<TrackerInner>`). A0 stores
+    /// the handle only — there is no read path yet, so this is inert.
+    /// Idempotent: a second call is ignored (the backend is fixed for the
+    /// process lifetime once resolved).
+    pub fn attach_backend(&self, backend: Arc<dyn StateBackend>) {
+        let _ = self.inner.backend.set(backend);
+    }
+
+    /// Test/A2 seam: the currently attached backend, if any.
+    pub fn backend(&self) -> Option<Arc<dyn StateBackend>> {
+        self.inner.backend.get().cloned()
+    }
+
+    // --- 2026-06-24 (redis-interim-durability P2) — durable strikes. ---
+
+    /// Hot-path dirty-marker. Cheap: a `OnceLock::get` (effectively free) to
+    /// skip entirely on the no-Redis path, then one concurrent-set insert.
+    /// Never does I/O.
+    #[inline]
+    fn mark_dirty(&self, key: &RiskKey) {
+        if self.inner.backend.get().is_some() {
+            self.inner.dirty.insert(key.clone());
+        }
+    }
+
+    /// Spawn the background durability tasks: a one-shot boot hydrate (loads
+    /// persisted strikes WITHOUT blocking readiness) and the periodic flush
+    /// loop. Call once from `run()` after [`attach_backend`]; both tasks
+    /// no-op effectively without a backend (empty dirty set / empty hash).
+    /// Returns the flush task handle; the caller may drop it to detach
+    /// (fire-and-forget, the established pattern) or hold it to join/abort.
+    ///
+    /// [`attach_backend`]: Self::attach_backend
+    pub fn spawn_persistence(&self) -> tokio::task::JoinHandle<()> {
+        // Boot hydrate — background so a cold start under attack enforces
+        // from a fresh DashMap immediately while history backfills behind it
+        // (§9 invariant 4).
+        let hydrator = self.clone();
+        tokio::spawn(async move {
+            hydrator.hydrate().await;
+        });
+        // Periodic flush.
+        let flusher = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(FLUSH_INTERVAL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                flusher.flush_once().await;
+            }
+        })
+    }
+
+    /// Flush the dirty set to `control:waf:risk` (one tick). Drains the dirty
+    /// set, keeps only struck slots still present in the map (the write
+    /// filter), caps the batch highest-strike-first (overflow re-dirtied),
+    /// and writes in pipelined `hset_multi` chunks. On a backend error
+    /// (incl. the bounded checkout-timeout under pool contention) it
+    /// re-marks the unflushed keys dirty and returns — never blocks the hot
+    /// path, never expands its connection budget (§9 invariant 1). No-op
+    /// without a backend.
+    pub async fn flush_once(&self) {
+        let Some(backend) = self.backend() else {
+            return;
+        };
+        // Reset fence — captured before the snapshot. If any reset bumps it
+        // during our async writes, we abort + re-dirty the remainder so we
+        // never resurrect a reset-removed strike (see `reset_gen`).
+        let gen0 = self.inner.reset_gen.load(std::sync::atomic::Ordering::Acquire);
+        // Drain the dirty set in one pass (retain-false removes).
+        let mut keys: Vec<RiskKey> = Vec::new();
+        self.inner.dirty.retain(|k| {
+            keys.push(k.clone());
+            false
+        });
+        if keys.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let now_wall = SystemTime::now();
+        // Build (key, strikes, field, json) for keys still present + struck.
+        let mut entries: Vec<(RiskKey, u32, String, Vec<u8>)> = Vec::with_capacity(keys.len());
+        for key in keys {
+            let Some(slot) = self.inner.map.get(&key).map(|e| *e) else {
+                continue; // swept or reset since marked — nothing to persist
+            };
+            if slot.strikes == 0 {
+                continue; // write filter
+            }
+            let (Some(field), Ok(json)) = (
+                risk_field(&key),
+                serde_json::to_vec(&slot_to_durable(&slot, now, now_wall)),
+            ) else {
+                continue;
+            };
+            entries.push((key, slot.strikes, field, json));
+        }
+        if entries.is_empty() {
+            return;
+        }
+        // Per-tick cap, highest-strike-first; overflow deferred to next tick.
+        if entries.len() > PER_TICK_FIELD_CAP {
+            entries.sort_by(|a, b| b.1.cmp(&a.1));
+            for (key, ..) in entries.drain(PER_TICK_FIELD_CAP..) {
+                self.inner.dirty.insert(key);
+            }
+        }
+        // Pipelined chunked writes; abort + re-dirty the remainder on error.
+        let mut flushed = 0usize;
+        let total = entries.len();
+        for chunk in entries.chunks(HSET_CHUNK) {
+            // Abort if a reset landed since our snapshot — its HDEL/UNLINK has
+            // run (or is about to), so writing now would resurrect cleared
+            // strikes. Re-dirty the remainder; the next tick re-reads the map
+            // (reset-removed keys are gone → silently dropped).
+            if self.inner.reset_gen.load(std::sync::atomic::Ordering::Acquire) != gen0 {
+                for (key, ..) in &entries[flushed..] {
+                    self.inner.dirty.insert(key.clone());
+                }
+                tracing::debug!(flushed, "risk flush: aborted by concurrent reset");
+                return;
+            }
+            let fields: Vec<(String, Vec<u8>)> = chunk
+                .iter()
+                .map(|(_, _, f, j)| (f.clone(), j.clone()))
+                .collect();
+            if let Err(e) = backend.hset_multi(CONTROL_RISK_KEY, &fields).await {
+                // Re-dirty everything not yet written (this chunk onward) and
+                // bail — persistence yields, enforcement is untouched.
+                for (key, ..) in &entries[flushed..] {
+                    self.inner.dirty.insert(key.clone());
+                }
+                tracing::warn!(
+                    error = %e,
+                    flushed,
+                    deferred = total - flushed,
+                    "risk flush: deferred on backend contention",
+                );
+                return;
+            }
+            flushed += chunk.len();
+        }
+        tracing::debug!(flushed, "risk flush: persisted struck slots");
+    }
+
+    /// Boot hydration (P2): load persisted struck slots from
+    /// `control:waf:risk` into the live `DashMap`, re-anchoring each
+    /// `last_seen` onto this process's clock. Respects `MAX_TRACKED_KEYS`
+    /// and never clobbers a live entry (`or_insert`), so concurrent traffic
+    /// during warm-up wins. A corrupt field is skipped, not fatal. No-op
+    /// without a backend.
+    pub async fn hydrate(&self) {
+        let Some(backend) = self.backend() else {
+            return;
+        };
+        let fields = match backend.hscan(CONTROL_RISK_KEY).await {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!(error = %e, "risk hydrate: hscan failed");
+                return;
+            }
+        };
+        let now = Instant::now();
+        let now_wall = SystemTime::now();
+        let mut loaded = 0usize;
+        for (field, bytes) in fields {
+            let Some(key) = risk_key_from_field(&field) else {
+                continue;
+            };
+            let Ok(durable) = serde_json::from_slice::<DurableSlot>(&bytes) else {
+                continue;
+            };
+            if durable.strikes == 0 {
+                continue; // defensive: only struck slots are durable-relevant
+            }
+            // A live entry already won (concurrent traffic during warm-up) —
+            // skip without consuming a cardinality slot or counting it, so the
+            // cap isn't hit prematurely and `loaded` reflects real restores.
+            if self.inner.map.contains_key(&key) {
+                continue;
+            }
+            if !self.may_insert_new_key() {
+                break; // cardinality cap — stop hydrating new keys
+            }
+            let slot = slot_from_durable(&durable, now, now_wall);
+            // `or_insert` guards the narrow contains_key→insert race: a key
+            // that appeared in between is left untouched (live still wins).
+            self.inner.map.entry(key).or_insert(slot);
+            loaded += 1;
+        }
+        if loaded > 0 {
+            tracing::info!(loaded, "risk strikes hydrated from durable store");
+        }
+    }
+
+    /// Reset hook (async half) — `UNLINK` the whole durable risk hash. O(1)
+    /// wall-time (single hash, not per-key), so `reset_state` stays fast
+    /// under bench churn (§9 invariant 3). No-op without a backend.
+    pub async fn unlink_durable(&self) {
+        let Some(backend) = self.backend() else {
+            return;
+        };
+        if let Err(e) = backend.unlink(CONTROL_RISK_KEY).await {
+            tracing::warn!(error = %e, "risk reset: durable unlink failed");
+        }
+    }
+
+    /// Per-key durable forget — `HDEL` one operator-reset key from the
+    /// durable hash so it doesn't resurrect on the next boot (§4). Also
+    /// drops any pending dirty mark for it. No-op without a backend.
+    pub async fn forget_durable(&self, key: &RiskKey) {
+        self.inner.dirty.remove(key);
+        let Some(backend) = self.backend() else {
+            return;
+        };
+        let Some(field) = risk_field(key) else {
+            return;
+        };
+        if let Err(e) = backend.hdel(CONTROL_RISK_KEY, &[field]).await {
+            tracing::warn!(error = %e, "risk reset: durable hdel failed");
         }
     }
 
@@ -319,10 +599,20 @@ impl RiskTracker {
             entry.score = (decayed + delta).min(max);
             entry.strikes = entry.strikes.saturating_add(1);
             entry.last_seen = now;
-            slot_to_state(*entry)
+            let snapshot = slot_to_state(*entry);
+            drop(entry);
+            // P2 — a stored strike is durable-relevant; mark dirty (no I/O,
+            // backend-gated). The clean path deliberately does NOT mark:
+            // strikes never decay, and score decay is recomputed on read from
+            // the persisted wall-clock anchor, so persisting on malicious-only
+            // keeps the dirty set bounded to struck keys while preserving the
+            // "permanent block survives restart" guarantee.
+            self.mark_dirty(&key);
+            snapshot
         } else if self.may_insert_new_key() {
             let slot = Slot { score: delta.min(max), strikes: 1, last_seen: now };
-            self.inner.map.insert(key, slot);
+            self.inner.map.insert(key.clone(), slot);
+            self.mark_dirty(&key);
             slot_to_state(slot)
         } else {
             // PROXY-02 — at the cardinality cap: don't persist this new key.
@@ -539,14 +829,32 @@ impl RiskTracker {
 
     /// Composite-key variant of [`reset`].
     pub fn reset_with_key(&self, key: &aegis_core::risk::RiskKey) -> bool {
+        // Bump the fence BEFORE the removal so a concurrent flush that already
+        // snapshotted this key aborts its remaining writes (P2 §4 — the
+        // durable HDEL is issued by `forget_durable` at the handler).
+        self.inner
+            .reset_gen
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.inner.dirty.remove(key);
         self.inner.map.remove(key).is_some()
     }
 
     /// Drop every tracked IP — score, strikes, last-seen.
     /// Used by the external control plane's `reset_state` to
-    /// wipe runtime state between phases.
+    /// wipe runtime state between phases. Also drops the pending
+    /// dirty set (nothing left to flush); the durable hash is wiped
+    /// separately by [`unlink_durable`] on the async reset half (§4).
+    ///
+    /// [`unlink_durable`]: Self::unlink_durable
     pub fn reset_all(&self) {
+        // Bump the fence FIRST so an in-flight flush aborts before the durable
+        // UNLINK (the async reset half) — otherwise a late flush write could
+        // re-create the hash after it was wiped (§4).
+        self.inner
+            .reset_gen
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         self.inner.map.clear();
+        self.inner.dirty.clear();
     }
 
     /// Top-N riskiest IPs sorted by `(strikes desc, score desc)`.
@@ -665,6 +973,79 @@ fn slot_to_state(slot: Slot) -> RiskState {
     }
 }
 
+/// 2026-06-24 — durable wire shape for one risk slot, the value half of
+/// the `control:waf:risk` HASH (`redis-interim-durability` P2). A0 adds
+/// only the (de)serialization seam; the flush/hydrate that calls it lands
+/// in A2.
+///
+/// The live [`Slot::last_seen`] is a process-local [`Instant`], which is
+/// NOT serde-able and meaningless across a restart (a fresh process's
+/// monotonic clock has a different origin). We persist it as a wall-clock
+/// unix-millis timestamp instead, so a slot's *age* — what trust-decay and
+/// idle-eviction actually care about — survives the restart, downtime
+/// included (the wall clock advances while the process is down, correctly
+/// ageing strikes out).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub(crate) struct DurableSlot {
+    pub score: u32,
+    pub strikes: u32,
+    /// Wall-clock last-seen, unix milliseconds.
+    pub last_seen_unix_ms: u64,
+}
+
+/// Canonical durable-hash field for a risk key: deterministic JSON of the
+/// `RiskKey` (struct fields serialize in declaration order). `None` only on
+/// the practically-impossible serde failure. The same key always yields the
+/// same field, so a flush is an idempotent overwrite.
+fn risk_field(key: &RiskKey) -> Option<String> {
+    serde_json::to_string(key).ok()
+}
+
+/// Inverse of [`risk_field`] — reconstruct the `RiskKey` from a hash field
+/// on hydrate. `None` on a corrupt / unparseable field (skipped, not fatal).
+fn risk_key_from_field(field: &str) -> Option<RiskKey> {
+    serde_json::from_str(field).ok()
+}
+
+/// Convert a live slot to its durable shape. `now_instant` / `now_wall`
+/// are the *current* monotonic + wall clocks (passed in so the function is
+/// pure and unit-testable); the slot's age is measured against the
+/// monotonic clock and re-expressed against the wall clock.
+fn slot_to_durable(slot: &Slot, now_instant: Instant, now_wall: SystemTime) -> DurableSlot {
+    let age = now_instant.saturating_duration_since(slot.last_seen);
+    let last_seen_wall = now_wall.checked_sub(age).unwrap_or(UNIX_EPOCH);
+    let last_seen_unix_ms = last_seen_wall
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or(0);
+    DurableSlot {
+        score: slot.score,
+        strikes: slot.strikes,
+        last_seen_unix_ms,
+    }
+}
+
+/// Rehydrate a durable slot back into a live [`Slot`], re-anchoring
+/// `last_seen` onto this process's monotonic clock. A slot whose wall-clock
+/// timestamp is in the future (clock skew) clamps to "just now".
+fn slot_from_durable(d: &DurableSlot, now_instant: Instant, now_wall: SystemTime) -> Slot {
+    // `checked_add` (not `+`): a corrupted / adversarial hash field with a
+    // huge `last_seen_unix_ms` must not panic `SystemTime` at hydrate time.
+    // An unrepresentable timestamp clamps to "now" (age 0) — fail-safe.
+    let last_seen_wall = UNIX_EPOCH
+        .checked_add(Duration::from_millis(d.last_seen_unix_ms))
+        .unwrap_or(now_wall);
+    let age = now_wall
+        .duration_since(last_seen_wall)
+        .unwrap_or(Duration::ZERO);
+    let last_seen = now_instant.checked_sub(age).unwrap_or(now_instant);
+    Slot {
+        score: d.score,
+        strikes: d.strikes,
+        last_seen,
+    }
+}
+
 /// 2026-06-21 — time-based decay applied on READ (decay-on-access). Returns a
 /// copy of `slot` with its score aged by the elapsed time since `last_seen` at
 /// the linear trust-recovery rate (`per_hour`). `last_seen` is preserved so the
@@ -725,6 +1106,358 @@ mod tests {
         let t = RiskTracker::new(&cfg());
         assert!(t.snapshot(ip("1.1.1.1")).is_none());
         assert_eq!(t.level(ip("1.1.1.1")), RiskLevel::Allow);
+    }
+
+    // ---- 2026-06-24 durable risk-slot serde (P2 seam, A0) -------------
+
+    #[test]
+    fn durable_slot_round_trips_score_strikes_and_age_through_json() {
+        // A slot last seen 100s ago, serialized and rehydrated against the
+        // SAME clocks, must come back with identical score/strikes and a
+        // last_seen that is ~100s before "now" (within a few ms tolerance).
+        let now_instant = Instant::now();
+        let now_wall = SystemTime::now();
+        let slot = Slot {
+            score: 73,
+            strikes: 4,
+            last_seen: now_instant - Duration::from_secs(100),
+        };
+
+        let durable = slot_to_durable(&slot, now_instant, now_wall);
+        // Survives a real JSON hop (the actual on-wire path in A2).
+        let bytes = serde_json::to_vec(&durable).unwrap();
+        let decoded: DurableSlot = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decoded, durable);
+
+        let rehydrated = slot_from_durable(&decoded, now_instant, now_wall);
+        assert_eq!(rehydrated.score, 73);
+        assert_eq!(rehydrated.strikes, 4);
+        let recovered_age = now_instant.saturating_duration_since(rehydrated.last_seen);
+        let drift = recovered_age.as_millis().abs_diff(100_000);
+        assert!(drift < 50, "age drift {drift}ms exceeds tolerance");
+    }
+
+    // ---- 2026-06-24 P2 risk-strike durability (A2) --------------------
+
+    /// Stateful in-test backend with real hash storage + an optional
+    /// failure switch (to exercise the contention/skip path).
+    type WriteHook = Arc<std::sync::Mutex<Option<Box<dyn FnMut() + Send>>>>;
+
+    #[derive(Clone, Default)]
+    struct MapHashBackend {
+        hashes: Arc<std::sync::Mutex<std::collections::HashMap<String, std::collections::HashMap<String, Vec<u8>>>>>,
+        fail: Arc<std::sync::atomic::AtomicBool>,
+        /// Fired at the START of every `hset_multi` — lets a test inject a
+        /// concurrent reset between flush snapshot and write (the TOCTOU).
+        before_write: WriteHook,
+    }
+    impl MapHashBackend {
+        fn fields(&self, key: &str) -> usize {
+            self.hashes.lock().unwrap().get(key).map(|h| h.len()).unwrap_or(0)
+        }
+        fn set_fail(&self, v: bool) {
+            self.fail.store(v, std::sync::atomic::Ordering::Relaxed);
+        }
+        fn on_before_write(&self, f: impl FnMut() + Send + 'static) {
+            *self.before_write.lock().unwrap() = Some(Box::new(f));
+        }
+        fn err<T>() -> aegis_core::Result<T> {
+            Err(aegis_core::WafError::State("induced".into()))
+        }
+    }
+    #[async_trait::async_trait]
+    impl StateBackend for MapHashBackend {
+        async fn get(&self, _k: &str) -> aegis_core::Result<Option<Vec<u8>>> { Ok(None) }
+        async fn set(&self, _k: &str, _v: &[u8], _t: Duration) -> aegis_core::Result<()> { Ok(()) }
+        async fn del(&self, _k: &str) -> aegis_core::Result<()> { Ok(()) }
+        async fn incr_window(&self, _k: &str, _w: Duration, _l: u64) -> aegis_core::Result<aegis_core::SlidingWindowResult> {
+            Ok(aegis_core::SlidingWindowResult { count: 0, allowed: true, retry_after: None })
+        }
+        async fn token_bucket(&self, _k: &str, _r: u32, _b: u32) -> aegis_core::Result<bool> { Ok(true) }
+        async fn get_risk(&self, _k: &RiskKey) -> aegis_core::Result<u32> { Ok(0) }
+        async fn add_risk(&self, _k: &RiskKey, _d: i32, _m: u32) -> aegis_core::Result<u32> { Ok(0) }
+        async fn auto_block(&self, _ip: IpAddr, _t: Duration) -> aegis_core::Result<()> { Ok(()) }
+        async fn is_auto_blocked(&self, _ip: IpAddr) -> aegis_core::Result<bool> { Ok(false) }
+        async fn put_nonce(&self, _n: &str, _t: Duration) -> aegis_core::Result<bool> { Ok(true) }
+        async fn consume_nonce(&self, _n: &str) -> aegis_core::Result<bool> { Ok(true) }
+        async fn hset_multi(&self, key: &str, fields: &[(String, Vec<u8>)]) -> aegis_core::Result<()> {
+            if let Some(hook) = self.before_write.lock().unwrap().as_mut() {
+                hook();
+            }
+            if self.fail.load(std::sync::atomic::Ordering::Relaxed) { return Self::err(); }
+            let mut g = self.hashes.lock().unwrap();
+            let h = g.entry(key.to_string()).or_default();
+            for (f, v) in fields { h.insert(f.clone(), v.clone()); }
+            Ok(())
+        }
+        async fn hdel(&self, key: &str, fields: &[String]) -> aegis_core::Result<()> {
+            if let Some(h) = self.hashes.lock().unwrap().get_mut(key) {
+                for f in fields { h.remove(f); }
+            }
+            Ok(())
+        }
+        async fn hscan(&self, key: &str) -> aegis_core::Result<Vec<(String, Vec<u8>)>> {
+            if self.fail.load(std::sync::atomic::Ordering::Relaxed) { return Self::err(); }
+            Ok(self.hashes.lock().unwrap().get(key)
+                .map(|h| h.iter().map(|(f, v)| (f.clone(), v.clone())).collect())
+                .unwrap_or_default())
+        }
+        async fn unlink(&self, key: &str) -> aegis_core::Result<()> {
+            self.hashes.lock().unwrap().remove(key);
+            Ok(())
+        }
+    }
+
+    fn be() -> Arc<MapHashBackend> {
+        Arc::new(MapHashBackend::default())
+    }
+
+    fn tracker_with(be: &Arc<MapHashBackend>) -> RiskTracker {
+        let t = RiskTracker::new(&cfg());
+        t.attach_backend(be.clone() as Arc<dyn StateBackend>);
+        t
+    }
+
+    #[tokio::test]
+    async fn malicious_strike_flushes_and_survives_restart() {
+        let backend = be();
+        let t = tracker_with(&backend);
+        // Two strikes on one IP → strikes=2, marked dirty.
+        t.record_malicious(ip("9.9.9.9"), 60);
+        t.record_malicious(ip("9.9.9.9"), 60);
+        t.flush_once().await;
+        assert_eq!(backend.fields(CONTROL_RISK_KEY), 1, "one struck key persisted");
+
+        // Fresh tracker hydrates the strike from the same backend.
+        let restarted = tracker_with(&backend);
+        assert!(restarted.snapshot(ip("9.9.9.9")).is_none(), "empty before hydrate");
+        restarted.hydrate().await;
+        let s = restarted.snapshot(ip("9.9.9.9")).expect("strike rehydrated");
+        assert_eq!(s.strikes, 2, "lifetime strikes survived restart");
+    }
+
+    #[tokio::test]
+    async fn clean_only_traffic_is_never_persisted() {
+        let backend = be();
+        let t = tracker_with(&backend);
+        // Clean requests on never-struck keys carry no durable value.
+        for i in 0..10 {
+            t.record_clean(ip(&format!("10.0.0.{i}")));
+        }
+        t.flush_once().await;
+        assert_eq!(backend.fields(CONTROL_RISK_KEY), 0, "no clean keys persisted");
+    }
+
+    #[tokio::test]
+    async fn reset_between_mark_and_flush_drops_the_key() {
+        let backend = be();
+        let t = tracker_with(&backend);
+        t.record_malicious(ip("1.2.3.4"), 60); // dirty + stored
+        t.reset(ip("1.2.3.4")); // removed from the map before flush
+        t.flush_once().await;
+        assert_eq!(backend.fields(CONTROL_RISK_KEY), 0, "removed key not persisted");
+    }
+
+    #[tokio::test]
+    async fn forget_durable_hdels_one_key_only() {
+        let backend = be();
+        let t = tracker_with(&backend);
+        t.record_malicious(ip("1.1.1.1"), 60);
+        t.record_malicious(ip("2.2.2.2"), 60);
+        t.flush_once().await;
+        assert_eq!(backend.fields(CONTROL_RISK_KEY), 2);
+
+        t.forget_durable(&RiskKey::from_ip(ip("1.1.1.1"))).await;
+        assert_eq!(backend.fields(CONTROL_RISK_KEY), 1);
+        // The survivor rehydrates; the forgotten one does not.
+        let restarted = tracker_with(&backend);
+        restarted.hydrate().await;
+        assert!(restarted.snapshot(ip("2.2.2.2")).is_some());
+        assert!(restarted.snapshot(ip("1.1.1.1")).is_none());
+    }
+
+    #[tokio::test]
+    async fn unlink_durable_wipes_the_whole_hash() {
+        let backend = be();
+        let t = tracker_with(&backend);
+        t.record_malicious(ip("3.3.3.3"), 60);
+        t.flush_once().await;
+        assert_eq!(backend.fields(CONTROL_RISK_KEY), 1);
+        t.unlink_durable().await;
+        assert_eq!(backend.fields(CONTROL_RISK_KEY), 0);
+    }
+
+    #[tokio::test]
+    async fn reset_all_clears_map_and_dirty() {
+        let backend = be();
+        let t = tracker_with(&backend);
+        t.record_malicious(ip("4.4.4.4"), 60);
+        t.reset_all();
+        // Nothing dirty → flush writes nothing; map empty.
+        t.flush_once().await;
+        assert_eq!(backend.fields(CONTROL_RISK_KEY), 0);
+        assert!(t.snapshot(ip("4.4.4.4")).is_none());
+    }
+
+    #[tokio::test]
+    async fn flush_caps_per_tick_highest_strike_first_and_defers_rest() {
+        // PER_TICK_FIELD_CAP is 4 in tests. Create 6 struck keys with
+        // increasing strike counts; the flush keeps the 4 highest, defers 2.
+        let backend = be();
+        let t = tracker_with(&backend);
+        for i in 0..6u32 {
+            let addr = ip(&format!("5.5.5.{i}"));
+            // i+1 strikes on key i.
+            for _ in 0..=i {
+                t.record_malicious(addr, 10);
+            }
+        }
+        t.flush_once().await;
+        assert_eq!(backend.fields(CONTROL_RISK_KEY), 4, "capped to PER_TICK_FIELD_CAP");
+        // The two lowest-strike keys (1 and 2 strikes) were deferred; a second
+        // flush drains them.
+        t.flush_once().await;
+        assert_eq!(backend.fields(CONTROL_RISK_KEY), 6, "deferred keys flushed next tick");
+    }
+
+    #[tokio::test]
+    async fn flush_defers_everything_on_backend_error() {
+        let backend = be();
+        let t = tracker_with(&backend);
+        t.record_malicious(ip("6.6.6.6"), 60);
+        backend.set_fail(true);
+        t.flush_once().await; // backend errors → key stays dirty
+        assert_eq!(backend.fields(CONTROL_RISK_KEY), 0, "nothing written on error");
+        backend.set_fail(false);
+        t.flush_once().await; // retry succeeds
+        assert_eq!(backend.fields(CONTROL_RISK_KEY), 1, "deferred key flushed on recovery");
+    }
+
+    #[tokio::test]
+    async fn flush_aborts_remaining_writes_when_a_reset_lands_mid_flush() {
+        // The TOCTOU: a reset bumps the fence AFTER flush_once snapshots but
+        // BEFORE it finishes its (multi-chunk, HSET_CHUNK=1 in tests) writes.
+        // The first write's hook fires a concurrent reset_all; the fence must
+        // then abort the remaining writes so cleared strikes aren't resurrected.
+        let backend = be();
+        let t = tracker_with(&backend);
+        for i in 0..3u32 {
+            // Distinct strike counts so all three become separate fields.
+            for _ in 0..=i {
+                t.record_malicious(ip(&format!("9.0.0.{i}")), 10);
+            }
+        }
+        // On the very first chunk write, simulate an operator/bench reset
+        // landing concurrently (bumps the fence + clears state).
+        let t_for_hook = t.clone();
+        let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let fired_c = fired.clone();
+        backend.on_before_write(move || {
+            if !fired_c.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                t_for_hook.reset_all();
+            }
+        });
+        t.flush_once().await;
+        // Exactly the first key was written before the reset took effect; the
+        // fence aborted the remaining two. (Without the fence, all 3 would be
+        // written and would resurrect on the next boot despite the reset.)
+        assert_eq!(
+            backend.fields(CONTROL_RISK_KEY),
+            1,
+            "fence aborted post-reset writes; only the pre-reset chunk landed"
+        );
+    }
+
+    #[tokio::test]
+    async fn hydrate_does_not_clobber_a_live_entry() {
+        let backend = be();
+        // Seed durable with strikes=1 for an IP.
+        let seeder = tracker_with(&backend);
+        seeder.record_malicious(ip("7.7.7.7"), 60);
+        seeder.flush_once().await;
+
+        // A fresh tracker accrues a LIVE strike for the same IP, THEN hydrates.
+        let t = tracker_with(&backend);
+        t.record_malicious(ip("7.7.7.7"), 60);
+        t.record_malicious(ip("7.7.7.7"), 60); // live strikes = 2
+        t.hydrate().await;
+        // Live entry (2) must win over the durable (1) — or_insert skips it.
+        assert_eq!(t.snapshot(ip("7.7.7.7")).unwrap().strikes, 2);
+    }
+
+    #[tokio::test]
+    async fn no_backend_path_marks_nothing_and_hooks_are_inert() {
+        // Without a backend: no dirty growth, durable hooks are no-ops.
+        let t = RiskTracker::new(&cfg());
+        t.record_malicious(ip("8.8.8.8"), 60);
+        assert!(t.snapshot(ip("8.8.8.8")).is_some(), "in-memory strike still works");
+        // flush/hydrate/unlink/forget all no-op without panicking.
+        t.flush_once().await;
+        t.hydrate().await;
+        t.unlink_durable().await;
+        t.forget_durable(&RiskKey::from_ip(ip("8.8.8.8"))).await;
+        assert_eq!(t.snapshot(ip("8.8.8.8")).unwrap().strikes, 1);
+    }
+
+    #[test]
+    fn attach_backend_is_settable_and_idempotent() {
+        let t = RiskTracker::new(&cfg());
+        assert!(t.backend().is_none(), "no backend before attach");
+        t.attach_backend(Arc::new(NoopBackend) as Arc<dyn StateBackend>);
+        assert!(t.backend().is_some(), "backend present after attach");
+        // Idempotent — a second attach must not panic.
+        t.attach_backend(Arc::new(NoopBackend) as Arc<dyn StateBackend>);
+        assert!(t.backend().is_some());
+    }
+
+    /// Minimal stub: relies on the trait's default impls for everything
+    /// except the still-required (non-default) methods.
+    struct NoopBackend;
+    #[async_trait::async_trait]
+    impl StateBackend for NoopBackend {
+        async fn get(&self, _k: &str) -> aegis_core::Result<Option<Vec<u8>>> { Ok(None) }
+        async fn set(&self, _k: &str, _v: &[u8], _t: Duration) -> aegis_core::Result<()> { Ok(()) }
+        async fn del(&self, _k: &str) -> aegis_core::Result<()> { Ok(()) }
+        async fn incr_window(&self, _k: &str, _w: Duration, _l: u64) -> aegis_core::Result<aegis_core::SlidingWindowResult> {
+            Ok(aegis_core::SlidingWindowResult { count: 0, allowed: true, retry_after: None })
+        }
+        async fn token_bucket(&self, _k: &str, _r: u32, _b: u32) -> aegis_core::Result<bool> { Ok(true) }
+        async fn get_risk(&self, _key: &aegis_core::risk::RiskKey) -> aegis_core::Result<u32> { Ok(0) }
+        async fn add_risk(&self, _key: &aegis_core::risk::RiskKey, _d: i32, _m: u32) -> aegis_core::Result<u32> { Ok(0) }
+        async fn auto_block(&self, _ip: IpAddr, _t: Duration) -> aegis_core::Result<()> { Ok(()) }
+        async fn is_auto_blocked(&self, _ip: IpAddr) -> aegis_core::Result<bool> { Ok(false) }
+        async fn put_nonce(&self, _n: &str, _t: Duration) -> aegis_core::Result<bool> { Ok(true) }
+        async fn consume_nonce(&self, _n: &str) -> aegis_core::Result<bool> { Ok(true) }
+    }
+
+    #[test]
+    fn slot_from_durable_clamps_corrupt_timestamp_without_panicking() {
+        // A garbage/adversarial last_seen near u64::MAX must NOT panic
+        // SystemTime at hydrate — it clamps to "now" (age 0).
+        let corrupt = DurableSlot { score: 10, strikes: 1, last_seen_unix_ms: u64::MAX };
+        let now_instant = Instant::now();
+        let rehydrated = slot_from_durable(&corrupt, now_instant, SystemTime::now());
+        assert_eq!(rehydrated.strikes, 1);
+        let age = now_instant.saturating_duration_since(rehydrated.last_seen);
+        assert!(age < Duration::from_millis(50), "clamped to ~now");
+    }
+
+    #[test]
+    fn durable_slot_ages_further_across_simulated_downtime() {
+        // Persist "now", then rehydrate as if the wall clock advanced 1h
+        // (process was down). The rehydrated slot must be ~1h old so trust
+        // decay correctly claws the score back after a restart.
+        let persist_instant = Instant::now();
+        let persist_wall = SystemTime::now();
+        let slot = Slot { score: 50, strikes: 2, last_seen: persist_instant };
+        let durable = slot_to_durable(&slot, persist_instant, persist_wall);
+
+        let load_instant = Instant::now();
+        let load_wall = persist_wall + Duration::from_secs(3600);
+        let rehydrated = slot_from_durable(&durable, load_instant, load_wall);
+        let age = load_instant.saturating_duration_since(rehydrated.last_seen);
+        let drift = age.as_secs().abs_diff(3600);
+        assert!(drift <= 1, "expected ~3600s age, got {}s", age.as_secs());
     }
 
     // 2026-05-20 memory-leak audit — the map must not grow without

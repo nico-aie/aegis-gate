@@ -580,6 +580,70 @@ impl StateBackend for ReconcilingBackend {
         }
     }
 
+    // --- 2026-06-24 — durable HASH ops (`redis-interim-durability`).
+    // Writes mirror to the fallback (like `set`/`del`/`expire`) so a
+    // partition that starts after the write still serves the durable copy
+    // locally; the read (`hscan`) follows the `scan_prefix` pattern. ---
+
+    async fn hset_multi(&self, key: &str, fields: &[(String, Vec<u8>)]) -> Result<()> {
+        let _ = self.fallback.hset_multi(key, fields).await;
+        match self.primary.hset_multi(key, fields).await {
+            Ok(()) => {
+                self.maybe_exit_partition().await;
+                Ok(())
+            }
+            Err(e @ WafError::State(_)) => {
+                self.enter_partition("hset_multi", &e);
+                Ok(())
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    async fn hdel(&self, key: &str, fields: &[String]) -> Result<()> {
+        let _ = self.fallback.hdel(key, fields).await;
+        match self.primary.hdel(key, fields).await {
+            Ok(()) => {
+                self.maybe_exit_partition().await;
+                Ok(())
+            }
+            Err(e @ WafError::State(_)) => {
+                self.enter_partition("hdel", &e);
+                Ok(())
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    async fn hscan(&self, key: &str) -> Result<Vec<(String, Vec<u8>)>> {
+        match self.primary.hscan(key).await {
+            Ok(v) => {
+                self.maybe_exit_partition().await;
+                Ok(v)
+            }
+            Err(e @ WafError::State(_)) => {
+                self.enter_partition("hscan", &e);
+                self.fallback.hscan(key).await
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    async fn unlink(&self, key: &str) -> Result<()> {
+        let _ = self.fallback.unlink(key).await;
+        match self.primary.unlink(key).await {
+            Ok(()) => {
+                self.maybe_exit_partition().await;
+                Ok(())
+            }
+            Err(e @ WafError::State(_)) => {
+                self.enter_partition("unlink", &e);
+                Ok(())
+            }
+            Err(other) => Err(other),
+        }
+    }
+
     /// SC-T1 — health for the reconciling wrapper.
     ///
     /// Surfaces the primary's snapshot but rebrands the `backend`
@@ -737,10 +801,82 @@ mod tests {
             }
             self.inner.consume_nonce(n).await
         }
+        async fn hset_multi(&self, k: &str, f: &[(String, Vec<u8>)]) -> Result<()> {
+            self.primary_ops.fetch_add(1, Ordering::Relaxed);
+            if self.unreachable.load(Ordering::Relaxed) {
+                return Err(self.err());
+            }
+            self.inner.hset_multi(k, f).await
+        }
+        async fn hdel(&self, k: &str, f: &[String]) -> Result<()> {
+            self.primary_ops.fetch_add(1, Ordering::Relaxed);
+            if self.unreachable.load(Ordering::Relaxed) {
+                return Err(self.err());
+            }
+            self.inner.hdel(k, f).await
+        }
+        async fn hscan(&self, k: &str) -> Result<Vec<(String, Vec<u8>)>> {
+            self.primary_ops.fetch_add(1, Ordering::Relaxed);
+            if self.unreachable.load(Ordering::Relaxed) {
+                return Err(self.err());
+            }
+            self.inner.hscan(k).await
+        }
+        async fn unlink(&self, k: &str) -> Result<()> {
+            self.primary_ops.fetch_add(1, Ordering::Relaxed);
+            if self.unreachable.load(Ordering::Relaxed) {
+                return Err(self.err());
+            }
+            self.inner.unlink(k).await
+        }
     }
 
     fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(a, b, c, d))
+    }
+
+    fn field(name: &str, val: &[u8]) -> (String, Vec<u8>) {
+        (name.to_string(), val.to_vec())
+    }
+
+    #[tokio::test]
+    async fn hash_ops_delegate_to_healthy_primary() {
+        // Regression guard: the wrapper must forward HASH ops to the real
+        // primary, not silently hit the trait-default no-op (which would
+        // make hydrate return empty and durability a lie).
+        let primary = ToggleBackend::new();
+        let r = ReconcilingBackend::new(primary.clone());
+        r.hset_multi("control:waf:risk", &[field("ip1", b"a"), field("ip2", b"b")])
+            .await
+            .unwrap();
+        let mut got = r.hscan("control:waf:risk").await.unwrap();
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(got, vec![field("ip1", b"a"), field("ip2", b"b")]);
+        r.hdel("control:waf:risk", &["ip1".into()]).await.unwrap();
+        assert_eq!(
+            r.hscan("control:waf:risk").await.unwrap(),
+            vec![field("ip2", b"b")]
+        );
+        r.unlink("control:waf:risk").await.unwrap();
+        assert!(r.hscan("control:waf:risk").await.unwrap().is_empty());
+        assert!(!r.is_partitioned());
+    }
+
+    #[tokio::test]
+    async fn hash_writes_mirror_to_fallback_and_reads_survive_partition() {
+        // A write mirrors to the fallback; when the primary then goes
+        // unreachable, the read falls back and still sees the durable copy —
+        // persistence-down never escalates to a read failure.
+        let primary = ToggleBackend::new();
+        let r = ReconcilingBackend::new(primary.clone());
+        r.hset_multi("control:waf:risk", &[field("ip1", b"a")])
+            .await
+            .unwrap();
+        primary.set_unreachable(true);
+        // hscan hits the primary (errors) → enters partition → reads fallback.
+        let got = r.hscan("control:waf:risk").await.unwrap();
+        assert_eq!(got, vec![field("ip1", b"a")]);
+        assert!(r.is_partitioned());
     }
 
     #[tokio::test]

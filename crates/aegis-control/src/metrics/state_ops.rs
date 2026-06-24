@@ -219,6 +219,27 @@ impl StateBackend for MeteredStateBackend {
         self.inner.cas_set(key, expected, new, ttl).await
     }
 
+    // --- 2026-06-24 — durable HASH ops (`redis-interim-durability`).
+    // Forwarded without a per-op metric, like the other generic KV
+    // primitives above: these run at background-flush / boot-hydrate
+    // cadence, not the per-request hot path. ---
+
+    async fn hset_multi(&self, key: &str, fields: &[(String, Vec<u8>)]) -> Result<()> {
+        self.inner.hset_multi(key, fields).await
+    }
+
+    async fn hdel(&self, key: &str, fields: &[String]) -> Result<()> {
+        self.inner.hdel(key, fields).await
+    }
+
+    async fn hscan(&self, key: &str) -> Result<Vec<(String, Vec<u8>)>> {
+        self.inner.hscan(key).await
+    }
+
+    async fn unlink(&self, key: &str) -> Result<()> {
+        self.inner.unlink(key).await
+    }
+
     /// SC-T1 — forward `health()` through to the wrapped backend so
     /// the dashboard sees the real backend identifier (`redis` /
     /// `in_memory` / `reconciling`) instead of the trait-default

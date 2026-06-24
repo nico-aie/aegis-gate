@@ -437,6 +437,9 @@ impl DashboardServices {
             None,
             Arc::new(TierStore::new()),
             Arc::new(RuleStore::new()),
+            // No durable backend on the lightweight spawn path (tests,
+            // single-node). The roster-aware `run()` path opts in.
+            None,
         )
     }
 
@@ -475,8 +478,16 @@ impl DashboardServices {
         // via `services.rules`. Test/single-node call sites pass a fresh
         // `RuleStore::new()`.
         rules: Arc<RuleStore>,
+        // 2026-06-24 (redis-interim-durability A0) — optional durable state
+        // backend for the interim Redis durability bridge. `Some(..)` (set
+        // by `run()` under `#[cfg(feature = "redis")]`) lets the
+        // incidents (P1) and stats-counter (P3) trackers persist to the
+        // `control:waf:*` keyspace; `None` (tests, single-node, no-Redis)
+        // keeps the prior in-memory-only behaviour. Inert in A0 — the
+        // trackers only store the handle; write-through lands in A1/A3.
+        durable_backend: Option<Arc<dyn aegis_core::state::StateBackend>>,
     ) -> (Self, tokio::task::JoinHandle<()>) {
-        let stats_agg = Arc::new(StatsAggregator::new());
+        let stats_agg = Arc::new(StatsAggregator::with_backend(durable_backend.clone()));
         let attacks_agg = Arc::new(AttacksAggregator::new());
         let audit_ring = Arc::new(AuditRing::new());
         let witness_state = Arc::new(WitnessState::new());
@@ -695,7 +706,9 @@ impl DashboardServices {
                 // Phase-3 incident overlay — empty at boot, fills
                 // as operators ack/snooze/resolve via the dashboard.
                 incidents: std::sync::Arc::new(
-                    crate::api::incidents::IncidentTracker::new(),
+                    crate::api::incidents::IncidentTracker::with_backend(
+                        durable_backend.clone(),
+                    ),
                 ),
                 // MTLS-T8 — empty override at boot. The proxy may
                 // seed it from a persisted file or YAML if needed.

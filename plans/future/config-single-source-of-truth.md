@@ -478,3 +478,46 @@ H1 (single writer + pragmatic split)        ← do first; standalone correctness
 Each arrow is "assumes, not requires-simultaneously" — H1 stands alone, 2a is
 valuable even if etcd never happens, and H3 items can be picked individually once
 2a lands.
+
+---
+
+## 11. H2a execution notes (code-checked 2026-06-24)
+
+**Status:** **Track B — scheduled after `redis-interim-durability` P1–P3**
+(foundation-first; the two are code-independent). H1 (P0–P2) shipped; H2a is the
+structural type split. A blast-radius pass against current code surfaced three
+things to handle before/within the refactor:
+
+1. **`fail_mode_by_tier` has no applier** (`config.rs:265`, "wiring lands in
+   Phase E") yet §10 files it under `DynamicConfig`. The tightened guard ("every
+   `DynamicConfig` field has a helper") will **fail** on it. **Decide first:**
+   either write a trivial `apply_cfg_change_to_fail_mode_by_tier` (it's a
+   per-tier failure-mode map → a small reconcile) **or** reclassify it as
+   not-yet-dynamic (keep it Tier-3/bootstrap until its consumer wiring lands).
+   Recommended: reclassify now, promote when the consumer ships — don't invent a
+   helper for an unconsumed field.
+2. **Migration is a fail-closed footgun (HIGH).** Every existing
+   `config:waf:doc.blob` is a **full `WafConfig` as YAML text**
+   (`config_store.rs:67`), and `deny_unknown_fields` is on. The first
+   `load_dynamic` after deploy **hard-fails on the Tier-1 keys → bricks the
+   config plane**. **Required:** land the serde compat shim / one-shot doc
+   rewrite (strip Tier-1 keys from the active doc + `config:waf:v:*` snapshots,
+   keep a full-`WafConfig` fallback parse for one release) as PR **B0**, before
+   the type split flips on. This is the single highest risk in H2a.
+3. **Blast radius (mechanical but wide).** The doc blob is YAML *text*, so the
+   change is to the **parse/validation surface**, not stored bytes: `load_config`
+   / `load_config_str` split into `load_bootstrap` + `load_dynamic`
+   (`config.rs:33/63`); ~20 `load_config_str` call sites in `admin_mutate.rs`;
+   all 17 `apply_cfg_change_to_*` + `apply_and_swap` (`&WafConfig`→`&DynamicConfig`);
+   the `ArcSwap<WafConfig>` carrier → `ArcSwap<DynamicConfig>` + a separate
+   `Arc<BootstrapConfig>`; `ProxyContext::build` (`proxy.rs:251`), `run.rs`,
+   `accept.rs:251`. **Fiddliest:** sub-field dynamics
+   (`observability.copilot`, `upstreams[].cache`, `zero_trust.downstream`) force
+   the split to descend into `ObservabilityConfig`/`PoolConfig`/`ZeroTrustConfig`.
+   The structural guard test (`redis_source.rs:823`) inverts from helper-scrape
+   to field-coverage — a rewrite, not an edit.
+
+**PR shape (Track B):** **B0** migration shim + `fail_mode_by_tier` decision
+(S) → **B1** the `BootstrapConfig`/`DynamicConfig` split + signature churn +
+guard rewrite (M). Note: any `persistence:` section added by
+`redis-interim-durability` (Track A, §10.3) gets classified here.

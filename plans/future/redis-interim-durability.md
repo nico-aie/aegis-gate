@@ -271,6 +271,94 @@ hang).
 
 ---
 
+## 10. Execution plan (decisions locked 2026-06-24)
+
+**Status:** **Active — next up.** Sequenced ahead of config H2a (foundation-first).
+Decisions: **(1)** add hash ops to `StateBackend` (single-hash layout, per §9
+invariant 3); **(2)** build the **full P1+P2+P3** set; **(3)** ship as the PR
+sequence below. Feature-gated behaviour unchanged with no Redis.
+
+### 10.1 Verification corrections (fold these in — code-checked 2026-06-24)
+
+The §1–§9 design is sound but six anchors drifted from current code; the build
+must account for them:
+
+1. **`StateBackend` has NO hash ops** (`aegis-core/src/state.rs:135-253` — only
+   `get/set/del/incrby/scan_prefix/cas_set/…`). The §2/§4/§9 single-hash design
+   (`HSET`/`HDEL`/`HSCAN`/`UNLINK`) needs **new trait methods with default no-op
+   impls** (mirroring the `:163-220` pattern) implemented on `RedisBackend`
+   (`aegis-proxy/src/state/redis.rs`), the in-memory backend, and the
+   reconcile/metered wrappers. This is PR **A0** below — it does not exist today.
+2. **The trackers can't reach Redis.** `RiskTracker` (aegis-security),
+   `IncidentTracker`/`StatsAggregator` (aegis-control) depend on **aegis-core
+   only** — they see the `StateBackend` *trait* but not the concrete
+   `RedisBackend`. Thread an `Option<Arc<dyn StateBackend>>` into each (trait
+   object → crates stay feature-agnostic). **Boot-ordering hazard:**
+   `RiskTracker::new` runs at `run.rs:513`, the backend is built at `run.rs:874`
+   → use a post-construction setter (`risk.attach_backend(state.clone())`), not a
+   constructor arg. Incidents/stats are built later (`dashboard_services.rs`) so
+   they can take it at construction.
+3. **`Slot.last_seen` is `std::time::Instant`** (`tracker.rs:162-167`) — not
+   serde-able. Persist as `SystemTime`/elapsed; rehydrate relative to boot.
+4. **`conn()` has no checkout timeout** (`redis.rs:299-304`; the existing
+   `with_timeout` wraps the *op*, not pool acquisition). §9's "short checkout
+   timeout, skip the tick on contention" needs a timeout around `pool.get()`.
+5. **No `note` method** on incidents — it's a param of `ack`/`snooze`/`resolve`
+   (`incidents.rs:106/122/138`). Write-through hooks those three.
+6. **Drain task is in `aegis-control/src/dashboard_services.rs:553-588`**
+   (`dispatch_event` → `stats.record` at `:758`), not aegis-proxy. P3's
+   delta/INCRBY must run in a **separate interval task** reading a snapshot —
+   `dispatch_event` is sync and holds the `std::sync::Mutex` internally.
+
+Confirmed-exact anchors (no change): `reset_all` `tracker.rs:548-550`; reset call
+site `run.rs:2555`; per-IP/key reset `admin_mutate.rs:3670/3803`;
+`EPHEMERAL_PATTERNS` `redis.rs:699-705` (excludes `control:waf:*` ✅);
+`MODES_KEY` `cluster_sync.rs:41`; `blocks_total` `stats.rs:143/200`;
+`MAX_TRACKED_KEYS` `tracker.rs:69`; pool size 16 `redis.rs:56`.
+
+### 10.2 PR sequence
+
+- **PR A0 — durable-store seam (no behaviour change).** Add hash ops to
+  `StateBackend` (`hset_multi` / `hdel` / `hscan` / `unlink`, default no-op);
+  implement on `RedisBackend` (+ checkout timeout on `pool.get()`), in-memory,
+  reconcile/metered wrappers. Add the `control:waf:*` key constants
+  (`cluster_sync.rs` convention) + `serde_json` (de)serialization helpers for
+  the three value shapes (with the `Instant`→`SystemTime` conversion). Add the
+  `Option<Arc<dyn StateBackend>>` injection seam (setter on `RiskTracker`,
+  ctor arg on incidents/stats) wired in `run.rs` under `#[cfg(feature="redis")]`,
+  passing `None` otherwise. **Tests:** in-memory backend hash-ops round-trip;
+  no-Redis path identical to today. *S.*
+- **PR A1 — P1 incidents durability.** Write-through on
+  `ack`/`snooze`/`resolve` → `control:waf:incidents` hash; hydrate the
+  `Mutex<HashMap>` on boot; wire `reset_state` to `DEL` the hash. Feature-gated.
+  **Tests:** ack survives a simulated restart (hydrate from a seeded backend);
+  no-Redis unchanged; reset clears durable copy. *S.*
+- **PR A2 — P2 RiskTracker durability (hot-path-safe).** Dirty-flag slots in
+  `record_malicious_at_with_key` / `record_clean_at_with_key`
+  (`tracker.rs:306/360`); a background interval task snapshots the dirty set
+  (temporal coalescing), filters `strikes>0`/above-threshold, and flushes via
+  chunked `hset_multi` (per-tick field cap, highest-strike-first overflow,
+  single-conn short-checkout skip-on-contention); hydrate on boot via batched
+  `hscan` behind readiness; wire `reset_all`→`unlink` and per-IP/key
+  reset→`hdel`. **Hot path stays DashMap-only.** **Acceptance gate (hard):** the
+  §9 k6 matrix — `X-WAF-Overhead-Latency` p99 delta ≈ 0 on/off; strikes survive a
+  mid-run restart; no pool-starvation; `reset_state` latency unchanged. *M.*
+- **PR A3 — P3 stats counters.** Persist `blocks_total` (+ any monotone totals)
+  to `control:waf:stats:counters` from a **separate interval task** (snapshot
+  under the `Mutex`, release, `INCRBY` delta outside the lock); reload on boot;
+  wire stats `reset()` to clear. Rings/timeseries explicitly out (ClickHouse).
+  **Tests:** counter survives restart; zero added `Lagged`; reset clears. *S.*
+
+### 10.3 Config touch
+
+A new durable-state config block (e.g. `persistence: { enabled, flush_interval,
+per_tick_field_cap }`) is the natural knob. It is **Tier-2 dynamic-ish but
+restart-sensitive** (the flush task is spawned at boot) — classify it explicitly
+when config H2a lands (Track B); for now a simple `#[serde(default)]` section,
+flush-interval hot-readable, enable restart-only, documented as such.
+
+---
+
 **See also:**
 [`persistent-datastore-tracking-data.md`](./persistent-datastore-tracking-data.md)
 (the eventual ClickHouse + Postgres replacement — this doc bridges to it and

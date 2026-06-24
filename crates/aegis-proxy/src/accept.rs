@@ -597,6 +597,21 @@ pub(crate) async fn admin_accept_loop(
         Some(Arc::clone(&roster_view)),
         Arc::clone(&tiers),
         Arc::clone(&rules),
+        // 2026-06-24 (redis-interim-durability A0) — hand the resolved
+        // state backend to the incidents (P1) / stats-counter (P3)
+        // trackers so they can persist to `control:waf:*`. Gated on the
+        // `redis` feature; `None` otherwise keeps the in-memory path. Inert
+        // in A0 (no write-through yet) — activated by A1/A3.
+        {
+            #[cfg(feature = "redis")]
+            {
+                Some(Arc::clone(&state_backend))
+            }
+            #[cfg(not(feature = "redis"))]
+            {
+                None
+            }
+        },
     );
     // Hand the interop Runtime to the admin control plane via
     // `services.interop`. Same Arc that the data-plane
@@ -679,7 +694,62 @@ pub(crate) async fn admin_accept_loop(
         rt.control.register_reset_callback(std::sync::Arc::new(move || {
             agg_for_reset.reset();
         }));
+
+        // 2026-06-24 (redis-interim-durability P1, A1) — incidents are now
+        // durable, so `reset_state` must clear BOTH the in-memory overlay
+        // (sync) and the durable `control:waf:incidents` hash (async UNLINK),
+        // or a reset would leave the operator overlay to resurrect on the
+        // next boot (durability plan §4). The async-half is a no-op without
+        // a backend, matching the StateBackend ephemeral wipe pattern.
+        let incidents_local_reset = services.incidents.clone();
+        rt.control.register_reset_callback(std::sync::Arc::new(move || {
+            incidents_local_reset.clear_local();
+        }));
+        let incidents_durable_reset = services.incidents.clone();
+        rt.control
+            .register_async_reset_callback(std::sync::Arc::new(move || {
+                let incidents = incidents_durable_reset.clone();
+                Box::pin(async move {
+                    incidents.unlink_durable().await;
+                })
+            }));
+
+        // 2026-06-24 (redis-interim-durability P3, A3) — lifetime stats
+        // counters (blocks_total, …) are now durable per-node, so
+        // `reset_state` must zero the in-memory counters (sync) AND drop this
+        // node's durable field (async HDEL). Mirrors the incidents pattern.
+        let stats_local_reset = services.stats_agg.clone();
+        rt.control.register_reset_callback(std::sync::Arc::new(move || {
+            stats_local_reset.reset_counters();
+        }));
+        let stats_durable_reset = services.stats_agg.clone();
+        let stats_reset_node = lease_store.self_id().as_str().to_string();
+        rt.control
+            .register_async_reset_callback(std::sync::Arc::new(move || {
+                let stats = stats_durable_reset.clone();
+                let node = stats_reset_node.clone();
+                Box::pin(async move {
+                    stats.forget_durable(&node).await;
+                })
+            }));
     }
+
+    // 2026-06-24 (redis-interim-durability P1, A1) — hydrate the durable
+    // incident overlay into the in-memory read cache before serving so an
+    // ack/snooze/resolve survives a restart. No-op without a durable backend
+    // (single-node / no-Redis). The overlay is tiny (per-admin-action), so a
+    // brief await at boot is acceptable — unlike the large risk hash (A2),
+    // which hydrates in the background.
+    services.incidents.hydrate().await;
+
+    // 2026-06-24 (redis-interim-durability P3, A3) — spawn the per-node stats
+    // counter durability: a background boot-hydrate (so the Overview top-line
+    // survives a restart) + a periodic flush. Off the request path entirely;
+    // no-op without a durable backend.
+    // Detached on purpose (fire-and-forget) — `let _` makes that explicit.
+    let _ = services
+        .stats_agg
+        .spawn_persistence(lease_store.self_id().as_str().to_string());
 
     // CI-T5 — seed `services.routes` from `cfg.routes` so
     // /api/routes returns the live routing trie. Hot-reload

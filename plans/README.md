@@ -109,6 +109,18 @@ plans/
   Acceptance gated on the existing `tests/load/` k6 suite (`risk-strikes`,
   `ddos-burst`, `failover-burst`, `loadmode-degradation`) — persistence on-vs-off
   must be latency-neutral. Designed-only; start at P0+P1. Not started.
+- **[`admin-accounts-rbac-sso.md`](./future/admin-accounts-rbac-sso.md)** —
+  enterprise-readiness: take the **control-plane admin identity** from one
+  hard-coded `admin` (every session = `Scopes::FULL`) to multi-user + human
+  **RBAC** + **dashboard SSO (OIDC)**. Consolidates the long-dangling
+  `docs/future/rbac-sso.md`. **P1** (self-service hardening — wire the
+  already-built-but-unrouted password-change / TOTP-enroll / session-revoke /
+  recovery-code endpoints, fleet-wide rate-limit, kill committed default creds)
+  is a standalone win on the single-admin model; **P2** multi-user store → **P3**
+  RBAC → **P4** per-user audit → **P5** OIDC SSO. **No new datastore** (rides the
+  config doc like `service_accounts` + the `control:waf:*`/session seams);
+  **not blocked by etcd** (orthogonal — same trait); real prereq = PREREQ-A
+  (✅ shipped). SAML/SCIM deferred. Drafted 2026-06-24; not started.
 - **SSE / streaming support** — ✅ **SHIPPED 2026-06-14**, archived to
   [`archive/sse-streaming-support.md`](./archive/sse-streaming-support.md).
   Streams `text/event-stream` through the data plane instead of buffering
