@@ -51,6 +51,14 @@ items. Planned + decisions locked:
 > WAF-vs-gateway boundary call ([[project_waf_vs_gateway_boundary]]); only the
 > GraphQL caps half shipped, which is uncontested WAF surface.
 
+> **Enterprise identity (new, drafted 2026-06-24) — [[admin-accounts-rbac-sso]].**
+> Control-plane admin auth today = one hard-coded `admin`, every session
+> `Scopes::FULL`. Plan takes it to multi-user + RBAC + OIDC SSO. **P1**
+> (self-service hardening: wire the dormant password/TOTP/session-revoke/recovery
+> endpoints, fleet-wide rate-limit, remove committed default creds) is a
+> standalone Wave-3 win — prereq PREREQ-A ✅, no new datastore, **not blocked by
+> etcd** (rides the same StateBackend/config-doc seam). Slot by capacity.
+
 **Config arc:** the near-term correctness work (H1) is done; the long-term
 structural split (H2a `BootstrapConfig`/`DynamicConfig`) and etcd (H2b) sit in
 Wave 3 / Wave 4 — not started.
@@ -101,7 +109,12 @@ dependents are unsafe / pointless:
 
 [STANDALONE] (no prereqs, slot anytime by capacity)
    ├─ ddos-cross-node-rps-aggregation (M)
-   └─ smart-caching Phase 4 (stale-if-error + ETag revalidation, S)
+   ├─ smart-caching Phase 4 (stale-if-error + ETag revalidation, S)
+   └─ admin-accounts-rbac-sso (enterprise identity)
+        P1 self-service hardening (S/M, prereq PREREQ-A ✅) ── standalone win
+          └─ P2 multi-user store → P3 RBAC → P4 per-user audit → P5 OIDC SSO
+        (no new datastore — rides config doc + control:waf:*/session seams;
+         NOT blocked by etcd; only P5 wants a secret resolver for client_secret)
 ```
 
 **Constraint gate:** the heavy infra plans — **etcd** (H2b) and the **ClickHouse +
@@ -156,6 +169,7 @@ foundation items run in parallel within a wave.
 | ◐ | **redis-interim-durability P1–P3** — **Track A, building** (A0 hash-ops seam → A1 incidents → A2 RiskTracker → A3 counters) → [[redis-interim-durability]] §10 | Foundation | M | Makes restart-fragile state durable *now* on existing Redis; forward-compatible seams for the Postgres endgame. Decisions locked: hash-ops layout, full P1+P2+P3 |
 | ☐ | **config-single-source-of-truth H2a** (BootstrapConfig / DynamicConfig split) — **Track B, after A** → [[config-single-source-of-truth]] §11 | Foundation | M | Compiler-enforces the §3 split; retires the file-vs-doc staleness class for good; prereq for etcd. B0 migration shim (fail-closed footgun) → B1 split |
 | ☐ | **smart-caching Phase 4** (stale-if-error, ETag revalidation) | Foundation | S | Finishes a shipped feature; slot by capacity |
+| ☐ | **admin-accounts-rbac-sso P1** (self-service hardening — wire dormant password/TOTP/session-revoke/recovery endpoints, fleet-wide rate-limit, remove committed default creds) → [[admin-accounts-rbac-sso]] | Foundation | S/M | Standalone enterprise-readiness win on the single-admin model; prereq PREREQ-A ✅; no new infra. P2–P5 (multi-user → RBAC → audit → OIDC SSO) follow by capacity |
 | ☐ | Roadmap **Tier 3 / 4** (Page Shield if PCI deadline; else bot-classifier enforcement Tier 4A) | Capability | M/M-L | PCI jumps the queue if a tenant deadline is live; otherwise 4A is an S win on existing scaffolding |
 
 ### Wave 4 — Scale-up endgame (constraint-gated) · L, multi-cycle
