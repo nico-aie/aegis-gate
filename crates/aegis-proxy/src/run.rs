@@ -1322,6 +1322,19 @@ pub async fn run(
         }
     };
 
+    // H2b (2026-06-24) — wrap the config-nudge `FleetBus` in the narrow
+    // [`ConfigWatch`] seam (the `config:waf:bump` channel baked in) so both
+    // the watcher (subscribe side) and the write handlers via
+    // `services.config_nudge` (notify side) talk to the abstraction the etcd
+    // config plane will supply natively (P2), not Redis pub/sub directly.
+    let config_nudge: Option<std::sync::Arc<dyn aegis_core::config_backend::ConfigWatch>> =
+        config_nudge_bus.map(|bus| {
+            aegis_core::config_backend::FleetBusConfigWatch::arc(
+                bus,
+                crate::config_source::config_store::CONFIG_BUMP_CHANNEL,
+            )
+        });
+
     // 2026-05-27 — shared-store config watcher (multi-node config
     // plane). INDEPENDENT of the boot config source above: it watches
     // the versioned `config:waf:doc` in the runtime `StateBackend` so a
@@ -1442,7 +1455,7 @@ pub async fn run(
             bus.clone(),
             targets,
             crate::config_source::redis_source::DEFAULT_POLL,
-            config_nudge_bus.clone(),
+            config_nudge.clone(),
             readiness.config_store_degraded.clone(),
             config_marker_path,
         ));
@@ -2128,7 +2141,7 @@ pub async fn run(
         config_yaml_path.clone(),
         tier_store,
         rule_store,
-        config_nudge_bus,
+        config_nudge,
         shared_receivers,
     )));
 

@@ -28,9 +28,9 @@ use arc_swap::ArcSwap;
 
 use aegis_core::audit::{AuditBus, AuditClass, AuditEvent};
 use aegis_core::config::WafConfig;
-use aegis_core::fleet::FleetBus;
+use aegis_core::config_backend::ConfigWatch;
 
-use super::config_store::{Activate, ConfigStore, CONFIG_BUMP_CHANNEL};
+use super::config_store::{Activate, ConfigStore};
 use super::reload;
 
 /// Default poll cadence. Full-fleet convergence is ≤ one interval when the
@@ -117,8 +117,8 @@ pub struct ApplyTargets {
 /// Spawn the shared-store config watcher. Exits when the last strong
 /// reference to `cfg` is dropped.
 ///
-/// `nudge` (N2) is the optional config-plane pub/sub bus. When wired, the
-/// loop subscribes to [`CONFIG_BUMP_CHANNEL`] and re-polls the instant a
+/// `nudge` (N2) is the optional config-plane [`ConfigWatch`]. When wired,
+/// the loop subscribes via [`ConfigWatch::watch`] and re-reads the instant a
 /// peer (or this node) activates a new version, so convergence drops from
 /// ≤`poll_interval` to ~ms. `None` ⇒ pure interval polling (single-node /
 /// in-memory / nudge disabled).
@@ -133,7 +133,7 @@ pub fn spawn_watcher(
     bus: AuditBus,
     targets: ApplyTargets,
     poll_interval: Duration,
-    nudge: Option<Arc<dyn FleetBus>>,
+    nudge: Option<Arc<dyn ConfigWatch>>,
     config_store_degraded: Arc<AtomicBool>,
     marker_path: Option<PathBuf>,
 ) -> tokio::task::JoinHandle<()> {
@@ -163,7 +163,7 @@ async fn watch_loop(
     bus: AuditBus,
     targets: ApplyTargets,
     poll_interval: Duration,
-    nudge: Option<Arc<dyn FleetBus>>,
+    nudge: Option<Arc<dyn ConfigWatch>>,
     // 2026-06-18 (runtime-config-lost-on-redis-data-loss report) — set true
     // when the store comes back empty after we'd applied a version (Redis
     // data loss → silent revert to file baseline). Reported on /healthz/ready.
@@ -185,9 +185,7 @@ async fn watch_loop(
     // N2 — subscribe to the config bump channel so an activate anywhere in
     // the fleet (incl. our own writes) wakes this loop immediately. The
     // poll below is the loss-tolerant backstop.
-    let mut bump_rx = nudge
-        .as_ref()
-        .map(|b| b.subscribe(CONFIG_BUMP_CHANNEL, NUDGE_CHANNEL_BOUND));
+    let mut bump_rx = nudge.as_ref().map(|w| w.watch(NUDGE_CHANNEL_BOUND));
 
     tracing::info!(
         node_id = %node_id,
