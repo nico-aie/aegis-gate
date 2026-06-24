@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use aegis_core::audit::AuditEvent;
+use aegis_core::state::StateBackend;
 use serde::Serialize;
 
 /// Rolling window for the request rate KPI on the Overview page.
@@ -155,6 +156,13 @@ struct AggregatorState {
 pub struct StatsAggregator {
     inner: Arc<Mutex<AggregatorState>>,
     risk_threshold: u32,
+    /// 2026-06-24 — durable-store handle for the interim Redis durability
+    /// bridge (`redis-interim-durability` P3): persists the small monotone
+    /// lifetime counters (`blocks_total`, …) to `control:waf:stats:counters`
+    /// so the Overview top-line survives a restart. `None` on the no-Redis
+    /// path. A0 only stores the handle (inert); the separate interval flush
+    /// task + boot reload that read it land in A3.
+    backend: Option<Arc<dyn StateBackend>>,
 }
 
 impl StatsAggregator {
@@ -163,9 +171,21 @@ impl StatsAggregator {
     }
 
     pub fn with_risk_threshold(risk_threshold: u32) -> Self {
+        Self::build(risk_threshold, None)
+    }
+
+    /// Build an aggregator with an optional durable backend. Pass
+    /// `Some(..)` (under `#[cfg(feature = "redis")]`) to enable P3 counter
+    /// durability; `None` is the in-memory-only path.
+    pub fn with_backend(backend: Option<Arc<dyn StateBackend>>) -> Self {
+        Self::build(DEFAULT_RISK_THRESHOLD, backend)
+    }
+
+    fn build(risk_threshold: u32, backend: Option<Arc<dyn StateBackend>>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(AggregatorState::default())),
             risk_threshold,
+            backend,
         }
     }
 

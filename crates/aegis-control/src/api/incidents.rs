@@ -22,8 +22,9 @@
 //! states whose `snoozed_until` has already passed.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use aegis_core::state::{StateBackend, CONTROL_INCIDENTS_KEY};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -82,9 +83,38 @@ pub fn alert_id(a: &SloAlert) -> String {
     format!("{:?}-{}h:{}", a.sli, a.window_hours, a.fired_at.timestamp())
 }
 
+/// Durable write of one incident overlay (field = `alert_id`, value =
+/// JSON) to `control:waf:incidents`. Best-effort: an encode or backend
+/// error is logged and swallowed — the operator action already succeeded
+/// in memory, and persistence is strictly subordinate to the live overlay
+/// (durability plan §6).
+async fn persist_to(backend: &Arc<dyn StateBackend>, state: &IncidentState) {
+    let json = match serde_json::to_vec(state) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::warn!(error = %e, id = %state.alert_id, "incident persist: encode failed");
+            return;
+        }
+    };
+    if let Err(e) = backend
+        .hset_multi(CONTROL_INCIDENTS_KEY, &[(state.alert_id.clone(), json)])
+        .await
+    {
+        tracing::warn!(error = %e, id = %state.alert_id, "incident persist: write failed");
+    }
+}
+
 /// In-process incident state.
 pub struct IncidentTracker {
     state: Mutex<HashMap<String, IncidentState>>,
+    /// 2026-06-24 — durable-store handle for the interim Redis durability
+    /// bridge (`redis-interim-durability` P1). `None` on the no-Redis /
+    /// single-node path, which behaves exactly as before. A0 only stores
+    /// the handle (inert); the write-through on ack/snooze/resolve and the
+    /// boot hydrate that read it land in A1. Constructor-injected (unlike
+    /// `RiskTracker`'s setter) because the tracker is built late enough
+    /// (`dashboard_services::spawn_*`) that the backend already exists.
+    backend: Option<Arc<dyn StateBackend>>,
 }
 
 impl Default for IncidentTracker {
@@ -95,8 +125,91 @@ impl Default for IncidentTracker {
 
 impl IncidentTracker {
     pub fn new() -> Self {
+        Self::with_backend(None)
+    }
+
+    /// Build a tracker with an optional durable backend. Pass `Some(..)`
+    /// (under `#[cfg(feature = "redis")]`) to enable P1 durability; `None`
+    /// is the in-memory-only path.
+    pub fn with_backend(backend: Option<Arc<dyn StateBackend>>) -> Self {
         Self {
             state: Mutex::new(HashMap::new()),
+            backend,
+        }
+    }
+
+    // --- 2026-06-24 (redis-interim-durability P1) — durable overlay. ---
+
+    /// Fire-and-forget the durable write for `state` off the operator's
+    /// request path. Spawns only when a backend is attached AND a Tokio
+    /// runtime is live (unit tests without a reactor simply skip — they
+    /// exercise the free `persist_to` helper directly). The operator's HTTP
+    /// response never blocks on Redis.
+    fn spawn_persist(&self, state: IncidentState) {
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        tokio::spawn(async move {
+            persist_to(&backend, &state).await;
+        });
+    }
+
+    /// Boot hydration (P1): load the durable overlay from
+    /// `control:waf:incidents` into the in-memory read cache. Runs once at
+    /// startup before serving. No-op without a backend. A decode failure on
+    /// one field is logged and skipped — one corrupt entry must not block
+    /// the rest of the overlay from loading.
+    pub async fn hydrate(&self) {
+        let Some(backend) = self.backend.as_ref() else {
+            return;
+        };
+        let fields = match backend.hscan(CONTROL_INCIDENTS_KEY).await {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!(error = %e, "incident hydrate: hscan failed");
+                return;
+            }
+        };
+        let mut loaded = 0usize;
+        let mut s = self.state.lock().expect("incident state poisoned");
+        for (id, bytes) in fields {
+            match serde_json::from_slice::<IncidentState>(&bytes) {
+                Ok(state) => {
+                    s.insert(id, state);
+                    loaded += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, field = %id, "incident hydrate: decode skipped")
+                }
+            }
+        }
+        if loaded > 0 {
+            tracing::info!(loaded, "incident overlay hydrated from durable store");
+        }
+    }
+
+    /// Reset hook (sync half) — drop the in-memory overlay. Paired with
+    /// [`unlink_durable`] on `/__waf_control/reset_state` so a reset gives a
+    /// clean incident slate that does not resurrect on the next boot
+    /// (durability plan §4).
+    ///
+    /// [`unlink_durable`]: Self::unlink_durable
+    pub fn clear_local(&self) {
+        self.state.lock().expect("incident state poisoned").clear();
+    }
+
+    /// Reset hook (async half) — `UNLINK` the durable hash. No-op without a
+    /// backend. Swallows-with-log like the other reset cleaners: a backend
+    /// hiccup must not turn a reset into an error.
+    pub async fn unlink_durable(&self) {
+        let Some(backend) = self.backend.as_ref() else {
+            return;
+        };
+        if let Err(e) = backend.unlink(CONTROL_INCIDENTS_KEY).await {
+            tracing::warn!(error = %e, "incident reset: durable unlink failed");
         }
     }
 
@@ -114,7 +227,10 @@ impl IncidentTracker {
         if let Some(n) = note {
             entry.note = Some(n);
         }
-        entry.clone()
+        let snapshot = entry.clone();
+        drop(s);
+        self.spawn_persist(snapshot.clone());
+        snapshot
     }
 
     /// Snooze an alert until `until`. The renderer hides snoozed
@@ -129,7 +245,10 @@ impl IncidentTracker {
         if let Some(n) = note {
             entry.note = Some(n);
         }
-        entry.clone()
+        let snapshot = entry.clone();
+        drop(s);
+        self.spawn_persist(snapshot.clone());
+        snapshot
     }
 
     /// Mark resolved. The SloEngine may still re-fire the alert if
@@ -148,7 +267,10 @@ impl IncidentTracker {
         if let Some(n) = note {
             entry.note = Some(n);
         }
-        entry.clone()
+        let snapshot = entry.clone();
+        drop(s);
+        self.spawn_persist(snapshot.clone());
+        snapshot
     }
 
     /// Look up the overlay for one alert ID. `None` when the
@@ -290,6 +412,175 @@ mod tests {
         let got = t.get(&id).unwrap();
         assert_eq!(got.status, IncidentStatus::Resolved);
         assert!(got.resolved_at.is_some());
+    }
+
+    // ---- 2026-06-24 P1 incident durability (A1) -----------------------
+
+    /// Minimal stateful backend that actually stores hashes, so the durable
+    /// round-trip (persist → hydrate) is deterministic without a live Redis.
+    /// Every non-hash method is an inert default-or-trivial impl.
+    #[derive(Clone, Default)]
+    struct MapHashBackend {
+        hashes: Arc<std::sync::Mutex<HashMap<String, HashMap<String, Vec<u8>>>>>,
+    }
+    #[async_trait::async_trait]
+    impl StateBackend for MapHashBackend {
+        async fn get(&self, _k: &str) -> aegis_core::Result<Option<Vec<u8>>> { Ok(None) }
+        async fn set(&self, _k: &str, _v: &[u8], _t: std::time::Duration) -> aegis_core::Result<()> { Ok(()) }
+        async fn del(&self, _k: &str) -> aegis_core::Result<()> { Ok(()) }
+        async fn incr_window(&self, _k: &str, _w: std::time::Duration, _l: u64) -> aegis_core::Result<aegis_core::SlidingWindowResult> {
+            Ok(aegis_core::SlidingWindowResult { count: 0, allowed: true, retry_after: None })
+        }
+        async fn token_bucket(&self, _k: &str, _r: u32, _b: u32) -> aegis_core::Result<bool> { Ok(true) }
+        async fn get_risk(&self, _k: &aegis_core::risk::RiskKey) -> aegis_core::Result<u32> { Ok(0) }
+        async fn add_risk(&self, _k: &aegis_core::risk::RiskKey, _d: i32, _m: u32) -> aegis_core::Result<u32> { Ok(0) }
+        async fn auto_block(&self, _ip: std::net::IpAddr, _t: std::time::Duration) -> aegis_core::Result<()> { Ok(()) }
+        async fn is_auto_blocked(&self, _ip: std::net::IpAddr) -> aegis_core::Result<bool> { Ok(false) }
+        async fn put_nonce(&self, _n: &str, _t: std::time::Duration) -> aegis_core::Result<bool> { Ok(true) }
+        async fn consume_nonce(&self, _n: &str) -> aegis_core::Result<bool> { Ok(true) }
+        async fn hset_multi(&self, key: &str, fields: &[(String, Vec<u8>)]) -> aegis_core::Result<()> {
+            let mut g = self.hashes.lock().unwrap();
+            let h = g.entry(key.to_string()).or_default();
+            for (f, v) in fields { h.insert(f.clone(), v.clone()); }
+            Ok(())
+        }
+        async fn hdel(&self, key: &str, fields: &[String]) -> aegis_core::Result<()> {
+            if let Some(h) = self.hashes.lock().unwrap().get_mut(key) {
+                for f in fields { h.remove(f); }
+            }
+            Ok(())
+        }
+        async fn hscan(&self, key: &str) -> aegis_core::Result<Vec<(String, Vec<u8>)>> {
+            Ok(self.hashes.lock().unwrap().get(key)
+                .map(|h| h.iter().map(|(f, v)| (f.clone(), v.clone())).collect())
+                .unwrap_or_default())
+        }
+        async fn unlink(&self, key: &str) -> aegis_core::Result<()> {
+            self.hashes.lock().unwrap().remove(key);
+            Ok(())
+        }
+    }
+
+    fn backend() -> Arc<MapHashBackend> {
+        Arc::new(MapHashBackend::default())
+    }
+
+    /// Pump the runtime until `f` is true or the bound is hit. Used to await
+    /// the fire-and-forget `spawn_persist` task deterministically (it runs
+    /// on the same runtime as the test).
+    async fn wait_until<F: Fn() -> bool>(f: F) {
+        for _ in 0..1000 {
+            if f() { return; }
+            tokio::task::yield_now().await;
+        }
+        panic!("condition not met within bound");
+    }
+
+    #[tokio::test]
+    async fn ack_writes_through_to_durable_store() {
+        let be = backend();
+        let t = IncidentTracker::with_backend(Some(be.clone() as Arc<dyn StateBackend>));
+        let a = alert(SliKind::DataPlaneAvailability, 1700000000);
+        let id = alert_id(&a);
+        t.ack(&id, Some("alice".into()), Some("triaging".into()));
+        // The write is fire-and-forget; await it.
+        let beq = be.clone();
+        let idq = id.clone();
+        wait_until(|| {
+            beq.hashes.lock().unwrap()
+                .get(CONTROL_INCIDENTS_KEY)
+                .map(|h| h.contains_key(&idq))
+                .unwrap_or(false)
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn ack_overlay_survives_a_simulated_restart() {
+        // Write through tracker1, then hydrate a fresh tracker2 from the
+        // SAME backend — the ack must reappear (the durability contract).
+        let be = backend();
+        let a = alert(SliKind::DataPlaneAvailability, 1700000001);
+        let id = alert_id(&a);
+        let acked = IncidentState {
+            alert_id: id.clone(),
+            status: IncidentStatus::Acknowledged,
+            acked_at: Some(Utc::now()),
+            acked_by: Some("carol".into()),
+            snoozed_until: None,
+            resolved_at: None,
+            note: Some("owned".into()),
+        };
+        persist_to(&(be.clone() as Arc<dyn StateBackend>), &acked).await;
+
+        let restarted = IncidentTracker::with_backend(Some(be as Arc<dyn StateBackend>));
+        assert!(restarted.get(&id).is_none(), "empty before hydrate");
+        restarted.hydrate().await;
+        let got = restarted.get(&id).expect("overlay rehydrated");
+        assert_eq!(got.status, IncidentStatus::Acknowledged);
+        assert_eq!(got.acked_by.as_deref(), Some("carol"));
+        assert_eq!(got.note.as_deref(), Some("owned"));
+    }
+
+    #[tokio::test]
+    async fn reset_clears_both_in_memory_and_durable() {
+        let be = backend();
+        let t = IncidentTracker::with_backend(Some(be.clone() as Arc<dyn StateBackend>));
+        let a = alert(SliKind::DataPlaneAvailability, 1700000002);
+        let id = alert_id(&a);
+        t.ack(&id, Some("dave".into()), None);
+        let beq = be.clone();
+        let idq = id.clone();
+        wait_until(|| {
+            beq.hashes.lock().unwrap().get(CONTROL_INCIDENTS_KEY)
+                .map(|h| h.contains_key(&idq)).unwrap_or(false)
+        })
+        .await;
+
+        t.clear_local();
+        t.unlink_durable().await;
+        assert!(t.get(&id).is_none(), "in-memory overlay cleared");
+        assert!(
+            be.hashes.lock().unwrap().get(CONTROL_INCIDENTS_KEY).is_none(),
+            "durable hash unlinked"
+        );
+    }
+
+    #[tokio::test]
+    async fn hydrate_skips_corrupt_fields_but_loads_the_rest() {
+        let be = backend();
+        let good = IncidentState {
+            alert_id: "good:1".into(),
+            status: IncidentStatus::Resolved,
+            acked_at: None, acked_by: None, snoozed_until: None,
+            resolved_at: Some(Utc::now()), note: None,
+        };
+        persist_to(&(be.clone() as Arc<dyn StateBackend>), &good).await;
+        // Inject a corrupt field directly.
+        be.hashes.lock().unwrap()
+            .get_mut(CONTROL_INCIDENTS_KEY).unwrap()
+            .insert("bad:2".into(), b"{not json".to_vec());
+
+        let t = IncidentTracker::with_backend(Some(be as Arc<dyn StateBackend>));
+        t.hydrate().await;
+        assert_eq!(t.get("good:1").unwrap().status, IncidentStatus::Resolved);
+        assert!(t.get("bad:2").is_none(), "corrupt field skipped, not fatal");
+    }
+
+    #[tokio::test]
+    async fn no_backend_path_is_unchanged_and_inert() {
+        // Without a backend: mutators still work in memory, and the durable
+        // hooks are harmless no-ops (no panic, nothing to load/clear).
+        let t = IncidentTracker::new();
+        let a = alert(SliKind::DataPlaneAvailability, 1700000003);
+        let id = alert_id(&a);
+        let s = t.ack(&id, Some("erin".into()), None);
+        assert_eq!(s.status, IncidentStatus::Acknowledged);
+        t.hydrate().await; // no-op
+        t.unlink_durable().await; // no-op
+        assert_eq!(t.get(&id).unwrap().acked_by.as_deref(), Some("erin"));
+        t.clear_local();
+        assert!(t.get(&id).is_none());
     }
 
     #[test]
