@@ -1,8 +1,47 @@
 # Config source-of-truth: Redis → etcd — durable config plane on a real KV/watch store
 
-**Status:** Designed · prerequisites SHIPPED · build gated behind a default-off
-cargo feature (constraint-respecting). Not yet scheduled for cutover.
-**Filed:** 2026-06-20 · **Updated:** 2026-06-24
+**Status:** P1 + P2 SHIPPED (config plane) behind the default-off `etcd_config`
+cargo feature; runtime `config_plane.store: shared_state | etcd` wired
+end-to-end. Remaining: control-plane retarget + one-shot migration tool +
+shadow-soak + docs.
+**Filed:** 2026-06-20 · **Updated:** 2026-06-25
+
+## Shipped status (2026-06-25)
+
+Landed on `feat/config-h2b-p1-config-backend-trait` (commits 45e73dc, b5590d1,
+9459ca0, 87bb881):
+
+- **P1 (config plane)** — extracted the narrow `ConfigBackend` + `ConfigWatch`
+  seam (`aegis-core::config_backend`) out of `StateBackend`/`FleetBus` as
+  **sibling traits** (not a supertrait — that would churn ~30 `StateBackend`
+  impls). `SharedStateConfigBackend` / `FleetBusConfigWatch` adapters make
+  `shared_state` ride the existing backend 1:1. `ConfigStore` + the config
+  watcher retargeted; `ConfigStore::new(Arc<dyn StateBackend>)` kept its
+  signature (wraps internally) so all ~15 call sites are unchanged.
+  Control plane (`cluster_sync`) deliberately stays on `StateBackend` — its
+  `reset_epoch` counter ops don't fit the narrow durable-KV trait; the
+  control-plane retarget moves to P3 with the counter audit.
+- **P2a** — `config_plane.store: shared_state | etcd` (default `shared_state`)
+  + `config_plane.etcd.endpoints` block + validation (etcd needs ≥1 endpoint).
+- **P2b** — `EtcdConfigBackend` + `EtcdConfigWatch` over native etcd v3 gRPC
+  (`etcd-client` KV/Txn/Watch/Lease): `cas_set`→Txn Compare, per-node ACK
+  `put_ttl`→lease, `scan_prefix`→prefix range, native Watch on `config:waf:doc`
+  (so `notify_change` is a no-op). 8 integration tests, gated on
+  `AEGIS_ETCD_TEST_ENDPOINTS`, green against etcd v3.5.16.
+- **P2c** — boot selection (`config_source::plane_select`) + loud feature
+  guard; the watcher AND the write handlers (`services.config_backend`) ride
+  the selected backend so reads/writes never split. Verified end-to-end: a
+  real `waf run` with `store: etcd` seeded `config:waf:doc` (v1, dynamic-only),
+  `config:waf:v:1`, and a lease-backed `config:waf:applied:<node>` into etcd.
+
+**Deviations from this plan, by necessity:**
+- Feature is named **`etcd_config`**, NOT `etcd`: the `etcd` cargo feature was
+  already taken by the etcd *service-discovery* REST poller (`sd::etcd`), which
+  does NOT pull the gRPC client. `etcd_config` pulls `etcd-client` (native
+  Watch/Txn/Lease).
+- The `etcd_config` build requires **`protoc`** at build time (standard for
+  gRPC crates; `etcd-client`'s build script compiles the etcd protobufs).
+  Same class of requirement as "redis tests need a running Redis."
 **Origin:** Resource-constrained hackathon shortcut — Redis was reused as the
 config store to avoid a second infra dependency. This plan revisits that once
 the constraint lifts.
@@ -208,15 +247,22 @@ stays on Redis — audit during P3.)
 
 ## Acceptance gates
 
-- [ ] P1: config + control planes compile and pass against the new traits with
-      Redis still backing them; apply-helper structural guard test
-      (`redis_source.rs:631-665`) unchanged and green.
-- [ ] etcd `txn_compare_and_set` returns `Conflict` on a stale expected-version
-      (parity with the Lua CAS 409 path) — deterministic unit test.
-- [ ] etcd Watch delivers a config change to a peer node without relying on the
-      poll fallback — integration test with the heartbeat poll disabled.
-- [ ] Per-node ACK key vanishes on node loss via lease expiry (no manual TTL).
+- [x] P1: **config** plane compiles + passes against the new traits with Redis
+      still backing it; apply-helper structural guard test (now
+      `redis_source.rs` ~843-877) unchanged and green. (Control plane retarget
+      deferred to P3 — see Shipped status.)
+- [x] etcd `cas_set` returns `Conflict`/`false` on a stale expected-version
+      (parity with the Lua CAS 409 path) — deterministic integration test
+      (`cas_set_value_guard_swaps_then_conflicts_on_stale`).
+- [x] etcd Watch delivers a config change without relying on the poll fallback
+      — integration test asserts delivery inside 1.5 s (well under the 3 s
+      poll) (`watch_delivers_a_change_event_without_polling`).
+- [x] Per-node ACK key vanishes via lease expiry, no manual del
+      (`put_ttl_value_is_readable_then_expires`); end-to-end boot showed the
+      ACK key carrying a non-zero etcd lease.
 - [ ] P2 shadow mode: 24 h soak with zero Redis-vs-etcd config divergence.
+      (Shadow / dual-read mode not yet built — P2c wired a direct cutover, not
+      a shadow comparator.)
 - [ ] P3 migration copies the active doc + all version snapshots + control-plane
       keys, and the fleet converges to the same active version post-cutover.
 
