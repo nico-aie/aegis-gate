@@ -7556,8 +7556,11 @@ state:
         use std::sync::Arc;
 
         // One shared backend = one shared config plane across both nodes.
-        let backend: Arc<dyn aegis_core::state::StateBackend> =
-            Arc::new(InMemoryBackend::new());
+        // H2b — the control plane rides the ConfigBackend seam.
+        let backend: Arc<dyn aegis_core::config_backend::ConfigBackend> =
+            aegis_core::config_backend::SharedStateConfigBackend::arc(Arc::new(
+                InMemoryBackend::new(),
+            ));
 
         // Node A's interop runtime, cluster-wired (as `run` does post-boot
         // for Redis deployments via `set_cluster_state`).

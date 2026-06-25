@@ -33,7 +33,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use etcd_client::{Client, Compare, CompareOp, GetOptions, PutOptions, Txn, TxnOp};
+use etcd_client::{Client, Compare, CompareOp, GetOptions, PutOptions, Txn, TxnOp, WatchOptions};
 use tokio::sync::mpsc;
 
 use aegis_core::config_backend::{ConfigBackend, ConfigWatch};
@@ -80,14 +80,26 @@ impl EtcdConfigBackend {
         Arc::new(self)
     }
 
-    /// A [`ConfigWatch`] handle sharing this backend's connection. Watches
-    /// the active-doc key so an activation anywhere in the fleet wakes the
-    /// local watcher natively (no poll). Erased to `Arc<dyn ConfigWatch>`
-    /// for the watcher wiring.
+    /// A [`ConfigWatch`] handle (sharing this backend's connection) over the
+    /// active-doc key — an activation anywhere in the fleet wakes the local
+    /// config watcher natively (no poll). For the config plane.
     pub fn config_watch(&self) -> Arc<dyn ConfigWatch> {
         Arc::new(EtcdConfigWatch {
             client: self.client.clone(),
             key: DOC_KEY.to_string(),
+            prefix: false,
+        })
+    }
+
+    /// A [`ConfigWatch`] handle over a key *prefix* (etcd `Watch` with
+    /// `WithPrefix`). The control plane uses this on `control:waf:` so any
+    /// of its keys (modes / reset_epoch / access-lists) changing wakes the
+    /// poller natively — the multi-key analogue of [`Self::config_watch`].
+    pub fn watch_prefix(&self, prefix: impl Into<String>) -> Arc<dyn ConfigWatch> {
+        Arc::new(EtcdConfigWatch {
+            client: self.client.clone(),
+            key: prefix.into(),
+            prefix: true,
         })
     }
 }
@@ -204,7 +216,11 @@ impl ConfigBackend for EtcdConfigBackend {
 #[derive(Clone)]
 pub struct EtcdConfigWatch {
     client: Client,
+    /// The key (exact) or prefix to watch — see `prefix`.
     key: String,
+    /// `true` ⇒ watch every key under `key` as a prefix (`WithPrefix`);
+    /// `false` ⇒ watch the single exact key.
+    prefix: bool,
 }
 
 /// How long the watch-forwarder backs off before re-establishing a dropped
@@ -222,11 +238,17 @@ impl ConfigWatch for EtcdConfigWatch {
         let (tx, rx) = mpsc::channel::<Vec<u8>>(bound.max(1));
         let mut client = self.client.clone();
         let key = self.key.clone();
+        let watch_prefix = self.prefix;
         tokio::spawn(async move {
             // Reconnect loop: a watch stream can end on a transport blip; the
             // config watcher's poll covers any window, so we just re-establish.
             loop {
-                let watched = client.watch(key.as_str(), None).await;
+                let opts = if watch_prefix {
+                    Some(WatchOptions::new().with_prefix())
+                } else {
+                    None
+                };
+                let watched = client.watch(key.as_str(), opts).await;
                 let (_watcher, mut stream) = match watched {
                     Ok(pair) => pair,
                     Err(e) => {
@@ -440,5 +462,28 @@ mod tests {
         let Some(b) = backend().await else { return };
         // Must not panic / error — the etcd Put is the notification.
         b.config_watch().notify_change().await;
+    }
+
+    #[tokio::test]
+    async fn watch_prefix_delivers_on_any_key_under_the_prefix() {
+        let Some(b) = backend().await else { return };
+        // Unique control-like prefix so the watch only sees our write.
+        let prefix = unique_prefix("ctrl-watch");
+        let watch = b.watch_prefix(prefix.clone());
+        let mut rx = watch.watch(8);
+
+        // Let the prefix watch establish.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Write a key UNDER the prefix (e.g. a modes-like key).
+        let key = format!("{prefix}modes");
+        assert!(b.cas_set(&key, None, b"{}", None).await.unwrap());
+
+        // The prefix watch must deliver inside the would-be poll interval.
+        let got = tokio::time::timeout(Duration::from_millis(1500), rx.recv()).await;
+        assert!(
+            matches!(got, Ok(Some(_))),
+            "watch_prefix must fire on a change to any key under the prefix",
+        );
     }
 }

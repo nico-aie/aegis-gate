@@ -25,12 +25,17 @@ use aegis_core::config_backend::{ConfigBackend, ConfigWatch, SharedStateConfigBa
 use aegis_core::error::Result;
 use aegis_core::state::StateBackend;
 
-/// The selected config plane: the durable backend, an optional native watch
-/// (etcd only — `None` means "use the existing nudge bus"), and a one-line
-/// boot-log summary.
+/// The selected config plane: the durable backend, optional native watches
+/// for the config + control planes (etcd only — `None` means "use the
+/// existing pub/sub nudge bus"), and a one-line boot-log summary.
 pub struct ConfigPlaneSelection {
     pub backend: Arc<dyn ConfigBackend>,
-    pub watch: Option<Arc<dyn ConfigWatch>>,
+    /// Native watch over `config:waf:doc` (etcd). `None` ⇒ shared_state, the
+    /// config watcher keeps the Redis pub/sub config nudge.
+    pub config_watch: Option<Arc<dyn ConfigWatch>>,
+    /// Native watch over the `control:waf:` prefix (etcd). `None` ⇒
+    /// shared_state, the control poller keeps the Redis pub/sub control nudge.
+    pub control_watch: Option<Arc<dyn ConfigWatch>>,
     pub summary: String,
 }
 
@@ -43,7 +48,8 @@ pub async fn select(
     match cfg.config_plane.store {
         ConfigPlaneStore::SharedState => Ok(ConfigPlaneSelection {
             backend: SharedStateConfigBackend::arc(state),
-            watch: None,
+            config_watch: None,
+            control_watch: None,
             summary: "shared_state (config doc rides state.backend)".to_string(),
         }),
         ConfigPlaneStore::Etcd => select_etcd(cfg).await,
@@ -64,11 +70,16 @@ async fn select_etcd(cfg: &WafConfig) -> Result<ConfigPlaneSelection> {
         .map(|e| e.endpoints.clone())
         .unwrap_or_default();
     let etcd = EtcdConfigBackend::connect(&endpoints).await?;
-    let watch = etcd.config_watch();
+    let config_watch = etcd.config_watch();
+    // Control plane watches the whole `control:waf:` prefix (modes /
+    // reset_epoch / access-lists), not a single doc key.
+    let control_watch =
+        etcd.watch_prefix(aegis_control::interop::cluster_sync::CONTROL_KEY_PREFIX);
     let summary = format!("etcd @ {} (native KV/Txn/Watch/Lease)", endpoints.join(","));
     Ok(ConfigPlaneSelection {
         backend: etcd.into_backend(),
-        watch: Some(watch),
+        config_watch: Some(config_watch),
+        control_watch: Some(control_watch),
         summary,
     })
 }
@@ -104,7 +115,10 @@ mod tests {
         let cfg = cfg_with_store("");
         let state: Arc<dyn StateBackend> = Arc::new(InMemoryBackend::new());
         let sel = select(&cfg, state).await.unwrap();
-        assert!(sel.watch.is_none(), "shared_state reuses the pub/sub nudge");
+        assert!(
+            sel.config_watch.is_none() && sel.control_watch.is_none(),
+            "shared_state reuses the pub/sub nudges",
+        );
         assert!(sel.summary.contains("shared_state"));
         // The selected backend is usable (a CAS write round-trips through the
         // wrapped state backend).

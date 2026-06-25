@@ -1652,8 +1652,12 @@ mod tests {
         use http_body_util::Full;
         use std::sync::Arc;
 
-        let backend: Arc<dyn aegis_core::state::StateBackend> =
-            Arc::new(crate::state::in_memory::InMemoryBackend::new());
+        // H2b — the control plane rides the ConfigBackend seam; wrap an
+        // in-memory state backend (shared_state) for the test.
+        let backend: Arc<dyn aegis_core::config_backend::ConfigBackend> =
+            aegis_core::config_backend::SharedStateConfigBackend::arc(Arc::new(
+                crate::state::in_memory::InMemoryBackend::new(),
+            ));
 
         let cfg = aegis_core::load_config_str(concat!(
             "listeners:\n  data: [{ bind: \"0.0.0.0:443\" }]\n",
