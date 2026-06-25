@@ -59,6 +59,16 @@ consul = ["dep:reqwest"]
 # optional `_USER` / `_PASSWORD` / `_CA_CERT_PATH` /
 # `_CLIENT_CERT_PATH` / `_CLIENT_KEY_PATH` for auth + mTLS).
 etcd = ["dep:reqwest", "dep:base64"]
+# `etcd_config` (H2b P2) — the durable CONFIG-PLANE etcd backend
+# (`config_source::etcd_backend`): native etcd v3 gRPC (KV / Txn /
+# Watch / Lease) via `etcd-client`, implementing the narrow
+# `aegis_core::ConfigBackend` + `ConfigWatch` seam so the config doc can
+# live in etcd (`config_plane.store: etcd`). DISTINCT from the `etcd`
+# feature above, which is the etcd *service-discovery* REST poller — this
+# one is the config store and uses the gRPC client for first-class
+# Watch/Txn/Lease (no poll). Default off: the shipped binary keeps the
+# single Redis dependency.
+etcd_config = ["dep:etcd-client"]
 # `k8s` enables a Kubernetes EndpointSlice watcher
 # (`sd::k8s::watch`). REST + streaming JSON lines via reqwest;
 # auto-detects in-cluster service-account creds. Env-driven
@@ -141,6 +151,9 @@ aws-sdk-secretsmanager = { workspace = true, optional = true }
 # Optional — gated by the `gcp` feature.
 gcp_auth = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
+
+# Optional — gated by the `etcd_config` feature (H2b config-plane backend).
+etcd-client = { workspace = true, optional = true }
 
 # Optional — gated by the `http3` feature.
 quinn = { workspace = true, optional = true }

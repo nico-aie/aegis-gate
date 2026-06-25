@@ -131,14 +131,25 @@ pub struct DashboardServices {
     /// (the SSE live feed is already fleet-wide; only the reload
     /// backfill was node-local). See [`crate::metrics::fleet_audit`].
     pub fleet_audit_cache: Option<crate::metrics::fleet_audit::FleetAuditCache>,
-    /// N2 (2026-06-11) — config-plane nudge bus. `None` for single-node /
-    /// cluster-off / nudge-disabled; `Some` when `aegis-proxy::run` wires
-    /// the Redis pub/sub bus. The audit-mutated config write handlers
-    /// (`/api/config`, detectors, rules, tiers, upstreams) attach it to
-    /// their per-request [`crate::...`]`ConfigStore` so a successful
-    /// activate publishes a `config:waf:bump`, waking every node's watcher
-    /// (incl. this one) for ~ms convergence instead of a poll-tick wait.
-    pub config_nudge: Option<Arc<dyn aegis_core::fleet::FleetBus>>,
+    /// N2 (2026-06-11) — config-plane change-notification seam. `None` for
+    /// single-node / cluster-off / nudge-disabled; `Some` when
+    /// `aegis-proxy::run` wires the Redis pub/sub bus (as a
+    /// [`aegis_core::config_backend::FleetBusConfigWatch`]). The
+    /// audit-mutated config write handlers (`/api/config`, detectors, rules,
+    /// tiers, upstreams) attach it to their per-request `ConfigStore` so a
+    /// successful activate fires a change notification, waking every node's
+    /// watcher (incl. this one) for ~ms convergence instead of a poll-tick
+    /// wait. H2b — the narrow [`aegis_core::config_backend::ConfigWatch`]
+    /// seam (was `FleetBus`) so the etcd config plane can supply a native
+    /// watch.
+    pub config_nudge: Option<Arc<dyn aegis_core::config_backend::ConfigWatch>>,
+    /// H2b — the durable config-plane backend (etcd or shared_state) selected
+    /// from `config_plane.store`. `Some` once `aegis-proxy::run` wires it; the
+    /// audit-mutated config write handlers build their `ConfigStore` from this
+    /// so activations land on the SAME store the convergence watcher reads. If
+    /// `None` (test bundles), handlers fall back to `state_backend`
+    /// (shared_state).
+    pub config_backend: Option<Arc<dyn aegis_core::config_backend::ConfigBackend>>,
     /// Live leaderless cluster-roster view. `None` for single-node /
     /// test builds; `Some` when `aegis-proxy::run` wires the
     /// `members:*` roster-poll background task. See
@@ -649,6 +660,7 @@ impl DashboardServices {
                 // N2 config-plane nudge — opted in by `aegis-proxy::run`
                 // alongside the fleet caches (Redis + cluster.pubsub_nudge).
                 config_nudge: None,
+                config_backend: None,
                 roster_view,
                 // Interop contract is opted in by the bin
                 // crate after construction (see

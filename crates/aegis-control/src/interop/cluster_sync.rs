@@ -8,19 +8,21 @@
 //! the other N-1 nodes stayed warm. Behind a load balancer that breaks
 //! the determinism contract (§2.4/§2.5).
 //!
-//! This module converges both through the shared `StateBackend` (the
-//! same Redis the data/state plane already shares), with no new
-//! transport:
+//! This module converges both through the durable [`ConfigBackend`] seam
+//! (H2b — the same store the config doc rides: Redis under `shared_state`,
+//! etcd under `config_plane.store: etcd`), with no new transport:
 //!
 //! - **Modes** ride a single versioned doc at [`MODES_KEY`]: a
 //!   generation counter embedded in the JSON, written with `cas_set`
 //!   (persistent — no TTL). A node that changes modes publishes the
 //!   new snapshot; every node polls the key and applies the snapshot
 //!   to its local `ModeStore` when the generation advances.
-//! - **`reset_state`** bumps the [`RESET_EPOCH_KEY`] counter
-//!   (`incrby`). Each node polls it and runs its *local* reset chain
-//!   when the epoch advances — the shared-backend wipe already fanned
-//!   out fleet-wide, so peers only need to flush in-process trackers.
+//! - **`reset_state`** bumps the [`RESET_EPOCH_KEY`] counter via a
+//!   **CAS-counter** (read decimal → `cas_set` to +1, retry on conflict —
+//!   so it works on the narrow seam without a backend `incrby`). Each node
+//!   polls it and runs its *local* reset chain when the epoch advances — the
+//!   shared-backend wipe already fanned out fleet-wide, so peers only need to
+//!   flush in-process trackers.
 //!
 //! Best-effort by design: a backend hiccup logs and is swallowed so a
 //! control call never turns into a 500. Single-node / in-memory
@@ -31,10 +33,15 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use aegis_core::state::StateBackend;
+use aegis_core::config_backend::ConfigBackend;
 
 use super::headers::Mode;
 use super::mode::ModeSnapshot;
+
+/// Common key prefix for the durable control plane (modes / reset_epoch /
+/// access-lists). H2b — the etcd config-plane watch subscribes to this prefix
+/// so any control-plane key changing wakes the poller natively.
+pub const CONTROL_KEY_PREFIX: &str = "control:waf:";
 
 /// Persistent doc holding the fleet-wide interop mode map + its
 /// monotonic generation.
@@ -117,7 +124,7 @@ impl ClusterModeDoc {
 
 /// Read the current published modes doc, if any. `None` when the key
 /// is absent or unreadable/corrupt (the caller keeps its local view).
-pub async fn read_modes(state: &Arc<dyn StateBackend>) -> Option<ClusterModeDoc> {
+pub async fn read_modes(state: &Arc<dyn ConfigBackend>) -> Option<ClusterModeDoc> {
     match state.get(MODES_KEY).await {
         Ok(Some(bytes)) => match serde_json::from_slice::<ClusterModeDoc>(&bytes) {
             Ok(doc) => Some(doc),
@@ -138,7 +145,7 @@ pub async fn read_modes(state: &Arc<dyn StateBackend>) -> Option<ClusterModeDoc>
 /// compute `generation + 1` and `cas_set`s it (one retry on a
 /// concurrent-writer conflict). Best-effort: returns the published
 /// generation on success, `None` on any backend error.
-pub async fn publish_modes(state: &Arc<dyn StateBackend>, snap: &ModeSnapshot) -> Option<u64> {
+pub async fn publish_modes(state: &Arc<dyn ConfigBackend>, snap: &ModeSnapshot) -> Option<u64> {
     for _ in 0..2 {
         let current = state.get(MODES_KEY).await.ok().flatten();
         let cur_gen = current
@@ -172,19 +179,49 @@ pub async fn publish_modes(state: &Arc<dyn StateBackend>, snap: &ModeSnapshot) -
 /// Bump the cluster reset epoch. Returns the new epoch, or `None` on a
 /// backend error. Peers run their local reset chain when they observe
 /// the increase.
-pub async fn publish_reset_epoch(state: &Arc<dyn StateBackend>) -> Option<u64> {
-    match state.incrby(RESET_EPOCH_KEY, 1).await {
-        Ok(epoch) => Some(epoch),
-        Err(e) => {
-            tracing::debug!(error = %e, "cluster reset-epoch publish failed");
-            None
+///
+/// H2b — implemented as a **CAS-counter** on the narrow [`ConfigBackend`]
+/// seam (read decimal → `cas_set` to +1, retry on conflict) rather than a
+/// backend `incrby`, so the control plane needs no counter primitive and can
+/// live in etcd as well as Redis. The epoch only needs to be *monotonic*
+/// (peers act on any advance), and a CAS retry still advances on every reset,
+/// so the semantics match the old `INCR`. The on-disk form is the same
+/// decimal string `INCR` produced, so an existing Redis epoch is read/written
+/// unchanged across the upgrade.
+pub async fn publish_reset_epoch(state: &Arc<dyn ConfigBackend>) -> Option<u64> {
+    for _ in 0..5 {
+        let current = state.get(RESET_EPOCH_KEY).await.ok().flatten();
+        let cur = decode_epoch(current.as_deref());
+        let next = cur + 1;
+        let bytes = next.to_string().into_bytes();
+        match state
+            .cas_set(RESET_EPOCH_KEY, current.as_deref(), &bytes, None)
+            .await
+        {
+            Ok(true) => return Some(next),
+            Ok(false) => continue, // lost the race — re-read and retry
+            Err(e) => {
+                tracing::debug!(error = %e, "cluster reset-epoch publish failed");
+                return None;
+            }
         }
     }
+    None
 }
 
-/// Read the current reset epoch (absent/error → 0).
-pub async fn read_reset_epoch(state: &Arc<dyn StateBackend>) -> u64 {
-    state.get_counter(RESET_EPOCH_KEY).await.unwrap_or(0)
+/// Read the current reset epoch (absent/unparseable → 0).
+pub async fn read_reset_epoch(state: &Arc<dyn ConfigBackend>) -> u64 {
+    decode_epoch(state.get(RESET_EPOCH_KEY).await.ok().flatten().as_deref())
+}
+
+/// Decode the reset-epoch value: a decimal-string `u64` (the form both the
+/// CAS-counter and the legacy Redis `INCR` write). Absent / non-UTF-8 /
+/// unparseable ⇒ 0.
+fn decode_epoch(bytes: Option<&[u8]>) -> u64 {
+    bytes
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -224,7 +261,7 @@ pub struct ClusterAccessListDoc {
 /// Read the published doc for `label`, or `None` when the key is absent
 /// or unparseable (the caller keeps its local view).
 pub async fn read_access_list(
-    state: &Arc<dyn StateBackend>,
+    state: &Arc<dyn ConfigBackend>,
     label: &str,
 ) -> Option<ClusterAccessListDoc> {
     let key = access_list_key(label);
@@ -251,7 +288,7 @@ pub async fn read_access_list(
 /// returns the new generation, or `None` on a backend error / lost race
 /// after retries.
 async fn publish_access_list_mutation<F>(
-    state: &Arc<dyn StateBackend>,
+    state: &Arc<dyn ConfigBackend>,
     label: &str,
     mutate: F,
 ) -> Option<u64>
@@ -293,7 +330,7 @@ where
 /// Publish an upsert of `entry` (insert, or replace the entry with the
 /// same id) into the converged list.
 pub async fn publish_access_list_upsert(
-    state: &Arc<dyn StateBackend>,
+    state: &Arc<dyn ConfigBackend>,
     label: &str,
     entry: &AccessListEntry,
 ) -> Option<u64> {
@@ -309,7 +346,7 @@ pub async fn publish_access_list_upsert(
 
 /// Publish a removal of the entry with `id` from the converged list.
 pub async fn publish_access_list_remove(
-    state: &Arc<dyn StateBackend>,
+    state: &Arc<dyn ConfigBackend>,
     label: &str,
     id: &str,
 ) -> Option<u64> {

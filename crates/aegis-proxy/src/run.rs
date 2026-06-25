@@ -1322,6 +1322,36 @@ pub async fn run(
         }
     };
 
+    // H2b (2026-06-24) — wrap the config-nudge `FleetBus` in the narrow
+    // [`ConfigWatch`] seam (the `config:waf:bump` channel baked in) so both
+    // the watcher (subscribe side) and the write handlers via
+    // `services.config_nudge` (notify side) talk to the abstraction the etcd
+    // config plane will supply natively (P2), not Redis pub/sub directly.
+    let fleet_config_nudge: Option<std::sync::Arc<dyn aegis_core::config_backend::ConfigWatch>> =
+        config_nudge_bus.map(|bus| {
+            aegis_core::config_backend::FleetBusConfigWatch::arc(
+                bus,
+                crate::config_source::config_store::CONFIG_BUMP_CHANNEL,
+            )
+        });
+
+    // H2b P2c — select the durable config-plane store from
+    // `config_plane.store`. `shared_state` (default) wraps the data-plane
+    // `state` backend (zero change); `etcd` connects a dedicated
+    // EtcdConfigBackend + its native watch. A loud boot error fires here if
+    // `store: etcd` is set on a binary built without the `etcd_config`
+    // feature. The whole config plane — the convergence watcher AND the
+    // audit-mutated write handlers (via `services.config_backend`) — rides
+    // the selected backend, so reads and writes never split across stores.
+    let config_plane =
+        crate::config_source::plane_select::select(&cfg, state.clone()).await?;
+    tracing::info!(store = %config_plane.summary, "config plane store selected");
+    let config_backend = config_plane.backend.clone();
+    // etcd supplies its own native watch (notify_change is then a no-op — the
+    // KV put IS the notification); shared_state reuses the pub/sub nudge.
+    let config_nudge: Option<std::sync::Arc<dyn aegis_core::config_backend::ConfigWatch>> =
+        config_plane.config_watch.clone().or(fleet_config_nudge);
+
     // 2026-05-27 — shared-store config watcher (multi-node config
     // plane). INDEPENDENT of the boot config source above: it watches
     // the versioned `config:waf:doc` in the runtime `StateBackend` so a
@@ -1353,7 +1383,11 @@ pub async fn run(
     };
     {
         let node_id = lease_store.self_id().to_string();
-        let store = crate::config_source::config_store::ConfigStore::new(state.clone());
+        // H2b — the watcher reads/seeds the SELECTED config backend (etcd when
+        // `config_plane.store: etcd`, else the shared state backend).
+        let store = crate::config_source::config_store::ConfigStore::with_config_backend(
+            config_backend.clone(),
+        );
         let targets = crate::config_source::redis_source::ApplyTargets {
             detector_mask: Some(mask.clone()),
             proxy_ctx: Some(upstream_ctx.clone()),
@@ -1442,7 +1476,7 @@ pub async fn run(
             bus.clone(),
             targets,
             crate::config_source::redis_source::DEFAULT_POLL,
-            config_nudge_bus.clone(),
+            config_nudge.clone(),
             readiness.config_store_degraded.clone(),
             config_marker_path,
         ));
@@ -1657,13 +1691,23 @@ pub async fn run(
         // so publish + poll are no-ops and the legacy node-local
         // behaviour is preserved.
         if matches!(cfg.state.backend, aegis_core::config::StateBackendKind::Redis) {
-            rt.control.set_cluster_state(std::sync::Arc::clone(&state));
-            // Phase 5 (§3) — optional pub/sub state nudge. Built BEFORE
-            // spawn_poller so the poller picks up the bus via
-            // `rt.control.cluster_nudge()`. Gated on cluster.pubsub_nudge
-            // + the `redis` feature; degrades to interval-only polling
-            // when off / unbuilt.
-            if cfg.cluster.pubsub_nudge {
+            // H2b — the control plane rides the SELECTED config backend (etcd
+            // when `config_plane.store: etcd`, else the shared state backend),
+            // so config + control converge on the same store.
+            rt.control.set_cluster_state(config_backend.clone());
+            // Phase 5 (§3) — control-plane change-notification nudge. Built
+            // BEFORE spawn_poller so the poller picks it up via
+            // `rt.control.cluster_nudge()`. Prefer the etcd native
+            // control-prefix watch; otherwise the Redis pub/sub bus
+            // (`control:waf:bump`) when `cluster.pubsub_nudge` + the `redis`
+            // feature. Degrades to interval-only polling when neither is set.
+            if let Some(control_watch) = config_plane.control_watch.clone() {
+                rt.control.set_cluster_nudge(control_watch);
+                tracing::info!(
+                    "interop: etcd native control-plane watch enabled \
+                     (control:waf: prefix → immediate re-poll)"
+                );
+            } else if cfg.cluster.pubsub_nudge {
                 #[cfg(feature = "redis")]
                 {
                     if let Some(url) =
@@ -1671,7 +1715,13 @@ pub async fn run(
                     {
                         match crate::state::RedisFleetBus::connect(url) {
                             Ok(bus) => {
-                                rt.control.set_cluster_nudge(std::sync::Arc::new(bus));
+                                // Wrap the Redis pub/sub bus as the narrow
+                                // ConfigWatch on the control bump channel.
+                                let watch = aegis_core::config_backend::FleetBusConfigWatch::arc(
+                                    std::sync::Arc::new(bus),
+                                    aegis_control::interop::cluster_sync::CONTROL_BUMP_CHANNEL,
+                                );
+                                rt.control.set_cluster_nudge(watch);
                                 tracing::info!(
                                     "interop: pub/sub state nudge enabled \
                                      (control:waf:bump → immediate re-poll)"
@@ -1693,7 +1743,7 @@ pub async fn run(
             }
             crate::cluster_control::spawn_poller(
                 std::sync::Arc::clone(rt),
-                std::sync::Arc::clone(&state),
+                config_backend.clone(),
                 vec![
                     crate::cluster_control::AccessListTarget {
                         label: "blacklist",
@@ -2128,7 +2178,11 @@ pub async fn run(
         config_yaml_path.clone(),
         tier_store,
         rule_store,
-        config_nudge_bus,
+        config_nudge,
+        // H2b — the selected config backend (etcd or shared_state) so the
+        // audit-mutated write handlers activate versions on the SAME store the
+        // watcher reads, never splitting reads and writes across stores.
+        config_backend,
         shared_receivers,
     )));
 
