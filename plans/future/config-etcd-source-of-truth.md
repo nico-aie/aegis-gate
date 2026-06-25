@@ -1,9 +1,10 @@
 # Config source-of-truth: Redis → etcd — durable config plane on a real KV/watch store
 
-**Status:** P1 + P2 SHIPPED (config plane) behind the default-off `etcd_config`
-cargo feature; runtime `config_plane.store: shared_state | etcd` wired
-end-to-end. Remaining: control-plane retarget + one-shot migration tool +
-shadow-soak + docs.
+**Status:** P1 + P2 + P3 SHIPPED behind the default-off `etcd_config` cargo
+feature. Both config AND control planes ride the `ConfigBackend`/`ConfigWatch`
+seam; `config_plane.store: shared_state | etcd` wired end-to-end; one-shot
+`waf migrate-config-plane` cutover tool + rollback + runbook §11 landed. Only
+the optional P2 dual-read shadow-soak remains (a validation aid, not a blocker).
 **Filed:** 2026-06-20 · **Updated:** 2026-06-25
 
 ## Shipped status (2026-06-25)
@@ -33,6 +34,24 @@ Landed on `feat/config-h2b-p1-config-backend-trait` (commits 45e73dc, b5590d1,
   the selected backend so reads/writes never split. Verified end-to-end: a
   real `waf run` with `store: etcd` seeded `config:waf:doc` (v1, dynamic-only),
   `config:waf:v:1`, and a lease-backed `config:waf:applied:<node>` into etcd.
+- **P3a (control-plane retarget)** — `cluster_sync` (modes / access-lists /
+  reset_epoch) + `ControlContext.cluster_state`/`cluster_nudge` + the
+  `cluster_control` poller all moved onto `ConfigBackend`/`ConfigWatch`, so
+  under `store: etcd` the control plane lives in etcd too (config + control on
+  one seam — closes the parity-drift risk). The counter audit resolved:
+  `reset_epoch` became a **CAS-counter** (get + cas_set, no `incrby`), keeping
+  the trait narrow and the on-disk decimal form Redis-compatible.
+  `EtcdConfigBackend::watch_prefix` added (control plane watches the
+  `control:waf:` prefix, not one key). Verified: boot with `state: redis +
+  store: etcd` logged "etcd native control-plane watch enabled".
+- **P3b (migration tool)** — `config_source::migrate` (backend-agnostic over
+  the seam) + `waf migrate-config-plane` CLI. Copies `config:waf:doc` +
+  `config:waf:v:*` + `control:waf:{modes,reset_epoch,access_list:*}`, verifies
+  the active version round-trips, idempotent. Skips ephemeral `applied:*` + the
+  redis-interim HASH keys. Verified end-to-end: dev Redis (live v30 + 30
+  snapshots + reset_epoch) → Docker etcd, report verified, re-run idempotent.
+- **P3c (docs)** — runbook §11 (etcd store, build req, cutover, rollback,
+  troubleshooting rows) in `deploy/CONFIG-PLANE-RUNBOOK.md`.
 
 **Deviations from this plan, by necessity:**
 - Feature is named **`etcd_config`**, NOT `etcd`: the `etcd` cargo feature was
@@ -250,7 +269,7 @@ stays on Redis — audit during P3.)
 - [x] P1: **config** plane compiles + passes against the new traits with Redis
       still backing it; apply-helper structural guard test (now
       `redis_source.rs` ~843-877) unchanged and green. (Control plane retarget
-      deferred to P3 — see Shipped status.)
+      landed in P3a — see Shipped status.)
 - [x] etcd `cas_set` returns `Conflict`/`false` on a stale expected-version
       (parity with the Lua CAS 409 path) — deterministic integration test
       (`cas_set_value_guard_swaps_then_conflicts_on_stale`).
@@ -263,8 +282,11 @@ stays on Redis — audit during P3.)
 - [ ] P2 shadow mode: 24 h soak with zero Redis-vs-etcd config divergence.
       (Shadow / dual-read mode not yet built — P2c wired a direct cutover, not
       a shadow comparator.)
-- [ ] P3 migration copies the active doc + all version snapshots + control-plane
+- [x] P3 migration copies the active doc + all version snapshots + control-plane
       keys, and the fleet converges to the same active version post-cutover.
+      (`waf migrate-config-plane`; verified dev Redis v30 + 30 snapshots +
+      reset_epoch → etcd, report `verified: true`, then a `store: etcd` boot
+      applied v30 from etcd.)
 
 ## Risks
 
