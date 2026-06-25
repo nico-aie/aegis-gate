@@ -14,7 +14,7 @@ today's (in-memory only).
 **Related:** [`persistent-datastore-tracking-data.md`](./persistent-datastore-tracking-data.md)
 (the eventual ClickHouse+Postgres replacement — this doc is the bridge to it),
 [`security-analytics-and-reporting.md`](./security-analytics-and-reporting.md),
-[`config-etcd-source-of-truth.md`](./config-etcd-source-of-truth.md),
+[`config-etcd-source-of-truth.md`](../archive/config-etcd-source-of-truth.md),
 [`config-auto-restore.md`](./config-auto-restore.md),
 [[project_cache_l2_single_node]], [[project_config_plane_doc_vs_file]],
 [[feedback_two_score_model]], [[project_health_signals_reported_not_gating]].
@@ -365,5 +365,5 @@ flush-interval hot-readable, enable restart-only, documented as such.
 shares its write-through/load-on-boot seams),
 [`security-analytics-and-reporting.md`](./security-analytics-and-reporting.md)
 (the analytics-tier deep dive),
-[`config-etcd-source-of-truth.md`](./config-etcd-source-of-truth.md) (the parallel
+[`config-etcd-source-of-truth.md`](../archive/config-etcd-source-of-truth.md) (the parallel
 "move the config plane off Redis" track).

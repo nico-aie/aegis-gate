@@ -12,7 +12,7 @@ durable control state · full Phases 1–4 · feature-gated, **off by default**
 **Related:** [`security-analytics-and-reporting.md`](./security-analytics-and-reporting.md)
 (the ClickHouse warm-analytics tier in depth — this plan reuses it for the
 analytics half and does **not** duplicate it),
-[`config-etcd-source-of-truth.md`](./config-etcd-source-of-truth.md),
+[`config-etcd-source-of-truth.md`](../archive/config-etcd-source-of-truth.md),
 [`config-auto-restore.md`](./config-auto-restore.md),
 [`world-class-waf-roadmap.md`](./world-class-waf-roadmap.md),
 [[project_cache_l2_single_node]], [[feedback_two_score_model]],
@@ -308,7 +308,7 @@ record. Full source URLs are in the research thread for this plan (2026-06-22).
 [`security-analytics-and-reporting.md`](./security-analytics-and-reporting.md)
 (the authoritative deep-dive for the ClickHouse analytics tier — this plan's
 P1/P3 are the same work, scoped here alongside the Postgres control-state half),
-[`config-etcd-source-of-truth.md`](./config-etcd-source-of-truth.md) (the
+[`config-etcd-source-of-truth.md`](../archive/config-etcd-source-of-truth.md) (the
 parallel "move the *config* plane off Redis" track),
 [`docs/observability/siem-log-forwarding.md`](../../docs/observability/siem-log-forwarding.md)
 (existing egress sinks).

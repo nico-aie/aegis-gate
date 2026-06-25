@@ -14,7 +14,7 @@ precedence etcd → last-applied cache → file (§2c); (3) the file **stays a l
 publisher** in the etcd era (§2c). Pragmatic-then-structural split (§3) stands as
 sequenced, not a fork.
 **Related:**
-[`config-etcd-source-of-truth.md`](./config-etcd-source-of-truth.md) (this is the
+[`config-etcd-source-of-truth.md`](../archive/config-etcd-source-of-truth.md) (this is the
 *prerequisite cleanup* that the etcd cutover assumes — etcd explicitly puts the
 file-vs-doc model out of scope),
 [`config-auto-restore.md`](./config-auto-restore.md),
@@ -277,7 +277,7 @@ the file feeds the doc (Tier 1 stays file-authoritative by design — see §3).
 ## 8. Out of scope
 
 - Moving the config **backend** Redis → etcd — that's
-  [`config-etcd-source-of-truth.md`](./config-etcd-source-of-truth.md); this plan
+  [`config-etcd-source-of-truth.md`](../archive/config-etcd-source-of-truth.md); this plan
   is its prerequisite (one writer first, then swap the store).
 - Auto-restore after a store wipe —
   [`config-auto-restore.md`](./config-auto-restore.md) (complementary; P0's
@@ -367,7 +367,7 @@ struct WafConfig { bootstrap: BootstrapConfig, dynamic: DynamicConfig }  // boot
   RED-safe behind the Horizon-1 single-writer model.
 
 **2b. etcd backend** — the existing
-[`config-etcd-source-of-truth.md`](./config-etcd-source-of-truth.md) plan, now
+[`config-etcd-source-of-truth.md`](../archive/config-etcd-source-of-truth.md) plan, now
 much cleaner: it inherits one writer (H1) and a doc that is *only* dynamic config
 (2a). Native Watch/Txn/Lease replace poll + Lua-CAS + emulated ACK TTLs. **L.**
 The `BootstrapConfig.state` field is exactly what tells a node where etcd is —
