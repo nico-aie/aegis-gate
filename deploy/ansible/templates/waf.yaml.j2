@@ -55,6 +55,18 @@ state:
   backend: redis
   redis: { urls: ["{{ redis_url }}"], pool_size: 16, timeout: "{{ redis_timeout }}" }
 
+# H2b — which store backs the durable config doc (config:waf:doc + control plane).
+# shared_state = Redis (above); etcd = dedicated etcd cluster. The data-plane hot
+# path ALWAYS stays on Redis regardless. Endpoints staged even under shared_state
+# so `waf migrate-config-plane` and the cutover need no extra edit.
+config_plane:
+  store: {{ config_plane_store }}
+  etcd:
+    endpoints:
+{% for ep in etcd_endpoints %}
+      - "{{ ep }}"
+{% endfor %}
+
 # Leaderless cluster — every node equal; shared Redis + identical csrf_secret.
 cluster:
   fleet_events: { enabled: true }

@@ -55,5 +55,38 @@ services:
       - "10.20.0.72:9993:9993"   # gRPC (HTTP/2)
       - "10.20.0.72:9994:9994"   # raw TCP
 
+  # H2b — durable CONFIG-PLANE store (config:waf:doc + version snapshots +
+  # control:waf:* ride etcd when config_plane.store=etcd). Distinct from Redis,
+  # which still backs the data-plane hot path. Single node (one infra box):
+  # durable via Raft WAL on the named volume, but NOT HA — if it's down the
+  # config plane is read-only/stale; the hot path (Redis) keeps serving.
+  # No auth (the WAF etcd-client config carries endpoints only); LAN-only,
+  # published on the private IP like Redis. Harden with TLS+auth later.
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.16
+    restart: unless-stopped
+    command:
+      - etcd
+      - --name=aegis-etcd-1
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://10.20.0.72:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://10.20.0.72:2380
+      - --initial-cluster=aegis-etcd-1=http://10.20.0.72:2380
+      - --initial-cluster-state=new
+      - --initial-cluster-token=aegis-etcd
+      - --auto-compaction-retention=1
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "10.20.0.72:2379:2379"   # etcd v3 gRPC client API (config plane)
+    volumes:
+      - etcd-data:/etcd-data
+
 volumes:
   redis-data: {}
+  etcd-data: {}

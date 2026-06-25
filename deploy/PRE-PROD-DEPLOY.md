@@ -1,11 +1,12 @@
 # Aegis-Gate — Pre-Prod Cluster Deployment Guide
 
 > **What this is:** the practical, *as-built* runbook for the `pre-prod`
-> topology — **one infra host** (Redis + multi-protocol mock + SigNoz) and
-> **N WAF nodes** (native binary, the TLS edge) sharing state via Redis,
-> balanced by **DNS round-robin**. It reflects exactly what we stood up and
-> verified, including the committee interop contract (v2.3/2.5 §8) and the
-> `make run-copilot` feature set (`redis geoip alerts ai affinity otel llm`).
+> topology — **one infra host** (Redis + **etcd** + multi-protocol mock + SigNoz)
+> and **N WAF nodes** (native binary, the TLS edge) sharing the data-plane hot
+> path via Redis and the **durable config plane via etcd** (H2b), balanced by
+> **DNS round-robin**. It reflects exactly what we stood up and verified,
+> including the committee interop contract (v2.3/2.5 §8) and the feature set
+> `redis geoip alerts ai affinity otel llm etcd_config`.
 >
 > **Companion docs:** [`INFRA-HOST-STATUS.md`](./INFRA-HOST-STATUS.md) (what runs
 > on the infra host) · [`CONFIG-PLANE-RUNBOOK.md`](./CONFIG-PLANE-RUNBOOK.md)
@@ -18,13 +19,14 @@
 
 ```
                     ┌──────────────── infra host: 10.20.0.72 ───────────────┐
-   clients          │  Redis :6379  (shared state · config plane · leases)   │
-     │  DNS A RR     │  mock  :9991/2/3/4  (http · ws · grpc · raw-tcp)       │
-     ▼              │  SigNoz :4317 OTLP  ·  :8090 UI                         │
-  waf-1  waf-2  …    └───────────────────────────────────────────────────────┘
+   clients          │  Redis :6379  (data-plane hot path · leases · rl/risk) │
+     │  DNS A RR     │  etcd  :2379  (durable config plane: doc + control)    │
+     ▼              │  mock  :9991/2/3/4  (http · ws · grpc · raw-tcp)        │
+  waf-1  waf-2  …    │  SigNoz :4317 OTLP  ·  :8090 UI                         │
+  (TLS edge)         └───────────────────────────────────────────────────────┘
   (each VM is the TLS edge: terminates TLS → JA3/JA4 + real client IP native)
-     │   each node → Redis(:6379) state+config · OTLP(:4317) traces · mock(:999x) upstream
-     └── all nodes share one Redis ⇒ one fleet (rate-limit · risk · config · block-list)
+     │  each node → Redis(:6379) hot path · etcd(:2379) config · OTLP(:4317) · mock(:999x)
+     └── all nodes share one Redis + one etcd ⇒ one fleet (rate-limit · risk · config · block-list)
 ```
 
 - **No in-path load balancer.** Clients reach WAF nodes directly via **DNS
@@ -41,7 +43,8 @@
 
 | Purpose | Endpoint |
 |---|---|
-| Shared state / config plane / leases | `redis://10.20.0.72:6379` |
+| Data-plane hot path (rate-limit · risk · leases · L2 cache) | `redis://10.20.0.72:6379` |
+| Durable config plane (config doc + control plane) — H2b | `http://10.20.0.72:2379` (etcd) |
 | OTLP traces (SigNoz collector) | `http://10.20.0.72:4317` |
 | Upstream mock (http/ws/grpc/tcp) | `10.20.0.72:9991` / `9992` / `9993` / `9994` |
 | SigNoz UI (operators) | `http://10.20.0.72:8090` |
@@ -61,9 +64,16 @@ source "$HOME/.cargo/env"
 
 # Network reachability to the infra host (must succeed):
 redis-cli -h 10.20.0.72 -p 6379 ping        # -> PONG   (or: nc -z 10.20.0.72 6379)
+nc -z 10.20.0.72 2379 && echo "etcd ok"     # H2b config plane (gRPC :2379)
 curl -s http://10.20.0.72:9991/api/health   # -> {"status":"ok"}
 nc -z 10.20.0.72 4317 && echo "otlp ok"
 ```
+
+> **`protoc` is REQUIRED** (H2b): the `etcd_config` feature pulls the etcd
+> gRPC stack, whose build runs `protoc` codegen. The `protobuf-compiler`
+> package above covers it. No sudo? Drop a static `protoc` on PATH:
+> `curl -fsSL -o /tmp/p.zip https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protoc-28.3-linux-x86_64.zip`
+> then `unzip` it and `install -m0755 bin/protoc ~/.cargo/bin/protoc`.
 
 > **glibc note:** the `ai` (ONNX) feature can't link its *prebuilt* runtime on
 > glibc < 2.38. This repo already pins `ort` to **`load-dynamic`** (in
@@ -72,18 +82,21 @@ nc -z 10.20.0.72 4317 && echo "otlp ok"
 
 ---
 
-## 2. Build the WAF (native, run-copilot feature set)
+## 2. Build the WAF (native, run-copilot + etcd_config feature set)
 
 ```sh
 cd ~/aegis-gate            # the cloned repo (this pre-prod branch)
 source "$HOME/.cargo/env"
 cargo build -p aegis-bin --release \
-    --features "redis geoip alerts ai affinity otel llm"
+    --features "redis geoip alerts ai affinity otel llm etcd_config"
 # ~10-20 min first build; seconds after. Result: target/release/waf
+# NB: etcd_config needs protoc on PATH (see §1). A binary built WITHOUT it that
+# boots config_plane.store: etcd fails loud at startup — no silent fallback.
 ```
 
-These are exactly the `make run-copilot` features (`FEATURES="redis geoip alerts
-ai affinity"` + `otel llm`). `affinity` enables optional CPU pinning (config
+These are the `make run-copilot` features (`redis geoip alerts ai affinity` +
+`otel llm`) plus **`etcd_config`** (H2b — the durable etcd config plane).
+`affinity` enables optional CPU pinning (config
 `runtime.cpu_affinity`, off by default — only turn on for dedicated bare metal).
 
 ---
@@ -116,6 +129,10 @@ node:
 state:
   redis:
     urls: ["redis://10.20.0.72:6379"]          # the infra host (same on all nodes)
+config_plane:                                   # H2b — durable config plane on etcd
+  store: etcd                                   # shared_state (Redis) | etcd (as built)
+  etcd:
+    endpoints: ["http://10.20.0.72:2379"]      # the infra etcd (same on all nodes)
 observability:
   otel:
     endpoint: "http://10.20.0.72:4317"         # SigNoz collector
@@ -137,10 +154,20 @@ geoip:                                          # MaxMind enrichment (geoip feat
 > committed (MaxMind license + 30-day refresh) — populate `data/geoip/` per node
 > (see `data/geoip/README.md`). Confirm load: `maxminddb::decoder` lines at boot.
 
-> **Rules that make it ONE fleet:** identical `state.redis.urls` on every node +
-> a **unique `node.id`** each. Don't hand-edit detectors/rules/upstreams on each
-> node — set them once on any node via the dashboard or `PUT /api/config`; the
-> config plane converges to all nodes in ~3s (see `CONFIG-PLANE-RUNBOOK.md`).
+> **Rules that make it ONE fleet:** identical `state.redis.urls` **and**
+> `config_plane.etcd.endpoints` on every node + a **unique `node.id`** each.
+> Don't hand-edit detectors/rules/upstreams on each node — set them once on any
+> node via the dashboard or `PUT /api/config`; the config plane converges to all
+> nodes (etcd native Watch, no Redis pub/sub nudge) — see `CONFIG-PLANE-RUNBOOK.md`.
+
+> **H2b — etcd config plane (as built).** The durable config doc + control plane
+> live in **etcd** (`config_plane.store: etcd`); Redis still backs the data-plane
+> hot path (rate-limit/risk/leases/L2) — it is **not** optional. To stand it up
+> or migrate an existing Redis-backed plane, follow
+> [`CONFIG-PLANE-RUNBOOK.md` §11](./CONFIG-PLANE-RUNBOOK.md): bring up etcd, run
+> `waf migrate-config-plane --config ./waf.yaml` (require `verified: true`), then
+> flip `store: etcd` and restart. The migration is a **copy** — Redis keeps the
+> pre-cutover doc, so rollback is just setting `store: shared_state` again.
 
 Validate before running:
 

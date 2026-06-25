@@ -79,6 +79,7 @@ cargo build -p aegis-bin --release --features "redis geoip alerts ai affinity ot
 | `otel` | OpenTelemetry | traces/metrics; cheap if you lower `sample_ratio` (§5). |
 | `affinity` | CPU pinning | steadier tail latency. |
 | `alerts` | alerting plumbing | negligible cost. |
+| `etcd_config` | etcd config plane (H2b) | **skip on a single node** — `config_plane.store: etcd` buys durable consensus that one box doesn't need, and it adds a `protoc` build dep + an etcd container. Single-node keeps `store: shared_state` (Redis/in_memory). Add it only if you'll later grow to a cluster (then see `CONFIG-PLANE-RUNBOOK.md` §11). |
 
 > The deterministic detectors (`sqli`, `xss`, `path_traversal`, `command_injection`,
 > `recon`, `jwt_inspection`, `header_injection`/smuggling, WebSocket frame inspection,
@@ -246,6 +247,11 @@ upstreams:
 state:
   backend: redis
   redis: { urls: ["redis://127.0.0.1:6379"], pool_size: 32, timeout: "1s" }
+
+# Config plane (H2b) — leave at the default `shared_state`: the durable config doc
+# rides the state backend above (Redis/in_memory). A single box gains nothing from
+# `store: etcd` (that's for multi-node durable consensus) — omit the block entirely.
+# config_plane: { store: shared_state }
 
 # Risk scoring — proven weights + bands. Challenge 30–69 / Block ≥70 (Contract §5.5 scale).
 risk:
