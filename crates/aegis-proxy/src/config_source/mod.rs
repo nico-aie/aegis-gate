@@ -28,6 +28,10 @@ pub mod config_store;
 /// shipped binary keeps the single Redis dependency.
 #[cfg(feature = "etcd_config")]
 pub mod etcd_backend;
+/// H2b P3 — one-shot config/control-plane migration between two
+/// `ConfigBackend`s (the Redis→etcd cutover copy). Backend-agnostic; the CLI
+/// wiring lives in `aegis-bin`.
+pub mod migrate;
 pub mod plane_select;
 pub mod redis_source;
 pub mod reload;
