@@ -153,6 +153,13 @@ aws-sdk-secretsmanager = { version = "1.49", default-features = false, features 
 gcp_auth = { version = "0.12", default-features = false, features = ["webpki-roots"] }
 base64 = "0.22"
 
+# H2b P2 — native etcd v3 gRPC client (KV / Txn / Watch / Lease) for the
+# durable config-plane backend. Pulled ONLY via aegis-proxy's default-off
+# `etcd_config` feature. Reuses the tonic 0.12 / prost 0.13 tree already in
+# the lock (via the otel stack), so it adds the etcd protobufs, not a second
+# gRPC runtime.
+etcd-client = { version = "0.14", default-features = false, features = ["tls"] }
+
 # MaxMind GeoIP2 reader (B3-T3 — Phase B). Pulled only via the
 # `aegis-security/geoip` feature. Pure-Rust mmap reader for
 # `.mmdb` files — works for both GeoLite2-Country and

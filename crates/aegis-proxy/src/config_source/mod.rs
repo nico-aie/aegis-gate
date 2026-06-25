@@ -22,5 +22,11 @@
 //!   watcher and the config-plane watcher.
 
 pub mod config_store;
+/// H2b P2 — the durable config-plane etcd backend (native gRPC KV / Txn /
+/// Watch / Lease) implementing the `aegis_core::ConfigBackend` +
+/// `ConfigWatch` seam. Behind the default-off `etcd_config` feature so the
+/// shipped binary keeps the single Redis dependency.
+#[cfg(feature = "etcd_config")]
+pub mod etcd_backend;
 pub mod redis_source;
 pub mod reload;
