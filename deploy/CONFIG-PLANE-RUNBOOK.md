@@ -409,6 +409,90 @@ curl -fsS -X POST "$ADMIN/api/zero-trust/upstream/trust/payments-ca" -b "$JAR" -
 
 ---
 
+## 11 · etcd config plane (optional — durable consensus store) — H2b
+
+By default the durable config document (`config:waf:doc` + version snapshots +
+the control plane `control:waf:*`) rides the **shared state backend** (Redis):
+`config_plane.store: shared_state`. That couples config durability to correct
+Redis AOF/RDB provisioning — a Redis restart without persistence returns an
+**empty** config doc and the node reverts to its file baseline.
+
+`config_plane.store: etcd` instead keeps **only the config + control plane** on
+a dedicated etcd cluster (durable-by-design Raft, native Watch/Txn/Lease). The
+hot-path ephemeral keyspace (rate-limit / risk / nonce / auto-block /
+smart-cache L2) **never moves** — `state.backend: redis` stays mandatory. etcd
+is *additive for config durability*, not a Redis replacement.
+
+```yaml
+config_plane:
+  store: etcd                # default: shared_state
+  etcd:
+    endpoints: ["http://etcd-1:2379", "http://etcd-2:2379"]
+```
+
+**Build requirement.** etcd support is behind a default-off cargo feature
+(distinct from the `etcd` *service-discovery* feature):
+
+```sh
+# protoc is required at build time (gRPC codegen): `brew install protobuf`
+# or `apt-get install -y protobuf-compiler`.
+cargo build -p aegis-bin --release --features "redis etcd_config"
+```
+
+A binary built **without** `etcd_config` that boots `store: etcd` **fails loud**
+at startup (it does not silently fall back) — rebuild with the feature, or set
+`store: shared_state`.
+
+### Cutover (Redis → etcd), zero data loss
+
+The migration is a **copy**, not a move — Redis keeps its keys, so rollback is
+just flipping the knob back.
+
+```sh
+# 1. Stage the etcd endpoints in each node's config (still store: shared_state):
+#      config_plane:
+#        store: shared_state          # not flipped yet
+#        etcd:
+#          endpoints: ["http://etcd-1:2379"]
+#
+# 2. Copy the live config + control plane into etcd and VERIFY (idempotent,
+#    safe to re-run). Reads the Redis source from state.backend, the etcd
+#    dest from config_plane.etcd.endpoints:
+target/release/waf migrate-config-plane --config config/cluster-a.yaml
+#    → report: source active version : N
+#              active doc copied     : true
+#              version snapshots     : N
+#              control-plane keys    : K
+#              verified              : true     ← required to proceed
+#    Exits non-zero (do NOT cut over) if verification fails or the source is empty.
+#
+# 3. Flip store: etcd on every node and restart. Confirm the boot log:
+#      "config plane store selected store=etcd ..."
+#      "interop: etcd native control-plane watch enabled ..."   (multi-node)
+#
+# 4. Confirm the fleet converged on the same version (as in step 5):
+#      curl -s :9443/api/config -H "authorization: Bearer $TOKEN" | jq '.version, .applied'
+```
+
+Under `store: etcd` **both** planes ride etcd: config doc activations
+(`PUT /api/config`, folded toggles) and control-plane convergence
+(`set_profile` / `reset_state` / operator access-lists) — with no Redis pub/sub
+nudge needed (etcd's native Watch delivers changes directly).
+
+### Rollback to Redis
+
+The cutover copies rather than moves, so Redis still holds the pre-cutover doc.
+Config edits made *after* cutover land only in etcd, so re-run the migration in
+reverse intent before rolling back if you want them preserved (or simply
+re-activate them). To roll back: set `config_plane.store: shared_state` on every
+node and restart — the nodes read `config:waf:doc` from Redis again.
+
+> **Operational note.** etcd matters at the scale where config durability is
+> worth a second dependency (and for multi-region later). A single-node /
+> in-memory deployment gains little — keep `shared_state` there.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |
@@ -424,6 +508,10 @@ curl -fsS -X POST "$ADMIN/api/zero-trust/upstream/trust/payments-ca" -b "$JAR" -
 | One node shows an old version forever | Its last activation failed validation; it's serving last-good. Activate a valid version; the node converges. |
 | `route-activity` / `hits` still look node-local | `state.backend` is `in_memory` (metrics aggregation is redis-only), or no traffic yet (flush cadence ~10 s). |
 | Mutation returns `401` / `403` | Re-run `login`; `$CSRF` empty or stale, or the admin session expired. |
+| Boot aborts: `config_plane.store = etcd but this binary was built without the etcd_config feature` | Rebuild with `--features "redis etcd_config"` (needs `protoc`), or set `config_plane.store: shared_state`. Fail-closed by design — no silent fallback. |
+| Boot aborts: `config_plane.store = etcd requires config_plane.etcd.endpoints` | Add at least one endpoint under `config_plane.etcd.endpoints`. |
+| `migrate-config-plane` prints `verified: false` / non-zero exit | Empty source (wrong source store?) or the dest doc didn't read back at the source version. Do **not** flip `store: etcd`; investigate, then re-run (it's idempotent). |
+| After `store: etcd`, edits don't survive a Redis restart but config is intact | Expected — the config doc now lives in etcd; Redis only holds the ephemeral hot path. |
 
 ---
 
@@ -434,3 +522,4 @@ curl -fsS -X POST "$ADMIN/api/zero-trust/upstream/trust/payments-ca" -b "$JAR" -
 - [`../docs/security/zero-trust-mtls.md`](../docs/security/zero-trust-mtls.md) — Zero Trust mTLS (both directions), used in step 10.
 - [`./GUIDE.md`](./GUIDE.md) — production deployment guide.
 - [`../config/README.md`](../config/README.md) — full YAML reference (incl. `rules.inline`, `detectors.per_tier`).
+- [`../plans/future/config-etcd-source-of-truth.md`](../plans/future/config-etcd-source-of-truth.md) — the etcd config-plane design (§11 above is the operate guide).

@@ -25,8 +25,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use aegis_core::config_backend::{ConfigBackend, ConfigWatch, SharedStateConfigBackend};
 use aegis_core::error::{Result, WafError};
-use aegis_core::fleet::FleetBus;
 use aegis_core::state::StateBackend;
 
 /// The single key holding the active config document (JSON-encoded
@@ -92,42 +92,66 @@ pub enum Activate {
     Conflict { current: u64 },
 }
 
-/// Versioned config store over a [`StateBackend`].
+/// Versioned config store over a [`ConfigBackend`].
+///
+/// H2b (2026-06-24) — the store talks to the narrow [`ConfigBackend`] /
+/// [`ConfigWatch`] seam, not [`StateBackend`] / `FleetBus` directly, so the
+/// durable config plane can be backed by etcd (P2) without dragging in the
+/// hot-path ephemeral keyspace. [`Self::new`] is the `shared_state` path: it
+/// wraps the data-plane state backend in [`SharedStateConfigBackend`], the
+/// default behaviour where the config doc rides `state.backend`.
 #[derive(Clone)]
 pub struct ConfigStore {
-    backend: Arc<dyn StateBackend>,
-    /// Optional config-plane nudge bus. When set, a successful
-    /// [`Self::activate`] publishes a 1-byte bump on [`CONFIG_BUMP_CHANNEL`]
-    /// so every node's config watcher (incl. the writer's own) re-polls
+    backend: Arc<dyn ConfigBackend>,
+    /// Optional config-plane change-notification seam. When set, a
+    /// successful [`Self::activate`] fires [`ConfigWatch::notify_change`] so
+    /// every node's config watcher (incl. the writer's own) re-reads
     /// immediately rather than waiting for its next poll tick. Best-effort +
-    /// non-load-bearing: a dropped bump just falls back to the poll. `None`
-    /// on the watcher's read-only store and on single-node / in-memory
-    /// deployments.
-    nudge: Option<Arc<dyn FleetBus>>,
+    /// non-load-bearing: a dropped notification just falls back to the poll.
+    /// `None` on the watcher's read-only store and on single-node /
+    /// in-memory deployments.
+    nudge: Option<Arc<dyn ConfigWatch>>,
 }
 
 impl ConfigStore {
+    /// `shared_state` constructor — the config doc rides the data-plane
+    /// [`StateBackend`] (today's default). Wraps `backend` in
+    /// [`SharedStateConfigBackend`]; the etcd path (H2b P2) constructs the
+    /// store from an [`Arc<dyn ConfigBackend>`] directly via
+    /// [`Self::with_config_backend`].
     pub fn new(backend: Arc<dyn StateBackend>) -> Self {
+        Self {
+            backend: SharedStateConfigBackend::arc(backend),
+            nudge: None,
+        }
+    }
+
+    /// H2b — construct the store over an arbitrary [`ConfigBackend`] (the
+    /// etcd path: `config_plane.store: etcd`). Identical semantics to
+    /// [`Self::new`]; only the durable store differs. The shared_state path
+    /// goes through [`Self::new`], which wraps the data-plane state backend.
+    pub fn with_config_backend(backend: Arc<dyn ConfigBackend>) -> Self {
         Self {
             backend,
             nudge: None,
         }
     }
 
-    /// Attach a config-plane nudge bus (see the `nudge` field). Builder so
-    /// the per-request write-path stores opt in while the watcher's
-    /// read-only store stays nudge-free. A `None` argument is a no-op.
-    pub fn with_nudge(mut self, nudge: Option<Arc<dyn FleetBus>>) -> Self {
+    /// Attach a config-plane change-notification seam (see the `nudge`
+    /// field). Builder so the per-request write-path stores opt in while the
+    /// watcher's read-only store stays nudge-free. A `None` argument is a
+    /// no-op.
+    pub fn with_nudge(mut self, nudge: Option<Arc<dyn ConfigWatch>>) -> Self {
         self.nudge = nudge;
         self
     }
 
-    /// Best-effort config-plane bump on [`CONFIG_BUMP_CHANNEL`]. No-op when
-    /// no nudge bus is wired. The bump carries no payload meaning — it is a
-    /// pure "re-poll now" signal; correctness lives in the polled [`DOC_KEY`].
+    /// Best-effort config-plane change notification. No-op when no watch is
+    /// wired. The signal carries no meaning — it is a pure "re-read now"
+    /// nudge; correctness lives in the polled [`DOC_KEY`].
     async fn fire_nudge(&self) {
-        if let Some(bus) = &self.nudge {
-            bus.publish(CONFIG_BUMP_CHANNEL, vec![1]).await;
+        if let Some(watch) = &self.nudge {
+            watch.notify_change().await;
         }
     }
 
@@ -287,7 +311,7 @@ impl ConfigStore {
     /// node that stops polling drops out of the roster.
     pub async fn record_applied(&self, node_id: &str, version: u64) -> Result<()> {
         self.backend
-            .set(
+            .put_ttl(
                 &applied_key(node_id),
                 version.to_string().as_bytes(),
                 APPLIED_TTL,
@@ -477,52 +501,52 @@ mod tests {
         assert_eq!(s.applied_version("node-b").await.unwrap(), 0);
     }
 
-    // N2 (2026-06-11) — config-plane nudge.
+    // N2 (2026-06-11) — config-plane nudge. H2b — the nudge is now the
+    // narrow [`ConfigWatch`] seam; the channel detail lives in the adapter,
+    // so the recorder just counts `notify_change` calls.
 
-    /// Recording [`FleetBus`] — captures every publish so a test can
-    /// assert a bump fired on the config bump channel.
+    /// Recording [`ConfigWatch`] — counts every `notify_change` so a test
+    /// can assert a nudge fired exactly once per successful activate.
     #[derive(Default)]
-    struct RecordingBus {
-        published: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
+    struct RecordingWatch {
+        notified: std::sync::atomic::AtomicUsize,
     }
 
     #[async_trait::async_trait]
-    impl FleetBus for RecordingBus {
-        async fn publish(&self, channel: &str, payload: Vec<u8>) {
-            self.published
-                .lock()
-                .unwrap()
-                .push((channel.to_string(), payload));
+    impl ConfigWatch for RecordingWatch {
+        async fn notify_change(&self) {
+            self.notified
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        fn subscribe(
-            &self,
-            _: &str,
-            bound: usize,
-        ) -> tokio::sync::mpsc::Receiver<Vec<u8>> {
+        fn watch(&self, bound: usize) -> tokio::sync::mpsc::Receiver<Vec<u8>> {
             let (_tx, rx) = tokio::sync::mpsc::channel(bound.max(1));
             rx
         }
     }
 
+    impl RecordingWatch {
+        fn count(&self) -> usize {
+            self.notified.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
     #[tokio::test]
     async fn activate_fires_a_nudge_when_bus_wired() {
-        let bus = Arc::new(RecordingBus::default());
-        let s = store().with_nudge(Some(bus.clone()));
+        let watch = Arc::new(RecordingWatch::default());
+        let s = store().with_nudge(Some(watch.clone()));
         s.activate(0, "a".into(), "u", "").await.unwrap();
-        let pubs = bus.published.lock().unwrap();
-        assert_eq!(pubs.len(), 1, "exactly one bump per successful activate");
-        assert_eq!(pubs[0].0, CONFIG_BUMP_CHANNEL);
+        assert_eq!(watch.count(), 1, "exactly one nudge per successful activate");
     }
 
     #[tokio::test]
     async fn conflict_does_not_nudge() {
-        let bus = Arc::new(RecordingBus::default());
-        let s = store().with_nudge(Some(bus.clone()));
+        let watch = Arc::new(RecordingWatch::default());
+        let s = store().with_nudge(Some(watch.clone()));
         s.activate(0, "a".into(), "u", "").await.unwrap(); // v1, fires once
-        // Stale expected version → Conflict, must NOT fire a second bump.
+        // Stale expected version → Conflict, must NOT fire a second nudge.
         let r = s.activate(0, "stale".into(), "u", "").await.unwrap();
         assert_eq!(r, Activate::Conflict { current: 1 });
-        assert_eq!(bus.published.lock().unwrap().len(), 1);
+        assert_eq!(watch.count(), 1);
     }
 
     #[tokio::test]

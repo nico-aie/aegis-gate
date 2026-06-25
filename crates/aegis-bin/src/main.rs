@@ -40,6 +40,7 @@ fn main() {
             }
         }
         "validate" => cmd_validate(&args),
+        "migrate-config-plane" => cmd_migrate_config_plane(&args),
         "audit" => cmd_audit(&args),
         "admin" => cmd_admin(&args),
         "snapshot" => snapshot::cmd_snapshot(&args),
@@ -350,6 +351,130 @@ fn cmd_validate(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// waf migrate-config-plane  (H2b P3 — Redis → etcd cutover copy)
+// ---------------------------------------------------------------------------
+
+/// One-shot copy of the durable config + control plane from the live
+/// shared-state store (Redis) into the etcd cluster named in
+/// `config_plane.etcd.endpoints`, then verify the active version round-trips.
+/// Run this once while still on `config_plane.store: shared_state`; on a
+/// verified report, flip to `store: etcd` and restart. Idempotent — safe to
+/// re-run. Requires the `etcd_config` (and `redis`) features.
+fn cmd_migrate_config_plane(args: &[String]) -> i32 {
+    let config_path = parse_config_flag(args);
+    let cfg = match aegis_core::load_config(&config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("config error: {e}");
+            return 1;
+        }
+    };
+    migrate_config_plane_impl(&cfg)
+}
+
+#[cfg(feature = "etcd_config")]
+fn migrate_config_plane_impl(cfg: &aegis_core::config::WafConfig) -> i32 {
+    use aegis_core::config_backend::{ConfigBackend, SharedStateConfigBackend};
+    use aegis_proxy::config_source::etcd_backend::EtcdConfigBackend;
+    use aegis_proxy::config_source::migrate::migrate_config_plane;
+
+    let endpoints = match cfg
+        .config_plane
+        .etcd
+        .as_ref()
+        .map(|e| e.endpoints.clone())
+        .filter(|e| e.iter().any(|u| !u.trim().is_empty()))
+    {
+        Some(e) => e,
+        None => {
+            eprintln!(
+                "migrate-config-plane: config_plane.etcd.endpoints must list the etcd \
+                 destination (e.g. [\"http://127.0.0.1:2379\"])"
+            );
+            return 1;
+        }
+    };
+
+    // Source = the live shared-state store (Redis). state_select emits the
+    // precise error if `state.backend` isn't a usable shared store.
+    let (state, state_summary) = match state_select::select(cfg) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("migrate-config-plane: source state backend: {e}");
+            return 1;
+        }
+    };
+
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("migrate-config-plane: runtime build failed: {e}");
+            return 1;
+        }
+    };
+
+    rt.block_on(async move {
+        println!("migrate-config-plane: source = {state_summary}");
+        println!("migrate-config-plane: destination = etcd @ {}", endpoints.join(","));
+        let source: std::sync::Arc<dyn ConfigBackend> = SharedStateConfigBackend::arc(state);
+        let dest: std::sync::Arc<dyn ConfigBackend> = match EtcdConfigBackend::connect(&endpoints).await
+        {
+            Ok(b) => b.into_backend(),
+            Err(e) => {
+                eprintln!("migrate-config-plane: etcd connect failed: {e}");
+                return 1;
+            }
+        };
+
+        match migrate_config_plane(&source, &dest).await {
+            Ok(report) => {
+                println!("migrate-config-plane: report:");
+                match report.source_version {
+                    Some(v) => println!("  source active version : {v}"),
+                    None => println!("  source active version : <none — nothing to migrate>"),
+                }
+                println!("  active doc copied     : {}", report.doc_copied);
+                println!("  version snapshots     : {}", report.snapshots_copied);
+                println!("  control-plane keys    : {}", report.control_keys_copied);
+                println!("  verified              : {}", report.verified);
+                if report.verified {
+                    println!(
+                        "migrate-config-plane: OK — etcd holds the active version. \
+                         You may now set config_plane.store: etcd and restart."
+                    );
+                    0
+                } else if report.source_version.is_none() {
+                    eprintln!(
+                        "migrate-config-plane: source had no active config doc — nothing \
+                         was migrated (is this the right source store?)."
+                    );
+                    1
+                } else {
+                    eprintln!("migrate-config-plane: verification FAILED — do NOT cut over.");
+                    1
+                }
+            }
+            Err(e) => {
+                eprintln!("migrate-config-plane: failed: {e}");
+                1
+            }
+        }
+    })
+}
+
+#[cfg(not(feature = "etcd_config"))]
+fn migrate_config_plane_impl(_cfg: &aegis_core::config::WafConfig) -> i32 {
+    eprintln!(
+        "migrate-config-plane requires the `etcd_config` feature. Rebuild with \
+         `cargo build -p aegis-bin --features \"redis etcd_config\"`."
+    );
+    1
 }
 
 // PR1 — `--print-route-priority` audit. Builds the route table from a
@@ -665,6 +790,8 @@ fn print_help() {
     println!("    run       --config <path>      Start the WAF gateway");
     println!("    validate  --config <path>      Dry-run config validation + compliance check");
     println!("              [--print-route-priority]   Also print the effective route eval order (PR1)");
+    println!("    migrate-config-plane --config <path>   Copy the live config+control plane Redis→etcd");
+    println!("                                    (H2b cutover; needs the `etcd_config` feature)");
     println!("    audit     verify --from <path> Verify audit chain integrity");
     println!("    admin     set-password          Hash admin password (argon2id)");
     println!("    admin     enroll-totp           Generate TOTP secret + recovery codes");

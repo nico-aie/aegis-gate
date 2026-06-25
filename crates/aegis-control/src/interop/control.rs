@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
-use aegis_core::state::StateBackend;
+use aegis_core::config_backend::ConfigBackend;
 
 use super::headers::Mode;
 use super::mode::{ModeSnapshot, ModeStore};
@@ -262,7 +262,7 @@ pub struct ControlContext {
     /// node-local (the legacy behaviour). Used to publish the mode map
     /// + reset epoch; a sibling poller (`aegis-proxy::accept`) reads
     /// them back.
-    pub cluster_state: std::sync::OnceLock<Arc<dyn StateBackend>>,
+    pub cluster_state: std::sync::OnceLock<Arc<dyn ConfigBackend>>,
     /// Phase 5 (§3) — optional pub/sub bus for the state *nudge*.
     /// Installed via [`Self::set_cluster_nudge`] at boot only when
     /// `cluster.pubsub_nudge` is on (and Redis is present). When set,
@@ -270,7 +270,7 @@ pub struct ControlContext {
     /// [`super::cluster_sync::CONTROL_BUMP_CHANNEL`] so peer pollers
     /// re-poll immediately. Best-effort + non-load-bearing — a missed
     /// bump just falls back to the next poll interval.
-    pub cluster_nudge: std::sync::OnceLock<Arc<dyn aegis_core::fleet::FleetBus>>,
+    pub cluster_nudge: std::sync::OnceLock<Arc<dyn aegis_core::config_backend::ConfigWatch>>,
 }
 
 /// Type alias for a reset callback. Wrapped in `Arc<dyn Fn>` so
@@ -460,29 +460,32 @@ impl ControlContext {
     /// C-1 — install the shared backend used for cluster propagation.
     /// Called once at boot for Redis deployments. Idempotent (later
     /// calls are ignored).
-    pub fn set_cluster_state(&self, state: Arc<dyn StateBackend>) {
+    pub fn set_cluster_state(&self, state: Arc<dyn ConfigBackend>) {
         let _ = self.cluster_state.set(state);
     }
 
-    /// Phase 5 (§3) — install the pub/sub nudge bus. Called once at
-    /// boot only when `cluster.pubsub_nudge` is on. Idempotent.
-    pub fn set_cluster_nudge(&self, bus: Arc<dyn aegis_core::fleet::FleetBus>) {
-        let _ = self.cluster_nudge.set(bus);
+    /// Phase 5 (§3) — install the change-notification seam. Called once at
+    /// boot only when a nudge is available (Redis pub/sub under
+    /// `cluster.pubsub_nudge`, or the etcd native control-prefix watch under
+    /// `config_plane.store: etcd`). Idempotent.
+    pub fn set_cluster_nudge(&self, watch: Arc<dyn aegis_core::config_backend::ConfigWatch>) {
+        let _ = self.cluster_nudge.set(watch);
     }
 
-    /// Phase 5 (§3) — the installed nudge bus, if any. Read by the
-    /// poller to decide whether to subscribe for immediate re-polls.
-    pub fn cluster_nudge(&self) -> Option<Arc<dyn aegis_core::fleet::FleetBus>> {
+    /// Phase 5 (§3) — the installed nudge, if any. Read by the poller to
+    /// decide whether to subscribe for immediate re-polls.
+    pub fn cluster_nudge(&self) -> Option<Arc<dyn aegis_core::config_backend::ConfigWatch>> {
         self.cluster_nudge.get().cloned()
     }
 
-    /// Phase 5 (§3) — publish a 1-byte `control:waf:bump` so peer
-    /// pollers re-poll immediately. Best-effort + no-op when the nudge
-    /// bus isn't wired. The bump carries no payload meaning — it's a
-    /// pure "re-poll now" signal; correctness lives in the polled keys.
+    /// Phase 5 (§3) — fire a control-plane change notification so peer
+    /// pollers re-poll immediately. Best-effort + no-op when no nudge is
+    /// wired. The signal carries no meaning — it's a pure "re-poll now"
+    /// nudge; correctness lives in the polled keys. (Under etcd this is a
+    /// no-op — the KV write itself wakes the prefix watch.)
     async fn fire_nudge(&self) {
-        if let Some(bus) = self.cluster_nudge.get() {
-            bus.publish(super::cluster_sync::CONTROL_BUMP_CHANNEL, vec![1]).await;
+        if let Some(watch) = self.cluster_nudge.get() {
+            watch.notify_change().await;
         }
     }
 
@@ -1186,70 +1189,63 @@ mod tests {
 
     // ---- Phase 5 — pub/sub state nudge --------------------------------
 
-    /// Recording FleetBus: captures every publish so the test can
-    /// assert a bump was fired. `subscribe` is unused here.
+    /// Recording ConfigWatch: counts `notify_change` calls so the test can
+    /// assert a nudge fired. `watch` is unused here. (H2b — the nudge is the
+    /// narrow `ConfigWatch` seam; the channel detail lives in the adapter.)
     #[derive(Default)]
-    struct RecordingFleetBus {
-        published: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
+    struct RecordingWatch {
+        notified: std::sync::atomic::AtomicUsize,
     }
 
     #[async_trait::async_trait]
-    impl aegis_core::fleet::FleetBus for RecordingFleetBus {
-        async fn publish(&self, channel: &str, payload: Vec<u8>) {
-            self.published.lock().unwrap().push((channel.to_string(), payload));
+    impl aegis_core::config_backend::ConfigWatch for RecordingWatch {
+        async fn notify_change(&self) {
+            self.notified.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        fn subscribe(&self, _: &str, bound: usize) -> tokio::sync::mpsc::Receiver<Vec<u8>> {
+        fn watch(&self, bound: usize) -> tokio::sync::mpsc::Receiver<Vec<u8>> {
             let (_tx, rx) = tokio::sync::mpsc::channel(bound.max(1));
             rx
         }
     }
 
-    /// Trivial StateBackend so `publish_modes` has a `cluster_state`
-    /// (the bump only fires when cluster propagation is wired). Only
-    /// `get`/`cas_set` are exercised; the rest are inert stubs.
-    struct NoopState;
+    impl RecordingWatch {
+        fn count(&self) -> usize {
+            self.notified.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    /// Trivial ConfigBackend so `publish_modes` has a `cluster_state` (the
+    /// nudge only fires when cluster propagation is wired). Only `get`/
+    /// `cas_set` are exercised; the rest are inert stubs.
+    struct NoopConfig;
 
     #[async_trait::async_trait]
-    impl StateBackend for NoopState {
+    impl ConfigBackend for NoopConfig {
         async fn get(&self, _: &str) -> aegis_core::Result<Option<Vec<u8>>> { Ok(None) }
-        async fn set(&self, _: &str, _: &[u8], _: std::time::Duration) -> aegis_core::Result<()> { Ok(()) }
-        async fn del(&self, _: &str) -> aegis_core::Result<()> { Ok(()) }
+        async fn put_ttl(&self, _: &str, _: &[u8], _: std::time::Duration) -> aegis_core::Result<()> { Ok(()) }
         async fn cas_set(
             &self, _: &str, _: Option<&[u8]>, _: &[u8], _: Option<std::time::Duration>,
         ) -> aegis_core::Result<bool> { Ok(true) }
-        async fn incr_window(
-            &self, _: &str, _: std::time::Duration, _: u64,
-        ) -> aegis_core::Result<aegis_core::state::SlidingWindowResult> {
-            Ok(aegis_core::state::SlidingWindowResult { count: 0, allowed: true, retry_after: None })
-        }
-        async fn token_bucket(&self, _: &str, _: u32, _: u32) -> aegis_core::Result<bool> { Ok(true) }
-        async fn get_risk(&self, _: &aegis_core::risk::RiskKey) -> aegis_core::Result<u32> { Ok(0) }
-        async fn add_risk(&self, _: &aegis_core::risk::RiskKey, _: i32, _: u32) -> aegis_core::Result<u32> { Ok(0) }
-        async fn auto_block(&self, _: std::net::IpAddr, _: std::time::Duration) -> aegis_core::Result<()> { Ok(()) }
-        async fn is_auto_blocked(&self, _: std::net::IpAddr) -> aegis_core::Result<bool> { Ok(false) }
-        async fn put_nonce(&self, _: &str, _: std::time::Duration) -> aegis_core::Result<bool> { Ok(true) }
-        async fn consume_nonce(&self, _: &str) -> aegis_core::Result<bool> { Ok(true) }
+        async fn scan_prefix(&self, _: &str) -> aegis_core::Result<Vec<String>> { Ok(Vec::new()) }
     }
 
     #[tokio::test]
     async fn publish_modes_fires_a_nudge_when_bus_wired() {
         let ctx = ctx();
-        ctx.set_cluster_state(Arc::new(NoopState));
-        let bus = Arc::new(RecordingFleetBus::default());
-        ctx.set_cluster_nudge(bus.clone());
+        ctx.set_cluster_state(Arc::new(NoopConfig));
+        let watch = Arc::new(RecordingWatch::default());
+        ctx.set_cluster_nudge(watch.clone());
 
         ctx.publish_modes().await;
 
-        let pubs = bus.published.lock().unwrap();
-        assert_eq!(pubs.len(), 1, "exactly one bump fired");
-        assert_eq!(pubs[0].0, super::super::cluster_sync::CONTROL_BUMP_CHANNEL);
+        assert_eq!(watch.count(), 1, "exactly one nudge fired");
     }
 
     #[tokio::test]
     async fn publish_modes_no_nudge_without_bus() {
-        // cluster_state set but no nudge bus → no bump, no panic.
+        // cluster_state set but no nudge → no bump, no panic.
         let ctx = ctx();
-        ctx.set_cluster_state(Arc::new(NoopState));
+        ctx.set_cluster_state(Arc::new(NoopConfig));
         ctx.publish_modes().await; // must not panic
         assert!(ctx.cluster_nudge().is_none());
     }

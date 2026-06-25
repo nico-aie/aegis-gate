@@ -65,6 +65,26 @@ use crate::responses::{
     extract_named_cookie, json_body_response, json_response, mutation_error_response,
 };
 
+/// H2b — build the config-plane [`ConfigStore`] for an audit-mutated write
+/// handler. Prefers the durable config backend selected from
+/// `config_plane.store` (`services.config_backend` — etcd when
+/// `config_plane.store: etcd`), so an activation lands on the SAME store the
+/// convergence watcher reads. Falls back to the data-plane `state_backend`
+/// (the `shared_state` default, and the path test bundles that don't wire a
+/// `config_backend` take). Always nudged so a successful activate wakes the
+/// fleet (a no-op under etcd, where the KV write IS the notification).
+fn config_plane_store(
+    state_backend: &std::sync::Arc<dyn aegis_core::state::StateBackend>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> crate::config_source::config_store::ConfigStore {
+    use crate::config_source::config_store::ConfigStore;
+    let store = match services.config_backend.as_ref() {
+        Some(cb) => ConfigStore::with_config_backend(cb.clone()),
+        None => ConfigStore::new(state_backend.clone()),
+    };
+    store.with_nudge(services.config_nudge.clone())
+}
+
 pub(crate) async fn handle_mode_put<B>(
     req: hyper::Request<B>,
     services: &aegis_control::dashboard_services::DashboardServices,
@@ -2292,8 +2312,7 @@ pub(crate) async fn handle_config_put(
             "config plane unavailable: no state backend wired".into(),
         ));
     };
-    let store = crate::config_source::config_store::ConfigStore::new(backend.clone())
-        .with_nudge(services.config_nudge.clone());
+    let store = config_plane_store(backend, services);
 
     let current = store.current_version().await.unwrap_or(0);
     let before = serde_json::json!({ "version": current });
@@ -2383,8 +2402,7 @@ pub(crate) async fn handle_config_rollback(
             "config plane unavailable: no state backend wired".into(),
         ));
     };
-    let store = crate::config_source::config_store::ConfigStore::new(backend.clone())
-        .with_nudge(services.config_nudge.clone());
+    let store = config_plane_store(backend, services);
 
     let current = store.current_version().await.unwrap_or(0);
     let before = serde_json::json!({ "version": current });
@@ -2697,8 +2715,7 @@ async fn load_active_config_doc(
             ),
         ));
     };
-    let store = crate::config_source::config_store::ConfigStore::new(backend.clone())
-        .with_nudge(services.config_nudge.clone());
+    let store = config_plane_store(backend, services);
     match store.load().await {
         Ok(Some(doc)) => Ok((store, full_doc_blob(doc.blob, services), doc.version)),
         Ok(None) => match services.config_yaml_path.as_ref() {
@@ -4059,8 +4076,7 @@ pub(crate) async fn handle_detectors_put(
             "config plane unavailable: no state backend wired".into(),
         ));
     };
-    let store = crate::config_source::config_store::ConfigStore::new(backend.clone())
-        .with_nudge(services.config_nudge.clone());
+    let store = config_plane_store(backend, services);
 
     let (base_blob, current_version) = match store.load().await {
         Ok(Some(doc)) => (full_doc_blob(doc.blob, services), doc.version),
@@ -4721,8 +4737,7 @@ pub(crate) async fn handle_tier_put(
             "config plane unavailable: no state backend wired".into(),
         ));
     };
-    let store = crate::config_source::config_store::ConfigStore::new(backend.clone())
-        .with_nudge(services.config_nudge.clone());
+    let store = config_plane_store(backend, services);
 
     let (base_blob, expected) = match store.load().await {
         Ok(Some(doc)) => (full_doc_blob(doc.blob, services), doc.version),
@@ -4946,8 +4961,7 @@ pub(crate) async fn handle_ai_enabled_put(
             "config plane unavailable: no state backend wired".into(),
         ));
     };
-    let store = crate::config_source::config_store::ConfigStore::new(backend.clone())
-        .with_nudge(services.config_nudge.clone());
+    let store = config_plane_store(backend, services);
 
     // Base blob to patch: the active shared doc, or — on a fresh cluster
     // with nothing activated yet — the boot config file (seeds v1).
@@ -5243,8 +5257,7 @@ pub(crate) async fn handle_ai_confidence_put(
             "config plane unavailable: no state backend wired".into(),
         ));
     };
-    let store = crate::config_source::config_store::ConfigStore::new(backend.clone())
-        .with_nudge(services.config_nudge.clone());
+    let store = config_plane_store(backend, services);
 
     let (base_blob, expected) = match store.load().await {
         Ok(Some(doc)) => (full_doc_blob(doc.blob, services), doc.version),
@@ -5458,8 +5471,7 @@ pub(crate) async fn handle_response_filter_put(
             "config plane unavailable: no state backend wired".into(),
         ));
     };
-    let store = crate::config_source::config_store::ConfigStore::new(backend.clone())
-        .with_nudge(services.config_nudge.clone());
+    let store = config_plane_store(backend, services);
 
     let (base_blob, expected) = match store.load().await {
         Ok(Some(doc)) => (full_doc_blob(doc.blob, services), doc.version),
@@ -7544,8 +7556,11 @@ state:
         use std::sync::Arc;
 
         // One shared backend = one shared config plane across both nodes.
-        let backend: Arc<dyn aegis_core::state::StateBackend> =
-            Arc::new(InMemoryBackend::new());
+        // H2b — the control plane rides the ConfigBackend seam.
+        let backend: Arc<dyn aegis_core::config_backend::ConfigBackend> =
+            aegis_core::config_backend::SharedStateConfigBackend::arc(Arc::new(
+                InMemoryBackend::new(),
+            ));
 
         // Node A's interop runtime, cluster-wired (as `run` does post-boot
         // for Redis deployments via `set_cluster_state`).

@@ -5,6 +5,7 @@ pub mod break_glass;
 pub mod cache;
 pub mod cluster;
 pub mod config;
+pub mod config_backend;
 pub mod context;
 pub mod decision;
 pub mod error;
@@ -28,6 +29,9 @@ pub use config::{
     load_config, load_config_str, load_dynamic_str, merge_bootstrap_keys,
     strip_legacy_bootstrap_keys, yaml_has_legacy_bootstrap_keys, BootstrapConfig,
     ConfigBroadcast, ConfigEvent, DynamicConfig, WafConfig, LEGACY_BOOTSTRAP_KEYS,
+};
+pub use config_backend::{
+    ConfigBackend, ConfigWatch, FleetBusConfigWatch, SharedStateConfigBackend,
 };
 pub use context::{ClientInfo, FieldValue, RequestCtx, RouteCtx, TlsFingerprint};
 pub use decision::{Action, ChallengeLevel, Decision};

@@ -50,6 +50,12 @@ azure  = ["aegis-proxy/azure"]
 consul = ["aegis-proxy/consul"]
 etcd   = ["aegis-proxy/etcd"]
 k8s    = ["aegis-proxy/k8s"]
+# `etcd_config` (H2b P2) — the durable CONFIG-PLANE etcd backend
+# (`config_plane.store: etcd`). DISTINCT from `etcd` above (the SD REST
+# poller): this pulls the native etcd-client gRPC stack for KV/Txn/Watch/
+# Lease. Default off — the shipped binary keeps the single Redis dependency.
+# Requires `protoc` at build time (standard for gRPC crates).
+etcd_config = ["aegis-proxy/etcd_config"]
 # `http3` — QUIC listener (quinn 0.11 + h3 0.0.8 + h3-quinn).
 http3 = ["aegis-proxy/http3"]
 # `taxii` — STIX/TAXII threat-intel fetch loop.

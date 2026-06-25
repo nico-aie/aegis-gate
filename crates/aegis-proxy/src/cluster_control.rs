@@ -23,7 +23,7 @@
 use std::sync::Arc;
 
 use aegis_control::interop::InteropRuntime;
-use aegis_core::state::StateBackend;
+use aegis_core::config_backend::ConfigBackend;
 
 /// Poll cadence. Matches the leader-view poller — fast enough that
 /// fleet convergence stays inside the ~3s the config plane already
@@ -41,7 +41,7 @@ pub(crate) struct AccessListTarget {
 /// for the lifetime of the process.
 pub(crate) fn spawn_poller(
     rt: Arc<InteropRuntime>,
-    state: Arc<dyn StateBackend>,
+    state: Arc<dyn ConfigBackend>,
     access_lists: Vec<AccessListTarget>,
 ) {
     tokio::spawn(async move {
@@ -70,10 +70,7 @@ pub(crate) fn spawn_poller(
         // up to POLL_INTERVAL). Polling stays the backstop — if the
         // nudge channel is absent or closes, the interval alone drives
         // convergence, so a dropped bump never breaks correctness.
-        let mut bump_rx = rt
-            .control
-            .cluster_nudge()
-            .map(|bus| bus.subscribe(cluster_sync::CONTROL_BUMP_CHANNEL, 64));
+        let mut bump_rx = rt.control.cluster_nudge().map(|watch| watch.watch(64));
 
         loop {
             // Wake on the interval tick OR a nudge, whichever comes first.
@@ -143,8 +140,12 @@ mod tests {
     use aegis_control::interop::headers::Mode;
     use aegis_control::interop::mode::ModeStore;
 
-    fn backend() -> Arc<dyn StateBackend> {
-        Arc::new(crate::state::in_memory::InMemoryBackend::new())
+    fn backend() -> Arc<dyn ConfigBackend> {
+        // H2b — the control plane rides the ConfigBackend seam; wrap an
+        // in-memory state backend (the shared_state path) for the tests.
+        aegis_core::config_backend::SharedStateConfigBackend::arc(Arc::new(
+            crate::state::in_memory::InMemoryBackend::new(),
+        ))
     }
 
     // Node A publishes a mode map through the shared backend; node B's

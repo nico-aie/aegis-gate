@@ -1806,6 +1806,26 @@ impl BootstrapConfig {
                 ));
             }
         }
+        // H2b — `config_plane.store: etcd` needs at least one endpoint. The
+        // cargo-feature guard (etcd selected on a binary built without the
+        // `etcd` feature) lives in `aegis-bin::config_plane_select`, mirroring
+        // the `state.backend = redis` feature guard — aegis-core can't see the
+        // binary's feature set. This is the store-independent coherence check.
+        if self.config_plane.store == ConfigPlaneStore::Etcd {
+            let endpoints_empty = self
+                .config_plane
+                .etcd
+                .as_ref()
+                .is_none_or(|e| e.endpoints.iter().all(|u| u.trim().is_empty()));
+            if endpoints_empty {
+                return Err(crate::error::WafError::Config(
+                    "config_plane.store = etcd requires config_plane.etcd.endpoints \
+                     to list at least one etcd endpoint (e.g. \
+                     [\"http://127.0.0.1:2379\"])."
+                        .into(),
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -2435,14 +2455,55 @@ pub enum FileWatchMode {
     Off,
 }
 
-/// Config-plane behaviour knobs. Currently just the file-watch role; future
-/// fields (backend selection, auto-restore) slot here per the config plans.
+/// Which store backs the durable config plane (`config:waf:doc` + its
+/// version snapshots + per-node applied ACKs). H2b — see
+/// `plans/future/config-etcd-source-of-truth.md` decision #3.
+///
+/// This is **NOT** `backend: redis | etcd`: Redis is never optional — it
+/// always backs the data plane's hot-path keyspace (`state.backend`)
+/// regardless. This knob relocates only the config doc; etcd is *additive
+/// for config durability*.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigPlaneStore {
+    /// **Default.** The config doc rides the data-plane `state.backend`
+    /// (today's behaviour — Redis in a cluster, in-memory single-node). No
+    /// second dependency.
+    #[default]
+    SharedState,
+    /// The config doc lives in a dedicated etcd cluster (durable-by-design
+    /// Raft + native Watch/Txn/Lease). Requires the `etcd` cargo feature;
+    /// selecting it on a binary built without that feature is a loud boot
+    /// error (see `aegis-bin::config_plane_select`).
+    Etcd,
+}
+
+/// etcd connection settings for [`ConfigPlaneStore::Etcd`]. Consulted only
+/// when `config_plane.store: etcd`; ignored under `shared_state`.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct EtcdConfig {
+    /// etcd v3 gRPC endpoints (e.g. `["http://127.0.0.1:2379"]`). At least
+    /// one is required when `store: etcd`.
+    pub endpoints: Vec<String>,
+}
+
+/// Config-plane behaviour knobs: the file-watch role plus (H2b) which store
+/// backs the durable config doc. Future fields (auto-restore) slot here per
+/// the config plans.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ConfigPlaneConfig {
     /// The boot file's authoring role relative to `config:waf:doc`.
     /// Defaults to [`FileWatchMode::Publish`].
     pub file_watch: FileWatchMode,
+    /// H2b — which store backs the durable config doc. Defaults to
+    /// [`ConfigPlaneStore::SharedState`] (rides `state.backend`).
+    pub store: ConfigPlaneStore,
+    /// etcd connection, consulted only when `store: etcd`. `None` under
+    /// `shared_state`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub etcd: Option<EtcdConfig>,
 }
 
 /// Per-route WebSocket message-inspection settings (WS-MSG).
@@ -6179,6 +6240,66 @@ state:
         // dynamic key still fails loudly (F-CRITICAL-013 intact).
         let doc = format!("{}detctors:\n  enabled: true\n", minimal_yaml());
         assert!(super::load_dynamic_str(&doc).is_err());
+    }
+
+    // ---- 2026-06-24 H2b config-plane store selection (P2a) ------------
+
+    #[test]
+    fn config_plane_store_defaults_to_shared_state() {
+        // No `config_plane` block ⇒ the durable config doc rides the
+        // data-plane state backend (today's behaviour); no etcd block.
+        let cfg = super::load_config_str(minimal_yaml()).unwrap();
+        assert_eq!(cfg.config_plane.store, super::ConfigPlaneStore::SharedState);
+        assert!(cfg.config_plane.etcd.is_none());
+    }
+
+    #[test]
+    fn config_plane_etcd_block_parses_and_validates() {
+        let yaml = format!(
+            "{}config_plane:\n  store: etcd\n  etcd:\n    endpoints:\n      - \"http://127.0.0.1:2379\"\n",
+            minimal_yaml(),
+        );
+        let cfg = super::load_config_str(&yaml).expect("etcd config plane is valid");
+        assert_eq!(cfg.config_plane.store, super::ConfigPlaneStore::Etcd);
+        assert_eq!(
+            cfg.config_plane.etcd.as_ref().unwrap().endpoints,
+            vec!["http://127.0.0.1:2379".to_string()],
+        );
+    }
+
+    #[test]
+    fn config_plane_etcd_without_endpoints_is_rejected() {
+        // store: etcd but no endpoints ⇒ loud config error (the
+        // store-independent coherence check; the cargo-feature guard lives in
+        // aegis-bin).
+        let yaml = format!("{}config_plane:\n  store: etcd\n", minimal_yaml());
+        let err = super::load_config_str(&yaml)
+            .expect_err("etcd store with no endpoints must fail validate")
+            .to_string();
+        assert!(
+            err.contains("config_plane.etcd.endpoints"),
+            "error should name the missing endpoints: {err}",
+        );
+
+        // An explicit-but-empty endpoints list is rejected too.
+        let yaml_empty = format!(
+            "{}config_plane:\n  store: etcd\n  etcd:\n    endpoints: []\n",
+            minimal_yaml(),
+        );
+        assert!(super::load_config_str(&yaml_empty).is_err());
+    }
+
+    #[test]
+    fn config_plane_shared_state_ignores_etcd_block() {
+        // An etcd block under the default shared_state store is inert (parsed,
+        // not required, not validated against) — operators can stage etcd
+        // settings before flipping the store.
+        let yaml = format!(
+            "{}config_plane:\n  store: shared_state\n  etcd:\n    endpoints: []\n",
+            minimal_yaml(),
+        );
+        let cfg = super::load_config_str(&yaml).expect("shared_state ignores etcd coherence");
+        assert_eq!(cfg.config_plane.store, super::ConfigPlaneStore::SharedState);
     }
 
     #[test]
