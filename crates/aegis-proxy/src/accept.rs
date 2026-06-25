@@ -382,6 +382,11 @@ pub(crate) async fn admin_accept_loop(
     // / cluster-off / nudge-disabled (interval polling only). H2b — narrow
     // [`aegis_core::config_backend::ConfigWatch`] (was `FleetBus`).
     config_nudge: Option<Arc<dyn aegis_core::config_backend::ConfigWatch>>,
+    // H2b — the durable config-plane backend selected from
+    // `config_plane.store` (etcd or shared_state). Stashed on
+    // `services.config_backend` so the audit-mutated config write handlers
+    // activate versions on the SAME store the convergence watcher reads.
+    config_backend: Arc<dyn aegis_core::config_backend::ConfigBackend>,
     // N1 (2026-06-11) — shared alert-receiver list, created in `run()` so
     // the config-plane watcher (`ApplyTargets.receiver_writer`) and this
     // admin loop (GET/PUT/DELETE/test + SLO dispatch) share one ArcSwap.
@@ -649,6 +654,8 @@ pub(crate) async fn admin_accept_loop(
     // N2 — config-plane nudge: write handlers publish `config:waf:bump`
     // on activate so peers (and this node) converge in ~ms, not a poll tick.
     services.config_nudge = config_nudge;
+    // H2b — the selected config-plane backend for the write handlers.
+    services.config_backend = Some(config_backend);
     // SC-1 — expose the data-plane response cache stats to GET /api/cache/stats
     // via a JSON-returning closure (keeps aegis-control free of aegis-proxy
     // types). Empty pools map until an upstream opts into `cache:`.

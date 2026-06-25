@@ -116,11 +116,23 @@ pub struct ConfigStore {
 impl ConfigStore {
     /// `shared_state` constructor — the config doc rides the data-plane
     /// [`StateBackend`] (today's default). Wraps `backend` in
-    /// [`SharedStateConfigBackend`]; the etcd path (P2) will construct the
-    /// store from an [`Arc<dyn ConfigBackend>`] directly.
+    /// [`SharedStateConfigBackend`]; the etcd path (H2b P2) constructs the
+    /// store from an [`Arc<dyn ConfigBackend>`] directly via
+    /// [`Self::with_config_backend`].
     pub fn new(backend: Arc<dyn StateBackend>) -> Self {
         Self {
             backend: SharedStateConfigBackend::arc(backend),
+            nudge: None,
+        }
+    }
+
+    /// H2b — construct the store over an arbitrary [`ConfigBackend`] (the
+    /// etcd path: `config_plane.store: etcd`). Identical semantics to
+    /// [`Self::new`]; only the durable store differs. The shared_state path
+    /// goes through [`Self::new`], which wraps the data-plane state backend.
+    pub fn with_config_backend(backend: Arc<dyn ConfigBackend>) -> Self {
+        Self {
+            backend,
             nudge: None,
         }
     }

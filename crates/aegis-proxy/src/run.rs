@@ -1327,13 +1327,30 @@ pub async fn run(
     // the watcher (subscribe side) and the write handlers via
     // `services.config_nudge` (notify side) talk to the abstraction the etcd
     // config plane will supply natively (P2), not Redis pub/sub directly.
-    let config_nudge: Option<std::sync::Arc<dyn aegis_core::config_backend::ConfigWatch>> =
+    let fleet_config_nudge: Option<std::sync::Arc<dyn aegis_core::config_backend::ConfigWatch>> =
         config_nudge_bus.map(|bus| {
             aegis_core::config_backend::FleetBusConfigWatch::arc(
                 bus,
                 crate::config_source::config_store::CONFIG_BUMP_CHANNEL,
             )
         });
+
+    // H2b P2c — select the durable config-plane store from
+    // `config_plane.store`. `shared_state` (default) wraps the data-plane
+    // `state` backend (zero change); `etcd` connects a dedicated
+    // EtcdConfigBackend + its native watch. A loud boot error fires here if
+    // `store: etcd` is set on a binary built without the `etcd_config`
+    // feature. The whole config plane — the convergence watcher AND the
+    // audit-mutated write handlers (via `services.config_backend`) — rides
+    // the selected backend, so reads and writes never split across stores.
+    let config_plane =
+        crate::config_source::plane_select::select(&cfg, state.clone()).await?;
+    tracing::info!(store = %config_plane.summary, "config plane store selected");
+    let config_backend = config_plane.backend.clone();
+    // etcd supplies its own native watch (notify_change is then a no-op — the
+    // KV put IS the notification); shared_state reuses the pub/sub nudge.
+    let config_nudge: Option<std::sync::Arc<dyn aegis_core::config_backend::ConfigWatch>> =
+        config_plane.watch.clone().or(fleet_config_nudge);
 
     // 2026-05-27 — shared-store config watcher (multi-node config
     // plane). INDEPENDENT of the boot config source above: it watches
@@ -1366,7 +1383,11 @@ pub async fn run(
     };
     {
         let node_id = lease_store.self_id().to_string();
-        let store = crate::config_source::config_store::ConfigStore::new(state.clone());
+        // H2b — the watcher reads/seeds the SELECTED config backend (etcd when
+        // `config_plane.store: etcd`, else the shared state backend).
+        let store = crate::config_source::config_store::ConfigStore::with_config_backend(
+            config_backend.clone(),
+        );
         let targets = crate::config_source::redis_source::ApplyTargets {
             detector_mask: Some(mask.clone()),
             proxy_ctx: Some(upstream_ctx.clone()),
@@ -2142,6 +2163,10 @@ pub async fn run(
         tier_store,
         rule_store,
         config_nudge,
+        // H2b — the selected config backend (etcd or shared_state) so the
+        // audit-mutated write handlers activate versions on the SAME store the
+        // watcher reads, never splitting reads and writes across stores.
+        config_backend,
         shared_receivers,
     )));
 

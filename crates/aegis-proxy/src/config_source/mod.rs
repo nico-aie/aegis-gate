@@ -28,5 +28,6 @@ pub mod config_store;
 /// shipped binary keeps the single Redis dependency.
 #[cfg(feature = "etcd_config")]
 pub mod etcd_backend;
+pub mod plane_select;
 pub mod redis_source;
 pub mod reload;
