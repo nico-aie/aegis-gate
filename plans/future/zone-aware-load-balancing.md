@@ -154,9 +154,14 @@ never returns `None` for a non-empty pool**.
 
 ## 5. Phasing
 
-- **P1 — node self-zone identity.** Config `zone:` + `AEGIS_ZONE` env, resolved
-  at boot, threaded to the `pick` call site. No routing change yet (read-only
-  plumbing + a dashboard "this node: az-a" readout). Ships safely on its own.
+- **P1 — node self-zone identity.** ✅ Shipped 2026-06-26 (this PR). Config
+  `node.zone` (chosen over a top-level `zone:` — it's node identity, mirrors
+  `node.id`) + `AEGIS_ZONE` env override (env wins, blank treated as unset), via
+  the pure `aegis_core::config::resolve_self_zone(file, env)`. Resolved once in
+  `ProxyContext::build` into `ProxyContext.self_zone` (accessor `self_zone()`) +
+  a boot log. **No routing change** — `pick` does not read it yet (P2). The
+  dashboard "this node: az-a" readout is folded into P3 (observability) to keep
+  P1 pure plumbing.
 - **P2 — zone preference in `pick`** behind `pool.locality.enabled` (default
   off), v1 presence-gate spillover, composed with the fail-open fallback.
 - **P3 — observability.** Local-member badge + per-zone healthy summary +
