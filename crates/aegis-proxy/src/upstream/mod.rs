@@ -294,13 +294,20 @@ pub fn record_passive_outcome_err(
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LocalityRuntime {
     pub enabled: bool,
+    /// Capacity gate (P4) — prefer the local zone only while its healthy
+    /// fraction is ≥ this percentage; below it, spill cross-zone. `None` ⇒ v1
+    /// presence gate (any healthy local member keeps traffic local).
+    pub min_local_healthy_pct: Option<u8>,
 }
 
 impl LocalityRuntime {
     /// Resolve from a pool's optional config block. `None` ⇒ disabled.
     pub fn resolve(cfg: Option<&aegis_core::config::LocalityConfig>) -> Self {
         match cfg {
-            Some(c) => Self { enabled: c.enabled },
+            Some(c) => Self {
+                enabled: c.enabled,
+                min_local_healthy_pct: c.min_local_healthy_pct,
+            },
             None => Self::default(),
         }
     }

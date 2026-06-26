@@ -175,8 +175,14 @@ never returns `None` for a non-empty pool**.
   non-empty pool.
 - **P3 — observability.** Local-member badge + per-zone healthy summary +
   metric/label for "served local vs cross-zone".
-- **P4 — capacity gate (v2)** + `min_local_healthy_pct`, and (optional) outlier
-  awareness so a slow-but-healthy local zone can shed load.
+- **P4 — capacity gate (v2)** ✅ Shipped 2026-06-26 (this PR).
+  `pool.locality.min_local_healthy_pct: Option<u8>` (non-breaking add). When
+  set, `pick_with_locality` prefers the local zone only while its healthy
+  fraction (`local_healthy / local_total` over *configured* local members) is
+  ≥ the threshold; below it, spill to the full healthy set so a half-dead local
+  zone isn't hammered (`local_zone_has_capacity`, integer math). `None` ⇒ the v1
+  presence gate (unchanged). Composes with fail-open (never `None`). Outlier /
+  latency-percentile awareness remains a possible later refinement.
 
 ## 6. Tests
 

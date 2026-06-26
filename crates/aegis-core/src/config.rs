@@ -2867,6 +2867,15 @@ pub struct LocalityConfig {
     /// never partitions by zone) — identical to omitting the block.
     #[serde(default)]
     pub enabled: bool,
+    /// Capacity gate (P4). Prefer the local zone only while its **healthy
+    /// fraction** (healthy local members / configured local members) is at or
+    /// above this percentage; below it, spill to the full healthy set so a
+    /// half-dead local zone isn't hammered. `None` (default) ⇒ the v1
+    /// **presence gate** (any healthy local member keeps traffic local). A
+    /// value `> 100` effectively disables local preference; `0` is equivalent
+    /// to the presence gate.
+    #[serde(default)]
+    pub min_local_healthy_pct: Option<u8>,
 }
 
 /// Per-pool passive upstream health. When `enabled`, a member is marked
@@ -3495,6 +3504,15 @@ locality:
     fn locality_defaults_off() {
         let lc: LocalityConfig = serde_yaml::from_str("{}").unwrap();
         assert!(!lc.enabled);
+        assert!(lc.min_local_healthy_pct.is_none());
+    }
+
+    #[test]
+    fn locality_capacity_gate_round_trips() {
+        let lc: LocalityConfig =
+            serde_yaml::from_str("enabled: true\nmin_local_healthy_pct: 50\n").unwrap();
+        assert!(lc.enabled);
+        assert_eq!(lc.min_local_healthy_pct, Some(50));
     }
 }
 
