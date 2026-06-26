@@ -78,6 +78,10 @@ pub struct DdosConfigView {
     /// `spike_active`, and consecutive under-threshold ticks to release it.
     pub spike_engage_ticks: u32,
     pub spike_release_ticks: u32,
+    /// Fleet RPS aggregation — `per_node` (default) or `fleet`. Surfaced so the
+    /// dashboard can show + edit the spike scope alongside the dwell knobs.
+    #[serde(default)]
+    pub spike_scope: aegis_core::config::SpikeScope,
 }
 
 impl From<DdosConfig> for DdosConfigView {
@@ -92,6 +96,7 @@ impl From<DdosConfig> for DdosConfigView {
             tightened_per_ip_rps: c.tightened_per_ip_rps,
             spike_engage_ticks: c.spike_engage_ticks,
             spike_release_ticks: c.spike_release_ticks,
+            spike_scope: c.spike_scope,
         }
     }
 }
@@ -120,6 +125,7 @@ impl DdosView {
                     tightened_per_ip_rps: 0,
                     spike_engage_ticks: 0,
                     spike_release_ticks: 0,
+                    spike_scope: aegis_core::config::SpikeScope::PerNode,
                 },
                 current_rps: 0,
                 baseline_rps: 0,
@@ -151,6 +157,11 @@ pub struct DdosPutBody {
     pub spike_engage_ticks: u32,
     #[serde(default = "default_spike_release_ticks")]
     pub spike_release_ticks: u32,
+    /// Fleet RPS aggregation — `per_node` (default) or `fleet`. Round-tripped
+    /// so a dashboard PUT preserves the scope instead of clobbering a YAML
+    /// `fleet` back to `per_node`.
+    #[serde(default)]
+    pub spike_scope: aegis_core::config::SpikeScope,
 }
 
 fn default_true() -> bool { true }
@@ -196,6 +207,7 @@ impl DdosPutBody {
             // (surfaced in the DDoS panel); the PUT carries it.
             spike_engage_ticks: self.spike_engage_ticks,
             spike_release_ticks: self.spike_release_ticks,
+            spike_scope: self.spike_scope,
             // 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005): the PUT
             // body doesn't carry per-tier overrides today —
             // operators tune those via YAML. The hot-swap surface
@@ -555,7 +567,19 @@ mod tests {
             tightened_per_ip_rps: 20,
             spike_engage_ticks: 3,
             spike_release_ticks: 9,
+            spike_scope: aegis_core::config::SpikeScope::PerNode,
         };
+        // Fleet RPS aggregation — spike_scope round-trips so a dashboard PUT
+        // never clobbers a YAML `fleet` back to `per_node`.
+        let fleet = DdosPutBody {
+            spike_scope: aegis_core::config::SpikeScope::Fleet,
+            ..valid.clone()
+        };
+        assert_eq!(
+            fleet.validate().unwrap().spike_scope,
+            aegis_core::config::SpikeScope::Fleet
+        );
+
         // Dwell knobs round-trip from PUT into the runtime config.
         let cfg = valid.validate().unwrap();
         assert_eq!(cfg.spike_engage_ticks, 3);
@@ -571,6 +595,7 @@ mod tests {
             tightened_per_ip_rps: 20,
             spike_engage_ticks: 2,
             spike_release_ticks: 8,
+            spike_scope: aegis_core::config::SpikeScope::PerNode,
         };
         let errs = zero_limit.validate().unwrap_err();
         assert!(errs.iter().any(|e| e.contains("per_ip_limit")));
@@ -585,6 +610,7 @@ mod tests {
             tightened_per_ip_rps: 20,
             spike_engage_ticks: 2,
             spike_release_ticks: 8,
+            spike_scope: aegis_core::config::SpikeScope::PerNode,
         };
         let errs = bad_multiplier.validate().unwrap_err();
         assert!(errs.iter().any(|e| e.contains("spike_multiplier")));
@@ -599,6 +625,7 @@ mod tests {
             tightened_per_ip_rps: 20,
             spike_engage_ticks: 0,
             spike_release_ticks: 8,
+            spike_scope: aegis_core::config::SpikeScope::PerNode,
         };
         let errs = zero_engage.validate().unwrap_err();
         assert!(errs.iter().any(|e| e.contains("spike_engage_ticks")));

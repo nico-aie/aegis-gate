@@ -78,14 +78,21 @@ panel alongside the dwell knobs (same wiring as P2's `spike_engage_ticks`).
 
 ## Phases
 
-- **P1** — Refactor `tick_rps` to a testable `tick_with_current(current, now)` seam; port the P2
-  hysteresis/dwell tests onto it (no behaviour change). Pure refactor, RED-safe.
-- **P2** — Tick-task fleet aggregation: `incrby` this node's count + read prior-second sum; EWMA
-  over fleet values; `spike_scope` config gate (default `per_node`). Fail-safe fallback to local.
-- **P3** — Dashboard: surface `spike_scope` + show `fleet_rps` vs `node_rps` in the DDoS panel
-  (the getters already exist for the per-node values).
+- **P1** — ✅ Shipped 2026-06-26 (this PR). `DdosDetector::tick_with_current(current)` seam +
+  `drain_rolling_rps()`; `tick_rps()` = drain + `tick_with_current`. EWMA/hysteresis now driven by
+  an injected value. No behaviour change — the per-node dwell tests are the regression guard.
+- **P2** — ✅ Shipped 2026-06-26 (this PR). `SpikeScope { per_node (default) | fleet }` on boot +
+  runtime `DdosConfig` (+ derive). `DdosRuntime::fleet_current(node_count, now_epoch)` —
+  `INCRBY ddos:fleet:rps:<epoch>` + `EXPIRE` (5 s TTL) + `GET ddos:fleet:rps:<epoch-1>` (prior
+  complete second). `tick_rps_fleet_at(epoch)` (testable) / `tick_rps_fleet()` (scheduler, run.rs):
+  drain → fleet sum in `fleet` scope, **fail-safe to per-node** on any backend error (debug log,
+  never panics/stalls) → `tick_with_current`. `per_node` skips the backend entirely (byte-identical
+  today). `spike_scope` round-trips through the `/api/gates/ddos` view + PUT so a dashboard edit
+  can't clobber a YAML `fleet`.
+- **P3** — *Partial.* API surface done (P2): `spike_scope` is in `DdosConfigView` + `DdosPutBody`.
+  **Remaining:** the DDoS-panel JSX (show/edit `spike_scope`; display `fleet_rps` vs `node_rps`).
 - **P4** — Docs: update `rolling_rps` / `dev.yaml` comments (drop the "deferred" breadcrumb),
-  document the Redis key shape + TTL.
+  document the Redis key shape + TTL. **Remaining.**
 
 ## Acceptance gates
 
