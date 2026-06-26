@@ -2873,6 +2873,10 @@ pub(crate) async fn forward_allow_to_upstream(
                     cb.record_success();
                 }
             }
+            // Passive upstream health (P2): a received response means the
+            // connection works → member success (unless `count_5xx` is on
+            // and this is a 5xx). No-op unless enabled for this pool.
+            crate::upstream::record_passive_outcome_ok(&pool.passive_health, member, status);
             tracing::Span::current().record(
                 "outcome",
                 if status.is_server_error() {
@@ -3018,6 +3022,10 @@ pub(crate) async fn forward_allow_to_upstream(
             if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
                 cb.record_failure();
             }
+            // Passive upstream health (P2): only connection-level failures
+            // (connect/handshake/timeout) evict this member; ambiguous
+            // mid-stream errors are ignored. No-op unless enabled.
+            crate::upstream::record_passive_outcome_err(&pool.passive_health, member, &e);
             // AF-T1: distinguish forward-failure modes for the
             // contract. Connect/Handshake/Send timeouts → Timeout;
             // anything else → CircuitBreaker (we refused to

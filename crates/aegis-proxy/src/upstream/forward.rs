@@ -706,6 +706,23 @@ pub enum ForwardError {
     Timeout(String),
 }
 
+impl ForwardError {
+    /// Whether this failure indicates the **member itself** is unreachable
+    /// (so it should count toward passive per-member eviction — P2 of
+    /// `plans/future/passive-upstream-health.md`).
+    ///
+    /// `Connect` / `Handshake` / `Timeout` mean we couldn't reach or
+    /// complete a conversation with this backend → member-level. `Send` /
+    /// `ReadBody` can fail mid-stream for client/app reasons, and
+    /// `BadRequest` is the proxy's own fault — none of those evict a member.
+    pub fn is_member_failure(&self) -> bool {
+        matches!(
+            self,
+            ForwardError::Connect(_) | ForwardError::Handshake(_) | ForwardError::Timeout(_)
+        )
+    }
+}
+
 impl std::fmt::Display for ForwardError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -768,6 +785,26 @@ mod tests {
         ] {
             assert!(!is_hop_by_hop_header(h), "should NOT be hop-by-hop: {h}");
         }
+    }
+
+    // ---- ForwardError::is_member_failure (passive upstream health P2) ----
+
+    #[test]
+    fn member_level_failures_are_connect_handshake_timeout() {
+        // These mean "couldn't reach / talk to this member" — they count
+        // toward passive per-member eviction.
+        assert!(ForwardError::Connect("refused".into()).is_member_failure());
+        assert!(ForwardError::Handshake("tls".into()).is_member_failure());
+        assert!(ForwardError::Timeout("read stalled".into()).is_member_failure());
+    }
+
+    #[test]
+    fn ambiguous_failures_are_not_member_failures() {
+        // Send/ReadBody can fail mid-stream for client/app reasons, and
+        // BadRequest is our own fault — none should evict a member.
+        assert!(!ForwardError::Send("write".into()).is_member_failure());
+        assert!(!ForwardError::ReadBody("trickle".into()).is_member_failure());
+        assert!(!ForwardError::BadRequest("uri".into()).is_member_failure());
     }
 
     // ---- path_and_query ----

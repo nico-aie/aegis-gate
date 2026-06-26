@@ -109,13 +109,23 @@ circuit-breaker half-open state already in `upstream/circuit.rs`.)
    tooltip).
 
 ## 5. Phasing
-- **P1 — fail-open LB.** `LbStrategy::pick` falls back to all members when none
-  healthy. Tests: all-down pool routes (502 from attempt) instead of 503.
-  Ship independently; it's a safety improvement on its own.
-- **P2 — passive accounting + marking** behind `pool.passive_health.enabled`
-  (default off), with hysteresis, wired to `healthy` + `observed`.
-- **P3 — half-open recovery probe** for passively-downed members.
-- **P4** — default on for pools without an active `health:` block; retire/)fold
+- **P1 — fail-open LB.** ✅ Shipped as PREREQ-B (#78). `LbStrategy::pick` falls
+  back to all members when none healthy; `None` only for a genuinely empty pool.
+- **P2 — passive accounting + marking** ✅ Shipped 2026-06-26 (this PR), behind
+  `pool.passive_health.{enabled (default off), fail_threshold=3,
+  rise_threshold=2, count_5xx=false}`. Per-member `consec_failures` /
+  `consec_successes` (AtomicU32) on `Member`; hysteresis (a single error never
+  flips); marks DOWN after `fail_threshold` consecutive connection-level
+  failures (`ForwardError::is_member_failure` = connect/handshake/timeout),
+  back UP after `rise_threshold` successes; writes both `healthy` (LB) and
+  `observed` (badge). Wired at both forward-result sites (proxy.rs +
+  data_plane.rs) via shared `record_passive_outcome_ok/err`; recording only on
+  a completed outcome (cancellation/streaming safe via the inflight guard).
+  5xx counts as a connection success unless `count_5xx` (stub toggle).
+  Default-off = today's behavior byte-for-byte. CB stays the pool fuse; passive
+  is per-member rotation (no double-penalty).
+- **P3 — half-open recovery probe** for passively-downed members. **Next.**
+- **P4** — default on for pools without an active `health:` block; retire/fold
   the standalone TCP observer for those pools.
 
 ## 6. Tests

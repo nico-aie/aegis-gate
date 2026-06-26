@@ -221,6 +221,9 @@ impl PoolRegistry {
                     members,
                     strategy,
                     connection,
+                    passive_health: crate::upstream::PassiveHealthRuntime::from_config(
+                        cfg.passive_health.as_ref(),
+                    ),
                 }),
             );
         }
