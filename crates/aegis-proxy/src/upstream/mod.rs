@@ -286,6 +286,26 @@ pub fn record_passive_outcome_err(
     }
 }
 
+/// Resolved, hot-path-cheap locality (zone-aware LB) settings for a pool
+/// (`plans/future/zone-aware-load-balancing.md` P2). A `Copy` snapshot of the
+/// pool's [`aegis_core::config::LocalityConfig`]; the default is **disabled**,
+/// which makes `LbStrategy::pick_with_locality` behave like plain `pick`
+/// (zone-agnostic — today's behavior).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LocalityRuntime {
+    pub enabled: bool,
+}
+
+impl LocalityRuntime {
+    /// Resolve from a pool's optional config block. `None` ⇒ disabled.
+    pub fn resolve(cfg: Option<&aegis_core::config::LocalityConfig>) -> Self {
+        match cfg {
+            Some(c) => Self { enabled: c.enabled },
+            None => Self::default(),
+        }
+    }
+}
+
 /// A pool of upstream members with a configured load-balancing strategy.
 #[derive(Debug)]
 pub struct Pool {
@@ -300,6 +320,10 @@ pub struct Pool {
     /// the forward-result call sites to decide whether a connection-level
     /// failure / success rotates this member.
     pub passive_health: PassiveHealthRuntime,
+    /// Zone-aware LB P2 — locality settings (default disabled). Read by
+    /// `LbStrategy::pick_with_locality` at the pick call sites to prefer
+    /// same-zone members.
+    pub locality: LocalityRuntime,
 }
 
 #[cfg(test)]

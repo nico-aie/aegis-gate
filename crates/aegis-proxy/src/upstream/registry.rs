@@ -228,6 +228,11 @@ impl PoolRegistry {
                         cfg.passive_health.as_ref(),
                         cfg.health.is_some(),
                     ),
+                    // Zone-aware LB P2 — per-pool locality preference (default
+                    // off ⇒ zone-agnostic selection).
+                    locality: crate::upstream::LocalityRuntime::resolve(
+                        cfg.locality.as_ref(),
+                    ),
                 }),
             );
         }

@@ -510,7 +510,12 @@ where
         }
     };
 
-    let member = match pool.strategy.pick(&pool.members, None) {
+    let member = match pool.strategy.pick_with_locality(
+        &pool.members,
+        None,
+        ctx.self_zone(),
+        pool.locality,
+    ) {
         Some(m) => m,
         None => {
             // All members unhealthy.

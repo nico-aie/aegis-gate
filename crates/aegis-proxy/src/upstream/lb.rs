@@ -2,7 +2,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use super::Member;
+use super::{LocalityRuntime, Member};
 
 /// Load-balancing strategy for an upstream pool.
 #[derive(Debug)]
@@ -28,33 +28,64 @@ impl LbStrategy {
         members: &'a [Arc<Member>],
         hash_key: Option<&str>,
     ) -> Option<&'a Arc<Member>> {
-        let healthy: Vec<(usize, &Arc<Member>)> = members
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| m.is_healthy())
-            .collect();
+        let candidates = healthy_or_fallback(members)?;
+        self.apply(&candidates, hash_key)
+    }
 
-        // Fail open (PREREQ-B for passive-upstream-health): when no member is
-        // healthy, fall back to the FULL member set so the pool still attempts
-        // a forward (a real 502 from the attempt) instead of refusing to route
-        // (a 503). A genuinely empty pool — no members configured — still
-        // returns None, since there is nothing to attempt.
-        let candidates: Vec<(usize, &Arc<Member>)> = if healthy.is_empty() {
-            if members.is_empty() {
-                return None;
+    /// Zone-aware pick (zone-aware LB P2). Identical to [`Self::pick`] except
+    /// that, when `locality.enabled` and the node has a `self_zone`, the
+    /// candidate set is **narrowed to members in the node's own zone** before
+    /// the strategy is applied — so an operator still gets round_robin / p2c /
+    /// consistent_hash *within* the local zone.
+    ///
+    /// **Spillover (v1 presence gate):** the narrowing only applies when the
+    /// local zone has at least one candidate; otherwise the full (healthy or
+    /// fail-open) set is used, so traffic is never stranded in an
+    /// under-provisioned zone. Composes with the fail-open fallback: narrowing
+    /// happens *after* the healthy→all-members fallback, on a guaranteed
+    /// non-empty set, so the invariant holds — **`pick` never returns `None`
+    /// for a non-empty pool** under any zone configuration.
+    ///
+    /// `locality` disabled or `self_zone == None` ⇒ byte-identical to
+    /// [`Self::pick`].
+    pub fn pick_with_locality<'a>(
+        &self,
+        members: &'a [Arc<Member>],
+        hash_key: Option<&str>,
+        self_zone: Option<&str>,
+        locality: LocalityRuntime,
+    ) -> Option<&'a Arc<Member>> {
+        let mut candidates = healthy_or_fallback(members)?;
+        if locality.enabled {
+            if let Some(zone) = self_zone {
+                let local: Vec<(usize, &Arc<Member>)> = candidates
+                    .iter()
+                    .filter(|(_, m)| m.zone.as_deref() == Some(zone))
+                    .cloned()
+                    .collect();
+                // Presence gate: prefer local only when it has capacity;
+                // otherwise spill to the full set (keep `candidates`).
+                if !local.is_empty() {
+                    candidates = local;
+                }
             }
-            members.iter().enumerate().collect()
-        } else {
-            healthy
-        };
+        }
+        self.apply(&candidates, hash_key)
+    }
 
+    /// Apply the configured strategy to an already-resolved candidate set.
+    fn apply<'a>(
+        &self,
+        candidates: &[(usize, &'a Arc<Member>)],
+        hash_key: Option<&str>,
+    ) -> Option<&'a Arc<Member>> {
         match self {
             LbStrategy::RoundRobin(counter) => {
                 let idx = counter.fetch_add(1, Ordering::Relaxed) % candidates.len();
                 Some(candidates[idx].1)
             }
             LbStrategy::WeightedRoundRobin(counter) => {
-                pick_weighted(&candidates, counter)
+                pick_weighted(candidates, counter)
             }
             LbStrategy::LeastConn => {
                 candidates
@@ -63,13 +94,36 @@ impl LbStrategy {
                     .map(|(_, m)| *m)
             }
             LbStrategy::P2c => {
-                pick_p2c(&candidates)
+                pick_p2c(candidates)
             }
             LbStrategy::ConsistentHash => {
                 let key = hash_key.unwrap_or("");
-                pick_consistent_hash(&candidates, key)
+                pick_consistent_hash(candidates, key)
             }
         }
+    }
+}
+
+/// Build the candidate set: the healthy members, or — when none are healthy —
+/// the **full** member set (fail open, PREREQ-B for passive-upstream-health),
+/// so an all-down pool still attempts a forward (a real 502) instead of
+/// refusing to route (a 503). `None` only for a genuinely empty pool (no
+/// members configured), the one case where there is nothing to attempt.
+fn healthy_or_fallback<'a>(
+    members: &'a [Arc<Member>],
+) -> Option<Vec<(usize, &'a Arc<Member>)>> {
+    let healthy: Vec<(usize, &Arc<Member>)> = members
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.is_healthy())
+        .collect();
+    if healthy.is_empty() {
+        if members.is_empty() {
+            return None;
+        }
+        Some(members.iter().enumerate().collect())
+    } else {
+        Some(healthy)
     }
 }
 
@@ -191,6 +245,129 @@ mod tests {
                 ))
             })
             .collect()
+    }
+
+    fn make_zoned_members(spec: &[(u16, &str)]) -> Vec<Arc<Member>> {
+        spec.iter()
+            .map(|(port, zone)| {
+                Arc::new(Member::new(
+                    format!("127.0.0.1:{port}").parse().unwrap(),
+                    1,
+                    Some((*zone).to_string()),
+                ))
+            })
+            .collect()
+    }
+
+    fn locality_on() -> LocalityRuntime {
+        LocalityRuntime { enabled: true }
+    }
+
+    // -----------------------------------------------------------------------
+    // Zone-aware load balancing (P2) — `pick_with_locality` prefers members in
+    // the node's own zone, with v1 presence-gate spillover, composed with the
+    // fail-open fallback. Default-off (`pick`) stays byte-identical.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn zone_preference_routes_only_to_local_when_present() {
+        // Pool spans az-a + az-b; node is in az-a; all healthy → every pick
+        // lands in az-a.
+        let members = make_zoned_members(&[(3000, "az-a"), (3001, "az-b"), (3002, "az-a")]);
+        let strategy = LbStrategy::RoundRobin(AtomicUsize::new(0));
+        for _ in 0..30 {
+            let m = strategy.pick_with_locality(&members, None, Some("az-a"), locality_on());
+            assert_eq!(
+                m.unwrap().zone.as_deref(),
+                Some("az-a"),
+                "must prefer the node's own zone when local capacity exists"
+            );
+        }
+    }
+
+    #[test]
+    fn zone_preference_distributes_within_local_zone() {
+        // Two local members → the strategy still spreads across them
+        // (round-robin cycles both az-a ports).
+        let members = make_zoned_members(&[(3000, "az-a"), (3001, "az-b"), (3002, "az-a")]);
+        let strategy = LbStrategy::RoundRobin(AtomicUsize::new(0));
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..20 {
+            let m = strategy.pick_with_locality(&members, None, Some("az-a"), locality_on());
+            seen.insert(m.unwrap().addr.port());
+        }
+        assert_eq!(
+            seen,
+            std::collections::HashSet::from([3000, 3002]),
+            "strategy must distribute across BOTH local members"
+        );
+    }
+
+    #[test]
+    fn zone_preference_spills_when_no_local_healthy() {
+        // The only az-a member is unhealthy → spill to the healthy az-b member
+        // (no None, no stranding in the local zone).
+        let members = make_zoned_members(&[(3000, "az-a"), (3001, "az-b")]);
+        members[0].healthy.store(false, Ordering::Relaxed);
+        let strategy = LbStrategy::RoundRobin(AtomicUsize::new(0));
+        for _ in 0..10 {
+            let m = strategy.pick_with_locality(&members, None, Some("az-a"), locality_on());
+            assert_eq!(
+                m.unwrap().addr.port(),
+                3001,
+                "must spill cross-zone when the local zone has no healthy member"
+            );
+        }
+    }
+
+    #[test]
+    fn zone_preference_off_is_identity_with_pick() {
+        // Locality disabled → identical candidate set to plain `pick` (routes
+        // across all zones). Regression guard.
+        let members = make_zoned_members(&[(3000, "az-a"), (3001, "az-b")]);
+        let strategy = LbStrategy::RoundRobin(AtomicUsize::new(0));
+        let mut ports = std::collections::HashSet::new();
+        for _ in 0..20 {
+            let m = strategy.pick_with_locality(
+                &members,
+                None,
+                Some("az-a"),
+                LocalityRuntime { enabled: false },
+            );
+            ports.insert(m.unwrap().addr.port());
+        }
+        assert_eq!(
+            ports,
+            std::collections::HashSet::from([3000, 3001]),
+            "disabled locality must route across all zones, like plain pick"
+        );
+    }
+
+    #[test]
+    fn zone_preference_inert_without_self_zone() {
+        // Locality on but the node has no zone identity → feature inert, routes
+        // across all zones.
+        let members = make_zoned_members(&[(3000, "az-a"), (3001, "az-b")]);
+        let strategy = LbStrategy::RoundRobin(AtomicUsize::new(0));
+        let mut ports = std::collections::HashSet::new();
+        for _ in 0..20 {
+            let m = strategy.pick_with_locality(&members, None, None, locality_on());
+            ports.insert(m.unwrap().addr.port());
+        }
+        assert_eq!(ports, std::collections::HashSet::from([3000, 3001]));
+    }
+
+    #[test]
+    fn zone_preference_never_none_when_all_unhealthy() {
+        // All members unhealthy + locality on → fail-open still routes (a real
+        // 502 from the attempt), never None for a non-empty pool.
+        let members = make_zoned_members(&[(3000, "az-a"), (3001, "az-b")]);
+        members[0].healthy.store(false, Ordering::Relaxed);
+        members[1].healthy.store(false, Ordering::Relaxed);
+        let strategy = LbStrategy::RoundRobin(AtomicUsize::new(0));
+        assert!(strategy
+            .pick_with_locality(&members, None, Some("az-a"), locality_on())
+            .is_some());
     }
 
     fn make_weighted_members(weights: &[u32]) -> Vec<Arc<Member>> {
