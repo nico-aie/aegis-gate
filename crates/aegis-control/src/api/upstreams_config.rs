@@ -346,6 +346,7 @@ pub trait UpstreamWriter: Send + Sync {
     ) -> crate::api::upstreams::PoolHealthSnapshot {
         crate::api::upstreams::PoolHealthSnapshot {
             pools: Vec::new(),
+            ..Default::default()
         }
     }
 

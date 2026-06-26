@@ -60,6 +60,52 @@ pub struct MemberHealth {
     /// snapshots (no `status` key) still deserialize.
     #[serde(default)]
     pub status: MemberStatus,
+    /// Zone-aware LB P3 — this member's availability zone (`MemberConfig.zone`),
+    /// or `None` if unlabeled. Additive; omitted from JSON when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<String>,
+    /// Zone-aware LB P3 — `true` when this member's zone matches the node's
+    /// own zone (the dashboard tints local members). Convenience flag so the
+    /// frontend doesn't re-derive it per member.
+    #[serde(default)]
+    pub is_local: bool,
+}
+
+/// Zone-aware LB P3 — per-zone health rollup for one pool's member set. Lets
+/// the dashboard card show "az-a: 2/3 healthy · serving local" so spillover
+/// state is legible.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ZoneHealth {
+    pub zone: String,
+    pub healthy: u32,
+    pub total: u32,
+    /// `true` when this zone is the node's own.
+    pub local: bool,
+}
+
+/// Roll a pool's members up by zone (zone-aware LB P3). Unlabeled members are
+/// grouped under the empty-string zone and are never `local`. Output is sorted
+/// by zone name for stable rendering.
+pub fn zone_rollup(members: &[MemberHealth], self_zone: Option<&str>) -> Vec<ZoneHealth> {
+    use std::collections::BTreeMap;
+    let mut by_zone: BTreeMap<&str, (u32, u32)> = BTreeMap::new();
+    for m in members {
+        let z = m.zone.as_deref().unwrap_or("");
+        let entry = by_zone.entry(z).or_insert((0, 0));
+        entry.1 += 1; // total
+        if m.healthy {
+            entry.0 += 1; // healthy
+        }
+    }
+    by_zone
+        .into_iter()
+        .map(|(zone, (healthy, total))| ZoneHealth {
+            zone: zone.to_string(),
+            healthy,
+            total,
+            local: self_zone.is_some_and(|sz| !zone.is_empty() && zone == sz),
+        })
+        .collect()
 }
 
 /// Snapshot of one upstream pool. Cheap value type so the `aegis-proxy`
@@ -79,6 +125,10 @@ pub struct PoolHealthEntry {
     pub members: Vec<MemberHealth>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub circuit: Option<String>,
+    /// Zone-aware LB P3 — per-zone health rollup (derived in `compute_summary`
+    /// from `members`). Empty when members carry no zone labels.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub zones: Vec<ZoneHealth>,
 }
 
 /// Input to [`compute_summary`]. A list of `PoolHealthEntry`. The
@@ -86,6 +136,11 @@ pub struct PoolHealthEntry {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PoolHealthSnapshot {
     pub pools: Vec<PoolHealthEntry>,
+    /// Zone-aware LB P3 — the node's own availability zone, so the dashboard
+    /// can render "this node: az-a" and tint local members. `None` ⇒ no zone
+    /// identity. Set proxy-side from `ProxyContext.self_zone`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_zone: Option<String>,
 }
 
 /// JSON shape returned by `GET /api/upstreams/summary`. Matches
@@ -98,6 +153,10 @@ pub struct UpstreamSummaryResponse {
     pub healthy_members: u32,
     pub total_members: u32,
     pub pools: Vec<PoolHealthEntry>,
+    /// Zone-aware LB P3 — the node's own zone (echoed from the snapshot) for
+    /// the "this node: az-a" readout. Omitted when no zone identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_zone: Option<String>,
 }
 
 /// Roll up a [`PoolHealthSnapshot`] into the summary response.
@@ -136,11 +195,26 @@ pub fn compute_summary(snap: &PoolHealthSnapshot) -> UpstreamSummaryResponse {
         "Healthy"
     };
 
+    // Zone-aware LB P3 — attach the per-zone rollup to each pool (derived from
+    // its members + the node's self-zone) so the dashboard card can show
+    // per-zone healthy counts and which zone is local.
+    let self_zone = snap.self_zone.as_deref();
+    let pools = snap
+        .pools
+        .iter()
+        .map(|p| {
+            let mut p = p.clone();
+            p.zones = zone_rollup(&p.members, self_zone);
+            p
+        })
+        .collect();
+
     UpstreamSummaryResponse {
         state,
         healthy_members,
         total_members,
-        pools: snap.pools.clone(),
+        pools,
+        self_zone: snap.self_zone.clone(),
     }
 }
 
@@ -219,7 +293,7 @@ mod tests {
     }
 
     fn snap(pools: Vec<PoolHealthEntry>) -> PoolHealthSnapshot {
-        PoolHealthSnapshot { pools }
+        PoolHealthSnapshot { pools, ..Default::default() }
     }
 
     #[test]
@@ -231,10 +305,11 @@ mod tests {
             healthy: 1,
             total: 2,
             members: vec![
-                MemberHealth { addr: "10.0.0.1:80".into(), healthy: true, status: MemberStatus::Up },
-                MemberHealth { addr: "10.0.0.2:80".into(), healthy: false, status: MemberStatus::Down },
+                MemberHealth { addr: "10.0.0.1:80".into(), healthy: true, status: MemberStatus::Up, ..Default::default() },
+                MemberHealth { addr: "10.0.0.2:80".into(), healthy: false, status: MemberStatus::Down, ..Default::default() },
             ],
             circuit: Some("open".into()),
+            ..Default::default()
         };
         let resp = compute_summary(&snap(vec![entry]));
         assert_eq!(resp.state, "Degraded"); // 1 of 2 healthy
@@ -245,6 +320,71 @@ mod tests {
         // The fields serialize for the dashboard.
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"10.0.0.2:80\"") && json.contains("\"circuit\":\"open\""));
+    }
+
+    // Zone-aware LB P3 — per-zone observability.
+
+    fn zmember(addr: &str, healthy: bool, zone: Option<&str>) -> MemberHealth {
+        MemberHealth {
+            addr: addr.into(),
+            healthy,
+            status: if healthy { MemberStatus::Up } else { MemberStatus::Down },
+            zone: zone.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn zone_rollup_groups_counts_and_marks_local() {
+        let members = vec![
+            zmember("10.0.0.1:80", true, Some("az-a")),
+            zmember("10.0.0.2:80", false, Some("az-a")),
+            zmember("10.0.0.3:80", true, Some("az-b")),
+        ];
+        let zones = zone_rollup(&members, Some("az-a"));
+        // Sorted by zone name for stable rendering.
+        assert_eq!(zones.len(), 2);
+        let az_a = zones.iter().find(|z| z.zone == "az-a").unwrap();
+        assert_eq!((az_a.healthy, az_a.total), (1, 2));
+        assert!(az_a.local, "az-a matches the node's zone");
+        let az_b = zones.iter().find(|z| z.zone == "az-b").unwrap();
+        assert_eq!((az_b.healthy, az_b.total), (1, 1));
+        assert!(!az_b.local);
+    }
+
+    #[test]
+    fn zone_rollup_unlabeled_members_are_not_local() {
+        let members = vec![zmember("10.0.0.1:80", true, None)];
+        let zones = zone_rollup(&members, Some("az-a"));
+        assert_eq!(zones.len(), 1);
+        assert_eq!(zones[0].zone, "");
+        assert!(!zones[0].local);
+    }
+
+    #[test]
+    fn self_zone_and_per_zone_summary_flow_through_compute_summary() {
+        let entry = PoolHealthEntry {
+            name: "api".into(),
+            healthy: 1,
+            total: 2,
+            members: vec![
+                zmember("10.0.0.1:80", true, Some("az-a")),
+                zmember("10.0.0.2:80", false, Some("az-b")),
+            ],
+            ..Default::default()
+        };
+        let snapshot = PoolHealthSnapshot {
+            pools: vec![entry],
+            self_zone: Some("az-a".into()),
+        };
+        let resp = compute_summary(&snapshot);
+        assert_eq!(resp.self_zone.as_deref(), Some("az-a"));
+        // The per-zone rollup is attached to the pool for the dashboard card.
+        let zones = &resp.pools[0].zones;
+        assert_eq!(zones.len(), 2);
+        assert!(zones.iter().any(|z| z.zone == "az-a" && z.local));
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"self_zone\":\"az-a\""));
     }
 
     #[test]
@@ -274,6 +414,7 @@ mod tests {
             addr: "1.2.3.4:80".into(),
             healthy: false,
             status: MemberStatus::Down,
+            ..Default::default()
         };
         let back: MemberHealth =
             serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();

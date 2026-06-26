@@ -823,6 +823,12 @@ pub async fn run(
         aegis_control::metrics::streaming::StreamingMetrics::register(&metrics)
             .expect("streaming metrics registration failed"),
     );
+    // Zone-aware LB P3 — served-local-vs-cross-zone routing counter. Stashed
+    // onto ProxyContext below; the pick sites increment it per request.
+    let zone_metrics = std::sync::Arc::new(
+        aegis_control::metrics::zone_routing::ZoneRoutingMetrics::register(&metrics)
+            .expect("zone routing metrics registration failed"),
+    );
     // PROM-T1 — upstream pool health gauges
     // `waf_upstream_members_healthy{pool}` /
     // `waf_upstream_members_total{pool}`. Synced once at boot
@@ -939,6 +945,7 @@ pub async fn run(
         // can stay non-OnceLock (it never changes after boot).
         ctx.websocket_metrics = Some(websocket_metrics.clone());
         ctx.stream_metrics = Some(stream_metrics.clone());
+        ctx.zone_metrics = Some(zone_metrics.clone());
         // WS-MSG3 — hand the detector chain + mask to the WS
         // message-inspection bridge (it runs on a spawned task and needs
         // owned handles). Same Arcs the accept loop / HTTP path use.

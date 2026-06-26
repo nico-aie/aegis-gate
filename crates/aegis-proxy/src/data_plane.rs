@@ -2225,6 +2225,17 @@ pub(crate) async fn forward_allow_to_upstream(
             }
         };
 
+        // Zone-aware LB P3 — served-local vs cross-zone routing counter.
+        if let Some(zm) = &ctx.zone_metrics {
+            if let Some(outcome) = crate::upstream::zone_routing_outcome(
+                pool.locality.enabled,
+                ctx.self_zone(),
+                member.zone.as_deref(),
+            ) {
+                zm.record(&route_ctx.upstream, outcome);
+            }
+        }
+
         let mut parts = parts;
         let on_upgrade =
             parts.extensions.remove::<hyper::upgrade::OnUpgrade>();
@@ -2837,6 +2848,18 @@ pub(crate) async fn forward_allow_to_upstream(
         }
     };
     tracing::Span::current().record("member", tracing::field::display(&member.addr));
+
+    // Zone-aware LB P3 — served-local vs cross-zone routing counter (no-op
+    // unless locality is on, the node has a self-zone, and metrics are wired).
+    if let Some(zm) = &ctx.zone_metrics {
+        if let Some(outcome) = crate::upstream::zone_routing_outcome(
+            pool.locality.enabled,
+            ctx.self_zone(),
+            member.zone.as_deref(),
+        ) {
+            zm.record(&route_ctx.upstream, outcome);
+        }
+    }
 
     // 2026-05-12 — strip the route prefix from the upstream URI
     // when the route opts in (`strip_prefix: true`, the default).

@@ -68,6 +68,11 @@ pub struct PoolRegistry {
     /// pool re-apply re-resolves each pool's client cert against the
     /// same identity. `None` ⇒ no pool can have upstream mTLS.
     upstream_identity: Arc<ArcSwap<Option<aegis_core::config::UpstreamIdentityConfig>>>,
+    /// Zone-aware LB P3 — this node's own zone, seeded once at boot
+    /// (`seed_self_zone`) from `ProxyContext.self_zone`. Read by
+    /// `live_snapshot` to mark each member `is_local` and echo the
+    /// node's zone to the dashboard. `None` ⇒ no zone identity.
+    self_zone: Arc<ArcSwap<Option<String>>>,
 }
 
 impl PoolRegistry {
@@ -79,6 +84,7 @@ impl PoolRegistry {
             breakers: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             raw: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             upstream_identity: Arc::new(ArcSwap::from_pointee(None)),
+            self_zone: Arc::new(ArcSwap::from_pointee(None)),
         }
     }
 
@@ -97,7 +103,14 @@ impl PoolRegistry {
             // and fall back to the cfg snapshot.
             raw: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             upstream_identity: Arc::new(ArcSwap::from_pointee(None)),
+            self_zone: Arc::new(ArcSwap::from_pointee(None)),
         }
+    }
+
+    /// Zone-aware LB P3 — seed this node's own zone at boot so
+    /// `live_snapshot` can mark local members and echo the node zone.
+    pub fn seed_self_zone(&self, zone: Option<String>) {
+        self.self_zone.store(Arc::new(zone));
     }
 
     /// Boot path uses this to seed the raw config shadow with
@@ -331,6 +344,8 @@ impl aegis_control::api::upstreams_config::UpstreamWriter for PoolRegistry {
         use crate::upstream::circuit::State;
         let snap = self.snapshot();
         let breakers = self.breakers.load();
+        let self_zone_guard = self.self_zone.load();
+        let self_zone: Option<&str> = self_zone_guard.as_deref();
         let pools = snap
             .iter()
             .map(|(name, pool)| {
@@ -352,10 +367,19 @@ impl aegis_control::api::upstreams_config::UpstreamWriter for PoolRegistry {
                             MemberStatus::Down => false,
                             MemberStatus::Unknown => m.is_healthy(),
                         };
+                        // Zone-aware LB P3 — surface the member's zone + a
+                        // convenience `is_local` flag (matches the node's own
+                        // zone) so the dashboard can tint local members.
+                        let is_local = match (self_zone, m.zone.as_deref()) {
+                            (Some(sz), Some(mz)) => sz == mz,
+                            _ => false,
+                        };
                         aegis_control::api::upstreams::MemberHealth {
                             addr: m.addr.to_string(),
                             healthy,
                             status,
+                            zone: m.zone.clone(),
+                            is_local,
                         }
                     })
                     .collect();
@@ -376,10 +400,16 @@ impl aegis_control::api::upstreams_config::UpstreamWriter for PoolRegistry {
                     total,
                     members,
                     circuit,
+                    // `zones` rollup is derived in `compute_summary` from
+                    // members + self_zone; leave empty here.
+                    ..Default::default()
                 }
             })
             .collect();
-        aegis_control::api::upstreams::PoolHealthSnapshot { pools }
+        aegis_control::api::upstreams::PoolHealthSnapshot {
+            pools,
+            self_zone: self_zone.map(str::to_string),
+        }
     }
 }
 
@@ -706,6 +736,58 @@ lb: round_robin
         let api = snap.pools.iter().find(|p| p.name == "api").unwrap();
         assert_eq!(api.members[0].status, MemberStatus::Up);
         assert_eq!(api.healthy, 1);
+    }
+
+    // Zone-aware LB P3 — live_snapshot surfaces each member's zone, marks the
+    // node-local ones, and echoes the node's own zone.
+    #[test]
+    fn live_snapshot_marks_local_members_and_echoes_self_zone() {
+        use aegis_control::api::upstreams_config::UpstreamWriter;
+        let yaml = r#"
+members:
+  - addr: "127.0.0.1:3001"
+    zone: az-a
+  - addr: "127.0.0.1:3002"
+    zone: az-b
+lb: round_robin
+"#;
+        let cfg = cfg_map(&[("api", serde_yaml::from_str(yaml).expect("yaml"))]);
+        let (pools, breakers) = PoolRegistry::build_pools(&cfg, None).unwrap();
+        let registry = PoolRegistry::from_pools(pools, breakers);
+        registry.seed_self_zone(Some("az-a".to_string()));
+
+        let snap = registry.live_snapshot();
+        assert_eq!(snap.self_zone.as_deref(), Some("az-a"));
+        let api = snap.pools.iter().find(|p| p.name == "api").unwrap();
+        let local: Vec<_> = api.members.iter().filter(|m| m.is_local).collect();
+        assert_eq!(local.len(), 1, "exactly one member is in the node's zone");
+        assert_eq!(local[0].zone.as_deref(), Some("az-a"));
+        assert!(
+            api.members
+                .iter()
+                .any(|m| m.zone.as_deref() == Some("az-b") && !m.is_local),
+            "the az-b member is surfaced but not local"
+        );
+    }
+
+    // Without a seeded self-zone, no member is local and the echo is None.
+    #[test]
+    fn live_snapshot_no_self_zone_marks_nothing_local() {
+        use aegis_control::api::upstreams_config::UpstreamWriter;
+        let yaml = r#"
+members:
+  - addr: "127.0.0.1:3001"
+    zone: az-a
+lb: round_robin
+"#;
+        let cfg = cfg_map(&[("api", serde_yaml::from_str(yaml).expect("yaml"))]);
+        let (pools, breakers) = PoolRegistry::build_pools(&cfg, None).unwrap();
+        let registry = PoolRegistry::from_pools(pools, breakers);
+
+        let snap = registry.live_snapshot();
+        assert!(snap.self_zone.is_none());
+        let api = snap.pools.iter().find(|p| p.name == "api").unwrap();
+        assert!(api.members.iter().all(|m| !m.is_local));
     }
 
     // Suppress unused-import warning when no test uses `Duration`.
