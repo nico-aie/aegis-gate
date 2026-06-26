@@ -63,9 +63,10 @@ impl LbStrategy {
                     .filter(|(_, m)| m.zone.as_deref() == Some(zone))
                     .cloned()
                     .collect();
-                // Presence gate: prefer local only when it has capacity;
-                // otherwise spill to the full set (keep `candidates`).
-                if !local.is_empty() {
+                // Prefer local only when it has capacity; otherwise spill to
+                // the full set (keep `candidates`).
+                if !local.is_empty() && local_zone_has_capacity(members, zone, local.len(), locality)
+                {
                     candidates = local;
                 }
             }
@@ -100,6 +101,34 @@ impl LbStrategy {
                 let key = hash_key.unwrap_or("");
                 pick_consistent_hash(candidates, key)
             }
+        }
+    }
+}
+
+/// Capacity gate (zone-aware LB P4). Given the count of healthy local-zone
+/// candidates, decide whether to keep traffic local or spill cross-zone.
+///
+/// - `min_local_healthy_pct == None` ⇒ **presence gate** (v1): any healthy
+///   local member keeps traffic local (the caller already checked non-empty).
+/// - `Some(pct)` ⇒ prefer local only while the local zone's healthy fraction
+///   (`local_healthy / local_total`, over *configured* local members) is at or
+///   above `pct` percent; below it, spill so a half-dead local zone isn't
+///   hammered. Integer math, no float.
+fn local_zone_has_capacity(
+    members: &[Arc<Member>],
+    zone: &str,
+    local_healthy: usize,
+    locality: LocalityRuntime,
+) -> bool {
+    match locality.min_local_healthy_pct {
+        None => true,
+        Some(pct) => {
+            let local_total = members
+                .iter()
+                .filter(|m| m.zone.as_deref() == Some(zone))
+                .count();
+            // local_total >= local_healthy >= 1 here, so it's never zero.
+            local_healthy * 100 >= pct as usize * local_total
         }
     }
 }
@@ -260,7 +289,11 @@ mod tests {
     }
 
     fn locality_on() -> LocalityRuntime {
-        LocalityRuntime { enabled: true }
+        LocalityRuntime { enabled: true, min_local_healthy_pct: None }
+    }
+
+    fn locality_pct(pct: u8) -> LocalityRuntime {
+        LocalityRuntime { enabled: true, min_local_healthy_pct: Some(pct) }
     }
 
     // -----------------------------------------------------------------------
@@ -332,7 +365,7 @@ mod tests {
                 &members,
                 None,
                 Some("az-a"),
-                LocalityRuntime { enabled: false },
+                LocalityRuntime { enabled: false, min_local_healthy_pct: None },
             );
             ports.insert(m.unwrap().addr.port());
         }
@@ -367,6 +400,89 @@ mod tests {
         let strategy = LbStrategy::RoundRobin(AtomicUsize::new(0));
         assert!(strategy
             .pick_with_locality(&members, None, Some("az-a"), locality_on())
+            .is_some());
+    }
+
+    // -------------------------------------------------------------------
+    // P4 — capacity gate. `min_local_healthy_pct` spills cross-zone when the
+    // local zone's healthy fraction drops below the threshold, so a half-dead
+    // local zone isn't hammered. `None` ⇒ v1 presence gate (unchanged).
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn capacity_gate_spills_when_local_below_threshold() {
+        // az-a has 3 members, only 1 healthy (33%); az-b has 1 healthy. Node
+        // in az-a, threshold 50% → 33% < 50% → spill to the full healthy set.
+        let members =
+            make_zoned_members(&[(3000, "az-a"), (3001, "az-a"), (3002, "az-a"), (3003, "az-b")]);
+        members[1].healthy.store(false, Ordering::Relaxed);
+        members[2].healthy.store(false, Ordering::Relaxed);
+        let strategy = LbStrategy::RoundRobin(AtomicUsize::new(0));
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..20 {
+            let m = strategy.pick_with_locality(&members, None, Some("az-a"), locality_pct(50));
+            seen.insert(m.unwrap().addr.port());
+        }
+        assert!(
+            seen.contains(&3003),
+            "below threshold must spill cross-zone (az-b expected), saw {seen:?}"
+        );
+    }
+
+    #[test]
+    fn capacity_gate_stays_local_when_at_or_above_threshold() {
+        // az-a 3 members, 2 healthy (66%); threshold 50% → 66% >= 50% → local
+        // only (never az-b).
+        let members =
+            make_zoned_members(&[(3000, "az-a"), (3001, "az-a"), (3002, "az-a"), (3003, "az-b")]);
+        members[2].healthy.store(false, Ordering::Relaxed);
+        let strategy = LbStrategy::RoundRobin(AtomicUsize::new(0));
+        for _ in 0..20 {
+            let m = strategy.pick_with_locality(&members, None, Some("az-a"), locality_pct(50));
+            assert_eq!(
+                m.unwrap().zone.as_deref(),
+                Some("az-a"),
+                "at/above threshold must stay local"
+            );
+        }
+    }
+
+    #[test]
+    fn capacity_gate_none_is_presence_gate() {
+        // No threshold → v1 presence gate: a single healthy local member is
+        // enough to keep all traffic local.
+        let members = make_zoned_members(&[(3000, "az-a"), (3001, "az-a"), (3002, "az-b")]);
+        members[1].healthy.store(false, Ordering::Relaxed);
+        let strategy = LbStrategy::RoundRobin(AtomicUsize::new(0));
+        for _ in 0..20 {
+            let m = strategy.pick_with_locality(&members, None, Some("az-a"), locality_on());
+            assert_eq!(m.unwrap().addr.port(), 3000, "presence gate keeps it local");
+        }
+    }
+
+    #[test]
+    fn capacity_gate_100_requires_all_local_healthy() {
+        // threshold 100%: 1 of 2 local healthy (50%) → spill.
+        let members = make_zoned_members(&[(3000, "az-a"), (3001, "az-a"), (3002, "az-b")]);
+        members[1].healthy.store(false, Ordering::Relaxed);
+        let strategy = LbStrategy::RoundRobin(AtomicUsize::new(0));
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..20 {
+            let m = strategy.pick_with_locality(&members, None, Some("az-a"), locality_pct(100));
+            seen.insert(m.unwrap().addr.port());
+        }
+        assert!(seen.contains(&3002), "100% threshold with a down local member must spill");
+    }
+
+    #[test]
+    fn capacity_gate_never_none_for_nonempty_pool() {
+        // All unhealthy + capacity gate on → fail-open still routes.
+        let members = make_zoned_members(&[(3000, "az-a"), (3001, "az-b")]);
+        members[0].healthy.store(false, Ordering::Relaxed);
+        members[1].healthy.store(false, Ordering::Relaxed);
+        let strategy = LbStrategy::RoundRobin(AtomicUsize::new(0));
+        assert!(strategy
+            .pick_with_locality(&members, None, Some("az-a"), locality_pct(50))
             .is_some());
     }
 
