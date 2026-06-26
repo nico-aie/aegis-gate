@@ -162,8 +162,17 @@ never returns `None` for a non-empty pool**.
   a boot log. **No routing change** — `pick` does not read it yet (P2). The
   dashboard "this node: az-a" readout is folded into P3 (observability) to keep
   P1 pure plumbing.
-- **P2 — zone preference in `pick`** behind `pool.locality.enabled` (default
-  off), v1 presence-gate spillover, composed with the fail-open fallback.
+- **P2 — zone preference in `pick`** ✅ Shipped 2026-06-26 (this PR). Behind
+  `pool.locality.enabled` (default off). New `LbStrategy::pick_with_locality`
+  narrows the candidate set to the node's own zone (`ctx.self_zone()` vs
+  `Member.zone`) *after* the healthy→fail-open fallback, then applies the
+  strategy within that subset — so round_robin / p2c / consistent_hash still
+  operate within the local zone. v1 **presence-gate spillover**: local
+  preference applies only when ≥1 local candidate exists, else the full set is
+  used (no stranding). `pick` refactored into shared `healthy_or_fallback` +
+  `apply`; plain `pick` (zone-off) stays byte-identical. Wired at all three
+  pick sites (proxy.rs + data_plane.rs ×2). Invariant holds: never `None` for a
+  non-empty pool.
 - **P3 — observability.** Local-member badge + per-zone healthy summary +
   metric/label for "served local vs cross-zone".
 - **P4 — capacity gate (v2)** + `min_local_healthy_pct`, and (optional) outlier

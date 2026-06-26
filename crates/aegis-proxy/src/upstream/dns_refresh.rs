@@ -299,6 +299,8 @@ pub fn spawn_pool_refresh(
                     upstream_mtls: spec.base.upstream_mtls.clone(),
                     // Preserve passive-health policy across DNS refresh.
                     passive_health: spec.base.passive_health.clone(),
+                    // Preserve locality (zone-aware LB) policy across refresh.
+                    locality: spec.base.locality.clone(),
                 };
                 full_map.insert(pool_name.clone(), pool_cfg);
                 match registry.apply(&full_map) {
@@ -667,6 +669,7 @@ mod tests {
             cache: None,
             upstream_mtls: None,
             passive_health: None,
+            locality: None,
         }
     }
 

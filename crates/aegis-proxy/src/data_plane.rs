@@ -2200,10 +2200,12 @@ pub(crate) async fn forward_allow_to_upstream(
                 return (resp, DecisionTag::block("websocket_no_upstream_pool"));
             }
         };
-        let member = match pool
-            .strategy
-            .pick(&pool.members, Some(parts.uri.path()))
-        {
+        let member = match pool.strategy.pick_with_locality(
+            &pool.members,
+            Some(parts.uri.path()),
+            ctx.self_zone(),
+            pool.locality,
+        ) {
             Some(m) => m.clone(),
             None => {
                 let resp = Response::builder()
@@ -2815,7 +2817,12 @@ pub(crate) async fn forward_allow_to_upstream(
         }
     };
 
-    let member = match pool.strategy.pick(&pool.members, None) {
+    let member = match pool.strategy.pick_with_locality(
+        &pool.members,
+        None,
+        ctx.self_zone(),
+        pool.locality,
+    ) {
         Some(m) => m,
         None => {
             if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {

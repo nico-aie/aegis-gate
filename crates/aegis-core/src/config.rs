@@ -2845,6 +2845,28 @@ pub struct PoolConfig {
     /// passively-flipped `healthy` flag). See [`PassiveHealthConfig`].
     #[serde(default)]
     pub passive_health: Option<PassiveHealthConfig>,
+    /// P2 of `plans/future/zone-aware-load-balancing.md` — prefer upstream
+    /// members in the proxy node's own zone (`node.zone`), spilling
+    /// cross-zone only when the local zone has no healthy capacity. Absent /
+    /// disabled ⇒ zone-agnostic selection (today's behavior). See
+    /// [`LocalityConfig`].
+    #[serde(default)]
+    pub locality: Option<LocalityConfig>,
+}
+
+/// Per-pool locality (zone-aware load balancing) policy. When `enabled` and
+/// the node has a resolved self-zone ([`resolve_self_zone`]), the load
+/// balancer prefers members whose `zone` matches the node's, applying the
+/// chosen LB strategy *within* the local-zone subset and only spilling to
+/// other zones when the local zone has no healthy member (v1 presence gate).
+/// Orthogonal to `lb` (the strategy) — the two compose.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LocalityConfig {
+    /// Master switch. `false` (default) ⇒ zone-agnostic selection (the LB
+    /// never partitions by zone) — identical to omitting the block.
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 /// Per-pool passive upstream health. When `enabled`, a member is marked
@@ -3443,6 +3465,36 @@ passive_health:
         assert_eq!(ph.fail_threshold, 3);
         assert_eq!(ph.rise_threshold, 2);
         assert!(!ph.count_5xx);
+    }
+}
+
+#[cfg(test)]
+mod locality_tests {
+    use super::*;
+
+    #[test]
+    fn pool_without_locality_block_is_none() {
+        let yaml = "members:\n  - addr: \"127.0.0.1:8080\"\n";
+        let pc: PoolConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(pc.locality.is_none());
+    }
+
+    #[test]
+    fn locality_block_round_trips() {
+        let yaml = "\
+members:
+  - addr: \"127.0.0.1:8080\"
+locality:
+  enabled: true
+";
+        let pc: PoolConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(pc.locality.expect("locality should parse").enabled);
+    }
+
+    #[test]
+    fn locality_defaults_off() {
+        let lc: LocalityConfig = serde_yaml::from_str("{}").unwrap();
+        assert!(!lc.enabled);
     }
 }
 

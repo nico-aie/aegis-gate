@@ -241,6 +241,7 @@ mod tests {
             cache: None,
             upstream_mtls: None,
             passive_health: None,
+            locality: None,
         }
     }
 
