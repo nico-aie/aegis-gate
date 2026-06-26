@@ -383,30 +383,16 @@ impl ProxyContext {
                     );
                     handles.push(h);
                 }
-                // No active health check configured — spawn a display-only
-                // TCP observer so the dashboard reports verified liveness
-                // instead of an optimistic, never-checked "up".
+                // No active health check configured. P4: passive health is the
+                // default health source for these pools — spawn the passive
+                // monitor (badge refresh + half-open recovery), which folds the
+                // standalone TCP observer. When the operator explicitly opted
+                // out (`passive_health.enabled: false`) fall back to the
+                // display-only TCP observer so the dashboard badge stays live.
                 None => {
-                    let h = crate::upstream::health::spawn_tcp_observer(
-                        name.clone(),
-                        pool.members.clone(),
-                        TCP_OBSERVE_INTERVAL,
-                        TCP_OBSERVE_TIMEOUT,
-                    );
-                    tracing::info!(
-                        pool = %name,
-                        "upstream TCP liveness observer spawned (no health block)"
-                    );
-                    handles.push(h);
-
-                    // P3 — when passive health is enabled for this (no active
-                    // `health:` block) pool, also spawn a half-open recovery
-                    // probe so a passively-downed member can be rotated back
-                    // in. No-op for the default (passive disabled) — nothing
-                    // ever marks a member down, so the loop would find none.
                     let ph = pool.passive_health;
                     if ph.enabled {
-                        let r = crate::upstream::health::spawn_passive_recovery_probe(
+                        let r = crate::upstream::health::spawn_passive_health_monitor(
                             name.clone(),
                             pool.members.clone(),
                             ph.rise_threshold,
@@ -417,9 +403,21 @@ impl ProxyContext {
                         );
                         tracing::info!(
                             pool = %name,
-                            "passive-health recovery probe spawned"
+                            "passive-health monitor spawned (no health block)"
                         );
                         handles.push(r);
+                    } else {
+                        let h = crate::upstream::health::spawn_tcp_observer(
+                            name.clone(),
+                            pool.members.clone(),
+                            TCP_OBSERVE_INTERVAL,
+                            TCP_OBSERVE_TIMEOUT,
+                        );
+                        tracing::info!(
+                            pool = %name,
+                            "upstream TCP liveness observer spawned (passive health off)"
+                        );
+                        handles.push(h);
                     }
                 }
             }

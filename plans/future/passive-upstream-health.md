@@ -135,8 +135,23 @@ circuit-breaker half-open state already in `upstream/circuit.rs`.)
   `passive_health.enabled` (default off ⇒ not spawned). A TCP connect is the
   matching trial (passive health measures connection-level reachability), so no
   HTTP probe path is needed. Mirrors the circuit-breaker half-open state.
-- **P4** — default on for pools without an active `health:` block; retire/fold
-  the standalone TCP observer for those pools. **Next.**
+- **P4** — ✅ Shipped 2026-06-26 (this PR). `PassiveHealthRuntime::resolve`
+  defaults passive health **on** for pools without an active `health:` block
+  (`enabled = !has_active_health`; an explicit `passive_health` block still
+  wins, so `enabled: false` opts back out). The half-open recovery probe is
+  generalized into `spawn_passive_health_monitor`, **folding the standalone TCP
+  observer**: one per-pool loop that badge-refreshes healthy members from TCP
+  reachability (never touching the LB flag — real traffic owns down-marking)
+  and runs half-open recovery for downed members. Boot (`spawn_health_checks`)
+  spawns the monitor for passive-enabled no-`health:` pools, and the
+  display-only `spawn_tcp_observer` only when passive was explicitly disabled.
+  Behavior change: a no-`health:` pool now marks members down on real connect
+  failures + recovers them instead of optimistic-always-up (safe via fail-open
+  `pick()`).
+
+**Plan complete** — P1 (PREREQ-B) · P2 · P3 · P4 all shipped. Remaining Wave 2
+items (`zone-aware-load-balancing`, `ddos-cross-node-rps-aggregation`) are
+tracked separately in `plans/implementation-sequence.md`.
 
 ## 6. Tests
 - (P1) zero-healthy pool routes via fallback, not `None`.

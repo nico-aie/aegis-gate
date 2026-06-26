@@ -100,26 +100,29 @@ pub fn spawn_tcp_observer(
     })
 }
 
-/// P3 of `plans/future/passive-upstream-health.md` — half-open recovery probe
-/// for members that passive accounting marked **down**.
+/// P3+P4 of `plans/future/passive-upstream-health.md` — the passive-health
+/// monitor for a pool **without** an active `health:` block. One loop that
+/// folds the standalone display-only TCP observer ([`spawn_tcp_observer`]) and
+/// the half-open recovery probe into a single per-member pass:
 ///
-/// A passively-downed member receives no real traffic (the LB skips it), so it
-/// can never recover on its own. This loop periodically TCP-probes **only the
-/// downed members** of a pool and feeds the outcome back through the same
-/// hysteretic accounting as the request path: a reachable probe is a
-/// [`Member::record_passive_success`] (so `rise_threshold` consecutive probe
-/// successes restore it), an unreachable one is a
-/// [`Member::record_passive_failure`] (which resets the success streak, so
-/// recovery requires *consecutive* successes). Healthy members are skipped
-/// entirely — this loop only rotates downed members back in, mirroring the
-/// circuit breaker's half-open state.
+/// - **Healthy member** → refresh the display badge ([`Member::set_observed`])
+///   from TCP reachability, **without** touching the LB `healthy` flag. Passive
+///   down-marking is owned by *real traffic* (the forward-result call sites),
+///   not this synthetic probe — a transient probe blip must not evict a member
+///   that real requests are still succeeding against.
+/// - **Downed member** → half-open recovery: a reachable probe is a
+///   [`Member::record_passive_success`] (so `rise_threshold` consecutive probe
+///   successes restore it), an unreachable one a
+///   [`Member::record_passive_failure`] (resetting the success streak, so
+///   recovery requires *consecutive* successes). Mirrors the circuit breaker's
+///   half-open state. Emits `member_recovered` ([`AuditClass::System`]) on the
+///   restore transition.
 ///
 /// A TCP connect is the right trial: passive health counts connection-level
 /// failures (connect refused / handshake / timeout), so reachability is the
-/// matching recovery signal — no HTTP `health:` path is required (these are
-/// exactly the pools without one). Emits `member_recovered`
-/// ([`AuditClass::System`]) on the restore transition.
-pub fn spawn_passive_recovery_probe(
+/// matching signal — no HTTP `health:` path is required (these are exactly the
+/// pools without one).
+pub fn spawn_passive_health_monitor(
     pool_name: String,
     members: Vec<Arc<Member>>,
     rise_threshold: u32,
@@ -131,12 +134,23 @@ pub fn spawn_passive_recovery_probe(
     tokio::spawn(async move {
         loop {
             for member in &members {
-                // Only downed members are probed — this loop never touches a
-                // healthy member's routing flag or badge.
+                let reachable = tcp_reachable(member.addr, timeout).await;
+
+                // Healthy member: badge-only refresh (folds the TCP observer).
+                // Never touch the routing flag — real traffic owns eviction.
                 if member.is_healthy() {
+                    member.set_observed(reachable);
+                    tracing::trace!(
+                        pool = %pool_name,
+                        member = %member.addr,
+                        reachable,
+                        "passive monitor: badge refreshed"
+                    );
                     continue;
                 }
-                let restored = if tcp_reachable(member.addr, timeout).await {
+
+                // Downed member: half-open recovery accounting.
+                let restored = if reachable {
                     member.record_passive_success(rise_threshold)
                 } else {
                     // Reset the success streak so recovery needs consecutive
@@ -417,15 +431,16 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // P3 — passive-health half-open recovery probe. A member downed by
-    // passive accounting gets no real traffic, so it can't recover passively.
-    // The recovery probe TCP-probes only downed members and feeds the result
-    // back through the same hysteretic accounting (rise_threshold consecutive
-    // probe successes → restored).
+    // P3+P4 — passive-health monitor. One per-pool loop that (P4) folds the
+    // standalone TCP observer: for a HEALTHY member it refreshes the display
+    // badge (`observed`) from TCP reachability without ever touching the LB
+    // `healthy` flag (real traffic owns down-marking), and for a DOWNED member
+    // it runs the (P3) half-open recovery accounting — `rise_threshold`
+    // consecutive reachable probes restore it.
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn passive_recovery_probe_restores_a_reachable_downed_member() {
+    async fn passive_monitor_restores_a_reachable_downed_member() {
         // A reachable backend (accepts TCP).
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -445,7 +460,7 @@ mod tests {
 
         let bus = AuditBus::new(16);
         let mut rx = bus.subscribe();
-        let handle = spawn_passive_recovery_probe(
+        let handle = spawn_passive_health_monitor(
             "passive-pool".into(),
             vec![member.clone()],
             1, // rise_threshold — one successful probe restores
@@ -473,7 +488,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn passive_recovery_probe_leaves_an_unreachable_member_down() {
+    async fn passive_monitor_leaves_an_unreachable_member_down() {
         // Bind then drop → nothing listening on the port.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -484,7 +499,7 @@ mod tests {
         assert!(!member.is_healthy());
 
         let bus = AuditBus::new(16);
-        let handle = spawn_passive_recovery_probe(
+        let handle = spawn_passive_health_monitor(
             "passive-pool".into(),
             vec![member.clone()],
             1,
@@ -504,10 +519,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn passive_recovery_probe_never_touches_a_healthy_member() {
-        // A reachable backend, but the member starts healthy: the probe must
-        // skip it entirely (it only rotates DOWN members back in), so its
-        // display badge is never written by this loop and stays Unknown.
+    async fn passive_monitor_badges_a_reachable_healthy_member_up() {
+        // P4: the monitor folds the TCP observer — it refreshes the display
+        // badge for a HEALTHY member from reachability, without touching the
+        // routing flag.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let srv = tokio::spawn(async move {
@@ -520,9 +535,14 @@ mod tests {
 
         let member = Arc::new(Member::new(addr, 1, None));
         assert!(member.is_healthy());
+        // Born Unknown until the monitor verifies it.
+        assert_eq!(
+            member.observed_status(),
+            aegis_control::api::upstreams::MemberStatus::Unknown
+        );
 
         let bus = AuditBus::new(16);
-        let handle = spawn_passive_recovery_probe(
+        let handle = spawn_passive_health_monitor(
             "passive-pool".into(),
             vec![member.clone()],
             1,
@@ -533,15 +553,52 @@ mod tests {
         );
 
         tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(member.is_healthy());
         assert_eq!(
             member.observed_status(),
-            aegis_control::api::upstreams::MemberStatus::Unknown,
-            "healthy members are not probed by the recovery loop"
+            aegis_control::api::upstreams::MemberStatus::Up,
+            "monitor must refresh a healthy member's badge from reachability"
         );
+        assert!(member.is_healthy(), "badge refresh must not touch routing");
 
         handle.abort();
         srv.abort();
+    }
+
+    #[tokio::test]
+    async fn passive_monitor_badges_an_unreachable_healthy_member_down_without_evicting() {
+        // An unreachable but still-healthy member: the monitor reports Down on
+        // the badge (honest) but must NOT flip the LB `healthy` flag — passive
+        // down-marking is owned by REAL traffic, not this synthetic probe.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let member = Arc::new(Member::new(addr, 1, None));
+        assert!(member.is_healthy());
+
+        let bus = AuditBus::new(16);
+        let handle = spawn_passive_health_monitor(
+            "passive-pool".into(),
+            vec![member.clone()],
+            1,
+            3,
+            Duration::from_millis(50),
+            Duration::from_millis(150),
+            bus,
+        );
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            member.observed_status(),
+            aegis_control::api::upstreams::MemberStatus::Down,
+            "badge must reflect the failed probe"
+        );
+        assert!(
+            member.is_healthy(),
+            "the monitor must never evict a healthy member — real traffic does that"
+        );
+
+        handle.abort();
     }
 
     #[tokio::test]

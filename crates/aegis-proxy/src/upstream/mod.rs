@@ -190,11 +190,12 @@ impl Drop for InflightGuard {
     }
 }
 
-/// Resolved, hot-path-cheap passive-health settings for a pool (P2 of
-/// `plans/future/passive-upstream-health.md`). A `Copy` snapshot of the
-/// pool's [`aegis_core::config::PassiveHealthConfig`]; the default is
-/// **disabled**, which makes the forward-result call sites skip all
-/// passive accounting (today's behavior byte-for-byte).
+/// Resolved, hot-path-cheap passive-health settings for a pool
+/// (`plans/future/passive-upstream-health.md`). A `Copy` snapshot derived from
+/// the pool's [`aegis_core::config::PassiveHealthConfig`] via [`Self::resolve`].
+/// The bare [`Default`] is **disabled** (the forward-result call sites skip all
+/// passive accounting); `resolve` applies the P4 default-on policy — passive
+/// becomes the health source for pools without an active `health:` block.
 #[derive(Debug, Clone, Copy)]
 pub struct PassiveHealthRuntime {
     pub enabled: bool,
@@ -215,9 +216,20 @@ impl Default for PassiveHealthRuntime {
 }
 
 impl PassiveHealthRuntime {
-    /// Resolve from a pool's optional config block. `None` ⇒ disabled
-    /// defaults ⇒ the call sites never flip a member.
-    pub fn from_config(cfg: Option<&aegis_core::config::PassiveHealthConfig>) -> Self {
+    /// Resolve a pool's effective passive-health settings (P4 default-on
+    /// policy).
+    ///
+    /// - An explicit `passive_health` block always wins — `enabled` is taken
+    ///   verbatim (so an operator can force it on alongside an active checker,
+    ///   or opt back out).
+    /// - **Absent** ⇒ passive health is the **default health source for pools
+    ///   without an active `health:` block** (`enabled = !has_active_health`).
+    ///   A pool with an active checker leaves it off — that checker is
+    ///   authoritative.
+    pub fn resolve(
+        cfg: Option<&aegis_core::config::PassiveHealthConfig>,
+        has_active_health: bool,
+    ) -> Self {
         match cfg {
             Some(c) => Self {
                 enabled: c.enabled,
@@ -225,7 +237,10 @@ impl PassiveHealthRuntime {
                 rise_threshold: c.rise_threshold,
                 count_5xx: c.count_5xx,
             },
-            None => Self::default(),
+            None => Self {
+                enabled: !has_active_health,
+                ..Self::default()
+            },
         }
     }
 }
@@ -344,6 +359,51 @@ mod tests {
             1,
             None,
         ))
+    }
+
+    // P4 — `PassiveHealthRuntime::resolve` default-on policy: passive health is
+    // the health source for pools without an active `health:` block, off when
+    // one exists, and an explicit config block always wins.
+
+    fn passive_cfg(enabled: bool) -> aegis_core::config::PassiveHealthConfig {
+        aegis_core::config::PassiveHealthConfig {
+            enabled,
+            fail_threshold: 3,
+            rise_threshold: 2,
+            count_5xx: false,
+        }
+    }
+
+    #[test]
+    fn passive_health_defaults_on_for_pool_without_active_health() {
+        // No `passive_health` block + no active `health:` → passive is the
+        // health source for this pool.
+        let rt = PassiveHealthRuntime::resolve(None, false);
+        assert!(rt.enabled);
+        assert_eq!(rt.fail_threshold, 3);
+        assert_eq!(rt.rise_threshold, 2);
+    }
+
+    #[test]
+    fn passive_health_defaults_off_when_active_health_present() {
+        // An active `health:` checker is authoritative — passive stays off
+        // unless explicitly enabled.
+        let rt = PassiveHealthRuntime::resolve(None, true);
+        assert!(!rt.enabled);
+    }
+
+    #[test]
+    fn explicit_passive_disable_is_honored_without_active_health() {
+        // Operator opts back out → off even though there's no active checker.
+        let rt = PassiveHealthRuntime::resolve(Some(&passive_cfg(false)), false);
+        assert!(!rt.enabled);
+    }
+
+    #[test]
+    fn explicit_passive_enable_is_honored_with_active_health() {
+        // Operator forces passive on alongside an active checker → honored.
+        let rt = PassiveHealthRuntime::resolve(Some(&passive_cfg(true)), true);
+        assert!(rt.enabled);
     }
 
     #[test]
