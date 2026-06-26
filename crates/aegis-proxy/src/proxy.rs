@@ -24,6 +24,12 @@ use crate::upstream::registry::PoolRegistry;
 pub struct ProxyContext {
     pub route_table: RouteTable,
     pub pools: PoolRegistry,
+    /// Zone-aware load balancing P1 — this node's availability zone, resolved
+    /// once at boot from `node.zone` with an `AEGIS_ZONE` env override (see
+    /// [`aegis_core::config::resolve_self_zone`]). `None` ⇒ no zone identity,
+    /// zone preference inert. P1 only plumbs it here (read-only); a later phase
+    /// teaches `LbStrategy::pick` to prefer members whose `zone` matches.
+    self_zone: Option<String>,
     /// SC-1 — per-upstream response cache (L1 in-process). Built from the
     /// boot config; only pools with a `cache:` block get an entry. CRITICAL
     /// tier is never cached (the data plane enforces that, not this).
@@ -265,9 +271,20 @@ impl ProxyContext {
         // pool re-applies re-resolve client certs against it.
         pool_registry.seed_upstream_identity(upstream_identity.cloned());
         let cache = Arc::new(crate::cache::ResponseCache::from_upstreams(&cfg.upstreams));
+        // Zone-aware LB P1 — resolve this node's self-zone once at boot. Env
+        // (`AEGIS_ZONE`, for per-pod injection) wins over the config file so
+        // one image deploys across zones.
+        let self_zone = aegis_core::config::resolve_self_zone(
+            cfg.node.zone.as_deref(),
+            std::env::var("AEGIS_ZONE").ok().as_deref(),
+        );
+        if let Some(zone) = self_zone.as_deref() {
+            tracing::info!(zone, "node self-zone resolved (zone-aware LB)");
+        }
         Ok(Self {
             route_table,
             pools: pool_registry,
+            self_zone,
             cache,
             pipeline,
             benchmark: BenchmarkConfig::off(),
@@ -330,6 +347,13 @@ impl ProxyContext {
                 crate::graphql_guard::GraphqlGuard::from_config(&cfg.graphql),
             )),
         })
+    }
+
+    /// This node's resolved availability zone (zone-aware LB P1), or `None`
+    /// when no zone identity is configured. A later phase compares this to
+    /// `Member.zone` in `LbStrategy::pick` to prefer same-zone upstreams.
+    pub fn self_zone(&self) -> Option<&str> {
+        self.self_zone.as_deref()
     }
 
     /// Spawn one health-check task per pool that has a `health:`
@@ -711,6 +735,65 @@ state:
         assert_eq!(ctx.trusted_proxies.len(), 1);
         let probe: std::net::IpAddr = "10.9.9.9".parse().unwrap();
         assert!(ctx.trusted_proxies.iter().any(|n| n.contains(&probe)));
+    }
+
+    // Zone-aware LB P1 — the node's self-zone (node.zone, AEGIS_ZONE env
+    // override) must resolve once into the long-lived ProxyContext so a later
+    // phase's `pick` can compare it against `Member.zone`. P1 is read-only: no
+    // routing change, just the plumbing + accessor.
+    #[test]
+    fn proxy_context_carries_self_zone() {
+        let with_zone = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:0"
+  admin:
+    bind: "127.0.0.1:0"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:9000"
+state:
+  backend: in_memory
+node:
+  id: pod-7
+  zone: az-a
+"#;
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let cfg: WafConfig = serde_yaml::from_str(with_zone).unwrap();
+        cfg.validate().unwrap();
+        let ctx = ProxyContext::build(&cfg, pipeline).unwrap();
+        assert_eq!(ctx.self_zone(), Some("az-a"));
+    }
+
+    #[test]
+    fn proxy_context_self_zone_none_when_unset() {
+        let no_zone = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:0"
+  admin:
+    bind: "127.0.0.1:0"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:9000"
+state:
+  backend: in_memory
+"#;
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let cfg: WafConfig = serde_yaml::from_str(no_zone).unwrap();
+        cfg.validate().unwrap();
+        let ctx = ProxyContext::build(&cfg, pipeline).unwrap();
+        assert_eq!(ctx.self_zone(), None);
     }
 
     #[tokio::test]

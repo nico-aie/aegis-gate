@@ -814,6 +814,98 @@ pub struct NodeConfig {
     /// audit log entries, lease holder strings.
     #[serde(default)]
     pub id: Option<String>,
+    /// Availability-zone label for this node (zone-aware load balancing P1).
+    /// Read once at boot and compared against `Member.zone` so the LB can
+    /// prefer same-zone upstreams. `None` ⇒ the node has no zone identity and
+    /// zone preference is inert. The `AEGIS_ZONE` env var overrides this (one
+    /// image, many zones); see [`resolve_self_zone`].
+    #[serde(default)]
+    pub zone: Option<String>,
+}
+
+/// Resolve a node's effective self-zone from its config value and the
+/// `AEGIS_ZONE` env override (zone-aware load balancing P1).
+///
+/// Precedence: **env wins over file** (so a single image can be deployed
+/// across zones via the Downward API / `topology.kubernetes.io/zone`).
+/// Blank / whitespace-only values are treated as unset, and the result is
+/// trimmed. `None` ⇒ the node has no zone identity (the feature is inert).
+pub fn resolve_self_zone(file_zone: Option<&str>, env_zone: Option<&str>) -> Option<String> {
+    let norm = |s: Option<&str>| -> Option<String> {
+        s.map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+    };
+    norm(env_zone).or_else(|| norm(file_zone))
+}
+
+#[cfg(test)]
+mod node_zone_tests {
+    use super::*;
+
+    #[test]
+    fn env_zone_wins_over_file() {
+        assert_eq!(
+            resolve_self_zone(Some("az-a"), Some("az-b")),
+            Some("az-b".to_string())
+        );
+    }
+
+    #[test]
+    fn file_zone_used_when_env_absent() {
+        assert_eq!(
+            resolve_self_zone(Some("az-a"), None),
+            Some("az-a".to_string())
+        );
+    }
+
+    #[test]
+    fn env_zone_used_when_file_absent() {
+        assert_eq!(
+            resolve_self_zone(None, Some("az-b")),
+            Some("az-b".to_string())
+        );
+    }
+
+    #[test]
+    fn unset_is_inert() {
+        assert_eq!(resolve_self_zone(None, None), None);
+    }
+
+    #[test]
+    fn blank_env_falls_back_to_file() {
+        // A pod template that injects an empty AEGIS_ZONE must not mask the
+        // file value.
+        assert_eq!(
+            resolve_self_zone(Some("az-a"), Some("   ")),
+            Some("az-a".to_string())
+        );
+    }
+
+    #[test]
+    fn blank_both_is_none() {
+        assert_eq!(resolve_self_zone(Some("  "), Some("")), None);
+    }
+
+    #[test]
+    fn result_is_trimmed() {
+        assert_eq!(
+            resolve_self_zone(Some("  az-a  "), None),
+            Some("az-a".to_string())
+        );
+    }
+
+    #[test]
+    fn node_config_deserializes_zone() {
+        let nc: NodeConfig = serde_yaml::from_str("id: pod-7\nzone: az-a\n").unwrap();
+        assert_eq!(nc.zone.as_deref(), Some("az-a"));
+    }
+
+    #[test]
+    fn node_config_zone_defaults_none() {
+        let nc: NodeConfig = serde_yaml::from_str("id: pod-7\n").unwrap();
+        assert!(nc.zone.is_none());
+    }
 }
 
 /// Cluster-mode configuration (leaderless multi-node sync). Every
