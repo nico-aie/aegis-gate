@@ -1087,7 +1087,12 @@ pub async fn run(
             let mut iv = tokio::time::interval(std::time::Duration::from_secs(1));
             loop {
                 iv.tick().await;
-                runtime_for_tick.tick_rps();
+                // Fleet RPS aggregation — `tick_rps_fleet` aggregates the
+                // spike signal across the fleet when `ddos.spike_scope: fleet`
+                // (and a shared backend is present), else behaves exactly like
+                // the per-node `tick_rps`. Fail-safe to per-node on any backend
+                // error; never blocks the tick.
+                runtime_for_tick.tick_rps_fleet().await;
             }
         }));
     }

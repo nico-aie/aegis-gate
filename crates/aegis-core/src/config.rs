@@ -5064,6 +5064,17 @@ pub struct DetectorToggle {
 ///   spike_multiplier: 3.0
 ///   tightened_per_ip_rps: 20
 /// ```
+/// Scope of the DDoS spike *signal* — see [`DdosConfig::spike_scope`].
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SpikeScope {
+    /// Spike detected from this node's own rolling RPS (today's behaviour).
+    #[default]
+    PerNode,
+    /// Spike detected from the fleet-wide RPS sum (shared backend).
+    Fleet,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct DdosConfig {
     #[serde(default = "default_true")]
@@ -5095,6 +5106,15 @@ pub struct DdosConfig {
     pub spike_engage_ticks: u32,
     #[serde(default = "default_ddos_spike_release_ticks")]
     pub spike_release_ticks: u32,
+    /// Fleet RPS aggregation — whether the spike *signal* (`current_rps` vs
+    /// `baseline`) is computed from **this node** alone (`per_node`, default)
+    /// or aggregated across the fleet via the shared state backend (`fleet`).
+    /// `fleet` makes every node converge on the same `spike_active` and catches
+    /// floods fanned thinly below any single node's threshold. Defaults to
+    /// `per_node` to preserve today's behaviour; opt into `fleet` when a shared
+    /// backend is present. See `plans/future/ddos-cross-node-rps-aggregation.md`.
+    #[serde(default)]
+    pub spike_scope: SpikeScope,
     /// 2026-05-17 F-CRITICAL-008 (core audit): per-tier overrides
     /// for the global DDoS knobs. Any field not specified in the
     /// override falls back to the top-level value. Empty (default)
@@ -5155,6 +5175,7 @@ impl Default for DdosConfig {
             tightened_per_ip_rps: default_ddos_tightened_rps(),
             spike_engage_ticks: default_ddos_spike_engage_ticks(),
             spike_release_ticks: default_ddos_spike_release_ticks(),
+            spike_scope: SpikeScope::default(),
             tier_overrides: HashMap::new(),
         }
     }
@@ -8209,6 +8230,18 @@ tier_overrides:
         let default_yaml = "enabled: true\n";
         let cfg: DdosConfig = serde_yaml::from_str(default_yaml).unwrap();
         assert!(cfg.tier_overrides.is_empty());
+    }
+
+    /// Fleet RPS aggregation — `spike_scope` parses from YAML and defaults to
+    /// `per_node` (today's behaviour) when absent.
+    #[test]
+    fn ddos_spike_scope_parses_and_defaults_per_node() {
+        let fleet: DdosConfig =
+            serde_yaml::from_str("enabled: true\nspike_scope: fleet\n").unwrap();
+        assert_eq!(fleet.spike_scope, SpikeScope::Fleet);
+
+        let dflt: DdosConfig = serde_yaml::from_str("enabled: true\n").unwrap();
+        assert_eq!(dflt.spike_scope, SpikeScope::PerNode);
     }
 
     /// 2026-05-17 F-CRITICAL-010 (core audit): `fail_mode_by_tier`
