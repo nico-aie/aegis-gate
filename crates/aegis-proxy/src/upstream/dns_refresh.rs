@@ -297,6 +297,8 @@ pub fn spawn_pool_refresh(
                     // Preserve upstream-mTLS policy; `registry.apply`
                     // re-resolves it against the shared fleet identity.
                     upstream_mtls: spec.base.upstream_mtls.clone(),
+                    // Preserve passive-health policy across DNS refresh.
+                    passive_health: spec.base.passive_health.clone(),
                 };
                 full_map.insert(pool_name.clone(), pool_cfg);
                 match registry.apply(&full_map) {
@@ -664,6 +666,7 @@ mod tests {
             connection: aegis_core::config::ConnectionPoolConfig::default(),
             cache: None,
             upstream_mtls: None,
+            passive_health: None,
         }
     }
 

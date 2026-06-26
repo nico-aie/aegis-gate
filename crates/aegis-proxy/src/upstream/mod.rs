@@ -15,7 +15,7 @@ pub mod streaming;
 pub mod tls;
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 
 use aegis_control::api::upstreams::MemberStatus;
@@ -44,6 +44,18 @@ pub struct Member {
     /// `Unknown` so the badge shows "unverified" rather than a false "up"
     /// before the first probe.
     observed: AtomicU8,
+    /// Passive-health consecutive-failure streak (P2 of
+    /// `plans/future/passive-upstream-health.md`). Incremented by
+    /// [`Self::record_passive_failure`] on a connection-level forward
+    /// failure and reset to 0 by [`Self::record_passive_success`]. Drives
+    /// the LB `healthy` flip only once it reaches the pool's
+    /// `fail_threshold` (hysteresis — a single error never evicts). `0`
+    /// when passive health is disabled, since the call sites never touch it.
+    consec_failures: AtomicU32,
+    /// Passive-health consecutive-success streak — the mirror of
+    /// [`Self::consec_failures`], used to restore a downed member after the
+    /// pool's `rise_threshold` consecutive successes.
+    consec_successes: AtomicU32,
     /// FIX 2026-05-03 — explicit Host-header override mirroring
     /// `MemberConfig.host_header`. When `Some(host)`,
     /// `forward()` sends `Host: <host>` upstream instead of
@@ -61,6 +73,8 @@ impl Member {
             healthy: AtomicBool::new(true),
             inflight: AtomicU64::new(0),
             observed: AtomicU8::new(OBSERVED_UNKNOWN),
+            consec_failures: AtomicU32::new(0),
+            consec_successes: AtomicU32::new(0),
             host_override: None,
         }
     }
@@ -78,6 +92,8 @@ impl Member {
             healthy: AtomicBool::new(true),
             inflight: AtomicU64::new(0),
             observed: AtomicU8::new(OBSERVED_UNKNOWN),
+            consec_failures: AtomicU32::new(0),
+            consec_successes: AtomicU32::new(0),
             host_override,
         }
     }
@@ -91,6 +107,48 @@ impl Member {
     pub fn set_observed(&self, up: bool) {
         let v = if up { OBSERVED_UP } else { OBSERVED_DOWN };
         self.observed.store(v, Ordering::Relaxed);
+    }
+
+    /// Passive health — record a connection-level failure on the real
+    /// request path (P2 of `plans/future/passive-upstream-health.md`).
+    ///
+    /// Resets the consecutive-success streak and grows the consecutive-
+    /// failure streak. When the streak reaches `fail_threshold` *and* the
+    /// member is currently healthy, flips it **down** for both the load
+    /// balancer ([`Self::healthy`]) and the display badge
+    /// ([`Self::observed`]). Returns `true` exactly on the transition, so
+    /// the caller can log the eviction once.
+    ///
+    /// Hysteresis: with `fail_threshold >= 2` a single error never flips a
+    /// member. The gate (whether passive health runs at all) lives at the
+    /// call site (`Pool.passive_health.enabled`); this method is a no-op on
+    /// routing until the threshold is crossed.
+    pub fn record_passive_failure(&self, fail_threshold: u32) -> bool {
+        self.consec_successes.store(0, Ordering::Relaxed);
+        let streak = self.consec_failures.fetch_add(1, Ordering::Relaxed) + 1;
+        if streak >= fail_threshold && self.healthy.swap(false, Ordering::Relaxed) {
+            // We held the last `true` → this call performed the transition.
+            self.set_observed(false);
+            return true;
+        }
+        false
+    }
+
+    /// Passive health — record a successful forward outcome (a response was
+    /// received; the connection works). Resets the consecutive-failure
+    /// streak and grows the consecutive-success streak. When the streak
+    /// reaches `rise_threshold` *and* the member is currently down, restores
+    /// it **up** for both the load balancer and the display badge. Returns
+    /// `true` exactly on the transition.
+    pub fn record_passive_success(&self, rise_threshold: u32) -> bool {
+        self.consec_failures.store(0, Ordering::Relaxed);
+        let streak = self.consec_successes.fetch_add(1, Ordering::Relaxed) + 1;
+        if streak >= rise_threshold && !self.healthy.swap(true, Ordering::Relaxed) {
+            // We held the last `false` → this call performed the restore.
+            self.set_observed(true);
+            return true;
+        }
+        false
     }
 
     /// Display-only observed liveness. `Unknown` until the first probe.
@@ -132,6 +190,87 @@ impl Drop for InflightGuard {
     }
 }
 
+/// Resolved, hot-path-cheap passive-health settings for a pool (P2 of
+/// `plans/future/passive-upstream-health.md`). A `Copy` snapshot of the
+/// pool's [`aegis_core::config::PassiveHealthConfig`]; the default is
+/// **disabled**, which makes the forward-result call sites skip all
+/// passive accounting (today's behavior byte-for-byte).
+#[derive(Debug, Clone, Copy)]
+pub struct PassiveHealthRuntime {
+    pub enabled: bool,
+    pub fail_threshold: u32,
+    pub rise_threshold: u32,
+    pub count_5xx: bool,
+}
+
+impl Default for PassiveHealthRuntime {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            fail_threshold: 3,
+            rise_threshold: 2,
+            count_5xx: false,
+        }
+    }
+}
+
+impl PassiveHealthRuntime {
+    /// Resolve from a pool's optional config block. `None` ⇒ disabled
+    /// defaults ⇒ the call sites never flip a member.
+    pub fn from_config(cfg: Option<&aegis_core::config::PassiveHealthConfig>) -> Self {
+        match cfg {
+            Some(c) => Self {
+                enabled: c.enabled,
+                fail_threshold: c.fail_threshold,
+                rise_threshold: c.rise_threshold,
+                count_5xx: c.count_5xx,
+            },
+            None => Self::default(),
+        }
+    }
+}
+
+/// Apply the passive-health verdict for a forward that **returned a
+/// response**. A received response means the connection works → a member
+/// success, unless the `count_5xx` toggle is on and this is a 5xx. No-op
+/// when passive health is disabled (today's behavior). Shared by the
+/// legacy proxy path and the production data plane so the two never drift.
+pub fn record_passive_outcome_ok(
+    ph: &PassiveHealthRuntime,
+    member: &Arc<Member>,
+    status: hyper::StatusCode,
+) {
+    if !ph.enabled {
+        return;
+    }
+    if ph.count_5xx && status.is_server_error() {
+        member.record_passive_failure(ph.fail_threshold);
+    } else {
+        member.record_passive_success(ph.rise_threshold);
+    }
+}
+
+/// Apply the passive-health verdict for a forward that **errored**. Only
+/// connection-level failures (`ForwardError::is_member_failure`) evict a
+/// member; ambiguous mid-stream errors are ignored so a client-cancelled or
+/// long-streaming request can't miscount. No-op when disabled.
+///
+/// Recording happens only on a *completed* forward outcome — a cancelled
+/// future never reaches the call sites (the inflight RAII guard handles the
+/// counter), so cancellation can't be miscounted as a failure here either.
+pub fn record_passive_outcome_err(
+    ph: &PassiveHealthRuntime,
+    member: &Arc<Member>,
+    err: &forward::ForwardError,
+) {
+    if !ph.enabled {
+        return;
+    }
+    if err.is_member_failure() {
+        member.record_passive_failure(ph.fail_threshold);
+    }
+}
+
 /// A pool of upstream members with a configured load-balancing strategy.
 #[derive(Debug)]
 pub struct Pool {
@@ -142,6 +281,10 @@ pub struct Pool {
     /// [`forward::forward`] so each call uses the same pooled
     /// `Client` for that signature.
     pub connection: aegis_core::config::ConnectionPoolConfig,
+    /// P2 — passive upstream health settings (default disabled). Read by
+    /// the forward-result call sites to decide whether a connection-level
+    /// failure / success rotates this member.
+    pub passive_health: PassiveHealthRuntime,
 }
 
 #[cfg(test)]
@@ -184,5 +327,114 @@ mod tests {
         assert!(result.is_err());
         // Counter must be back to zero despite the panic.
         assert_eq!(m.inflight.load(Ordering::Relaxed), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Passive upstream health (P2) — per-member consecutive failure/success
+    // accounting with hysteresis. The passive verdict writes BOTH `healthy`
+    // (load balancer) and `observed` (display badge) so routing and the
+    // dashboard agree. Gating (default-off) lives at the call sites
+    // (`Pool.passive_health.enabled`); these tests exercise the Member
+    // primitives directly with thresholds passed in.
+    // -----------------------------------------------------------------------
+
+    fn lb_member(port: u16) -> Arc<Member> {
+        Arc::new(Member::new(
+            format!("127.0.0.1:{port}").parse().unwrap(),
+            1,
+            None,
+        ))
+    }
+
+    #[test]
+    fn passive_failure_marks_member_down_after_threshold() {
+        let m = member();
+        assert!(m.is_healthy());
+        // fail_threshold = 3: the first two failures must NOT flip it.
+        assert!(!m.record_passive_failure(3));
+        assert!(m.is_healthy());
+        assert!(!m.record_passive_failure(3));
+        assert!(m.is_healthy());
+        // The third consecutive failure trips it — returns `true` (flipped).
+        assert!(m.record_passive_failure(3));
+        assert!(!m.is_healthy());
+        // Display badge agrees with routing.
+        assert_eq!(m.observed_status(), MemberStatus::Down);
+    }
+
+    #[test]
+    fn single_failure_never_flips_a_healthy_member() {
+        let m = member();
+        assert!(!m.record_passive_failure(3));
+        assert!(m.is_healthy(), "one error must never evict a member");
+        assert_eq!(m.observed_status(), MemberStatus::Unknown);
+    }
+
+    #[test]
+    fn passive_success_marks_member_up_after_rise_threshold() {
+        let m = member();
+        // Drive it down first (fail_threshold = 2).
+        m.record_passive_failure(2);
+        m.record_passive_failure(2);
+        assert!(!m.is_healthy());
+        // rise_threshold = 2: the first success doesn't restore it yet.
+        assert!(!m.record_passive_success(2));
+        assert!(!m.is_healthy());
+        // The second consecutive success restores it — returns `true`.
+        assert!(m.record_passive_success(2));
+        assert!(m.is_healthy());
+        assert_eq!(m.observed_status(), MemberStatus::Up);
+    }
+
+    #[test]
+    fn a_success_resets_the_failure_streak() {
+        let m = member();
+        // Two failures (fail_threshold = 3 — not yet down).
+        m.record_passive_failure(3);
+        m.record_passive_failure(3);
+        assert!(m.is_healthy());
+        // A success resets the consecutive-failure streak...
+        m.record_passive_success(2);
+        // ...so it again takes a FULL 3 consecutive failures to trip.
+        assert!(!m.record_passive_failure(3));
+        assert!(!m.record_passive_failure(3));
+        assert!(m.is_healthy());
+        assert!(m.record_passive_failure(3));
+        assert!(!m.is_healthy());
+    }
+
+    #[test]
+    fn passively_downed_member_is_skipped_by_lb_while_peers_up() {
+        use super::lb::LbStrategy;
+        use std::sync::atomic::AtomicUsize;
+        let members = vec![lb_member(3000), lb_member(3001)];
+        // Passively mark member 0 down (fail_threshold = 2).
+        members[0].record_passive_failure(2);
+        members[0].record_passive_failure(2);
+        assert!(!members[0].is_healthy());
+
+        let strategy = LbStrategy::RoundRobin(AtomicUsize::new(0));
+        for _ in 0..10 {
+            let picked = strategy.pick(&members, None).unwrap();
+            assert_eq!(
+                picked.addr.port(),
+                3001,
+                "LB must route around a passively-downed member"
+            );
+        }
+    }
+
+    #[test]
+    fn lb_still_routes_when_passive_health_downs_the_only_member() {
+        use super::lb::LbStrategy;
+        use std::sync::atomic::AtomicUsize;
+        let members = vec![lb_member(3000)];
+        members[0].record_passive_failure(1);
+        assert!(!members[0].is_healthy());
+        // Fail open (PREREQ-B): a non-empty pool never returns None, even
+        // when passive health has downed every member — it still attempts a
+        // forward (a real 502) rather than refusing to route (a 503).
+        let strategy = LbStrategy::RoundRobin(AtomicUsize::new(0));
+        assert!(strategy.pick(&members, None).is_some());
     }
 }

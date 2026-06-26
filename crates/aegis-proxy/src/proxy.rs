@@ -527,6 +527,16 @@ where
                     cb.record_success();
                 }
             }
+            // Passive upstream health (P2): a received response means the
+            // connection works, so it's a member success — unless the
+            // `count_5xx` toggle is on and this is a 5xx. Default-off ⇒
+            // skipped entirely (no member ever flips). CB stays the pool
+            // fuse; this is per-member rotation — no double-penalty.
+            crate::upstream::record_passive_outcome_ok(
+                &pool.passive_health,
+                member,
+                resp.status(),
+            );
             resp
         }
         Err(e) => {
@@ -534,6 +544,7 @@ where
             if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
                 cb.record_failure();
             }
+            crate::upstream::record_passive_outcome_err(&pool.passive_health, member, &e);
             Response::builder()
                 .status(StatusCode::BAD_GATEWAY)
                 .body(crate::body::full("upstream error\n"))

@@ -2746,6 +2746,56 @@ pub struct PoolConfig {
     /// `verify` / `trust`. See [`UpstreamMtlsConfig`].
     #[serde(default)]
     pub upstream_mtls: Option<UpstreamMtlsConfig>,
+    /// P2 of `plans/future/passive-upstream-health.md` — derive member
+    /// health from the *real* request path (connect refused / TLS handshake
+    /// / timeout) instead of only an active `health:` probe. Absent ⇒
+    /// disabled ⇒ today's behavior byte-for-byte (the LB never sees a
+    /// passively-flipped `healthy` flag). See [`PassiveHealthConfig`].
+    #[serde(default)]
+    pub passive_health: Option<PassiveHealthConfig>,
+}
+
+/// Per-pool passive upstream health. When `enabled`, a member is marked
+/// **down** for the load balancer after `fail_threshold` *consecutive*
+/// connection-level failures on real proxied traffic, and **up** again
+/// after `rise_threshold` *consecutive* successes (hysteresis — a single
+/// error never flips a member). The passive verdict writes both the LB
+/// `healthy` flag and the display `observed` badge so routing and the
+/// dashboard agree.
+///
+/// Distinct from the active `health:` probe (a configured HTTP check) and
+/// from the per-pool circuit breaker (a pool-granularity fuse): passive
+/// health is per-member rotation driven by the actual forward outcome.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PassiveHealthConfig {
+    /// Master switch. `false` (default) ⇒ no member is ever flipped by the
+    /// request path — identical to not configuring the block at all.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Consecutive connection-level failures before a member is marked
+    /// down. Defaults to `3` — never `1`, so a lone error can't evict.
+    #[serde(default = "default_passive_fail_threshold")]
+    pub fail_threshold: u32,
+    /// Consecutive successes before a downed member is restored. Defaults
+    /// to `2`.
+    #[serde(default = "default_passive_rise_threshold")]
+    pub rise_threshold: u32,
+    /// Count an upstream `5xx` response as a member failure. Defaults to
+    /// `false` — a 5xx usually means the app is broken, not the member is
+    /// unreachable, so it's treated as a (connection) success. Reserved
+    /// toggle for a later refinement; the connect/handshake/timeout signal
+    /// is the reliable per-member health input.
+    #[serde(default)]
+    pub count_5xx: bool,
+}
+
+fn default_passive_fail_threshold() -> u32 {
+    3
+}
+
+fn default_passive_rise_threshold() -> u32 {
+    2
 }
 
 /// Per-pool upstream mTLS (WAF-as-client) policy. Opt-in; defaults
@@ -3257,6 +3307,50 @@ mod upstream_scheme_tests {
         let yaml = "tls: false\n";
         let c: ConnectionPoolConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(c.scheme, UpstreamScheme::Auto);
+    }
+}
+
+#[cfg(test)]
+mod passive_health_tests {
+    use super::*;
+
+    #[test]
+    fn pool_without_passive_health_block_is_none() {
+        // Default-off: a pool that doesn't mention passive_health leaves it
+        // unset, so the runtime treats it as disabled (byte-for-byte today).
+        let yaml = "members:\n  - addr: \"127.0.0.1:8080\"\n";
+        let pc: PoolConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(pc.passive_health.is_none());
+    }
+
+    #[test]
+    fn passive_health_block_round_trips() {
+        let yaml = "\
+members:
+  - addr: \"127.0.0.1:8080\"
+passive_health:
+  enabled: true
+  fail_threshold: 5
+  rise_threshold: 4
+  count_5xx: true
+";
+        let pc: PoolConfig = serde_yaml::from_str(yaml).unwrap();
+        let ph = pc.passive_health.expect("passive_health should parse");
+        assert!(ph.enabled);
+        assert_eq!(ph.fail_threshold, 5);
+        assert_eq!(ph.rise_threshold, 4);
+        assert!(ph.count_5xx);
+    }
+
+    #[test]
+    fn passive_health_defaults_are_off_and_hysteretic() {
+        // An empty block enables nothing and uses sane hysteresis defaults:
+        // a single error can never flip a member (fail_threshold >= 2).
+        let ph: PassiveHealthConfig = serde_yaml::from_str("{}").unwrap();
+        assert!(!ph.enabled);
+        assert_eq!(ph.fail_threshold, 3);
+        assert_eq!(ph.rise_threshold, 2);
+        assert!(!ph.count_5xx);
     }
 }
 
