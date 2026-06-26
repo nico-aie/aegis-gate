@@ -30,6 +30,11 @@ pub struct ProxyContext {
     /// zone preference inert. P1 only plumbs it here (read-only); a later phase
     /// teaches `LbStrategy::pick` to prefer members whose `zone` matches.
     self_zone: Option<String>,
+    /// Zone-aware LB P3 — served-local-vs-cross-zone routing counter. `None`
+    /// for builds/tests without a metrics registry; the data-plane pick sites
+    /// guard on it so the cost is nil when absent. Installed at boot in `run`.
+    pub zone_metrics:
+        Option<Arc<aegis_control::metrics::zone_routing::ZoneRoutingMetrics>>,
     /// SC-1 — per-upstream response cache (L1 in-process). Built from the
     /// boot config; only pools with a `cache:` block get an entry. CRITICAL
     /// tier is never cached (the data plane enforces that, not this).
@@ -281,10 +286,14 @@ impl ProxyContext {
         if let Some(zone) = self_zone.as_deref() {
             tracing::info!(zone, "node self-zone resolved (zone-aware LB)");
         }
+        // Zone-aware LB P3 — seed the registry so live_snapshot marks local
+        // members and echoes the node's zone to the dashboard.
+        pool_registry.seed_self_zone(self_zone.clone());
         Ok(Self {
             route_table,
             pools: pool_registry,
             self_zone,
+            zone_metrics: None,
             cache,
             pipeline,
             benchmark: BenchmarkConfig::off(),
@@ -528,6 +537,19 @@ where
                 .unwrap());
         }
     };
+
+    // Zone-aware LB P3 — record whether this request was served from the
+    // node's own zone or spilled cross-zone (no-op unless locality is on,
+    // the node has a self-zone, and a metrics registry is wired).
+    if let Some(zm) = &ctx.zone_metrics {
+        if let Some(outcome) = crate::upstream::zone_routing_outcome(
+            pool.locality.enabled,
+            ctx.self_zone(),
+            member.zone.as_deref(),
+        ) {
+            zm.record(&route_ctx.upstream, outcome);
+        }
+    }
 
     // Captured route stage timing (only meaningful when
     // benchmark mode is on).

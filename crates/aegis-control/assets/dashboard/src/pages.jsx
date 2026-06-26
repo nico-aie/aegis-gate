@@ -9114,6 +9114,10 @@ function PageUpstreams() {
   const pools = window.applyOverlayMap(cfgApi.data?.pools || {}, poolOverlay.overlay);
   const names = Object.keys(pools).sort();
   const summary = summaryApi.data?.pools || [];
+  // Zone-aware LB P3 — the node's own availability zone (when configured),
+  // surfaced as a readout so operators can see "this node is in az-a" and
+  // reason about same-zone preference / spillover.
+  const selfZone = summaryApi.data?.self_zone || null;
   const routes = window.applyOverlayList(routesApi.data?.routes || [], routeOverlay.overlay, r => r.id);
 
   // Drop staged entries once a fresh load reflects them (self-correcting:
@@ -9255,6 +9259,15 @@ function PageUpstreams() {
         <div>
           <h1 className="page-title">
             Routing &amp; Upstreams
+            {selfZone && (
+              <span
+                className="pill ok"
+                style={{ marginLeft: 10, fontSize: 11, verticalAlign: 'middle' }}
+                title="This node's availability zone (node.zone / AEGIS_ZONE). Zone-aware pools prefer same-zone upstream members."
+              >
+                this node: {selfZone}
+              </span>
+            )}
             <window.PageTitleRefresh
               onClick={() => {
                 cfgApi.reload && cfgApi.reload();

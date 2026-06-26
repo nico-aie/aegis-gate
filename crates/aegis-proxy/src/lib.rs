@@ -395,7 +395,7 @@ state:
 
         let bus = aegis_core::AuditBus::new(8);
         let pool = std::sync::Arc::new(|| {
-            aegis_control::api::upstreams::PoolHealthSnapshot { pools: Vec::new() }
+            aegis_control::api::upstreams::PoolHealthSnapshot { pools: Vec::new(), ..Default::default() }
         });
         let identity = std::sync::Arc::new(AdminIdentity {
             user: "admin".into(),

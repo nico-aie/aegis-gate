@@ -17,6 +17,7 @@ pub mod state_ops;
 pub mod streaming;
 pub mod upstream_pools;
 pub mod websocket;
+pub mod zone_routing;
 
 use prometheus::Registry;
 use std::sync::Arc;

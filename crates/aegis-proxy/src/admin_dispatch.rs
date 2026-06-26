@@ -1681,6 +1681,7 @@ mod tests {
         let pools: aegis_control::dashboard_services::PoolSnapshotProvider =
             Arc::new(|| aegis_control::api::upstreams::PoolHealthSnapshot {
                 pools: Vec::new(),
+                ..Default::default()
             });
         let (mut services, _drain) =
             aegis_control::dashboard_services::DashboardServices::spawn(bus, pools, None);

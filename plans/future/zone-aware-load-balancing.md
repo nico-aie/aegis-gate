@@ -173,8 +173,19 @@ never returns `None` for a non-empty pool**.
   `apply`; plain `pick` (zone-off) stays byte-identical. Wired at all three
   pick sites (proxy.rs + data_plane.rs ×2). Invariant holds: never `None` for a
   non-empty pool.
-- **P3 — observability.** Local-member badge + per-zone healthy summary +
-  metric/label for "served local vs cross-zone".
+- **P3 — observability.** ✅ Shipped 2026-06-26 (this PR). (1) Live upstreams
+  API enriched: `MemberHealth.{zone,is_local}`, `PoolHealthEntry.zones`
+  (per-zone `{healthy,total,local}` via the pure `zone_rollup`), and
+  `self_zone` on the snapshot + summary response; built proxy-side in
+  `live_snapshot` (registry gains `seed_self_zone`, fed from
+  `ProxyContext.self_zone`). (2) `waf_upstream_zone_routing_total{pool,outcome}`
+  counter (`ZoneRoutingMetrics`) incremented at all three pick sites via the
+  pure `zone_routing_outcome` classifier (local vs cross_zone; no-op unless
+  locality on + self-zone set). (3) Dashboard "this node: az-a" readout on the
+  Routing & Upstreams page. **Deferred polish:** the per-member local
+  badge/tint + per-zone card — the API data is ready, but this routes-centric
+  page has no live per-member table render path yet (the old `PoolDetail`
+  component is dead); best as a focused follow-up.
 - **P4 — capacity gate (v2)** ✅ Shipped 2026-06-26 (this PR).
   `pool.locality.min_local_healthy_pct: Option<u8>` (non-breaking add). When
   set, `pick_with_locality` prefers the local zone only while its healthy

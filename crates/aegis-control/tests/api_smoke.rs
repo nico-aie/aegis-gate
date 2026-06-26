@@ -49,6 +49,7 @@ fn fake_pools() -> PoolSnapshotProvider {
                 total: 4,
                 members: Vec::new(),
                 circuit: None,
+                ..Default::default()
             },
             PoolHealthEntry {
                 name: "static-pool".into(),
@@ -56,8 +57,10 @@ fn fake_pools() -> PoolSnapshotProvider {
                 total: 2,
                 members: Vec::new(),
                 circuit: None,
+                ..Default::default()
             },
         ],
+        ..Default::default()
     })
 }
 

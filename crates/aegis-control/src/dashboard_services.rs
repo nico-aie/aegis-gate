@@ -856,6 +856,7 @@ pub fn pool_snapshot_provider(cfg: &aegis_core::config::WafConfig) -> PoolSnapsh
         .collect();
     Arc::new(move || PoolHealthSnapshot {
         pools: pools.clone(),
+        ..Default::default()
     })
 }
 
@@ -886,7 +887,7 @@ mod tests {
     }
 
     fn empty_pool_provider() -> PoolSnapshotProvider {
-        Arc::new(|| PoolHealthSnapshot { pools: Vec::new() })
+        Arc::new(|| PoolHealthSnapshot { pools: Vec::new(), ..Default::default() })
     }
 
     fn fake_pool_provider() -> PoolSnapshotProvider {
@@ -897,6 +898,7 @@ mod tests {
                 total: 4,
                 ..Default::default()
             }],
+            ..Default::default()
         })
     }
 

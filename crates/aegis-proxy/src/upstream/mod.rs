@@ -313,6 +313,28 @@ impl LocalityRuntime {
     }
 }
 
+/// Classify which zone a picked member was served from, for the zone-aware LB
+/// P3 routing metric (`waf_upstream_zone_routing_total`). Returns the metric
+/// `outcome` label, or `None` when this wasn't a zone-aware decision (locality
+/// disabled, or the node has no self-zone) so the counter isn't polluted with
+/// traffic that never had a locality preference to honor.
+pub fn zone_routing_outcome(
+    locality_enabled: bool,
+    self_zone: Option<&str>,
+    member_zone: Option<&str>,
+) -> Option<&'static str> {
+    use aegis_control::metrics::zone_routing::{OUTCOME_CROSS_ZONE, OUTCOME_LOCAL};
+    if !locality_enabled {
+        return None;
+    }
+    let sz = self_zone?;
+    Some(if member_zone == Some(sz) {
+        OUTCOME_LOCAL
+    } else {
+        OUTCOME_CROSS_ZONE
+    })
+}
+
 /// A pool of upstream members with a configured load-balancing strategy.
 #[derive(Debug)]
 pub struct Pool {
@@ -435,6 +457,39 @@ mod tests {
         // Operator forces passive on alongside an active checker → honored.
         let rt = PassiveHealthRuntime::resolve(Some(&passive_cfg(true)), true);
         assert!(rt.enabled);
+    }
+
+    // Zone-aware LB P3 — routing-outcome classifier for the served-local /
+    // cross-zone metric.
+
+    #[test]
+    fn zone_routing_outcome_none_when_locality_disabled() {
+        assert_eq!(zone_routing_outcome(false, Some("az-a"), Some("az-a")), None);
+    }
+
+    #[test]
+    fn zone_routing_outcome_none_without_self_zone() {
+        assert_eq!(zone_routing_outcome(true, None, Some("az-a")), None);
+    }
+
+    #[test]
+    fn zone_routing_outcome_local_when_member_matches_node() {
+        assert_eq!(
+            zone_routing_outcome(true, Some("az-a"), Some("az-a")),
+            Some("local")
+        );
+    }
+
+    #[test]
+    fn zone_routing_outcome_cross_zone_when_member_differs_or_unlabeled() {
+        assert_eq!(
+            zone_routing_outcome(true, Some("az-a"), Some("az-b")),
+            Some("cross_zone")
+        );
+        assert_eq!(
+            zone_routing_outcome(true, Some("az-a"), None),
+            Some("cross_zone")
+        );
     }
 
     #[test]
