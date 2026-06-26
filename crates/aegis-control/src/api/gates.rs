@@ -50,6 +50,11 @@ pub struct DdosView {
     /// `tick_rps()` ticker spawned in `aegis-proxy::run`.
     pub current_rps: u64,
     pub baseline_rps: u64,
+    /// Fleet RPS aggregation P3 — the fleet-wide RPS the spike signal acted on
+    /// when `config.spike_scope == fleet` (0 in per-node scope). Lets the panel
+    /// show "fleet N rps vs node M rps".
+    #[serde(default)]
+    pub fleet_rps: u64,
     pub spike_active: bool,
     /// 2026-05-22 — interop mode resolved for the `ddos` feature
     /// (`set_profile`). `"enforce"` or `"log_only"`. This is
@@ -109,6 +114,7 @@ impl DdosView {
                 config: DdosConfigView::from(r.config_snapshot()),
                 current_rps: r.current_rps(),
                 baseline_rps: r.baseline_rps(),
+                fleet_rps: r.fleet_rps(),
                 spike_active: r.is_spike_active(),
                 // Default; `render_get` overlays the live interop mode.
                 effective_mode: "enforce".into(),
@@ -129,6 +135,7 @@ impl DdosView {
                 },
                 current_rps: 0,
                 baseline_rps: 0,
+                fleet_rps: 0,
                 spike_active: false,
                 effective_mode: "enforce".into(),
             },

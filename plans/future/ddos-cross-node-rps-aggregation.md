@@ -89,10 +89,16 @@ panel alongside the dwell knobs (same wiring as P2's `spike_engage_ticks`).
   never panics/stalls) → `tick_with_current`. `per_node` skips the backend entirely (byte-identical
   today). `spike_scope` round-trips through the `/api/gates/ddos` view + PUT so a dashboard edit
   can't clobber a YAML `fleet`.
-- **P3** — *Partial.* API surface done (P2): `spike_scope` is in `DdosConfigView` + `DdosPutBody`.
-  **Remaining:** the DDoS-panel JSX (show/edit `spike_scope`; display `fleet_rps` vs `node_rps`).
-- **P4** — Docs: update `rolling_rps` / `dev.yaml` comments (drop the "deferred" breadcrumb),
-  document the Redis key shape + TTL. **Remaining.**
+- **P3** — ✅ Shipped 2026-06-26. `DdosDetector.last_fleet_rps` + `fleet_rps()` getter (set in
+  `tick_rps_fleet_at`, fleet scope) surfaced as `DdosView.fleet_rps`. DDoS panel JSX: a
+  `spike_scope` tile + `fleet`-vs-node RPS readout on the Current-RPS tile, and a `spike_scope`
+  `<select>` in the edit modal that round-trips through the PUT (so a save can't clobber a `fleet`
+  setting). Bundle rebuilt (`build.sh`).
+- **P4** — ✅ Shipped 2026-06-26. `rolling_rps` doc comment + `config/dev.yaml` updated (dropped the
+  "deferred" breadcrumb; document `spike_scope`, the `ddos:fleet:rps:<epoch>` key shape + ~5 s TTL,
+  and the fail-safe). `prod.yaml` had no breadcrumb.
+
+**Plan complete** — P1–P4 shipped. Wave 2 availability theme closed.
 
 ## Acceptance gates
 
