@@ -12875,7 +12875,11 @@ function DdosGateCard() {
           <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
             <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Current RPS</div>
             <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>{hotDisabled ? '—' : data.current_rps}</div>
-            <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>this 1-second window</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>
+              {cfg.spike_scope === 'fleet'
+                ? <>node window · fleet <strong>{hotDisabled ? '—' : data.fleet_rps}</strong> rps</>
+                : 'this 1-second window'}
+            </div>
           </div>
           <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
             <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Baseline RPS</div>
@@ -12930,6 +12934,11 @@ function DdosGateCard() {
             <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>ticks to release (~{cfg.spike_release_ticks}s)</div>
           </div>
           <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>spike_scope</div>
+            <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>{cfg.spike_scope || 'per_node'}</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>{cfg.spike_scope === 'fleet' ? 'fleet-wide RPS signal' : 'this node only'}</div>
+          </div>
+          <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
             <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>normal trip rate</div>
             <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>
               {(cfg.per_ip_limit / ddosWin).toFixed(1)}/s
@@ -12972,6 +12981,10 @@ function DdosEditModal({ current, onClose, onSaved }) {
   const [tightenedRps, setTightenedRps] = useStateP(current?.tightened_per_ip_rps ?? 20);
   const [engageTicks, setEngageTicks] = useStateP(current?.spike_engage_ticks ?? 2);
   const [releaseTicks, setReleaseTicks] = useStateP(current?.spike_release_ticks ?? 8);
+  // Fleet RPS aggregation P3 — spike scope. Seeded from the live config so a
+  // save round-trips it (the PUT defaults an omitted scope to per_node, which
+  // would clobber a YAML `fleet`).
+  const [spikeScope, setSpikeScope] = useStateP(current?.spike_scope ?? 'per_node');
   const [busy, setBusy] = useStateP(false);
   const [err, setErr] = useStateP(null);
 
@@ -12990,6 +13003,7 @@ function DdosEditModal({ current, onClose, onSaved }) {
           tightened_per_ip_rps: parseInt(tightenedRps, 10),
           spike_engage_ticks: parseInt(engageTicks, 10),
           spike_release_ticks: parseInt(releaseTicks, 10),
+          spike_scope: spikeScope,
         },
       });
       if (r && r.ok !== false && (r.status === undefined || (r.status >= 200 && r.status < 300))) {
@@ -13071,6 +13085,16 @@ function DdosEditModal({ current, onClose, onSaved }) {
                 onChange={e => setReleaseTicks(e.target.value)} disabled={busy}
                 style={{ marginTop: 4, width: '100%' }} />
               <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>consecutive under-threshold ticks before spike releases (anti-flap)</div>
+            </label>
+            <label style={{ fontSize: 12 }}>
+              spike_scope
+              <select className="input" value={spikeScope}
+                onChange={e => setSpikeScope(e.target.value)} disabled={busy}
+                style={{ marginTop: 4, width: '100%' }}>
+                <option value="per_node">per_node</option>
+                <option value="fleet">fleet</option>
+              </select>
+              <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>per_node = this node's RPS; fleet = sum across the cluster (needs a shared state backend)</div>
             </label>
           </div>
           <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>

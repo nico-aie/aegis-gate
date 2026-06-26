@@ -219,14 +219,18 @@ pub struct DdosDetector {
     /// Matches the `IpRateLimiter` pattern.
     /// Hot-path cost: one `ArcSwap::load` per request (~5 ns).
     config: arc_swap::ArcSwap<DdosConfig>,
-    /// Rolling RPS estimate (requests in current second).
-    /// **PER-NODE** — `fetch_add` on this node's traffic only; spike
-    /// detection is therefore per-node, NOT fleet-wide (despite the
-    /// historical "cluster" wording elsewhere). True cluster-wide RPS
-    /// (Redis `INCR` a per-tick key + read the fleet sum in `tick_rps`)
-    /// is deferred — see plans/issues/PLAN-ddos-spike-enforcement-2026-06-20.md
-    /// (P3). In practice an LB fans a single source IP to every node, so
-    /// each node observes the spike independently.
+    /// Rolling RPS estimate (requests in current second). `fetch_add` on
+    /// **this node's** traffic only.
+    ///
+    /// The spike *signal* this feeds is per-node by default
+    /// (`ddos.spike_scope: per_node`), so each node detects its own surge —
+    /// fine when an LB fans a source IP to every node. With
+    /// `ddos.spike_scope: fleet` the 1 s tick instead writes this count into a
+    /// shared per-second bucket (`ddos:fleet:rps:<epoch>`, ~5 s TTL) and reads
+    /// the prior second's fleet-wide sum, so a flood fanned thinly below any
+    /// single node's threshold still engages spike across the cluster. See
+    /// `DdosRuntime::tick_rps_fleet` and
+    /// `plans/future/ddos-cross-node-rps-aggregation.md`.
     rolling_rps: AtomicU64,
     /// Average RPS baseline (per-node EWMA).
     baseline_rps: AtomicU64,
@@ -238,6 +242,10 @@ pub struct DdosDetector {
     /// dwell. See `tick_rps`.
     spike_over_ticks: AtomicU64,
     spike_under_ticks: AtomicU64,
+    /// Fleet RPS aggregation P3 — the most recent fleet-wide RPS the tick
+    /// acted on (prior-second bucket sum). `0` in per-node scope. Display-only,
+    /// for the dashboard's fleet-vs-node readout.
+    last_fleet_rps: AtomicU64,
     /// 2026-05-23 (perf) — in-process per-`(tier,ip)` sliding window.
     /// Replaces the per-request `StateBackend::incr_window` round-trip
     /// (the dominant WAF-overhead tail + a Redis-throughput cap at
@@ -461,7 +469,10 @@ impl DdosRuntime {
             && cfg.spike_scope == aegis_core::config::SpikeScope::Fleet
         {
             match self.fleet_current(node_count, now_epoch).await {
-                Ok(fleet) => fleet,
+                Ok(fleet) => {
+                    self.detector.set_fleet_rps(fleet);
+                    fleet
+                }
                 Err(e) => {
                     tracing::debug!(error = %e, "ddos fleet rps: backend error; per-node fallback");
                     node_count
@@ -510,6 +521,12 @@ impl DdosRuntime {
         self.detector.baseline_rps()
     }
 
+    /// Fleet RPS aggregation P3 — last fleet-wide RPS the tick acted on (0 in
+    /// per-node scope). Display-only, for the dashboard fleet-vs-node readout.
+    pub fn fleet_rps(&self) -> u64 {
+        self.detector.fleet_rps()
+    }
+
     pub fn is_spike_active(&self) -> bool {
         self.detector.is_spike_active()
     }
@@ -531,6 +548,7 @@ impl DdosDetector {
             spike_active: AtomicU64::new(0),
             spike_over_ticks: AtomicU64::new(0),
             spike_under_ticks: AtomicU64::new(0),
+            last_fleet_rps: AtomicU64::new(0),
             windows: DashMap::new(),
             local_blocks: DashMap::new(),
             last_sweep: Mutex::new(Instant::now()),
@@ -823,6 +841,17 @@ impl DdosDetector {
     /// Baseline RPS.
     pub fn baseline_rps(&self) -> u64 {
         self.baseline_rps.load(Ordering::Relaxed)
+    }
+
+    /// Fleet RPS aggregation P3 — the last fleet-wide RPS acted on (0 in
+    /// per-node scope). Display-only.
+    pub fn fleet_rps(&self) -> u64 {
+        self.last_fleet_rps.load(Ordering::Relaxed)
+    }
+
+    /// Record the fleet RPS the tick acted on (fleet scope only).
+    pub fn set_fleet_rps(&self, v: u64) {
+        self.last_fleet_rps.store(v, Ordering::Relaxed);
     }
 
     /// 2026-05-20 — clear the temporary spike-detection state for
@@ -1137,6 +1166,22 @@ mod tests {
         node_b.tick_rps_fleet_at(101).await;
         assert!(node_a.is_spike_active(), "node A engages on fleet sum");
         assert!(node_b.is_spike_active(), "node B engages on fleet sum");
+    }
+
+    #[tokio::test]
+    async fn fleet_rps_getter_reflects_prior_second_sum() {
+        // After a fleet tick, the runtime exposes the fleet RPS it acted on
+        // (for the dashboard's fleet-vs-node readout).
+        let backend: Arc<dyn StateBackend> = Arc::new(MockState::new());
+        let node_a = fleet_cfg(backend.clone());
+        let node_b = fleet_cfg(backend.clone());
+        node_a.detector.rolling_rps.store(200, Ordering::Relaxed);
+        node_b.detector.rolling_rps.store(150, Ordering::Relaxed);
+        node_a.tick_rps_fleet_at(100).await; // writes bucket[100]
+        node_b.tick_rps_fleet_at(100).await;
+        // Next second: the tick reads bucket[100] = 350.
+        node_a.tick_rps_fleet_at(101).await;
+        assert_eq!(node_a.fleet_rps(), 350);
     }
 
     #[tokio::test]
