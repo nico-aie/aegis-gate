@@ -124,9 +124,19 @@ circuit-breaker half-open state already in `upstream/circuit.rs`.)
   5xx counts as a connection success unless `count_5xx` (stub toggle).
   Default-off = today's behavior byte-for-byte. CB stays the pool fuse; passive
   is per-member rotation (no double-penalty).
-- **P3 — half-open recovery probe** for passively-downed members. **Next.**
+- **P3 — half-open recovery probe** ✅ Shipped 2026-06-26 (this PR).
+  `spawn_passive_recovery_probe` (health.rs) TCP-probes **only downed** members
+  of a passive-enabled pool and feeds the result back through the same
+  hysteretic accounting — `rise_threshold` consecutive reachable probes restore
+  (via `record_passive_success`), an unreachable probe resets the success
+  streak (via `record_passive_failure`). Healthy members are skipped. Emits a
+  `member_recovered` audit on the restore. Spawned from `spawn_health_checks`
+  (proxy.rs) in the no-active-`health:` branch only when
+  `passive_health.enabled` (default off ⇒ not spawned). A TCP connect is the
+  matching trial (passive health measures connection-level reachability), so no
+  HTTP probe path is needed. Mirrors the circuit-breaker half-open state.
 - **P4** — default on for pools without an active `health:` block; retire/fold
-  the standalone TCP observer for those pools.
+  the standalone TCP observer for those pools. **Next.**
 
 ## 6. Tests
 - (P1) zero-healthy pool routes via fallback, not `None`.

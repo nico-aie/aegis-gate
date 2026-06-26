@@ -353,6 +353,11 @@ impl ProxyContext {
         // badge, never load-balancer selection.
         const TCP_OBSERVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
         const TCP_OBSERVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+        // P3 — half-open recovery probe cadence for passively-downed members.
+        // A downed member gets no real traffic, so this loop is its only path
+        // back; probe a little more eagerly than the badge observer.
+        const PASSIVE_RECOVERY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+        const PASSIVE_RECOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
         let mut handles = Vec::new();
         let pools = self.pools.snapshot();
@@ -393,6 +398,29 @@ impl ProxyContext {
                         "upstream TCP liveness observer spawned (no health block)"
                     );
                     handles.push(h);
+
+                    // P3 — when passive health is enabled for this (no active
+                    // `health:` block) pool, also spawn a half-open recovery
+                    // probe so a passively-downed member can be rotated back
+                    // in. No-op for the default (passive disabled) — nothing
+                    // ever marks a member down, so the loop would find none.
+                    let ph = pool.passive_health;
+                    if ph.enabled {
+                        let r = crate::upstream::health::spawn_passive_recovery_probe(
+                            name.clone(),
+                            pool.members.clone(),
+                            ph.rise_threshold,
+                            ph.fail_threshold,
+                            PASSIVE_RECOVERY_INTERVAL,
+                            PASSIVE_RECOVERY_TIMEOUT,
+                            bus.clone(),
+                        );
+                        tracing::info!(
+                            pool = %name,
+                            "passive-health recovery probe spawned"
+                        );
+                        handles.push(r);
+                    }
                 }
             }
         }
