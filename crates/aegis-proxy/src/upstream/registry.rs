@@ -221,8 +221,12 @@ impl PoolRegistry {
                     members,
                     strategy,
                     connection,
-                    passive_health: crate::upstream::PassiveHealthRuntime::from_config(
+                    // P4 — passive health defaults ON for pools without an
+                    // active `health:` block (it becomes their health source);
+                    // an explicit `passive_health` block still wins.
+                    passive_health: crate::upstream::PassiveHealthRuntime::resolve(
                         cfg.passive_health.as_ref(),
+                        cfg.health.is_some(),
                     ),
                 }),
             );

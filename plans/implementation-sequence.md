@@ -169,7 +169,7 @@ foundation items run in parallel within a wave.
 
 | ✓ | Item | Stream | Effort | Why now |
 |---|---|---|---|---|
-| ◑ | **passive-upstream-health** — **P2+P3 shipped** (per-member passive accounting + hysteresis marking behind `pool.passive_health`, default off; both forward-result sites wired; **P3** half-open TCP recovery probe rotates downed members back in). P4 default-on/retire-TCP-observer remains | Foundation | M | Real-failure member health → LB; correctness |
+| ✅ | **passive-upstream-health** — **P2+P3+P4 shipped** (per-member passive accounting + hysteresis marking; both forward-result sites wired; P3 half-open TCP recovery; **P4** default-on for pools without an active `health:` block + folded the TCP observer into one `spawn_passive_health_monitor`). Plan complete → [[passive-upstream-health]] | Foundation | M | Real-failure member health → LB; correctness |
 | ☐ | **zone-aware-load-balancing** (after PREREQ-B + node self-zone) — **do with passive-health** | Foundation | M | Locality routing; shares the `LbStrategy::pick` touchpoint with passive-health — do together to touch the LB once |
 | ☐ | **ddos-cross-node-rps-aggregation** | Foundation | M | Cluster-wide RPS; standalone; slot by capacity |
 | ⏸ | Roadmap **Tier 2** — AI/LLM firewall — **deferred, research-gated** → [[ai-llm-firewall]] | Capability | M | Net-new differentiator (2A prompt-injection first; 2B/2C behind the SSE decision). NOT the `ai` ONNX detector. Needs research (signature corpus / FP calibration / streaming decision) before build — see plan §8 |
