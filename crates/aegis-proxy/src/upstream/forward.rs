@@ -742,6 +742,14 @@ impl std::error::Error for ForwardError {}
 mod tests {
     use super::*;
 
+    /// Serializes tests that touch the process-global client `CACHE` via
+    /// `_reset_client_cache()`. Without it, a concurrent test resetting the
+    /// cache mid-loop forces a counting test to rebuild its client → an extra
+    /// TCP `accept()` → flaky `observed == 1` assertions under `cargo test`'s
+    /// parallel execution. A `tokio::sync::Mutex` so it's held cleanly across
+    /// `.await` in the async tests; the one sync test uses `blocking_lock()`.
+    static CACHE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     fn hm(items: &[(&str, &str)]) -> HeaderMap {
         let mut m = HeaderMap::new();
         for (k, v) in items {
@@ -1033,6 +1041,7 @@ mod tests {
     #[tokio::test]
     async fn pooled_keep_alive_reuses_tcp_connection() {
         // Reset cache so a previous test's client doesn't leak in.
+        let _serial = CACHE_LOCK.lock().await;
         super::_reset_client_cache();
         let (addr, conns) = spawn_counting_server().await;
         let member = Member::new(addr, 1, None);
@@ -1146,6 +1155,7 @@ mod tests {
         // with the cache-key test above, this confirms the cache
         // builds a fresh client on a scheme change instead of
         // returning the stale one.
+        let _serial = CACHE_LOCK.blocking_lock();
         super::_reset_client_cache();
         let auto = ConnectionPoolConfig {
             max_idle_per_host: 32,
@@ -1258,6 +1268,7 @@ mod tests {
 
     #[tokio::test]
     async fn keep_alive_disabled_opens_a_connection_per_request() {
+        let _serial = CACHE_LOCK.lock().await;
         super::_reset_client_cache();
         let (addr, conns) = spawn_counting_server().await;
         let member = Member::new(addr, 1, None);
@@ -1358,6 +1369,7 @@ mod tests {
     /// delivers every event.
     #[tokio::test]
     async fn sse_streams_through_past_the_read_deadline() {
+        let _serial = CACHE_LOCK.lock().await;
         super::_reset_client_cache();
         // 3 events, 80ms apart (~240ms total) — well past the 20ms buffered
         // read deadline below, which proves that deadline no longer applies.
@@ -1394,6 +1406,7 @@ mod tests {
     /// subject to the buffered read deadline / size cap as before).
     #[tokio::test]
     async fn streaming_disabled_buffers_event_stream() {
+        let _serial = CACHE_LOCK.lock().await;
         super::_reset_client_cache();
         // Fast upstream so the buffered collect completes within the cfg
         // read deadline.
@@ -1432,6 +1445,7 @@ mod tests {
     #[tokio::test]
     async fn streaming_cap_rejects_then_recovers() {
         use crate::upstream::streaming::ResponseMode;
+        let _serial = CACHE_LOCK.lock().await;
         super::_reset_client_cache();
         let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
         let cfg = streaming_cfg(Duration::from_secs(5));
