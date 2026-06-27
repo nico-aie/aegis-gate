@@ -58,6 +58,29 @@ fn must_detect(detector: &dyn Detector, method: http::Method, uri: &str, body: &
     );
 }
 
+/// Like [`must_detect`], but POSTs the body with a scannable
+/// `application/x-www-form-urlencoded` content-type. Since the 2026-05-24 FP
+/// fix, body scanning is gated on content-type (`body_is_scannable`) — an
+/// unknown-typed body is (correctly) skipped — so a body-attack assertion must
+/// present the content-type a real form-POST attack carries.
+fn must_detect_form_body(detector: &dyn Detector, uri: &str, body: &[u8]) {
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        "content-type",
+        "application/x-www-form-urlencoded".parse().unwrap(),
+    );
+    let method = http::Method::POST;
+    let u: http::Uri = uri.parse().unwrap();
+    let b = BodyPeek::new(body.to_vec(), Some(body.len() as u64), false);
+    let r = req(&method, &u, &headers, &b);
+    assert!(
+        !detector.inspect(&r).is_empty(),
+        "{} should detect attack in body: {}",
+        detector.id(),
+        String::from_utf8_lossy(body),
+    );
+}
+
 // ---- SQLi red team ----
 #[test]
 fn redteam_sqli_union() {
@@ -71,7 +94,9 @@ fn redteam_sqli_or_bypass() {
 
 #[test]
 fn redteam_sqli_drop_table() {
-    must_detect(&SqliDetector, http::Method::POST, "/api", b"id=1; DROP TABLE users;--");
+    // A real form-POST attack carries a content-type; body scanning is gated on
+    // it (FP fix), so present `application/x-www-form-urlencoded`.
+    must_detect_form_body(&SqliDetector, "/api", b"id=1; DROP TABLE users;--");
 }
 
 #[test]
