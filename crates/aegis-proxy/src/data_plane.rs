@@ -1882,6 +1882,19 @@ fn ws_frame_preview(payload: &[u8], cap: usize) -> String {
     }
 }
 
+/// SC-1 Phase 4 — build a client response from a stored cache entry (shared by
+/// the fresh-HIT, stale-if-error serve, and 304-revalidation paths).
+fn cache_entry_response(
+    entry: &crate::cache::CacheEntry,
+) -> Response<crate::body::DataBody> {
+    let mut rb = Response::builder().status(entry.status);
+    for (n, v) in &entry.headers {
+        rb = rb.header(n, v);
+    }
+    rb.body(crate::body::full(entry.body.clone()))
+        .unwrap_or_else(|_| Response::new(crate::body::full(entry.body.clone())))
+}
+
 /// Resolve a route + member from the live `ProxyContext`,
 /// collect the request body, and forward through
 /// `upstream::forward::forward()`. Returns 404 on no-route,
@@ -1902,7 +1915,7 @@ fn ws_frame_preview(payload: &[u8], cap: usize) -> String {
 )]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn forward_allow_to_upstream(
-    parts: http::request::Parts,
+    mut parts: http::request::Parts,
     body_bytes: Bytes,
     ctx: &Arc<crate::proxy::ProxyContext>,
     // 2026-06-12 — the per-route `auth_required` gate that consumed the
@@ -2774,6 +2787,15 @@ pub(crate) async fn forward_allow_to_upstream(
         crate::cache::CacheKey,
         usize,
     )> = None;
+    // SC-1 Phase 4 — a retained-but-stale entry to fall back on: served on an
+    // upstream error / 5xx (stale-if-error), or refreshed + served on a 304
+    // (ETag revalidation). Set only on a `Stale` lookup.
+    let mut stale_serve: Option<(
+        std::sync::Arc<crate::cache::PoolCache>,
+        std::sync::Arc<crate::cache::CacheEntry>,
+        crate::cache::CacheKey,
+        usize,
+    )> = None;
     if route_ctx.tier != aegis_core::tier::Tier::Critical {
         if let Some(pc) = ctx.cache.pool(&route_ctx.upstream) {
             let pc = pc.clone();
@@ -2783,21 +2805,29 @@ pub(crate) async fn forward_allow_to_upstream(
             {
                 crate::cache::CacheLookup::Hit(entry) => {
                     tracing::Span::current().record("outcome", "cache-hit");
-                    let mut rb = Response::builder().status(entry.status);
-                    for (n, v) in &entry.headers {
-                        rb = rb.header(n, v);
-                    }
-                    let resp = rb
-                        .body(crate::body::full(entry.body.clone()))
-                        .unwrap_or_else(|_| Response::new(crate::body::full(entry.body.clone())));
                     return (
-                        resp,
+                        cache_entry_response(&entry),
                         DecisionTag::allow().with_tier(route_ctx.tier).with_cache(
                             aegis_control::interop::headers::CacheState::Hit,
                         ),
                     );
                 }
                 crate::cache::CacheLookup::Miss { key, rule_idx } => {
+                    cache_pending = Some((pc, key, rule_idx));
+                }
+                crate::cache::CacheLookup::Stale { entry, key, rule_idx } => {
+                    // Revalidate with `If-None-Match` when the stale entry has an
+                    // ETag, so the upstream can answer 304 (refresh, no body).
+                    if let Some(etag) = entry
+                        .headers
+                        .iter()
+                        .find(|(n, _)| n == http::header::ETAG)
+                        .map(|(_, v)| v.clone())
+                    {
+                        parts.headers.insert(http::header::IF_NONE_MATCH, etag);
+                    }
+                    stale_serve = Some((pc.clone(), entry, key.clone(), rule_idx));
+                    // A genuinely-fresh 200 still stores like a miss.
                     cache_pending = Some((pc, key, rule_idx));
                 }
                 crate::cache::CacheLookup::Bypass(_reason) => {}
@@ -2915,6 +2945,29 @@ pub(crate) async fn forward_allow_to_upstream(
                     "ok"
                 },
             );
+            // SC-1 Phase 4 — a stale entry was retained for this request:
+            //  • 304 Not Modified → cached body still valid; refresh freshness
+            //    and serve it (no re-fetch).
+            //  • 5xx → upstream is failing; serve the stale copy instead of the
+            //    error (stale-if-error).
+            //  • a real 200 → fall through to the normal store + serve.
+            // Both serve stamps `X-WAF-Cache: HIT` (the wire enum is frozen).
+            if let Some((pc, entry, key, _rule_idx)) = stale_serve.take() {
+                let hit = || {
+                    DecisionTag::allow().with_tier(route_ctx.tier).with_cache(
+                        aegis_control::interop::headers::CacheState::Hit,
+                    )
+                };
+                if status == hyper::StatusCode::NOT_MODIFIED {
+                    pc.refresh(key, &entry).await;
+                    tracing::Span::current().record("outcome", "cache-revalidated");
+                    return (cache_entry_response(&entry), hit());
+                }
+                if status.is_server_error() {
+                    tracing::Span::current().record("outcome", "cache-stale-served");
+                    return (cache_entry_response(&entry), hit());
+                }
+            }
             // SSE plan Phase 3 — streaming bypass. A streamed response is
             // header-inspected only: its body can't be re-read, so we skip
             // the response-filter pipeline AND the response cache and pass
@@ -3056,6 +3109,18 @@ pub(crate) async fn forward_allow_to_upstream(
             // (connect/handshake/timeout) evict this member; ambiguous
             // mid-stream errors are ignored. No-op unless enabled.
             crate::upstream::record_passive_outcome_err(&pool.passive_health, member, &e);
+            // SC-1 Phase 4 — stale-if-error: the upstream is unreachable
+            // (connect/timeout/reset). Serve the retained stale copy instead of
+            // a 502, stamping HIT. No stale entry ⇒ fall through to the error.
+            if let Some((_pc, entry, _key, _rule_idx)) = stale_serve.take() {
+                tracing::Span::current().record("outcome", "cache-stale-served");
+                return (
+                    cache_entry_response(&entry),
+                    DecisionTag::allow().with_tier(route_ctx.tier).with_cache(
+                        aegis_control::interop::headers::CacheState::Hit,
+                    ),
+                );
+            }
             // AF-T1: distinguish forward-failure modes for the
             // contract. Connect/Handshake/Send timeouts → Timeout;
             // anything else → CircuitBreaker (we refused to
@@ -7364,6 +7429,146 @@ state: {{ backend: in_memory }}
             hits.load(Ordering::SeqCst),
             2,
             "critical never caches → backend hit every request"
+        );
+    }
+
+    // ── SC-1 Phase 4 — stale-if-error + ETag revalidation ──
+    // `ttl: "0s"` makes a stored entry immediately *stale* (retained for the
+    // pool's `stale_if_error` window), so these are deterministic with no sleep.
+
+    use std::sync::atomic::AtomicBool;
+
+    /// Mock backend: returns `200 + ETag "v1" + text/css` normally; `304` when
+    /// the request carries `If-None-Match: "v1"`; `503` when `fail` is set
+    /// (checked first). Returns `(addr, request_count, fail_flag)`.
+    async fn spawn_p4_backend() -> (std::net::SocketAddr, Arc<AtomicUsize>, Arc<AtomicBool>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let fail = Arc::new(AtomicBool::new(false));
+        let (h, f) = (hits.clone(), fail.clone());
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = match listener.accept().await {
+                    Ok(c) => c,
+                    Err(_) => break,
+                };
+                let (h, f) = (h.clone(), f.clone());
+                tokio::spawn(async move {
+                    let io = TokioIo::new(stream);
+                    let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                        let (h, f) = (h.clone(), f.clone());
+                        async move {
+                            h.fetch_add(1, Ordering::SeqCst);
+                            let inm = req
+                                .headers()
+                                .get("if-none-match")
+                                .and_then(|v| v.to_str().ok())
+                                .map(|s| s.to_string());
+                            let resp = if f.load(Ordering::SeqCst) {
+                                hyper::Response::builder()
+                                    .status(503)
+                                    .body(http_body_util::Full::new(Bytes::from_static(b"down")))
+                                    .unwrap()
+                            } else if inm.as_deref() == Some("\"v1\"") {
+                                hyper::Response::builder()
+                                    .status(304)
+                                    .header("etag", "\"v1\"")
+                                    .body(http_body_util::Full::new(Bytes::new()))
+                                    .unwrap()
+                            } else {
+                                hyper::Response::builder()
+                                    .status(200)
+                                    .header("content-type", "text/css")
+                                    .header("etag", "\"v1\"")
+                                    .body(http_body_util::Full::new(Bytes::from_static(
+                                        b"fresh-css-body",
+                                    )))
+                                    .unwrap()
+                            };
+                            Ok::<_, Infallible>(resp)
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, svc)
+                        .await;
+                });
+            }
+        });
+        (addr, hits, fail)
+    }
+
+    fn ctx_for_stale(addr: std::net::SocketAddr) -> Arc<ProxyContext> {
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: assets, path: "/", upstream: pool }}
+upstreams:
+  pool:
+    members: [{{ addr: "{addr}" }}]
+    cache:
+      enabled: true
+      default_ttl: "60s"
+      stale_if_error: "30s"
+      rules:
+        - prefix: "/static/"
+          ttl: "0s"
+          content_types: ["text/css"]
+state: {{ backend: in_memory }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        Arc::new(ProxyContext::build(&cfg, pipeline).unwrap())
+    }
+
+    #[tokio::test]
+    async fn stale_served_when_upstream_fails() {
+        let (addr, _hits, fail) = spawn_p4_backend().await;
+        let ctx = ctx_for_stale(addr);
+        let rh = route_latency();
+        let bus = AuditBus::new(16);
+
+        // 1st GET — MISS, stored. ttl=0 → immediately stale, retained 30s.
+        let (s1, c1, b1) = forward(&ctx, "/static/app.css", &rh, &bus).await;
+        assert_eq!(s1, 200);
+        assert!(matches!(c1, CacheState::Miss));
+        assert_eq!(&b1[..], b"fresh-css-body");
+
+        // Upstream now fails (503). The stale copy must be served instead.
+        fail.store(true, Ordering::SeqCst);
+        let (s2, c2, b2) = forward(&ctx, "/static/app.css", &rh, &bus).await;
+        assert_eq!(s2, 200, "stale copy served, not the 503");
+        assert!(matches!(c2, CacheState::Hit), "stale-if-error stamps HIT, got {c2:?}");
+        assert_eq!(&b2[..], b"fresh-css-body", "served the stored body");
+    }
+
+    #[tokio::test]
+    async fn etag_revalidation_304_serves_stored_body() {
+        let (addr, hits, _fail) = spawn_p4_backend().await;
+        let ctx = ctx_for_stale(addr);
+        let rh = route_latency();
+        let bus = AuditBus::new(16);
+
+        // 1st GET — MISS, stored with ETag "v1" (immediately stale).
+        let (_s1, c1, _b1) = forward(&ctx, "/static/app.css", &rh, &bus).await;
+        assert!(matches!(c1, CacheState::Miss));
+        let after_first = hits.load(Ordering::SeqCst);
+
+        // 2nd GET — stale → revalidate with If-None-Match: "v1" → backend 304 →
+        // serve the stored body, stamp HIT (not a full re-fetch).
+        let (s2, c2, b2) = forward(&ctx, "/static/app.css", &rh, &bus).await;
+        assert_eq!(s2, 200, "304 → serve stored body as 200");
+        assert!(matches!(c2, CacheState::Hit), "revalidated → HIT, got {c2:?}");
+        assert_eq!(&b2[..], b"fresh-css-body");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            after_first + 1,
+            "backend got one conditional request (the 304)"
         );
     }
 }

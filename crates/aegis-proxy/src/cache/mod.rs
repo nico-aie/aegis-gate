@@ -49,6 +49,13 @@ pub struct CacheEntry {
     pub ttl: Duration,
     /// Weigher units = body + header bytes; bounds the byte budget.
     pub weight: u32,
+    /// SC-1 Phase 4 — `stored_at + ttl`: the instant this entry stops being
+    /// *fresh*. Past it, the entry is retained for the pool's `stale_if_error`
+    /// window (see [`classify_freshness`]) so it can be served on an upstream
+    /// error or revalidated. Runtime-only (monotonic `Instant`) — **not** in the
+    /// L2 wire format; an L2 hit is reconstructed as freshly-stored (Redis `EX`
+    /// already bounds it to its TTL).
+    pub fresh_until: std::time::Instant,
 }
 
 impl CacheEntry {
@@ -107,12 +114,16 @@ impl CacheEntry {
             .map(|(n, v)| n.as_str().len() + v.as_bytes().len())
             .sum();
         let weight = (body.len() + header_bytes).min(u32::MAX as usize) as u32;
+        let ttl = Duration::from_secs(ttl_secs as u64);
         Some(CacheEntry {
             status,
             headers,
             body,
-            ttl: Duration::from_secs(ttl_secs as u64),
+            ttl,
             weight,
+            // L2 entries are bounded by Redis `EX ttl`, so a retrieved L2 hit is
+            // within its TTL → treat it as freshly stored for L1 freshness.
+            fresh_until: std::time::Instant::now() + ttl,
         })
     }
 }
@@ -125,6 +136,16 @@ pub enum CacheLookup {
     Miss { key: CacheKey, rule_idx: usize },
     /// Stored + fresh — serve this, stamp HIT.
     Hit(Arc<CacheEntry>),
+    /// SC-1 Phase 4 — stored but past TTL, retained within the `stale_if_error`
+    /// window. Forward (revalidating with `If-None-Match` if the entry has an
+    /// `ETag`); on a 304 refresh + serve the stored body, on an upstream error
+    /// serve this stale copy, otherwise store the fresh response. Carries the
+    /// `key`/`rule_idx` so a fresh response can be re-stored.
+    Stale {
+        entry: Arc<CacheEntry>,
+        key: CacheKey,
+        rule_idx: usize,
+    },
 }
 
 /// Per-pool cache + resolved policy + counters.
@@ -142,9 +163,45 @@ pub struct PoolCache {
     l2: Option<l2::L2Cache>,
 }
 
+/// SC-1 Phase 4 — freshness of a retained entry relative to `now`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Freshness {
+    /// Within TTL — serve directly (a normal `Hit`).
+    Fresh,
+    /// Past TTL but within the `stale_if_error` window — retained so it can be
+    /// served on an upstream error or revalidated (ETag).
+    Stale,
+    /// Past TTL + stale window — no longer usable (treat as a miss). The cache
+    /// backend should have evicted it; this is the defensive classification for
+    /// the lazy-eviction window.
+    Expired,
+}
+
+/// Classify a retained entry. `fresh_until` is `stored_at + ttl`; an entry is
+/// `Stale` for `stale_window` after that, then `Expired`. A zero `stale_window`
+/// means no stale band (Fresh → Expired, today's behavior).
+pub(crate) fn classify_freshness(
+    fresh_until: std::time::Instant,
+    now: std::time::Instant,
+    stale_window: Duration,
+) -> Freshness {
+    if now < fresh_until {
+        Freshness::Fresh
+    } else if now < fresh_until + stale_window {
+        Freshness::Stale
+    } else {
+        Freshness::Expired
+    }
+}
+
 /// Per-entry expiry so each rule's TTL is honored (moka's `time_to_live` is
-/// global; this returns the entry's own TTL at insert time).
-struct EntryExpiry;
+/// global; this returns the entry's own TTL at insert time). SC-1 Phase 4 —
+/// retention is extended to `ttl + stale_window` so an expired-but-recent entry
+/// survives for stale-if-error / revalidation; freshness is then decided
+/// logically via [`classify_freshness`].
+struct EntryExpiry {
+    stale_window: Duration,
+}
 impl Expiry<CacheKey, Arc<CacheEntry>> for EntryExpiry {
     fn expire_after_create(
         &self,
@@ -152,7 +209,9 @@ impl Expiry<CacheKey, Arc<CacheEntry>> for EntryExpiry {
         value: &Arc<CacheEntry>,
         _now: std::time::Instant,
     ) -> Option<Duration> {
-        Some(value.ttl)
+        // Retain past TTL for the stale window so stale-if-error / revalidation
+        // can still find the entry; freshness is decided by `classify_freshness`.
+        Some(value.ttl + self.stale_window)
     }
 }
 
@@ -177,7 +236,9 @@ impl PoolCache {
             // Weight in bytes → eviction keeps stored bytes ≤ max_total_bytes.
             .weigher(|_k: &CacheKey, v: &Arc<CacheEntry>| v.weight)
             .time_to_idle(cfg.time_to_idle)
-            .expire_after(EntryExpiry)
+            .expire_after(EntryExpiry {
+                stale_window: cfg.stale_if_error.unwrap_or(Duration::ZERO),
+            })
             .eviction_listener(move |_k, _v, _cause| {
                 ev.fetch_add(1, Ordering::Relaxed);
             })
@@ -249,10 +310,24 @@ impl PoolCache {
         // the cached entry carries is acceptable to every one of them.
         let ae = normalize_accept_encoding(req_headers);
         let key = compute_key(method, host_of(req_headers), path, query, &ae, rule, &self.cfg);
+        let stale_window = self.cfg.stale_if_error.unwrap_or(Duration::ZERO);
         // L1 (in-process) first.
         if let Some(entry) = self.cache.get(&key).await {
-            self.hits.fetch_add(1, Ordering::Relaxed);
-            return CacheLookup::Hit(entry);
+            match classify_freshness(entry.fresh_until, std::time::Instant::now(), stale_window) {
+                Freshness::Fresh => {
+                    self.hits.fetch_add(1, Ordering::Relaxed);
+                    return CacheLookup::Hit(entry);
+                }
+                // Past TTL but retained — revalidate / serve-on-error upstream.
+                Freshness::Stale => {
+                    return CacheLookup::Stale { entry, key, rule_idx };
+                }
+                // Past the stale window (lazy-eviction lingerer) — treat as miss.
+                Freshness::Expired => {
+                    self.misses.fetch_add(1, Ordering::Relaxed);
+                    return CacheLookup::Miss { key, rule_idx };
+                }
+            }
         }
         // L2 (shared Redis) behind L1: on a hit, promote into L1 so subsequent
         // requests on this node are microsecond-fast.
@@ -327,6 +402,7 @@ impl PoolCache {
             body: body.clone(),
             ttl,
             weight,
+            fresh_until: std::time::Instant::now() + ttl,
         });
         // Write L2 (shared) before L1 so a racing peer that misses L1 can still
         // find it in L2. Best-effort — an L2 failure never blocks the L1 store.
@@ -337,6 +413,21 @@ impl PoolCache {
         self.cache.insert(key, entry).await;
         self.stores.fetch_add(1, Ordering::Relaxed);
         true
+    }
+
+    /// SC-1 Phase 4 — refresh a stale entry's freshness after a `304 Not
+    /// Modified` revalidation (re-insert with `fresh_until = now + ttl`), so the
+    /// next request is a fresh `Hit` again without re-fetching the body.
+    pub async fn refresh(&self, key: CacheKey, entry: &Arc<CacheEntry>) {
+        let refreshed = Arc::new(CacheEntry {
+            fresh_until: std::time::Instant::now() + entry.ttl,
+            ..(**entry).clone()
+        });
+        #[cfg(feature = "redis")]
+        if let Some(l2) = &self.l2 {
+            l2.put(&key, &refreshed).await;
+        }
+        self.cache.insert(key, refreshed).await;
     }
 
     /// Drop all entries in this pool's L1 cache (sync; moka reclaims lazily).
@@ -764,7 +855,34 @@ mod tests {
             bypass_on_cookie: true,
             bypass_on_authorization: true,
             l2: None,
+            stale_if_error: None,
         }
+    }
+
+    // SC-1 Phase 4 — stale-if-error: freshness classification. An entry past
+    // its TTL but within the stale window is `Stale` (servable on upstream
+    // error / revalidatable); past TTL+stale it's `Expired` (a miss).
+    #[test]
+    fn freshness_classifies_fresh_stale_expired() {
+        let base = std::time::Instant::now();
+        let fresh_until = base + Duration::from_secs(10);
+        let stale = Duration::from_secs(30);
+        assert_eq!(classify_freshness(fresh_until, base, stale), Freshness::Fresh);
+        assert_eq!(
+            classify_freshness(fresh_until, base + Duration::from_secs(20), stale),
+            Freshness::Stale,
+        );
+        assert_eq!(
+            classify_freshness(fresh_until, base + Duration::from_secs(45), stale),
+            Freshness::Expired,
+        );
+        // No stale window ⇒ no stale band: Expired the instant it's not Fresh.
+        assert_eq!(
+            classify_freshness(fresh_until, base + Duration::from_secs(11), Duration::ZERO),
+            Freshness::Expired,
+        );
+        // Exactly at the freshness boundary is no longer Fresh.
+        assert_eq!(classify_freshness(fresh_until, fresh_until, stale), Freshness::Stale);
     }
 
     #[test]
@@ -778,6 +896,7 @@ mod tests {
             body: Bytes::from_static(b"body-bytes-\x00\xff-binary"),
             ttl: Duration::from_secs(300),
             weight: 99,
+            fresh_until: std::time::Instant::now() + Duration::from_secs(300),
         };
         let buf = entry.encode_for_l2();
         let back = CacheEntry::decode_from_l2(&buf).expect("decodes");

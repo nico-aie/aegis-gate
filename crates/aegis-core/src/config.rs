@@ -3107,6 +3107,14 @@ pub struct PoolCacheConfig {
     /// L1-only (per node). Requires the binary built with `--features redis`.
     #[serde(default)]
     pub l2: Option<CacheL2Config>,
+    /// SC-1 Phase 4 — `stale-if-error` window. After an entry's TTL expires it
+    /// is **retained** for this long; if the upstream then fails (5xx / connect
+    /// / timeout / breaker open) the stale copy is served instead of the error,
+    /// and a stale entry with an `ETag` is revalidated (`If-None-Match`) on the
+    /// next request. Absent / zero ⇒ disabled (entries evict at TTL, today's
+    /// behavior). Pairs with the circuit breaker + graceful degradation.
+    #[serde(default, with = "humantime_serde::option")]
+    pub stale_if_error: Option<Duration>,
 }
 
 /// One path-prefix cache rule inside a [`PoolCacheConfig`].
@@ -3505,6 +3513,23 @@ locality:
         let lc: LocalityConfig = serde_yaml::from_str("{}").unwrap();
         assert!(!lc.enabled);
         assert!(lc.min_local_healthy_pct.is_none());
+    }
+
+    #[test]
+    fn cache_stale_if_error_round_trips_and_defaults_none() {
+        let with: PoolConfig = serde_yaml::from_str(
+            "members:\n  - addr: \"127.0.0.1:8080\"\ncache:\n  enabled: true\n  stale_if_error: \"30s\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            with.cache.unwrap().stale_if_error,
+            Some(std::time::Duration::from_secs(30))
+        );
+        let without: PoolConfig = serde_yaml::from_str(
+            "members:\n  - addr: \"127.0.0.1:8080\"\ncache:\n  enabled: true\n",
+        )
+        .unwrap();
+        assert!(without.cache.unwrap().stale_if_error.is_none());
     }
 
     #[test]
