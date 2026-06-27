@@ -28,7 +28,7 @@ mock_host: "{{ infra_host }}"          # multi-protocol mock :9991-9994
 # Flip to "etcd" ONLY after `waf migrate-config-plane` reports verified:true.
 # etcd endpoints are staged here even under shared_state so the migrate tool and
 # a later flip need no further edit.
-config_plane_store: "etcd"   # cut over 2026-06-25 after migrate-config-plane verified:true (src v114)
+config_plane_store: "etcd"   # re-cutover 2026-06-26 after dev fix bb2c9ec (admin read-side version follows config backend); migrate-config-plane verified:true (src v129)
 etcd_endpoints:
   - "http://{{ infra_host }}:2379"
 
