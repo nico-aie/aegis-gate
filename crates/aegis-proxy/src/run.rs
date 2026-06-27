@@ -1252,6 +1252,17 @@ pub async fn run(
         ConfigReloadSource::File(p) => Some(p.clone()),
         _ => None,
     };
+    // H2b P2c — select the durable config-plane store from `config_plane.store`
+    // BEFORE the file watcher, so the file *publisher* activates onto the SAME
+    // store everything else reads (etcd under `store: etcd`), not Redis. Moved
+    // above the watcher to fix the etcd file-publisher asymmetry; `shared_state`
+    // is byte-identical (the backend is `SharedStateConfigBackend::arc(state)`,
+    // exactly what `ConfigStore::new(state)` wraps). A loud boot error fires
+    // here if `store: etcd` is set on a binary built without `etcd_config`.
+    let config_plane =
+        crate::config_source::plane_select::select(&cfg, state.clone()).await?;
+    tracing::info!(store = %config_plane.summary, "config plane store selected");
+    let config_backend = config_plane.backend.clone();
     // config-single-source-of-truth H1·P1 — the file watcher is now a
     // *publisher* into `config:waf:doc`, not a second applier. It validates a
     // file change and activates it as a new version; the shared-store watcher
@@ -1275,8 +1286,13 @@ pub async fn run(
                     path = %path.display(),
                     "config reload watcher: file publisher → config:waf:doc",
                 );
+                // Publish onto the selected config plane (etcd under
+                // `store: etcd`), NOT unconditionally Redis — else file edits
+                // land in a store nobody reads under etcd.
                 let file_store =
-                    crate::config_source::config_store::ConfigStore::new(state.clone());
+                    crate::config_source::config_store::ConfigStore::with_config_backend(
+                        config_backend.clone(),
+                    );
                 // Drop the JoinHandle; the watcher runs for the lifetime of the
                 // proxy and tokio::spawn keeps the task alive regardless of
                 // handle ownership.
@@ -1347,18 +1363,6 @@ pub async fn run(
             )
         });
 
-    // H2b P2c — select the durable config-plane store from
-    // `config_plane.store`. `shared_state` (default) wraps the data-plane
-    // `state` backend (zero change); `etcd` connects a dedicated
-    // EtcdConfigBackend + its native watch. A loud boot error fires here if
-    // `store: etcd` is set on a binary built without the `etcd_config`
-    // feature. The whole config plane — the convergence watcher AND the
-    // audit-mutated write handlers (via `services.config_backend`) — rides
-    // the selected backend, so reads and writes never split across stores.
-    let config_plane =
-        crate::config_source::plane_select::select(&cfg, state.clone()).await?;
-    tracing::info!(store = %config_plane.summary, "config plane store selected");
-    let config_backend = config_plane.backend.clone();
     // etcd supplies its own native watch (notify_change is then a no-op — the
     // KV put IS the notification); shared_state reuses the pub/sub nudge.
     let config_nudge: Option<std::sync::Arc<dyn aegis_core::config_backend::ConfigWatch>> =
