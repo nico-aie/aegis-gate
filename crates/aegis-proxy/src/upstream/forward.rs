@@ -558,10 +558,20 @@ pub async fn forward(
     // SSE plan decisions 2 + 2a — classify the response ONCE, here, from
     // its media type against the streaming allowlist. The mode rides out
     // on the return value; no later phase re-parses Content-Type.
-    let mode = if streaming.enabled {
-        let content_type = resp_headers
-            .get(http::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok());
+    let content_type = resp_headers
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok());
+    // gRPC P1 — a gRPC response is forced onto the streaming path so its
+    // HTTP/2 `grpc-status` / `grpc-message` trailers survive (the buffered
+    // `.collect()` drops them). This is detection, NOT operator config, so it
+    // holds even when `streaming.enabled` is false. `is_grpc_resp` also gates
+    // the on-exhaustion guard below (gRPC must never buffer-degrade).
+    let is_grpc_resp = content_type
+        .map(crate::proto::grpc::content_type_is_grpc)
+        .unwrap_or(false);
+    let mode = if is_grpc_resp {
+        crate::upstream::streaming::ResponseMode::Streaming
+    } else if streaming.enabled {
         crate::upstream::streaming::classify_response_mode(content_type, &streaming.content_types)
     } else {
         crate::upstream::streaming::ResponseMode::Buffered
@@ -612,24 +622,33 @@ pub async fn forward(
     ) {
         match std::sync::Arc::clone(stream_permits).try_acquire_owned() {
             Ok(permit) => Some(permit),
-            Err(_) => match streaming.on_exhaustion {
-                aegis_core::config::OnStreamExhaustion::Reject => {
-                    // Drop the upstream `resp` (releases its connection at
-                    // once) and shed with 503. Returned as Buffered so the
-                    // data plane handles it as a normal small response.
-                    let resp_503 = Response::builder()
-                        .status(http::StatusCode::SERVICE_UNAVAILABLE)
-                        .body(Full::new(Bytes::from_static(
-                            b"streaming capacity exceeded\n",
-                        )))
-                        .map_err(|e| ForwardError::BadRequest(e.to_string()))?;
-                    return Ok((
-                        crate::body::boxed(resp_503),
-                        crate::upstream::streaming::ResponseMode::Buffered,
-                    ));
-                }
-                aegis_core::config::OnStreamExhaustion::Buffer => None,
-            },
+            // gRPC P1 guard — a gRPC stream that loses the permit race must
+            // REJECT (503), never `Buffer`: the buffer-degrade path re-collects
+            // and drops the `grpc-status` trailers, turning every call into an
+            // opaque INTERNAL error. So gRPC ignores `on_exhaustion: buffer`.
+            Err(_) if is_grpc_resp
+                || matches!(
+                    streaming.on_exhaustion,
+                    aegis_core::config::OnStreamExhaustion::Reject
+                ) =>
+            {
+                // Drop the upstream `resp` (releases its connection at
+                // once) and shed with 503. Returned as Buffered so the
+                // data plane handles it as a normal small response.
+                let resp_503 = Response::builder()
+                    .status(http::StatusCode::SERVICE_UNAVAILABLE)
+                    .body(Full::new(Bytes::from_static(
+                        b"streaming capacity exceeded\n",
+                    )))
+                    .map_err(|e| ForwardError::BadRequest(e.to_string()))?;
+                return Ok((
+                    crate::body::boxed(resp_503),
+                    crate::upstream::streaming::ResponseMode::Buffered,
+                ));
+            }
+            // `on_exhaustion: buffer` for a NON-gRPC stream → degrade to the
+            // buffered collect (the `_` arm below).
+            Err(_) => None,
         }
     } else {
         None
@@ -1360,6 +1379,139 @@ mod tests {
             response_body_read_timeout: read_timeout,
             upstream_mtls: None,
         }
+    }
+
+    /// Mock **cleartext h2 (h2c)** gRPC backend: one connection, returns
+    /// `200 application/grpc` with a data frame followed by `grpc-status` /
+    /// `grpc-message` **trailers**. Returns the bound address.
+    async fn spawn_grpc_h2c_upstream() -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let io = hyper_util::rt::TokioIo::new(stream);
+                    let _ = hyper::server::conn::http2::Builder::new(
+                        hyper_util::rt::TokioExecutor::new(),
+                    )
+                    .serve_connection(
+                        io,
+                        hyper::service::service_fn(
+                            |_req: hyper::Request<hyper::body::Incoming>| async {
+                                use hyper::body::Frame;
+                                let (tx, rx) = tokio::sync::mpsc::channel::<
+                                    Result<Frame<Bytes>, std::convert::Infallible>,
+                                >(4);
+                                tokio::spawn(async move {
+                                    let _ = tx
+                                        .send(Ok(Frame::data(Bytes::from_static(
+                                            b"\x00\x00\x00\x00\x05hello",
+                                        ))))
+                                        .await;
+                                    let mut trailers = hyper::HeaderMap::new();
+                                    trailers.insert("grpc-status", "0".parse().unwrap());
+                                    trailers.insert("grpc-message", "OK".parse().unwrap());
+                                    let _ = tx.send(Ok(Frame::trailers(trailers))).await;
+                                });
+                                let body = http_body_util::StreamBody::new(
+                                    tokio_stream::wrappers::ReceiverStream::new(rx),
+                                );
+                                Ok::<_, std::convert::Infallible>(
+                                    hyper::Response::builder()
+                                        .status(200)
+                                        .header("content-type", "application/grpc")
+                                        .body(body)
+                                        .unwrap(),
+                                )
+                            },
+                        ),
+                    )
+                    .await;
+                });
+            }
+        });
+        addr
+    }
+
+    /// gRPC P1 — a gRPC response is forced onto the streaming path so its
+    /// HTTP/2 `grpc-status` / `grpc-message` trailers survive end-to-end
+    /// through `forward()`. The buffered path would `.collect()` and drop them.
+    #[tokio::test]
+    async fn grpc_response_streams_and_preserves_trailers() {
+        let _serial = CACHE_LOCK.lock().await;
+        super::_reset_client_cache();
+        let addr = spawn_grpc_h2c_upstream().await;
+        let member = Member::new(addr, 1, None);
+        let mut cfg = streaming_cfg(Duration::from_millis(50));
+        // Cleartext prior-knowledge h2 so `forward()` speaks gRPC to the backend.
+        cfg.scheme = aegis_core::config::UpstreamScheme::H2c;
+        let streaming = aegis_core::config::StreamingConfig::default();
+
+        let (resp, mode) = forward(
+            &member,
+            &cfg,
+            Method::POST,
+            "/pkg.Svc/Method".parse().unwrap(),
+            hm(&[("content-type", "application/grpc")]),
+            Bytes::new(),
+            &streaming,
+            &std::sync::Arc::new(tokio::sync::Semaphore::new(256)),
+        )
+        .await
+        .expect("gRPC forward must succeed");
+
+        // Forced onto the streaming path regardless of the allowlist.
+        assert_eq!(mode, crate::upstream::streaming::ResponseMode::Streaming);
+        assert_eq!(resp.status(), 200);
+
+        use http_body_util::BodyExt;
+        let collected = resp.into_body().collect().await.unwrap();
+        let grpc_status = collected
+            .trailers()
+            .and_then(|t| t.get("grpc-status"))
+            .cloned();
+        let body = collected.to_bytes();
+        assert!(body.windows(5).any(|w| w == b"hello"), "data frame survived");
+        assert_eq!(
+            grpc_status.expect("grpc-status trailer must survive"),
+            "0",
+            "the gRPC status trailer is preserved end-to-end",
+        );
+    }
+
+    /// gRPC P1 guard — under streaming-permit exhaustion, gRPC must REJECT
+    /// (503), never `Buffer`-degrade: the buffer path re-collects and drops the
+    /// `grpc-status` trailers. So gRPC overrides `on_exhaustion: buffer`.
+    #[tokio::test]
+    async fn grpc_rejects_503_on_permit_exhaustion_never_buffer_degrades() {
+        let _serial = CACHE_LOCK.lock().await;
+        super::_reset_client_cache();
+        let addr = spawn_grpc_h2c_upstream().await;
+        let member = Member::new(addr, 1, None);
+        let mut cfg = streaming_cfg(Duration::from_millis(50));
+        cfg.scheme = aegis_core::config::UpstreamScheme::H2c;
+        let mut streaming = aegis_core::config::StreamingConfig::default();
+        streaming.on_exhaustion = aegis_core::config::OnStreamExhaustion::Buffer;
+
+        // Zero permits → the gRPC stream loses the concurrency race.
+        let (resp, _mode) = forward(
+            &member,
+            &cfg,
+            Method::POST,
+            "/pkg.Svc/Method".parse().unwrap(),
+            hm(&[("content-type", "application/grpc")]),
+            Bytes::new(),
+            &streaming,
+            &std::sync::Arc::new(tokio::sync::Semaphore::new(0)),
+        )
+        .await
+        .expect("forward returns a 503 response, not an error");
+
+        assert_eq!(
+            resp.status(),
+            503,
+            "gRPC must reject on exhaustion, never buffer-degrade (drops trailers)",
+        );
     }
 
     /// The regression proof: an SSE upstream that trickles events over far
