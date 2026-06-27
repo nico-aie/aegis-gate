@@ -1,12 +1,24 @@
 # Config auto-restore — re-publish last-known-good after a shared-store wipe (future plan)
 
+> **⚠️ Durability half SUPERSEDED 2026-06-25 by the shipped etcd config plane**
+> ([H2b](../archive/config-etcd-source-of-truth.md), PR #86). etcd is
+> durable-by-design (Raft + fsync), so `config_plane.store: etcd` removes the
+> empty-store root cause this plan exists to recover from — there is no wipe to
+> auto-restore. This plan is therefore only relevant to a fleet that stays on
+> `config_plane.store: shared_state` over **non-durable** Redis (no AOF/RDB), and
+> even then PREREQ-A (Redis volume) softens the premise. What survives is purely
+> the **fleet split-brain / single-writer-election** design below — not the
+> durability motivation. Don't build standalone; revisit only if that narrow
+> case becomes a live risk.
+>
 > **Status:** Drafted 2026-06-18. Deferred follow-up to the shipped
 > *detect + alert* fix for the `runtime-config-lost-on-redis-data-loss`
 > finding (commit `3f3d719` on `develop`). That fix made the failure
 > **loud**; this plan makes recovery **automatic**. Not started — the crux
 > (fleet split-brain on re-publish) needs a decision before any code.
 > Related: [[project_health_signals_reported_not_gating]],
-> `deploy/CONFIG-PLANE-RUNBOOK.md` (AOF note).
+> [H2b etcd config plane](../archive/config-etcd-source-of-truth.md),
+> `deploy/CONFIG-PLANE-RUNBOOK.md` (AOF note + §11 etcd).
 
 ## Goal
 

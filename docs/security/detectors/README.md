@@ -33,11 +33,19 @@ verbatim.
 | [behavior-signals.md](./behavior-signals.md) | `behavior_no_ua`, `behavior_missing_referer`, `behavior_zero_depth` | Per-request behaviour signals (§5.2 audit-mandated): missing/empty User-Agent, missing Referer on POST/PUT/PATCH/DELETE, fresh first-touch with no Cookie + no Referer. Scores 15/20/15 — accumulate with OWASP detectors. Added 2026-05-18 (Phase F F-CRITICAL-004); `behavior_burst` retired 2026-05-19 (single-IP benchmarks tripped it on every repeat). |
 | [velocity-sequence.md](./velocity-sequence.md) | `velocity_login_to_deposit`, `velocity_login_to_withdrawal`, `velocity_otp_to_deposit`, `velocity_otp_to_withdrawal` | Cross-endpoint sequence engine — fires when login/otp is followed by deposit/withdrawal within 5 s from the same peer IP. Scores 60/70/50/60. Added 2026-05-18 (Phase F F-CRITICAL-003). |
 | [ai-detector.md](./ai-detector.md) | `ai` | URL, body, headers (binary attack/normal verdict over a 26-feature vector via ONNX) |
+| [device-fingerprinting.md](../device-fingerprinting.md#cross-ip-rotation-detection-device_ip_rotation) | `device_ip_rotation` | TLS fingerprint × peer IP — **not a maskable class** (fingerprint-layer tracker). Fires when one JA4 appears from >5 distinct IPs within 60 s. Score 60. Added 2026-05-18 (F-CRITICAL-010). |
 
 The detector mask controls which of these are active per tier — see
 [`../tiered-protection.md`](../tiered-protection.md) and the
 [`/api/detectors`](../../control-plane/enterprise/api.md) admin
 endpoint.
+
+> **`device_ip_rotation` is the exception** — it is emitted by a
+> fingerprint-layer tracker (`device_ip_tracker.rs`), not a
+> `DetectorClass`, so the mask grid and `/api/detectors` do **not**
+> toggle it. It is always on when a TLS fingerprint is present, with
+> compile-time defaults. See
+> [`../device-fingerprinting.md`](../device-fingerprinting.md#cross-ip-rotation-detection-device_ip_rotation).
 
 In the dashboard, the **Detectors** page shows the merged view —
 AI observability panel (predictions / attack rate / fallbacks) on

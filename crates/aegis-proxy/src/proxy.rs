@@ -24,6 +24,17 @@ use crate::upstream::registry::PoolRegistry;
 pub struct ProxyContext {
     pub route_table: RouteTable,
     pub pools: PoolRegistry,
+    /// Zone-aware load balancing P1 — this node's availability zone, resolved
+    /// once at boot from `node.zone` with an `AEGIS_ZONE` env override (see
+    /// [`aegis_core::config::resolve_self_zone`]). `None` ⇒ no zone identity,
+    /// zone preference inert. P1 only plumbs it here (read-only); a later phase
+    /// teaches `LbStrategy::pick` to prefer members whose `zone` matches.
+    self_zone: Option<String>,
+    /// Zone-aware LB P3 — served-local-vs-cross-zone routing counter. `None`
+    /// for builds/tests without a metrics registry; the data-plane pick sites
+    /// guard on it so the cost is nil when absent. Installed at boot in `run`.
+    pub zone_metrics:
+        Option<Arc<aegis_control::metrics::zone_routing::ZoneRoutingMetrics>>,
     /// SC-1 — per-upstream response cache (L1 in-process). Built from the
     /// boot config; only pools with a `cache:` block get an entry. CRITICAL
     /// tier is never cached (the data plane enforces that, not this).
@@ -265,9 +276,24 @@ impl ProxyContext {
         // pool re-applies re-resolve client certs against it.
         pool_registry.seed_upstream_identity(upstream_identity.cloned());
         let cache = Arc::new(crate::cache::ResponseCache::from_upstreams(&cfg.upstreams));
+        // Zone-aware LB P1 — resolve this node's self-zone once at boot. Env
+        // (`AEGIS_ZONE`, for per-pod injection) wins over the config file so
+        // one image deploys across zones.
+        let self_zone = aegis_core::config::resolve_self_zone(
+            cfg.node.zone.as_deref(),
+            std::env::var("AEGIS_ZONE").ok().as_deref(),
+        );
+        if let Some(zone) = self_zone.as_deref() {
+            tracing::info!(zone, "node self-zone resolved (zone-aware LB)");
+        }
+        // Zone-aware LB P3 — seed the registry so live_snapshot marks local
+        // members and echoes the node's zone to the dashboard.
+        pool_registry.seed_self_zone(self_zone.clone());
         Ok(Self {
             route_table,
             pools: pool_registry,
+            self_zone,
+            zone_metrics: None,
             cache,
             pipeline,
             benchmark: BenchmarkConfig::off(),
@@ -332,6 +358,13 @@ impl ProxyContext {
         })
     }
 
+    /// This node's resolved availability zone (zone-aware LB P1), or `None`
+    /// when no zone identity is configured. A later phase compares this to
+    /// `Member.zone` in `LbStrategy::pick` to prefer same-zone upstreams.
+    pub fn self_zone(&self) -> Option<&str> {
+        self.self_zone.as_deref()
+    }
+
     /// Spawn one health-check task per pool that has a `health:`
     /// block configured. Each task flips `Member.healthy` on every
     /// probe response (success → true, failure → false) and emits
@@ -353,6 +386,11 @@ impl ProxyContext {
         // badge, never load-balancer selection.
         const TCP_OBSERVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
         const TCP_OBSERVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+        // P3 — half-open recovery probe cadence for passively-downed members.
+        // A downed member gets no real traffic, so this loop is its only path
+        // back; probe a little more eagerly than the badge observer.
+        const PASSIVE_RECOVERY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+        const PASSIVE_RECOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
         let mut handles = Vec::new();
         let pools = self.pools.snapshot();
@@ -378,21 +416,42 @@ impl ProxyContext {
                     );
                     handles.push(h);
                 }
-                // No active health check configured — spawn a display-only
-                // TCP observer so the dashboard reports verified liveness
-                // instead of an optimistic, never-checked "up".
+                // No active health check configured. P4: passive health is the
+                // default health source for these pools — spawn the passive
+                // monitor (badge refresh + half-open recovery), which folds the
+                // standalone TCP observer. When the operator explicitly opted
+                // out (`passive_health.enabled: false`) fall back to the
+                // display-only TCP observer so the dashboard badge stays live.
                 None => {
-                    let h = crate::upstream::health::spawn_tcp_observer(
-                        name.clone(),
-                        pool.members.clone(),
-                        TCP_OBSERVE_INTERVAL,
-                        TCP_OBSERVE_TIMEOUT,
-                    );
-                    tracing::info!(
-                        pool = %name,
-                        "upstream TCP liveness observer spawned (no health block)"
-                    );
-                    handles.push(h);
+                    let ph = pool.passive_health;
+                    if ph.enabled {
+                        let r = crate::upstream::health::spawn_passive_health_monitor(
+                            name.clone(),
+                            pool.members.clone(),
+                            ph.rise_threshold,
+                            ph.fail_threshold,
+                            PASSIVE_RECOVERY_INTERVAL,
+                            PASSIVE_RECOVERY_TIMEOUT,
+                            bus.clone(),
+                        );
+                        tracing::info!(
+                            pool = %name,
+                            "passive-health monitor spawned (no health block)"
+                        );
+                        handles.push(r);
+                    } else {
+                        let h = crate::upstream::health::spawn_tcp_observer(
+                            name.clone(),
+                            pool.members.clone(),
+                            TCP_OBSERVE_INTERVAL,
+                            TCP_OBSERVE_TIMEOUT,
+                        );
+                        tracing::info!(
+                            pool = %name,
+                            "upstream TCP liveness observer spawned (passive health off)"
+                        );
+                        handles.push(h);
+                    }
                 }
             }
         }
@@ -460,7 +519,12 @@ where
         }
     };
 
-    let member = match pool.strategy.pick(&pool.members, None) {
+    let member = match pool.strategy.pick_with_locality(
+        &pool.members,
+        None,
+        ctx.self_zone(),
+        pool.locality,
+    ) {
         Some(m) => m,
         None => {
             // All members unhealthy.
@@ -473,6 +537,19 @@ where
                 .unwrap());
         }
     };
+
+    // Zone-aware LB P3 — record whether this request was served from the
+    // node's own zone or spilled cross-zone (no-op unless locality is on,
+    // the node has a self-zone, and a metrics registry is wired).
+    if let Some(zm) = &ctx.zone_metrics {
+        if let Some(outcome) = crate::upstream::zone_routing_outcome(
+            pool.locality.enabled,
+            ctx.self_zone(),
+            member.zone.as_deref(),
+        ) {
+            zm.record(&route_ctx.upstream, outcome);
+        }
+    }
 
     // Captured route stage timing (only meaningful when
     // benchmark mode is on).
@@ -527,6 +604,16 @@ where
                     cb.record_success();
                 }
             }
+            // Passive upstream health (P2): a received response means the
+            // connection works, so it's a member success — unless the
+            // `count_5xx` toggle is on and this is a 5xx. Default-off ⇒
+            // skipped entirely (no member ever flips). CB stays the pool
+            // fuse; this is per-member rotation — no double-penalty.
+            crate::upstream::record_passive_outcome_ok(
+                &pool.passive_health,
+                member,
+                resp.status(),
+            );
             resp
         }
         Err(e) => {
@@ -534,6 +621,7 @@ where
             if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
                 cb.record_failure();
             }
+            crate::upstream::record_passive_outcome_err(&pool.passive_health, member, &e);
             Response::builder()
                 .status(StatusCode::BAD_GATEWAY)
                 .body(crate::body::full("upstream error\n"))
@@ -674,6 +762,65 @@ state:
         assert_eq!(ctx.trusted_proxies.len(), 1);
         let probe: std::net::IpAddr = "10.9.9.9".parse().unwrap();
         assert!(ctx.trusted_proxies.iter().any(|n| n.contains(&probe)));
+    }
+
+    // Zone-aware LB P1 — the node's self-zone (node.zone, AEGIS_ZONE env
+    // override) must resolve once into the long-lived ProxyContext so a later
+    // phase's `pick` can compare it against `Member.zone`. P1 is read-only: no
+    // routing change, just the plumbing + accessor.
+    #[test]
+    fn proxy_context_carries_self_zone() {
+        let with_zone = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:0"
+  admin:
+    bind: "127.0.0.1:0"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:9000"
+state:
+  backend: in_memory
+node:
+  id: pod-7
+  zone: az-a
+"#;
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let cfg: WafConfig = serde_yaml::from_str(with_zone).unwrap();
+        cfg.validate().unwrap();
+        let ctx = ProxyContext::build(&cfg, pipeline).unwrap();
+        assert_eq!(ctx.self_zone(), Some("az-a"));
+    }
+
+    #[test]
+    fn proxy_context_self_zone_none_when_unset() {
+        let no_zone = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:0"
+  admin:
+    bind: "127.0.0.1:0"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:9000"
+state:
+  backend: in_memory
+"#;
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let cfg: WafConfig = serde_yaml::from_str(no_zone).unwrap();
+        cfg.validate().unwrap();
+        let ctx = ProxyContext::build(&cfg, pipeline).unwrap();
+        assert_eq!(ctx.self_zone(), None);
     }
 
     #[tokio::test]

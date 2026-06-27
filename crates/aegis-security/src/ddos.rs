@@ -65,6 +65,10 @@ pub struct DdosConfig {
     /// all clients. See `plans/issues/PLAN-ddos-spike-enforcement-2026-06-20.md`.
     pub spike_engage_ticks: u32,
     pub spike_release_ticks: u32,
+    /// Fleet RPS aggregation — `per_node` (default) or `fleet`. Drives whether
+    /// the tick task feeds this node's own count or the fleet-wide sum into the
+    /// EWMA/spike seam. See `plans/future/ddos-cross-node-rps-aggregation.md`.
+    pub spike_scope: aegis_core::config::SpikeScope,
     /// 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005): per-tier limit
     /// overrides. Schema landed in Phase G (`678baa2`); this is
     /// the runtime side that actually consumes it. Empty map (the
@@ -132,6 +136,7 @@ impl Default for DdosConfig {
             tightened_per_ip_rps: 20,
             spike_engage_ticks: 2,
             spike_release_ticks: 8,
+            spike_scope: aegis_core::config::SpikeScope::PerNode,
             tier_overrides: HashMap::new(),
             failure_mode: HashMap::new(),
         }
@@ -170,6 +175,7 @@ impl From<aegis_core::config::DdosConfig> for DdosConfig {
             tightened_per_ip_rps: c.tightened_per_ip_rps,
             spike_engage_ticks: c.spike_engage_ticks,
             spike_release_ticks: c.spike_release_ticks,
+            spike_scope: c.spike_scope,
             tier_overrides,
             // The fail-mode map at the WafConfig level is keyed
             // by Tier via the v2.3 `fail_mode_by_tier` schema
@@ -213,14 +219,18 @@ pub struct DdosDetector {
     /// Matches the `IpRateLimiter` pattern.
     /// Hot-path cost: one `ArcSwap::load` per request (~5 ns).
     config: arc_swap::ArcSwap<DdosConfig>,
-    /// Rolling RPS estimate (requests in current second).
-    /// **PER-NODE** — `fetch_add` on this node's traffic only; spike
-    /// detection is therefore per-node, NOT fleet-wide (despite the
-    /// historical "cluster" wording elsewhere). True cluster-wide RPS
-    /// (Redis `INCR` a per-tick key + read the fleet sum in `tick_rps`)
-    /// is deferred — see plans/issues/PLAN-ddos-spike-enforcement-2026-06-20.md
-    /// (P3). In practice an LB fans a single source IP to every node, so
-    /// each node observes the spike independently.
+    /// Rolling RPS estimate (requests in current second). `fetch_add` on
+    /// **this node's** traffic only.
+    ///
+    /// The spike *signal* this feeds is per-node by default
+    /// (`ddos.spike_scope: per_node`), so each node detects its own surge —
+    /// fine when an LB fans a source IP to every node. With
+    /// `ddos.spike_scope: fleet` the 1 s tick instead writes this count into a
+    /// shared per-second bucket (`ddos:fleet:rps:<epoch>`, ~5 s TTL) and reads
+    /// the prior second's fleet-wide sum, so a flood fanned thinly below any
+    /// single node's threshold still engages spike across the cluster. See
+    /// `DdosRuntime::tick_rps_fleet` and
+    /// `plans/future/ddos-cross-node-rps-aggregation.md`.
     rolling_rps: AtomicU64,
     /// Average RPS baseline (per-node EWMA).
     baseline_rps: AtomicU64,
@@ -232,6 +242,10 @@ pub struct DdosDetector {
     /// dwell. See `tick_rps`.
     spike_over_ticks: AtomicU64,
     spike_under_ticks: AtomicU64,
+    /// Fleet RPS aggregation P3 — the most recent fleet-wide RPS the tick
+    /// acted on (prior-second bucket sum). `0` in per-node scope. Display-only,
+    /// for the dashboard's fleet-vs-node readout.
+    last_fleet_rps: AtomicU64,
     /// 2026-05-23 (perf) — in-process per-`(tier,ip)` sliding window.
     /// Replaces the per-request `StateBackend::incr_window` round-trip
     /// (the dominant WAF-overhead tail + a Redis-throughput cap at
@@ -417,6 +431,69 @@ impl DdosRuntime {
         self.detector.tick_rps();
     }
 
+    /// Fleet RPS aggregation P2 — TTL on each per-second fleet bucket. A few
+    /// seconds tolerates clock skew while letting old buckets self-clean (no
+    /// `scan_prefix` sweep needed).
+    const FLEET_BUCKET_TTL: Duration = Duration::from_secs(5);
+
+    /// Redis key for the fleet RPS bucket of a given epoch second.
+    fn fleet_bucket_key(epoch_sec: u64) -> String {
+        format!("ddos:fleet:rps:{epoch_sec}")
+    }
+
+    /// Fleet RPS aggregation P2 — contribute this node's last-second count to
+    /// the shared per-second bucket and return the **prior** complete second's
+    /// fleet-wide sum. Off the request hot path (tick-only). Any backend error
+    /// propagates so the caller can fail-safe to the per-node count.
+    pub async fn fleet_current(&self, node_count: u64, now_epoch: u64) -> aegis_core::Result<u64> {
+        let cur_key = Self::fleet_bucket_key(now_epoch);
+        self.state.incrby(&cur_key, node_count).await?;
+        // Best-effort TTL refresh; an expire failure must not lose the sample.
+        let _ = self.state.expire(&cur_key, Self::FLEET_BUCKET_TTL).await;
+        // Read the previous COMPLETE second so partial in-flight writes to the
+        // current bucket don't undercount.
+        let prior = now_epoch.saturating_sub(1);
+        self.state.get_counter(&Self::fleet_bucket_key(prior)).await
+    }
+
+    /// Fleet RPS aggregation P2 — one tick at an injected epoch (testable
+    /// seam). Drains this node's count; in `fleet` scope (and only while
+    /// enabled) it aggregates across the fleet, **failing safe to the local
+    /// count** on any backend error; then advances the EWMA/spike state. In
+    /// `per_node` scope it never touches the backend — byte-identical to
+    /// [`Self::tick_rps`].
+    pub async fn tick_rps_fleet_at(&self, now_epoch: u64) {
+        let cfg = self.detector.config_snapshot();
+        let node_count = self.detector.drain_rolling_rps();
+        let current = if cfg.enabled
+            && cfg.spike_scope == aegis_core::config::SpikeScope::Fleet
+        {
+            match self.fleet_current(node_count, now_epoch).await {
+                Ok(fleet) => {
+                    self.detector.set_fleet_rps(fleet);
+                    fleet
+                }
+                Err(e) => {
+                    tracing::debug!(error = %e, "ddos fleet rps: backend error; per-node fallback");
+                    node_count
+                }
+            }
+        } else {
+            node_count
+        };
+        self.detector.tick_with_current(current);
+    }
+
+    /// Fleet RPS aggregation P2 — the scheduler entry point. Resolves the
+    /// current epoch second and delegates to [`Self::tick_rps_fleet_at`].
+    pub async fn tick_rps_fleet(&self) {
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.tick_rps_fleet_at(now_epoch).await;
+    }
+
     pub fn observe_only(&self) -> bool {
         self.detector.config_snapshot().observe_only
     }
@@ -444,6 +521,12 @@ impl DdosRuntime {
         self.detector.baseline_rps()
     }
 
+    /// Fleet RPS aggregation P3 — last fleet-wide RPS the tick acted on (0 in
+    /// per-node scope). Display-only, for the dashboard fleet-vs-node readout.
+    pub fn fleet_rps(&self) -> u64 {
+        self.detector.fleet_rps()
+    }
+
     pub fn is_spike_active(&self) -> bool {
         self.detector.is_spike_active()
     }
@@ -465,6 +548,7 @@ impl DdosDetector {
             spike_active: AtomicU64::new(0),
             spike_over_ticks: AtomicU64::new(0),
             spike_under_ticks: AtomicU64::new(0),
+            last_fleet_rps: AtomicU64::new(0),
             windows: DashMap::new(),
             local_blocks: DashMap::new(),
             last_sweep: Mutex::new(Instant::now()),
@@ -678,7 +762,29 @@ impl DdosDetector {
     }
 
     /// Update per-node spike detection. Called periodically (~1s tick).
+    /// Drain this node's accumulated last-second request count, resetting the
+    /// rolling counter to zero. Fleet RPS aggregation P1 — the tick task reads
+    /// this, optionally aggregates it across the fleet, then feeds the result
+    /// to [`Self::tick_with_current`].
+    pub fn drain_rolling_rps(&self) -> u64 {
+        self.rolling_rps.swap(0, Ordering::Relaxed)
+    }
+
+    /// Per-node tick: drain this node's count and advance the EWMA + spike
+    /// state on it. Identical to draining `rolling_rps` and calling
+    /// [`Self::tick_with_current`] — the fleet path (P2) instead feeds a
+    /// fleet-wide sum into the same seam.
     pub fn tick_rps(&self) {
+        let current = self.drain_rolling_rps();
+        self.tick_with_current(current);
+    }
+
+    /// Fleet RPS aggregation P1 — advance the EWMA baseline + spike
+    /// hysteresis/dwell on an **injected** `current` RPS value. Per-node mode
+    /// passes this node's drained count; fleet mode (P2) passes the prior
+    /// second's fleet-wide sum, so every node converges on the same
+    /// `spike_active`. Pure of any time source — one call == one tick.
+    pub fn tick_with_current(&self, current: u64) {
         let cfg = self.config.load();
         // 2026-05-19 — when the gate is hot-disabled, freeze the
         // EWMA. We zero `rolling_rps` so the counter doesn't keep
@@ -693,7 +799,6 @@ impl DdosDetector {
             self.spike_under_ticks.store(0, Ordering::Relaxed);
             return;
         }
-        let current = self.rolling_rps.swap(0, Ordering::Relaxed);
         let baseline = self.baseline_rps.load(Ordering::Relaxed);
 
         // EWMA update: baseline = 0.9 * baseline + 0.1 * current
@@ -738,6 +843,17 @@ impl DdosDetector {
         self.baseline_rps.load(Ordering::Relaxed)
     }
 
+    /// Fleet RPS aggregation P3 — the last fleet-wide RPS acted on (0 in
+    /// per-node scope). Display-only.
+    pub fn fleet_rps(&self) -> u64 {
+        self.last_fleet_rps.load(Ordering::Relaxed)
+    }
+
+    /// Record the fleet RPS the tick acted on (fleet scope only).
+    pub fn set_fleet_rps(&self, v: u64) {
+        self.last_fleet_rps.store(v, Ordering::Relaxed);
+    }
+
     /// 2026-05-20 — clear the temporary spike-detection state for
     /// `/__waf_control/reset_state` (committee item 6, "temporary
     /// enforcement state"). Resets `rolling_rps` + `spike_active`
@@ -768,6 +884,11 @@ mod tests {
     struct MockState {
         windows: Mutex<HashMap<String, (u64, Instant)>>,
         blocked: Mutex<HashMap<String, ()>>,
+        /// Fleet RPS aggregation — a real `incrby`/`get_counter` store so two
+        /// runtimes sharing one backend aggregate across the fleet.
+        counters: Mutex<HashMap<String, u64>>,
+        /// When set, `incrby` errors — drives the fail-safe-to-per-node test.
+        fail_incrby: bool,
     }
 
     impl MockState {
@@ -775,7 +896,12 @@ mod tests {
             Self {
                 windows: Mutex::new(HashMap::new()),
                 blocked: Mutex::new(HashMap::new()),
+                counters: Mutex::new(HashMap::new()),
+                fail_incrby: false,
             }
+        }
+        fn new_failing() -> Self {
+            Self { fail_incrby: true, ..Self::new() }
         }
     }
 
@@ -813,6 +939,18 @@ mod tests {
         }
         async fn put_nonce(&self, _n: &str, _t: Duration) -> aegis_core::Result<bool> { Ok(true) }
         async fn consume_nonce(&self, _n: &str) -> aegis_core::Result<bool> { Ok(true) }
+        async fn incrby(&self, key: &str, delta: u64) -> aegis_core::Result<u64> {
+            if self.fail_incrby {
+                return Err(aegis_core::WafError::State("incrby failed (test)".into()));
+            }
+            let mut m = self.counters.lock().unwrap();
+            let v = m.entry(key.to_string()).or_insert(0);
+            *v += delta;
+            Ok(*v)
+        }
+        async fn get_counter(&self, key: &str) -> aegis_core::Result<u64> {
+            Ok(*self.counters.lock().unwrap().get(key).unwrap_or(&0))
+        }
     }
 
     #[tokio::test]
@@ -919,6 +1057,164 @@ mod tests {
             detector.tick_rps();
         }
         assert!(!detector.is_spike_active());
+    }
+
+    // ── Fleet RPS aggregation P1 — `tick_with_current` seam ──
+    // The EWMA + hysteresis/dwell logic, driven by an INJECTED current value
+    // (so P2 can feed a fleet-wide sum instead of this node's count). Mirrors
+    // the per-node dwell tests but bypasses `rolling_rps`.
+
+    #[test]
+    fn tick_with_current_engages_and_releases_on_injected_values() {
+        let detector = DdosDetector::new(DdosConfig {
+            spike_multiplier: 2.0,
+            ..Default::default()
+        });
+        // Normal (below threshold) — no spike.
+        detector.baseline_rps.store(100, Ordering::Relaxed);
+        detector.tick_with_current(150);
+        assert!(!detector.is_spike_active());
+
+        // Over threshold (3x baseline) — engage needs 2 consecutive over ticks.
+        detector.baseline_rps.store(100, Ordering::Relaxed);
+        detector.tick_with_current(300);
+        assert!(!detector.is_spike_active(), "one over-tick must not engage");
+        detector.baseline_rps.store(100, Ordering::Relaxed);
+        detector.tick_with_current(300);
+        assert!(detector.is_spike_active(), "second over-tick engages");
+
+        // Drop below — release needs the full cooldown (8 ticks).
+        for _ in 0..8 {
+            detector.baseline_rps.store(100, Ordering::Relaxed);
+            detector.tick_with_current(50);
+        }
+        assert!(!detector.is_spike_active());
+    }
+
+    #[test]
+    fn tick_with_current_matches_tick_rps_via_drain() {
+        // The per-node `tick_rps` must be exactly `tick_with_current` fed the
+        // drained `rolling_rps` — no behaviour change from the refactor.
+        let a = DdosDetector::new(DdosConfig { spike_multiplier: 2.0, ..Default::default() });
+        let b = DdosDetector::new(DdosConfig { spike_multiplier: 2.0, ..Default::default() });
+        for _ in 0..2 {
+            a.baseline_rps.store(100, Ordering::Relaxed);
+            a.rolling_rps.store(300, Ordering::Relaxed);
+            a.tick_rps();
+
+            b.baseline_rps.store(100, Ordering::Relaxed);
+            b.rolling_rps.store(300, Ordering::Relaxed);
+            let drained = b.drain_rolling_rps();
+            b.tick_with_current(drained);
+        }
+        assert_eq!(a.is_spike_active(), b.is_spike_active());
+        assert_eq!(a.baseline_rps(), b.baseline_rps());
+    }
+
+    // ── Fleet RPS aggregation P2 — cross-node sum + fail-safe ──
+
+    fn fleet_cfg(state: Arc<dyn StateBackend>) -> DdosRuntime {
+        let cfg = DdosConfig {
+            spike_multiplier: 2.0,
+            spike_engage_ticks: 1, // engage on the first over-tick for brevity
+            spike_scope: aegis_core::config::SpikeScope::Fleet,
+            ..Default::default()
+        };
+        DdosRuntime::new(cfg, state)
+    }
+
+    #[tokio::test]
+    async fn fleet_current_sums_across_nodes_and_reads_prior_second() {
+        // Two nodes share one backend. Each writes its node count into the
+        // per-second bucket; the read returns the PRIOR second's fleet sum.
+        let backend: Arc<dyn StateBackend> = Arc::new(MockState::new());
+        let node_a = fleet_cfg(backend.clone());
+        let node_b = fleet_cfg(backend.clone());
+
+        // Second 100: both nodes contribute; prior second (99) is empty → 0.
+        assert_eq!(node_a.fleet_current(200, 100).await.unwrap(), 0);
+        assert_eq!(node_b.fleet_current(150, 100).await.unwrap(), 0);
+
+        // Second 101: reading the prior second (100) returns 200 + 150 = 350.
+        assert_eq!(node_a.fleet_current(10, 101).await.unwrap(), 350);
+        assert_eq!(node_b.fleet_current(10, 101).await.unwrap(), 350);
+    }
+
+    #[tokio::test]
+    async fn fleet_scope_engages_spike_below_per_node_but_above_fleet() {
+        // Each node sees 200 rps (< 2x baseline=100 → 200 == threshold, NOT
+        // over per-node). The fleet sum 400 > 200 threshold → both engage.
+        let backend: Arc<dyn StateBackend> = Arc::new(MockState::new());
+        let node_a = fleet_cfg(backend.clone());
+        let node_b = fleet_cfg(backend.clone());
+        for rt in [&node_a, &node_b] {
+            rt.detector.baseline_rps.store(100, Ordering::Relaxed);
+            rt.detector.rolling_rps.store(200, Ordering::Relaxed);
+        }
+        // Tick second 100: writes buckets, reads empty prior → per-tick current 0.
+        node_a.tick_rps_fleet_at(100).await;
+        node_b.tick_rps_fleet_at(100).await;
+        assert!(!node_a.is_spike_active() && !node_b.is_spike_active());
+
+        // Re-arm rolling for second 101 (the tick drained it), keep baseline.
+        for rt in [&node_a, &node_b] {
+            rt.detector.baseline_rps.store(100, Ordering::Relaxed);
+            rt.detector.rolling_rps.store(200, Ordering::Relaxed);
+        }
+        // Tick second 101: prior-second fleet sum = 400 > 200 → engage on both.
+        node_a.tick_rps_fleet_at(101).await;
+        node_b.tick_rps_fleet_at(101).await;
+        assert!(node_a.is_spike_active(), "node A engages on fleet sum");
+        assert!(node_b.is_spike_active(), "node B engages on fleet sum");
+    }
+
+    #[tokio::test]
+    async fn fleet_rps_getter_reflects_prior_second_sum() {
+        // After a fleet tick, the runtime exposes the fleet RPS it acted on
+        // (for the dashboard's fleet-vs-node readout).
+        let backend: Arc<dyn StateBackend> = Arc::new(MockState::new());
+        let node_a = fleet_cfg(backend.clone());
+        let node_b = fleet_cfg(backend.clone());
+        node_a.detector.rolling_rps.store(200, Ordering::Relaxed);
+        node_b.detector.rolling_rps.store(150, Ordering::Relaxed);
+        node_a.tick_rps_fleet_at(100).await; // writes bucket[100]
+        node_b.tick_rps_fleet_at(100).await;
+        // Next second: the tick reads bucket[100] = 350.
+        node_a.tick_rps_fleet_at(101).await;
+        assert_eq!(node_a.fleet_rps(), 350);
+    }
+
+    #[tokio::test]
+    async fn fleet_tick_fails_safe_to_per_node_on_backend_error() {
+        // Backend errors on incrby → the tick must fall back to this node's own
+        // count (per-node behaviour), never panic or stall.
+        let backend: Arc<dyn StateBackend> = Arc::new(MockState::new_failing());
+        let rt = fleet_cfg(backend);
+        rt.detector.baseline_rps.store(100, Ordering::Relaxed);
+        rt.detector.rolling_rps.store(300, Ordering::Relaxed); // 300 > 2x100 per-node
+        rt.tick_rps_fleet_at(100).await;
+        // Fell back to the local 300 → over per-node threshold → engaged
+        // (engage_ticks=1), proving the fallback used the node count.
+        assert!(rt.is_spike_active(), "must fall back to per-node on backend error");
+    }
+
+    #[tokio::test]
+    async fn per_node_scope_ignores_backend_and_matches_today() {
+        // spike_scope=per_node → no backend I/O; identical to tick_rps.
+        let backend: Arc<dyn StateBackend> = Arc::new(MockState::new());
+        let cfg = DdosConfig {
+            spike_multiplier: 2.0,
+            spike_engage_ticks: 1,
+            spike_scope: aegis_core::config::SpikeScope::PerNode,
+            ..Default::default()
+        };
+        let rt = DdosRuntime::new(cfg, backend.clone());
+        rt.detector.baseline_rps.store(100, Ordering::Relaxed);
+        rt.detector.rolling_rps.store(300, Ordering::Relaxed);
+        rt.tick_rps_fleet_at(100).await;
+        assert!(rt.is_spike_active());
+        // No fleet bucket was written (per_node skips the backend entirely).
+        assert_eq!(backend.get_counter("ddos:fleet:rps:100").await.unwrap(), 0);
     }
 
     // ── Spike enforcement (GAP: tightened_per_ip_rps was dead config) ──
@@ -1157,6 +1453,7 @@ mod tests {
             tightened_per_ip_rps: 20,
             spike_engage_ticks: 2,
             spike_release_ticks: 8,
+            spike_scope: aegis_core::config::SpikeScope::PerNode,
             tier_overrides: HashMap::new(),
             failure_mode: HashMap::new(),
         };
@@ -1194,6 +1491,7 @@ mod tests {
             tightened_per_ip_rps: 20,
             spike_engage_ticks: 2,
             spike_release_ticks: 8,
+            spike_scope: aegis_core::config::SpikeScope::PerNode,
             tier_overrides: HashMap::new(),
             failure_mode: HashMap::new(),
         };
@@ -1241,6 +1539,7 @@ mod tests {
             tightened_per_ip_rps: 11,
             spike_engage_ticks: 3,
             spike_release_ticks: 9,
+            spike_scope: aegis_core::config::SpikeScope::PerNode,
             tier_overrides: std::collections::HashMap::new(),
         };
         let sec_cfg: DdosConfig = core_cfg.clone().into();
@@ -1400,6 +1699,7 @@ mod tests {
             tightened_per_ip_rps: 20,
             spike_engage_ticks: 2,
             spike_release_ticks: 8,
+            spike_scope: aegis_core::config::SpikeScope::PerNode,
             tier_overrides: std::collections::HashMap::new(),
         };
         core_cfg.tier_overrides.insert(

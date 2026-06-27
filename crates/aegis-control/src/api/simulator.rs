@@ -354,10 +354,13 @@ mod tests {
     }
 
     #[test]
-    fn strong_xss_payload_crosses_threshold_and_blocks() {
-        // `<script>alert(1)</script>` fires multiple xss signals that sum past
-        // the Low tier's 80 threshold → block. Proves the simulator honors the
-        // tier threshold (vs the old "block on any hit").
+    fn single_xss_hit_is_detected_but_allowed_on_low_tier() {
+        // `<script>alert(1)</script>` fires ONE xss signal (score 70) after the
+        // xss FP-reduction work (commits 9996634 / 8820251 / accd35f — exec-sink
+        // gating). On the lenient Low tier (threshold 80) a single 70 hit is
+        // detected-but-forwarded, exactly like `path_traversal_is_detected_on_low_tier`.
+        // The threshold-crossing BLOCK path is covered by
+        // `combined_detectors_cross_threshold_and_block` (two detectors summing ≥ 80).
         let req = SimulateRequest {
             method: Some("GET".into()),
             path: "/search?q=<script>alert(1)</script>".into(),
@@ -366,9 +369,18 @@ mod tests {
             body: None,
         };
         let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers());
-        assert_eq!(resp.decision_action, "block");
-        assert!(resp.risk_score >= 80);
-        assert!(resp.detectors_fired.iter().any(|d| d == "xss"));
+        assert!(
+            resp.detectors_fired.iter().any(|d| d == "xss"),
+            "xss must still fire, got {:?}",
+            resp.detectors_fired,
+        );
+        // Strong single signal, but under the Low tier's 80 → allow-but-detected.
+        assert!(
+            resp.risk_score >= 70 && resp.risk_score < 80,
+            "expected a single strong-but-sub-threshold xss hit, got {}",
+            resp.risk_score,
+        );
+        assert_eq!(resp.decision_action, "allow");
     }
 
     #[test]

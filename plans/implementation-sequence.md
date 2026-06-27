@@ -59,16 +59,19 @@ Tier-1A GraphQL caps (#79) all shipped.
 > standalone Wave-3 win — prereq PREREQ-A ✅, no new datastore, **not blocked by
 > etcd** (rides the same StateBackend/config-doc seam). Slot by capacity.
 
-**Config arc:** H1 (single-writer correctness) and **H2a (the structural
-`BootstrapConfig`/`DynamicConfig` split) are DONE** (2026-06-24). The doc now
-holds the dynamic config only. Remaining: **H2b — etcd source of truth**
-([[config-etcd-source-of-truth]]), constraint-gated but unblocked design-wise.
-Decided 2026-06-24: build it behind a **default-off cargo `etcd` feature** (so
-the shipped default keeps the single Redis dependency) with a runtime knob
-**`config_plane.store: shared_state | etcd`** (default `shared_state`) — etcd
-relocates only the config doc; Redis stays mandatory for the data plane. Small
-config-UX follow-ups (mark Tier-1/restart-only fields read-only in the API;
-config-file bootstrap/dynamic banners — banners shipped 2026-06-24).
+**Config arc:** H1 (single-writer correctness), **H2a** (the structural
+`BootstrapConfig`/`DynamicConfig` split), and **H2b** (etcd source of truth) are
+**all DONE**. H2b shipped 2026-06-25 (PR #86, archived → [[config-etcd-source-of-truth]])
+**constraint-respecting**: config **and** control plane on etcd behind the
+default-off `etcd_config` cargo feature (built distinct from the SD `etcd`
+feature; needs `protoc`), runtime knob **`config_plane.store: shared_state |
+etcd`** (default `shared_state`), plus the `waf migrate-config-plane` Redis→etcd
+cutover tool. The shipped default keeps the single Redis dependency; etcd
+relocates only the config+control doc, Redis stays mandatory for the data plane.
+The P2 dual-read shadow-soak was dropped (the direct verify-then-copy migration
+covers cutover safety). **Remaining: H3** — config control plane (canary /
+GitOps / multi-region). Small config-UX follow-ups (mark Tier-1/restart-only
+fields read-only in the API; bootstrap/dynamic banners shipped 2026-06-24).
 
 ---
 
@@ -106,13 +109,13 @@ dependents are unsafe / pointless:
    └─ zone-aware-load-balancing (also needs node self-zone identity)
 
 [CONFIG] config-single-source-of-truth
-   H1 (P0 seed boot→doc v0, S)  ──standalone correctness win, no prereq
-     └─ H1 (P1-P3 single writer, M)
-          └─ H2a (BootstrapConfig/DynamicConfig type split, M)
-               └─ H2b = config-etcd-source-of-truth (L, constraint-gated)
-                    └─ H3 config control plane (canary/GitOps/multi-region, L+)
-   (config-auto-restore is superseded for its durability half by H2b;
-    keep only its fleet-reconciliation idea, and only if etcd slips)
+   H1 (P0 seed boot→doc v0, S)  ──standalone correctness win, no prereq   ✅
+     └─ H1 (P1-P3 single writer, M)                                       ✅
+          └─ H2a (BootstrapConfig/DynamicConfig type split, M)            ✅
+               └─ H2b = config-etcd-source-of-truth (L)                   ✅ shipped behind default-off etcd_config feature
+                    └─ H3 config control plane (canary/GitOps/multi-region, L+)   ← next
+   (config-auto-restore's durability half is now SUPERSEDED by the shipped H2b;
+    only its fleet-reconciliation idea survives, and only for shared_state-on-non-durable-Redis)
 
 [STANDALONE] (no prereqs, slot anytime by capacity)
    ├─ ddos-cross-node-rps-aggregation (M)
@@ -124,12 +127,15 @@ dependents are unsafe / pointless:
          NOT blocked by etcd; only P5 wants a secret resolver for client_secret)
 ```
 
-**Constraint gate:** the heavy infra plans — **etcd** (H2b) and the **ClickHouse +
-Postgres** datastore (persistent-datastore-tracking-data + security-analytics P2+)
-— are explicitly deferred until the *hackathon one-dependency constraint lifts*.
-`redis-interim-durability` is the deliberate **dependency-light bridge** that
-buys the durability those plans give, using the Redis already in the stack, until
-then.
+**Constraint gate:** the heavy infra plans were deferred until the *hackathon
+one-dependency constraint lifts*. **etcd (H2b) is now shipped constraint-
+respecting** — the code is built/tested behind a **default-off `etcd_config`
+feature**, so the shipped default still pulls only Redis; the gate lifts simply
+by shipping the feature build when a second dependency is acceptable. Still
+gated: the **ClickHouse + Postgres** datastore (persistent-datastore-tracking-data
++ security-analytics P2+). `redis-interim-durability` remains the deliberate
+**dependency-light bridge** for the durability those plans give, using the Redis
+already in the stack, until then.
 
 ---
 
@@ -163,9 +169,9 @@ foundation items run in parallel within a wave.
 
 | ✓ | Item | Stream | Effort | Why now |
 |---|---|---|---|---|
-| ☐ | **passive-upstream-health** (after PREREQ-B) — **next** | Foundation | M | Real-failure member health → LB; correctness |
-| ☐ | **zone-aware-load-balancing** (after PREREQ-B + node self-zone) — **do with passive-health** | Foundation | M | Locality routing; shares the `LbStrategy::pick` touchpoint with passive-health — do together to touch the LB once |
-| ☐ | **ddos-cross-node-rps-aggregation** | Foundation | M | Cluster-wide RPS; standalone; slot by capacity |
+| ✅ | **passive-upstream-health** — **P2+P3+P4 shipped** (per-member passive accounting + hysteresis marking; both forward-result sites wired; P3 half-open TCP recovery; **P4** default-on for pools without an active `health:` block + folded the TCP observer into one `spawn_passive_health_monitor`). Plan complete → [[passive-upstream-health]] | Foundation | M | Real-failure member health → LB; correctness |
+| ✅ | **zone-aware-load-balancing** — **P1–P4 shipped, plan complete** (P1 self-zone; P2 same-zone preference; P4 capacity gate; **P3** observability — zone data in `/api/upstreams`, `waf_upstream_zone_routing_total` metric, "this node: az-a" dashboard readout). Deferred polish: per-member local badge/per-zone card (API ready; routes-page render path) → [[zone-aware-load-balancing]] | Foundation | M | Locality routing; shares the `LbStrategy::pick` touchpoint |
+| ✅ | **ddos-cross-node-rps-aggregation** — **P1–P4 shipped, plan complete** (testable `tick_with_current` seam; fleet RPS aggregation via `ddos:fleet:rps:<sec>` buckets behind `ddos.spike_scope: per_node\|fleet`, default off, fail-safe to per-node; `fleet_rps` getter + dashboard panel scope tile/select + fleet-vs-node readout; docs). **Closes the Wave 2 availability theme** → [[ddos-cross-node-rps-aggregation]] | Foundation | M | Cluster-wide spike signal |
 | ⏸ | Roadmap **Tier 2** — AI/LLM firewall — **deferred, research-gated** → [[ai-llm-firewall]] | Capability | M | Net-new differentiator (2A prompt-injection first; 2B/2C behind the SSE decision). NOT the `ai` ONNX detector. Needs research (signature corpus / FP calibration / streaming decision) before build — see plan §8 |
 
 ### Wave 3 — Durability bridge + config structural cleanup · ~2–3 wk
@@ -184,7 +190,8 @@ foundation items run in parallel within a wave.
 
 | ✓ | Item | Stream | Effort | Why gated |
 |---|---|---|---|---|
-| ☐ | **config-etcd-source-of-truth** (H2b) + then **H3** control plane | Foundation | L / L+ | Adds etcd; clean now because it inherits H1 single-writer + H2a dynamic-only doc |
+| ✅ | **config-etcd-source-of-truth (H2b)** — shipped PR #86 (`d562a0d`) **constraint-respecting**: config+control plane on etcd behind the default-off `etcd_config` feature (`config_plane.store: shared_state \| etcd`, native Txn/Watch/Lease, `waf migrate-config-plane` cutover). Default build still Redis-only. Archived → [[config-etcd-source-of-truth]]. Next = **H3** control plane | Foundation | L | Inherited H1 single-writer + H2a dynamic-only doc, so it was a clean second implementor of the seam. Dual-read shadow-soak dropped (direct verified migration) |
+| ☐ | **H3 config control plane** (canary / GitOps / multi-region) | Foundation | L+ | The config-arc tail; etcd (H2b) makes multi-region tractable |
 | ☐ | **persistent-datastore-tracking-data** + **security-analytics-and-reporting** P2+ (ClickHouse firehose + Postgres durable control) | Foundation | L | Second/third infra dependency; redis-interim bridge holds until scale forces this |
 | ☐ | Roadmap **Tier 5 / 6** (ML positive-security learning; managed ruleset / virtual patching) | Capability | L / M-L | Highest-effort capability; do once the foundation + earlier tiers are solid |
 
@@ -202,13 +209,16 @@ foundation items run in parallel within a wave.
 - **Touch the LB once:** sequence `passive-upstream-health` and
   `zone-aware-load-balancing` together (Wave 2) — they share `LbStrategy::pick`
   and the fail-open change.
-- **etcd vs ClickHouse/Postgres are the same decision:** both are "lift the
-  one-dependency constraint." If that decision lands, Wave 4's infra items can be
-  planned as one infra epic; until then, `redis-interim-durability` is the answer.
+- **etcd is shipped, the datastore decision remains:** etcd (H2b) landed
+  behind a default-off feature, so it no longer waits on the constraint — the
+  feature build ships when a second dependency is acceptable. The **ClickHouse +
+  Postgres** datastore is still the open "lift the one-dependency constraint"
+  call; until then, `redis-interim-durability` is the answer.
 - **config-auto-restore:** don't build it standalone — its durability half is
-  superseded by etcd (H2b) and its premise is softened by PREREQ-A. Revisit only
-  if etcd slips and a fleet wipe is still a live risk; then it's just the
-  split-brain/fleet-reconciliation design.
+  now **superseded by the shipped etcd config plane** (etcd removes the
+  empty-store root cause), and its premise is softened by PREREQ-A. Revisit only
+  for a fleet on `store: shared_state` over non-durable Redis; then it's just the
+  split-brain / fleet-reconciliation design.
 
 ---
 

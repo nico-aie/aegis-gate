@@ -240,6 +240,8 @@ mod tests {
             connection: aegis_core::config::ConnectionPoolConfig::default(),
             cache: None,
             upstream_mtls: None,
+            passive_health: None,
+            locality: None,
         }
     }
 

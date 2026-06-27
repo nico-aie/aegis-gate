@@ -589,7 +589,7 @@ mod tests {
     use super::*;
 
     fn empty_pool_provider() -> crate::api::upstreams::PoolHealthSnapshot {
-        crate::api::upstreams::PoolHealthSnapshot { pools: Vec::new() }
+        crate::api::upstreams::PoolHealthSnapshot { pools: Vec::new(), ..Default::default() }
     }
 
     fn handler() -> TrackingHandler {

@@ -1,10 +1,19 @@
 # Config source-of-truth: Redis → etcd — durable config plane on a real KV/watch store
 
+> **✅ SHIPPED — ARCHIVED 2026-06-25 (PR #86, merged to `develop` `d562a0d`).**
+> P1 + P2 + P3 landed behind the default-off `etcd_config` cargo feature (so the
+> shipped default still respects the one-dependency constraint). The P2 dual-read
+> shadow-soak was **deliberately not built** — superseded by the direct
+> verify-then-copy migration (`waf migrate-config-plane`) + documented rollback.
+> Next config step is **H3** (config control plane: canary / GitOps /
+> multi-region), a separate future plan. Kept for design history.
+
 **Status:** P1 + P2 + P3 SHIPPED behind the default-off `etcd_config` cargo
 feature. Both config AND control planes ride the `ConfigBackend`/`ConfigWatch`
 seam; `config_plane.store: shared_state | etcd` wired end-to-end; one-shot
-`waf migrate-config-plane` cutover tool + rollback + runbook §11 landed. Only
-the optional P2 dual-read shadow-soak remains (a validation aid, not a blocker).
+`waf migrate-config-plane` cutover tool + rollback + runbook §11 landed. The
+optional P2 dual-read shadow-soak was **dropped** (see the banner) — not a
+blocker.
 **Filed:** 2026-06-20 · **Updated:** 2026-06-25
 
 ## Shipped status (2026-06-25)
@@ -64,10 +73,10 @@ Landed on `feat/config-h2b-p1-config-backend-trait` (commits 45e73dc, b5590d1,
 **Origin:** Resource-constrained hackathon shortcut — Redis was reused as the
 config store to avoid a second infra dependency. This plan revisits that once
 the constraint lifts.
-**Related:** [`config-single-source-of-truth.md`](./config-single-source-of-truth.md)
-(H1/H2a — the prerequisites, now shipped), [`config-auto-restore.md`](./config-auto-restore.md)
+**Related:** [`config-single-source-of-truth.md`](../future/config-single-source-of-truth.md)
+(H1/H2a — the prerequisites, now shipped), [`config-auto-restore.md`](../future/config-auto-restore.md)
 (the durability follow-up this would subsume),
-[`world-class-waf-roadmap.md`](./world-class-waf-roadmap.md),
+[`world-class-waf-roadmap.md`](../future/world-class-waf-roadmap.md),
 [[project_config_plane_doc_vs_file]], [[project_config_h2a_split_progress]],
 [[project_api_mode_no_cluster_publish]], [[project_apply_and_swap_helper_guard]]
 
@@ -128,7 +137,7 @@ durable config plane specifically it has real seams:
   re-implemented in Lua.
 - **Durability is not guaranteed by default.** A Redis restart without AOF/RDB
   returns an **empty** `config:waf:doc` — the failure mode that
-  [`config-auto-restore.md`](./config-auto-restore.md) exists to recover from.
+  [`config-auto-restore.md`](../future/config-auto-restore.md) exists to recover from.
   etcd is durable-by-design (Raft log + fsync), removing the root cause rather
   than detecting-and-restoring after it.
 - **Per-node ACK TTLs are emulated.** `config:waf:applied:<node>` uses a 30 s
@@ -260,7 +269,7 @@ stays on Redis — audit during P3.)
   Redis.
 - **P4 — Docs + runbook.** Update `deploy/CONFIG-PLANE-RUNBOOK.md`, the
   cluster/HA docs, and `plans/README.md`. Mark
-  [`config-auto-restore.md`](./config-auto-restore.md) **superseded** for the
+  [`config-auto-restore.md`](../future/config-auto-restore.md) **superseded** for the
   durability half (etcd removes the empty-store root cause), keeping only its
   fleet-reconciliation ideas if still wanted.
 
@@ -279,9 +288,12 @@ stays on Redis — audit during P3.)
 - [x] Per-node ACK key vanishes via lease expiry, no manual del
       (`put_ttl_value_is_readable_then_expires`); end-to-end boot showed the
       ACK key carrying a non-zero etcd lease.
-- [ ] P2 shadow mode: 24 h soak with zero Redis-vs-etcd config divergence.
-      (Shadow / dual-read mode not yet built — P2c wired a direct cutover, not
-      a shadow comparator.)
+- [~] P2 shadow mode: 24 h soak with zero Redis-vs-etcd config divergence.
+      **DROPPED (2026-06-25).** Superseded by the direct verify-then-copy
+      migration (`waf migrate-config-plane` exits non-zero unless the dest doc
+      reads back at the source version) + the copy-not-move rollback. The
+      shadow comparator's marginal value (continuous parity under live traffic)
+      only pays off on a high-edit-rate multi-node fleet; revisit then.
 - [x] P3 migration copies the active doc + all version snapshots + control-plane
       keys, and the fleet converges to the same active version post-cutover.
       (`waf migrate-config-plane`; verified dev Redis v30 + 30 snapshots +
@@ -325,7 +337,7 @@ Per-phase estimate, single engineer on this codebase:
 | **P1** | Extract `ConfigBackend` + `ConfigWatch` traits; retarget config + control planes off `StateBackend`/`FleetBus`, Redis still backing. Pure refactor, RED-safe. | ~2–4 d |
 | **P2** | `EtcdBackend` + `EtcdWatch` (etcd-client: KV/Txn/Watch/Lease) + dual-read shadow mode + 24 h parity soak | ~1–1.5 wk |
 | **P3** | Cutover, one-shot migration tool (copy `config:waf:doc` / `config:waf:v:*` / `control:waf:*`), verify active version + documented rollback | ~3–5 d |
-| **P4** | Runbook + cluster/HA docs; mark [`config-auto-restore.md`](./config-auto-restore.md) superseded | ~1–2 d |
+| **P4** | Runbook + cluster/HA docs; mark [`config-auto-restore.md`](../future/config-auto-restore.md) superseded | ~1–2 d |
 
 **Total: ~3–4 weeks of focused work.** Caveats: the long pole is the P2
 shadow-soak (wall-clock, not effort); add buffer if etcd provisioning /

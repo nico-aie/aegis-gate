@@ -814,6 +814,98 @@ pub struct NodeConfig {
     /// audit log entries, lease holder strings.
     #[serde(default)]
     pub id: Option<String>,
+    /// Availability-zone label for this node (zone-aware load balancing P1).
+    /// Read once at boot and compared against `Member.zone` so the LB can
+    /// prefer same-zone upstreams. `None` ⇒ the node has no zone identity and
+    /// zone preference is inert. The `AEGIS_ZONE` env var overrides this (one
+    /// image, many zones); see [`resolve_self_zone`].
+    #[serde(default)]
+    pub zone: Option<String>,
+}
+
+/// Resolve a node's effective self-zone from its config value and the
+/// `AEGIS_ZONE` env override (zone-aware load balancing P1).
+///
+/// Precedence: **env wins over file** (so a single image can be deployed
+/// across zones via the Downward API / `topology.kubernetes.io/zone`).
+/// Blank / whitespace-only values are treated as unset, and the result is
+/// trimmed. `None` ⇒ the node has no zone identity (the feature is inert).
+pub fn resolve_self_zone(file_zone: Option<&str>, env_zone: Option<&str>) -> Option<String> {
+    let norm = |s: Option<&str>| -> Option<String> {
+        s.map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+    };
+    norm(env_zone).or_else(|| norm(file_zone))
+}
+
+#[cfg(test)]
+mod node_zone_tests {
+    use super::*;
+
+    #[test]
+    fn env_zone_wins_over_file() {
+        assert_eq!(
+            resolve_self_zone(Some("az-a"), Some("az-b")),
+            Some("az-b".to_string())
+        );
+    }
+
+    #[test]
+    fn file_zone_used_when_env_absent() {
+        assert_eq!(
+            resolve_self_zone(Some("az-a"), None),
+            Some("az-a".to_string())
+        );
+    }
+
+    #[test]
+    fn env_zone_used_when_file_absent() {
+        assert_eq!(
+            resolve_self_zone(None, Some("az-b")),
+            Some("az-b".to_string())
+        );
+    }
+
+    #[test]
+    fn unset_is_inert() {
+        assert_eq!(resolve_self_zone(None, None), None);
+    }
+
+    #[test]
+    fn blank_env_falls_back_to_file() {
+        // A pod template that injects an empty AEGIS_ZONE must not mask the
+        // file value.
+        assert_eq!(
+            resolve_self_zone(Some("az-a"), Some("   ")),
+            Some("az-a".to_string())
+        );
+    }
+
+    #[test]
+    fn blank_both_is_none() {
+        assert_eq!(resolve_self_zone(Some("  "), Some("")), None);
+    }
+
+    #[test]
+    fn result_is_trimmed() {
+        assert_eq!(
+            resolve_self_zone(Some("  az-a  "), None),
+            Some("az-a".to_string())
+        );
+    }
+
+    #[test]
+    fn node_config_deserializes_zone() {
+        let nc: NodeConfig = serde_yaml::from_str("id: pod-7\nzone: az-a\n").unwrap();
+        assert_eq!(nc.zone.as_deref(), Some("az-a"));
+    }
+
+    #[test]
+    fn node_config_zone_defaults_none() {
+        let nc: NodeConfig = serde_yaml::from_str("id: pod-7\n").unwrap();
+        assert!(nc.zone.is_none());
+    }
 }
 
 /// Cluster-mode configuration (leaderless multi-node sync). Every
@@ -2746,6 +2838,87 @@ pub struct PoolConfig {
     /// `verify` / `trust`. See [`UpstreamMtlsConfig`].
     #[serde(default)]
     pub upstream_mtls: Option<UpstreamMtlsConfig>,
+    /// P2 of `plans/future/passive-upstream-health.md` — derive member
+    /// health from the *real* request path (connect refused / TLS handshake
+    /// / timeout) instead of only an active `health:` probe. Absent ⇒
+    /// disabled ⇒ today's behavior byte-for-byte (the LB never sees a
+    /// passively-flipped `healthy` flag). See [`PassiveHealthConfig`].
+    #[serde(default)]
+    pub passive_health: Option<PassiveHealthConfig>,
+    /// P2 of `plans/future/zone-aware-load-balancing.md` — prefer upstream
+    /// members in the proxy node's own zone (`node.zone`), spilling
+    /// cross-zone only when the local zone has no healthy capacity. Absent /
+    /// disabled ⇒ zone-agnostic selection (today's behavior). See
+    /// [`LocalityConfig`].
+    #[serde(default)]
+    pub locality: Option<LocalityConfig>,
+}
+
+/// Per-pool locality (zone-aware load balancing) policy. When `enabled` and
+/// the node has a resolved self-zone ([`resolve_self_zone`]), the load
+/// balancer prefers members whose `zone` matches the node's, applying the
+/// chosen LB strategy *within* the local-zone subset and only spilling to
+/// other zones when the local zone has no healthy member (v1 presence gate).
+/// Orthogonal to `lb` (the strategy) — the two compose.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LocalityConfig {
+    /// Master switch. `false` (default) ⇒ zone-agnostic selection (the LB
+    /// never partitions by zone) — identical to omitting the block.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Capacity gate (P4). Prefer the local zone only while its **healthy
+    /// fraction** (healthy local members / configured local members) is at or
+    /// above this percentage; below it, spill to the full healthy set so a
+    /// half-dead local zone isn't hammered. `None` (default) ⇒ the v1
+    /// **presence gate** (any healthy local member keeps traffic local). A
+    /// value `> 100` effectively disables local preference; `0` is equivalent
+    /// to the presence gate.
+    #[serde(default)]
+    pub min_local_healthy_pct: Option<u8>,
+}
+
+/// Per-pool passive upstream health. When `enabled`, a member is marked
+/// **down** for the load balancer after `fail_threshold` *consecutive*
+/// connection-level failures on real proxied traffic, and **up** again
+/// after `rise_threshold` *consecutive* successes (hysteresis — a single
+/// error never flips a member). The passive verdict writes both the LB
+/// `healthy` flag and the display `observed` badge so routing and the
+/// dashboard agree.
+///
+/// Distinct from the active `health:` probe (a configured HTTP check) and
+/// from the per-pool circuit breaker (a pool-granularity fuse): passive
+/// health is per-member rotation driven by the actual forward outcome.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PassiveHealthConfig {
+    /// Master switch. `false` (default) ⇒ no member is ever flipped by the
+    /// request path — identical to not configuring the block at all.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Consecutive connection-level failures before a member is marked
+    /// down. Defaults to `3` — never `1`, so a lone error can't evict.
+    #[serde(default = "default_passive_fail_threshold")]
+    pub fail_threshold: u32,
+    /// Consecutive successes before a downed member is restored. Defaults
+    /// to `2`.
+    #[serde(default = "default_passive_rise_threshold")]
+    pub rise_threshold: u32,
+    /// Count an upstream `5xx` response as a member failure. Defaults to
+    /// `false` — a 5xx usually means the app is broken, not the member is
+    /// unreachable, so it's treated as a (connection) success. Reserved
+    /// toggle for a later refinement; the connect/handshake/timeout signal
+    /// is the reliable per-member health input.
+    #[serde(default)]
+    pub count_5xx: bool,
+}
+
+fn default_passive_fail_threshold() -> u32 {
+    3
+}
+
+fn default_passive_rise_threshold() -> u32 {
+    2
 }
 
 /// Per-pool upstream mTLS (WAF-as-client) policy. Opt-in; defaults
@@ -3257,6 +3430,89 @@ mod upstream_scheme_tests {
         let yaml = "tls: false\n";
         let c: ConnectionPoolConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(c.scheme, UpstreamScheme::Auto);
+    }
+}
+
+#[cfg(test)]
+mod passive_health_tests {
+    use super::*;
+
+    #[test]
+    fn pool_without_passive_health_block_is_none() {
+        // Default-off: a pool that doesn't mention passive_health leaves it
+        // unset, so the runtime treats it as disabled (byte-for-byte today).
+        let yaml = "members:\n  - addr: \"127.0.0.1:8080\"\n";
+        let pc: PoolConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(pc.passive_health.is_none());
+    }
+
+    #[test]
+    fn passive_health_block_round_trips() {
+        let yaml = "\
+members:
+  - addr: \"127.0.0.1:8080\"
+passive_health:
+  enabled: true
+  fail_threshold: 5
+  rise_threshold: 4
+  count_5xx: true
+";
+        let pc: PoolConfig = serde_yaml::from_str(yaml).unwrap();
+        let ph = pc.passive_health.expect("passive_health should parse");
+        assert!(ph.enabled);
+        assert_eq!(ph.fail_threshold, 5);
+        assert_eq!(ph.rise_threshold, 4);
+        assert!(ph.count_5xx);
+    }
+
+    #[test]
+    fn passive_health_defaults_are_off_and_hysteretic() {
+        // An empty block enables nothing and uses sane hysteresis defaults:
+        // a single error can never flip a member (fail_threshold >= 2).
+        let ph: PassiveHealthConfig = serde_yaml::from_str("{}").unwrap();
+        assert!(!ph.enabled);
+        assert_eq!(ph.fail_threshold, 3);
+        assert_eq!(ph.rise_threshold, 2);
+        assert!(!ph.count_5xx);
+    }
+}
+
+#[cfg(test)]
+mod locality_tests {
+    use super::*;
+
+    #[test]
+    fn pool_without_locality_block_is_none() {
+        let yaml = "members:\n  - addr: \"127.0.0.1:8080\"\n";
+        let pc: PoolConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(pc.locality.is_none());
+    }
+
+    #[test]
+    fn locality_block_round_trips() {
+        let yaml = "\
+members:
+  - addr: \"127.0.0.1:8080\"
+locality:
+  enabled: true
+";
+        let pc: PoolConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(pc.locality.expect("locality should parse").enabled);
+    }
+
+    #[test]
+    fn locality_defaults_off() {
+        let lc: LocalityConfig = serde_yaml::from_str("{}").unwrap();
+        assert!(!lc.enabled);
+        assert!(lc.min_local_healthy_pct.is_none());
+    }
+
+    #[test]
+    fn locality_capacity_gate_round_trips() {
+        let lc: LocalityConfig =
+            serde_yaml::from_str("enabled: true\nmin_local_healthy_pct: 50\n").unwrap();
+        assert!(lc.enabled);
+        assert_eq!(lc.min_local_healthy_pct, Some(50));
     }
 }
 
@@ -4808,6 +5064,17 @@ pub struct DetectorToggle {
 ///   spike_multiplier: 3.0
 ///   tightened_per_ip_rps: 20
 /// ```
+/// Scope of the DDoS spike *signal* — see [`DdosConfig::spike_scope`].
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SpikeScope {
+    /// Spike detected from this node's own rolling RPS (today's behaviour).
+    #[default]
+    PerNode,
+    /// Spike detected from the fleet-wide RPS sum (shared backend).
+    Fleet,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct DdosConfig {
     #[serde(default = "default_true")]
@@ -4839,6 +5106,15 @@ pub struct DdosConfig {
     pub spike_engage_ticks: u32,
     #[serde(default = "default_ddos_spike_release_ticks")]
     pub spike_release_ticks: u32,
+    /// Fleet RPS aggregation — whether the spike *signal* (`current_rps` vs
+    /// `baseline`) is computed from **this node** alone (`per_node`, default)
+    /// or aggregated across the fleet via the shared state backend (`fleet`).
+    /// `fleet` makes every node converge on the same `spike_active` and catches
+    /// floods fanned thinly below any single node's threshold. Defaults to
+    /// `per_node` to preserve today's behaviour; opt into `fleet` when a shared
+    /// backend is present. See `plans/future/ddos-cross-node-rps-aggregation.md`.
+    #[serde(default)]
+    pub spike_scope: SpikeScope,
     /// 2026-05-17 F-CRITICAL-008 (core audit): per-tier overrides
     /// for the global DDoS knobs. Any field not specified in the
     /// override falls back to the top-level value. Empty (default)
@@ -4899,6 +5175,7 @@ impl Default for DdosConfig {
             tightened_per_ip_rps: default_ddos_tightened_rps(),
             spike_engage_ticks: default_ddos_spike_engage_ticks(),
             spike_release_ticks: default_ddos_spike_release_ticks(),
+            spike_scope: SpikeScope::default(),
             tier_overrides: HashMap::new(),
         }
     }
@@ -7953,6 +8230,18 @@ tier_overrides:
         let default_yaml = "enabled: true\n";
         let cfg: DdosConfig = serde_yaml::from_str(default_yaml).unwrap();
         assert!(cfg.tier_overrides.is_empty());
+    }
+
+    /// Fleet RPS aggregation — `spike_scope` parses from YAML and defaults to
+    /// `per_node` (today's behaviour) when absent.
+    #[test]
+    fn ddos_spike_scope_parses_and_defaults_per_node() {
+        let fleet: DdosConfig =
+            serde_yaml::from_str("enabled: true\nspike_scope: fleet\n").unwrap();
+        assert_eq!(fleet.spike_scope, SpikeScope::Fleet);
+
+        let dflt: DdosConfig = serde_yaml::from_str("enabled: true\n").unwrap();
+        assert_eq!(dflt.spike_scope, SpikeScope::PerNode);
     }
 
     /// 2026-05-17 F-CRITICAL-010 (core audit): `fail_mode_by_tier`

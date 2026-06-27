@@ -14,6 +14,10 @@ were removed (stale, contradicted git) — **status now = git history +
 [`issues/`](./issues/README.md)**; 7 resolved issues archived → `issues/archived/`
 (per-route monitor QC, btc-miss recon, FP-precision round 2, css/jwt gap reports,
 the superseded 06-14 sec-regression triage, the host security audit).)
+**2026-06-25:** config **H2b** (`config-etcd-source-of-truth.md`) shipped (PR #86 —
+config+control plane on etcd behind the default-off `etcd_config` feature) and
+moved to `archive/`; the `config-single-source-of-truth.md` + `config-auto-restore.md`
+entries refreshed (H1/H2a shipped; auto-restore durability half superseded by etcd).
 
 ## Layout
 
@@ -61,18 +65,22 @@ plans/
   the live data plane (the "I change one key and another key moves" report).
   Demote the file to **bootstrap + publisher**, make the versioned doc the single
   source of truth, with an explicit bootstrap-only / dynamic / partial config
-  split (Tier 1/2/3). Prerequisite to `config-auto-restore` + `config-etcd-source-of-truth`;
-  P0 (seed boot file → doc v0) is a standalone win. Not started.
+  split (Tier 1/2/3). **H1 + H2a SHIPPED** (single-writer + Bootstrap/Dynamic
+  split); the doc holds dynamic-only. H2b (etcd) shipped + archived. **H3**
+  (config control plane: canary / GitOps / multi-region) remains.
 - **[`config-auto-restore.md`](./future/config-auto-restore.md)** — deferred
   follow-up to the shipped config-loss *detect+alert* fix: auto re-publish the
-  last-known-good config after a Redis wipe. Blocked on a fleet split-brain
-  decision (single-writer election). Not started.
-- **[`config-etcd-source-of-truth.md`](./future/config-etcd-source-of-truth.md)** —
-  durability/infra: move the config source of truth (`config:waf:doc` +
-  `control:waf:*`) from Redis to **etcd** for native Txn/Watch/Lease and Raft
-  durability. A trait split (durable config plane → etcd; hot ephemeral keyspace
-  stays Redis), additive and opt-in (default stays Redis). Deferred until the
-  hackathon one-dependency constraint lifts. Not started.
+  last-known-good config after a Redis wipe. **Durability half superseded** by
+  the shipped etcd config plane (etcd removes the empty-store root cause); only
+  the fleet split-brain / reconciliation idea survives, and only if a fleet runs
+  `store: shared_state` on non-durable Redis. Not started.
+- **config-etcd-source-of-truth.md (H2b)** — ✅ **SHIPPED 2026-06-25** (PR #86),
+  archived to [`archive/config-etcd-source-of-truth.md`](./archive/config-etcd-source-of-truth.md).
+  Config **and** control plane on etcd behind the default-off `etcd_config`
+  feature (`config_plane.store: shared_state | etcd`, native Txn/Watch/Lease,
+  `waf migrate-config-plane` cutover). Default build still Redis-only. The P2
+  dual-read shadow-soak was dropped (direct verified migration instead). Next
+  config step is **H3** (config control plane).
 - **[`passive-upstream-health.md`](./future/passive-upstream-health.md)** —
   deferred follow-up (3.2a) to the shipped *honest upstream badge* fix: derive
   member health from real traffic and feed the LB. Must ship with a fail-open

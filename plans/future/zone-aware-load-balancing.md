@@ -154,15 +154,46 @@ never returns `None` for a non-empty pool**.
 
 ## 5. Phasing
 
-- **P1 — node self-zone identity.** Config `zone:` + `AEGIS_ZONE` env, resolved
-  at boot, threaded to the `pick` call site. No routing change yet (read-only
-  plumbing + a dashboard "this node: az-a" readout). Ships safely on its own.
-- **P2 — zone preference in `pick`** behind `pool.locality.enabled` (default
-  off), v1 presence-gate spillover, composed with the fail-open fallback.
-- **P3 — observability.** Local-member badge + per-zone healthy summary +
-  metric/label for "served local vs cross-zone".
-- **P4 — capacity gate (v2)** + `min_local_healthy_pct`, and (optional) outlier
-  awareness so a slow-but-healthy local zone can shed load.
+- **P1 — node self-zone identity.** ✅ Shipped 2026-06-26 (this PR). Config
+  `node.zone` (chosen over a top-level `zone:` — it's node identity, mirrors
+  `node.id`) + `AEGIS_ZONE` env override (env wins, blank treated as unset), via
+  the pure `aegis_core::config::resolve_self_zone(file, env)`. Resolved once in
+  `ProxyContext::build` into `ProxyContext.self_zone` (accessor `self_zone()`) +
+  a boot log. **No routing change** — `pick` does not read it yet (P2). The
+  dashboard "this node: az-a" readout is folded into P3 (observability) to keep
+  P1 pure plumbing.
+- **P2 — zone preference in `pick`** ✅ Shipped 2026-06-26 (this PR). Behind
+  `pool.locality.enabled` (default off). New `LbStrategy::pick_with_locality`
+  narrows the candidate set to the node's own zone (`ctx.self_zone()` vs
+  `Member.zone`) *after* the healthy→fail-open fallback, then applies the
+  strategy within that subset — so round_robin / p2c / consistent_hash still
+  operate within the local zone. v1 **presence-gate spillover**: local
+  preference applies only when ≥1 local candidate exists, else the full set is
+  used (no stranding). `pick` refactored into shared `healthy_or_fallback` +
+  `apply`; plain `pick` (zone-off) stays byte-identical. Wired at all three
+  pick sites (proxy.rs + data_plane.rs ×2). Invariant holds: never `None` for a
+  non-empty pool.
+- **P3 — observability.** ✅ Shipped 2026-06-26 (this PR). (1) Live upstreams
+  API enriched: `MemberHealth.{zone,is_local}`, `PoolHealthEntry.zones`
+  (per-zone `{healthy,total,local}` via the pure `zone_rollup`), and
+  `self_zone` on the snapshot + summary response; built proxy-side in
+  `live_snapshot` (registry gains `seed_self_zone`, fed from
+  `ProxyContext.self_zone`). (2) `waf_upstream_zone_routing_total{pool,outcome}`
+  counter (`ZoneRoutingMetrics`) incremented at all three pick sites via the
+  pure `zone_routing_outcome` classifier (local vs cross_zone; no-op unless
+  locality on + self-zone set). (3) Dashboard "this node: az-a" readout on the
+  Routing & Upstreams page. **Deferred polish:** the per-member local
+  badge/tint + per-zone card — the API data is ready, but this routes-centric
+  page has no live per-member table render path yet (the old `PoolDetail`
+  component is dead); best as a focused follow-up.
+- **P4 — capacity gate (v2)** ✅ Shipped 2026-06-26 (this PR).
+  `pool.locality.min_local_healthy_pct: Option<u8>` (non-breaking add). When
+  set, `pick_with_locality` prefers the local zone only while its healthy
+  fraction (`local_healthy / local_total` over *configured* local members) is
+  ≥ the threshold; below it, spill to the full healthy set so a half-dead local
+  zone isn't hammered (`local_zone_has_capacity`, integer math). `None` ⇒ the v1
+  presence gate (unchanged). Composes with fail-open (never `None`). Outlier /
+  latency-percentile awareness remains a possible later refinement.
 
 ## 6. Tests
 

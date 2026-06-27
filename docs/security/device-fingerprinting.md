@@ -81,8 +81,72 @@ Device records (`device_id → { first_seen, last_seen, risk, confidence,
 bot_class }`) live in the state backend, so a device fingerprint
 observed on node A is recognized on node B within replication latency.
 
+## Cross-IP rotation detection (`device_ip_rotation`)
+
+> **Status:** Implemented — `fingerprint/device_ip_tracker.rs`. Added
+> 2026-05-18 (QC Sprint 3.1 — closes audit finding **F-CRITICAL-010**,
+> "no same-device / different-IP detection"; Attack Battle scenario 04,
+> distributed-IP rotation).
+
+A standalone `DeviceIpTracker` holds a reverse map **`ja4 → recent
+(IP, timestamp) observations`** and flags the canonical "one client
+rotating source IPs to stay under per-IP rate limits" shape (botnet,
+proxy pool, mobile-IP churn). The IP changes on every request, but the
+TLS fingerprint does not — so the tracker keys on **JA4**, not the IP.
+
+On every request the data plane calls `observe(ja4, peer_ip)`, which:
+
+1. prunes observations older than the window,
+2. dedupes the incoming IP — the **same** IP retrying does not count and
+   does not extend the window (the first-seen timestamp is kept),
+3. appends the new `(IP, now)`,
+4. counts the distinct IPs still inside the window,
+5. emits a `device_ip_rotation` signal once that count **exceeds** the
+   threshold.
+
+The emitted signal carries score **60** — above
+`risk.thresholds.challenge_at` (30) but below `block_at` (70) — so it
+**stacks** with detector signals rather than blocking on its own
+(per-request contribution is capped at `max(signal)`; see
+[`risk-scoring.md`](./risk-scoring.md)). The signal `field` is
+`device:<ja4[..16]>:ips:<n>` for the audit log.
+
+### Defaults
+
+| Parameter | Default | Notes |
+|---|---|---|
+| Distinct-IP threshold | **5** | Trigger is strict `>`, so the signal first fires on the **6th** distinct IP |
+| Window | **60 s** | Sliding; aligns with the v2.3 §5.2 #08 "5 distinct IPs in 60 seconds" example |
+| Score | **60** | Challenge-band; stacks toward a block |
+| Max IPs tracked per fingerprint | **64** | Memory bound; the signal has already fired well before this cap |
+| Max fingerprints tracked | **100 000** | Random eviction on overflow |
+
+A roaming user moving between home Wi-Fi and a mobile network might
+briefly reach 2–3 distinct IPs; 5 is the floor where "rotation" is the
+most likely explanation.
+
+### Scope and limits
+
+- **Not a maskable `DetectorClass`.** It runs at the fingerprint layer
+  (JA4 has to be computed at the TLS handshake, before the detector
+  chain), so it does **not** appear on the Detectors & Tiers mask grid
+  and `/api/detectors` does not toggle it. It is **always on** when a
+  TLS fingerprint is present, and has **no config field today** — the
+  defaults above are compile-time constants in `device_ip_tracker.rs`.
+- **Skipped** for plain-HTTP / TLS-offloaded edges (no JA4) and for
+  whitelisted requests (a trusted source is not rotation-suspicious by
+  definition).
+- **Fingerprint-dependent.** An attacker who also rotates their TLS
+  stack per IP, or who arrives over plain HTTP, evades this signal — it
+  is one layer designed to stack, not a standalone gate. Stable JA4 is a
+  hard prerequisite (see the GREASE-stripping note above, F-CRITICAL-011).
+- State is wiped by the `reset_state` control-plane callback so
+  benchmark phases start clean.
+
 ## Uses
 
+- [cross-IP rotation detection](#cross-ip-rotation-detection-device_ip_rotation)
+  — `device_ip_rotation` signal keyed on JA4
 - [`rate-limiting.md`](./rate-limiting.md) — scope by device to beat NAT
   sharing
 - [`risk-scoring.md`](./risk-scoring.md) — `RiskKey` includes `device_fp`
@@ -120,6 +184,11 @@ fingerprint:
   salt: "${secret:vault:kv/data/waf#device_salt}"
 ```
 
+> Cross-IP rotation thresholds (distinct-IP count, window, score) are
+> **not** configurable today — they are compile-time constants in
+> `device_ip_tracker.rs`. See
+> [Cross-IP rotation detection](#cross-ip-rotation-detection-device_ip_rotation).
+
 ## Implementation
 
 - `src/fingerprint/ja4.rs` — JA4 + legacy JA3
@@ -127,6 +196,7 @@ fingerprint:
 - `src/fingerprint/ua_entropy.rs` — Shannon entropy + header-order stability
 - `src/fingerprint/device_id.rs` — blake3 composite
 - `src/fingerprint/store.rs` — clustered device store
+- `src/fingerprint/device_ip_tracker.rs` — cross-IP rotation tracker (`device_ip_rotation`)
 
 ## Performance notes
 

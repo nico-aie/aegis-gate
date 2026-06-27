@@ -228,13 +228,14 @@ tiers:
   re-publish last-known-good config after a Redis data-loss wipe (the
   detect+alert half shipped 2026-06-18; auto-restore blocked on a fleet
   split-brain decision).
-- [`config-etcd-source-of-truth.md`](./config-etcd-source-of-truth.md) —
-  durability/infra: migrate the config **source of truth** (`config:waf:doc` +
-  `control:waf:*`) off Redis onto **etcd** for first-class Txn/Watch/Lease and
-  Raft durability (removes the empty-store root cause `config-auto-restore`
-  recovers from). Ephemeral hot path (`g:*`, cache, leases) stays on Redis; it's
-  a trait split, not a StateBackend port. Deferred — default stays Redis. **L**,
-  phased.
+- [`config-etcd-source-of-truth.md`](../archive/config-etcd-source-of-truth.md) —
+  ✅ **SHIPPED 2026-06-25 (PR #86, archived)**: config **and** control
+  **source of truth** (`config:waf:doc` + `control:waf:*`) on **etcd** for
+  first-class Txn/Watch/Lease + Raft durability, behind the default-off
+  `etcd_config` feature (`config_plane.store: shared_state | etcd`, +
+  `waf migrate-config-plane` cutover). Ephemeral hot path (`g:*`, cache, leases)
+  stays on Redis — a trait split, not a StateBackend port. Default still
+  Redis-only. Next config step = **H3** control plane.
 - [`grpc-aware-proxying.md`](./grpc-aware-proxying.md) — protocol correctness:
   make gRPC a correct proxy target. Today gRPC responses misclassify as
   `Buffered` and `collect()` drops the `grpc-status`/`grpc-message` trailers →

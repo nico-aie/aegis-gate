@@ -6606,6 +6606,7 @@ mod gate_toggle_patch_tests {
             // persists them (defaults are 2/8).
             spike_engage_ticks: 5,
             spike_release_ticks: 12,
+            spike_scope: aegis_core::config::SpikeScope::PerNode,
         }
     }
 
@@ -7495,6 +7496,7 @@ state:
         let pools: aegis_control::dashboard_services::PoolSnapshotProvider =
             Arc::new(|| aegis_control::api::upstreams::PoolHealthSnapshot {
                 pools: Vec::new(),
+                ..Default::default()
             });
         let (mut services, _drain) =
             aegis_control::dashboard_services::DashboardServices::spawn(bus, pools, None);
@@ -7587,6 +7589,7 @@ state:
         let pools: aegis_control::dashboard_services::PoolSnapshotProvider =
             Arc::new(|| aegis_control::api::upstreams::PoolHealthSnapshot {
                 pools: Vec::new(),
+                ..Default::default()
             });
         let (mut services, _drain) =
             aegis_control::dashboard_services::DashboardServices::spawn(bus, pools, None);

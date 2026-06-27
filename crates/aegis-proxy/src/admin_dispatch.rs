@@ -582,6 +582,28 @@ pub(crate) async fn handle_admin_request(
 /// activated version + each live node's applied version (drift view).
 /// Reads through a `ConfigStore` built from the runtime state backend;
 /// empty/zero when no config has been activated or no backend is wired.
+/// Build the read-side `ConfigStore` from the **same** backend the write side
+/// activates on: `services.config_backend` (the store selected by
+/// `config_plane.store` — etcd under `store: etcd`) when present, else the
+/// data-plane `state_backend` (the `shared_state` default + test bundles).
+///
+/// Read/write asymmetry was the etcd config-plane bug: the read helpers stamped
+/// `config_version` from `state_backend` (Redis) while `activate()` read the
+/// real version from etcd, so every `If-Match` mutation 412'd. Mirrors the
+/// write-side `admin_mutate::config_plane_store`. `None` ⇒ no backend wired.
+fn config_store_for(
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Option<crate::config_source::config_store::ConfigStore> {
+    use crate::config_source::config_store::ConfigStore;
+    if let Some(cb) = services.config_backend.as_ref() {
+        return Some(ConfigStore::with_config_backend(cb.clone()));
+    }
+    services
+        .state_backend
+        .as_ref()
+        .map(|b| ConfigStore::new(b.clone()))
+}
+
 async fn handle_config_get(
     services: &aegis_control::dashboard_services::DashboardServices,
 ) -> Response<Full<Bytes>> {
@@ -593,7 +615,7 @@ async fn handle_config_get(
         .interop
         .as_ref()
         .map(|rt| rt.modes.current().default.as_str());
-    let Some(backend) = services.state_backend.as_ref() else {
+    let Some(store) = config_store_for(services) else {
         return json_body_response(
             200,
             serde_json::json!({ "version": 0, "applied": [], "backend": false, "mode": mode })
@@ -601,7 +623,6 @@ async fn handle_config_get(
             "private, max-age=2",
         );
     };
-    let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
     let version = store.current_version().await.unwrap_or(0);
     let applied: Vec<serde_json::Value> = store
         .applied_map()
@@ -676,13 +697,8 @@ pub(crate) fn config_version_body(
 async fn this_node_applied_version(
     services: &aegis_control::dashboard_services::DashboardServices,
 ) -> Option<u64> {
-    match (
-        services.state_backend.as_ref(),
-        services.roster_view.as_ref(),
-    ) {
-        (Some(backend), Some(rv)) if !rv.our_node.is_empty() => {
-            let store =
-                crate::config_source::config_store::ConfigStore::new(backend.clone());
+    match (config_store_for(services), services.roster_view.as_ref()) {
+        (Some(store), Some(rv)) if !rv.our_node.is_empty() => {
             store.applied_version(&rv.our_node).await.ok()
         }
         _ => None,
@@ -1586,6 +1602,63 @@ pub(crate) fn handle_force_https_request(
 mod tests {
     use super::config_version_body;
 
+    // BUG (etcd config plane) — the admin read-side that stamps `config_version`
+    // must follow the SAME backend the write side activates on
+    // (`services.config_backend` when set, e.g. etcd), not the data-plane
+    // `state_backend` (Redis). Otherwise every `If-Match`-guarded mutation 412s
+    // under `config_plane.store: etcd`. This pins `config_store_for`'s
+    // selection: config_backend wins, state_backend is the fallback.
+    #[tokio::test]
+    async fn config_store_for_follows_config_backend_when_set() {
+        use crate::config_source::config_store::ConfigStore;
+        use std::sync::Arc;
+
+        // state_backend (Redis stand-in) holds version 1; config_backend (etcd
+        // stand-in) holds a DIFFERENT version 2.
+        let state_be: Arc<dyn aegis_core::state::StateBackend> =
+            Arc::new(crate::state::in_memory::InMemoryBackend::new());
+        ConfigStore::new(state_be.clone())
+            .activate(0, "state-doc".into(), "t", "")
+            .await
+            .unwrap();
+
+        let cfg_be: Arc<dyn aegis_core::config_backend::ConfigBackend> =
+            aegis_core::config_backend::SharedStateConfigBackend::arc(Arc::new(
+                crate::state::in_memory::InMemoryBackend::new(),
+            ));
+        let cfg_store = ConfigStore::with_config_backend(cfg_be.clone());
+        cfg_store.activate(0, "cfg-doc-a".into(), "t", "").await.unwrap();
+        cfg_store.activate(1, "cfg-doc-b".into(), "t", "").await.unwrap();
+
+        let bus = aegis_core::audit::AuditBus::new(8);
+        let pools: aegis_control::dashboard_services::PoolSnapshotProvider =
+            Arc::new(|| aegis_control::api::upstreams::PoolHealthSnapshot {
+                pools: Vec::new(),
+                ..Default::default()
+            });
+        let (mut services, _drain) =
+            aegis_control::dashboard_services::DashboardServices::spawn(bus, pools, None);
+        services.state_backend = Some(state_be.clone());
+        services.config_backend = Some(cfg_be.clone());
+
+        // With a config_backend set, the read store follows it → version 2.
+        let v = super::config_store_for(&services)
+            .expect("store")
+            .current_version()
+            .await
+            .unwrap();
+        assert_eq!(v, 2, "read side must follow config_backend (etcd), not state_backend");
+
+        // Fallback: no config_backend → state_backend → version 1.
+        services.config_backend = None;
+        let v = super::config_store_for(&services)
+            .expect("store")
+            .current_version()
+            .await
+            .unwrap();
+        assert_eq!(v, 1, "without a config_backend the read side falls back to state_backend");
+    }
+
     // Pool/route edits land via the async apply pipeline, so the
     // dashboard must wait on this node's *applied* config-doc version
     // (the ACK the watcher records after `writer.apply()`), NOT the
@@ -1681,6 +1754,7 @@ mod tests {
         let pools: aegis_control::dashboard_services::PoolSnapshotProvider =
             Arc::new(|| aegis_control::api::upstreams::PoolHealthSnapshot {
                 pools: Vec::new(),
+                ..Default::default()
             });
         let (mut services, _drain) =
             aegis_control::dashboard_services::DashboardServices::spawn(bus, pools, None);

@@ -2200,10 +2200,12 @@ pub(crate) async fn forward_allow_to_upstream(
                 return (resp, DecisionTag::block("websocket_no_upstream_pool"));
             }
         };
-        let member = match pool
-            .strategy
-            .pick(&pool.members, Some(parts.uri.path()))
-        {
+        let member = match pool.strategy.pick_with_locality(
+            &pool.members,
+            Some(parts.uri.path()),
+            ctx.self_zone(),
+            pool.locality,
+        ) {
             Some(m) => m.clone(),
             None => {
                 let resp = Response::builder()
@@ -2222,6 +2224,17 @@ pub(crate) async fn forward_allow_to_upstream(
                 return (resp, DecisionTag::circuit_breaker("upstream.no_healthy_member"));
             }
         };
+
+        // Zone-aware LB P3 — served-local vs cross-zone routing counter.
+        if let Some(zm) = &ctx.zone_metrics {
+            if let Some(outcome) = crate::upstream::zone_routing_outcome(
+                pool.locality.enabled,
+                ctx.self_zone(),
+                member.zone.as_deref(),
+            ) {
+                zm.record(&route_ctx.upstream, outcome);
+            }
+        }
 
         let mut parts = parts;
         let on_upgrade =
@@ -2815,7 +2828,12 @@ pub(crate) async fn forward_allow_to_upstream(
         }
     };
 
-    let member = match pool.strategy.pick(&pool.members, None) {
+    let member = match pool.strategy.pick_with_locality(
+        &pool.members,
+        None,
+        ctx.self_zone(),
+        pool.locality,
+    ) {
         Some(m) => m,
         None => {
             if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
@@ -2830,6 +2848,18 @@ pub(crate) async fn forward_allow_to_upstream(
         }
     };
     tracing::Span::current().record("member", tracing::field::display(&member.addr));
+
+    // Zone-aware LB P3 — served-local vs cross-zone routing counter (no-op
+    // unless locality is on, the node has a self-zone, and metrics are wired).
+    if let Some(zm) = &ctx.zone_metrics {
+        if let Some(outcome) = crate::upstream::zone_routing_outcome(
+            pool.locality.enabled,
+            ctx.self_zone(),
+            member.zone.as_deref(),
+        ) {
+            zm.record(&route_ctx.upstream, outcome);
+        }
+    }
 
     // 2026-05-12 — strip the route prefix from the upstream URI
     // when the route opts in (`strip_prefix: true`, the default).
@@ -2873,6 +2903,10 @@ pub(crate) async fn forward_allow_to_upstream(
                     cb.record_success();
                 }
             }
+            // Passive upstream health (P2): a received response means the
+            // connection works → member success (unless `count_5xx` is on
+            // and this is a 5xx). No-op unless enabled for this pool.
+            crate::upstream::record_passive_outcome_ok(&pool.passive_health, member, status);
             tracing::Span::current().record(
                 "outcome",
                 if status.is_server_error() {
@@ -3018,6 +3052,10 @@ pub(crate) async fn forward_allow_to_upstream(
             if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
                 cb.record_failure();
             }
+            // Passive upstream health (P2): only connection-level failures
+            // (connect/handshake/timeout) evict this member; ambiguous
+            // mid-stream errors are ignored. No-op unless enabled.
+            crate::upstream::record_passive_outcome_err(&pool.passive_health, member, &e);
             // AF-T1: distinguish forward-failure modes for the
             // contract. Connect/Handshake/Send timeouts → Timeout;
             // anything else → CircuitBreaker (we refused to
