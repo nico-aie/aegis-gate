@@ -24,7 +24,7 @@ mod login_flow {
         // Step 2: Create session.
         let key = [42u8; 32];
         let store = session::SessionStore::new(key);
-        let (session_id, cookie) = store.create("10.0.0.1", "Mozilla/5.0").await;
+        let (session_id, cookie) = store.create("10.0.0.1", "Mozilla/5.0").await.unwrap();
         let record = store.validate(&cookie).await.unwrap();
         assert_eq!(record.ip, "10.0.0.1");
         assert!(!record.totp_verified);
