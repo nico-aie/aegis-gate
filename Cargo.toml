@@ -92,7 +92,7 @@ ppp = "=2.3.0"
 # Observability
 prometheus = "0.13"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["json"] }
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 
 # Error handling
 thiserror = "2"
