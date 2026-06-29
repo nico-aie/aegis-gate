@@ -1,5 +1,15 @@
 # Smart Caching — per-upstream response cache (future plan)
 
+> **Status (2026-06-27): Phases 1–4 shipped — plan complete.**
+> Phase 4 (`stale-if-error` + ETag revalidation, L1) landed 2026-06-27: entries
+> are retained past TTL for `cache.stale_if_error` (per-pool, default off);
+> `CacheLookup::Stale` surfaces a retained entry; on an upstream **5xx/error**
+> the stale copy is served (stamp `HIT`), and a stale entry with an `ETag` is
+> revalidated (`If-None-Match`) — a `304` refreshes freshness + serves the
+> stored body. Freshness is a logical `classify_freshness(fresh_until, now,
+> stale_window)`; moka retention = `ttl + stale_window`. L2 (Redis) stale-serve
+> is a follow-up (Redis `EX` still bounds L2 to TTL; L1 does stale-if-error).
+> `Last-Modified` revalidation remains out of scope (§8).
 > **Status (2026-06-08): Phases 1–3 shipped, incl. Redis Cluster.**
 > Per-upstream L1 in-process cache + the security guards, `X-WAF-Cache`
 > HIT/MISS/BYPASS, never-CRITICAL, Accept-Encoding/Vary keying,
@@ -418,7 +428,7 @@ Wire the **already-reserved** `POST /__waf_control/flush_cache` (today a
 | **1** | Per-upstream **L1 in-mem** cache, GET/HEAD allow-list by prefix, hard Critical guard, key normalization + deny-query, Set-Cookie/Authorization bypass, byte-budgeted eviction, `X-WAF-Cache` HIT/MISS, `/api/cache/stats`, **Redis pub/sub purge fan-out** (fleet-wide invalidation, reuses cluster Redis) | ~750 LoC · ~4.5 d |
 | **2** | Cache Deception Armor (`content_types`), `Vary`/`Accept-Encoding` keying, origin `Cache-Control` honoring, tier TTL ceilings, wire `flush_cache` (by upstream/prefix) | ~350 LoC · ~2 d |
 | **3** | **L2 shared Redis behind L1** (tiered; dedicated cache instance, per-pool prefix, `allkeys-lru`). **Redis Cluster** as a scale-only option behind the same `CacheBackend` trait | ~450 LoC · ~2.5 d |
-| **4** | `stale-if-error` / serve-stale (pairs with circuit breaker + graceful degradation), conditional revalidation (ETag) | ~300 LoC · ~2 d |
+| **4** | ✅ **Shipped 2026-06-27.** `stale-if-error` / serve-stale (L1; pairs with circuit breaker), conditional revalidation (ETag/`If-None-Match`→304). `PoolCacheConfig.stale_if_error` (default off), `CacheEntry.fresh_until` + `classify_freshness`, `CacheLookup::Stale`, data-plane serve-stale-on-5xx/error + 304-refresh. L2 stale-serve deferred. | ~300 LoC · ~2 d |
 | — | Tests (incl. **deception + poisoning** abuse tests) + dashboard wiring | ~450 LoC · ~2.5 d |
 
 Defaults **off**; operator opts in per pool. Phase 1 is shippable on its own.

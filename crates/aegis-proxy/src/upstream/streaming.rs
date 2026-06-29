@@ -52,6 +52,12 @@ pub fn classify_response_mode(content_type: Option<&str>, allowlist: &[String]) 
     let Some(essence) = content_type.and_then(media_type_essence) else {
         return ResponseMode::Buffered;
     };
+    // gRPC P1 — gRPC responses MUST stream so the HTTP/2 `grpc-status` /
+    // `grpc-message` trailers survive (the buffered `.collect()` drops them).
+    // Forced regardless of the allowlist — detection, not operator config.
+    if crate::proto::grpc::content_type_is_grpc(&essence) {
+        return ResponseMode::Streaming;
+    }
     if allowlist.iter().any(|a| a.trim().eq_ignore_ascii_case(&essence)) {
         ResponseMode::Streaming
     } else {
@@ -269,6 +275,66 @@ mod tests {
             classify_response_mode(Some("text/event-stream"), &allow()),
             ResponseMode::Streaming,
         );
+    }
+
+    // gRPC P1 — gRPC responses MUST stream (regardless of the allowlist) so the
+    // HTTP/2 `grpc-status` / `grpc-message` trailers survive; the buffered path
+    // `.collect()` drops them. Detection, not operator config: an EMPTY
+    // allowlist must still stream gRPC.
+    #[test]
+    fn grpc_content_types_force_streaming_even_without_allowlist() {
+        let empty: Vec<String> = vec![];
+        for ct in [
+            "application/grpc",
+            "application/grpc+proto",
+            "application/grpc-web",
+            "application/grpc; charset=utf-8",
+        ] {
+            assert_eq!(
+                classify_response_mode(Some(ct), &empty),
+                ResponseMode::Streaming,
+                "{ct} must force streaming",
+            );
+        }
+        // A near-miss that is NOT gRPC stays buffered (no false positive).
+        assert_eq!(
+            classify_response_mode(Some("application/grpcfoo-not"), &empty),
+            ResponseMode::Streaming,
+            "application/grpc-prefixed types stream",
+        );
+        assert_eq!(
+            classify_response_mode(Some("application/json"), &empty),
+            ResponseMode::Buffered,
+        );
+    }
+
+    // gRPC P1 — the metering wrapper is the only one that inspects frames (it
+    // counts `data_ref()` bytes); make sure it still **returns trailer frames
+    // untouched**, so `grpc-status` isn't eaten on the data-plane stream path.
+    #[tokio::test]
+    async fn metered_stream_body_preserves_trailers() {
+        use http_body_util::{BodyExt, StreamBody};
+        use hyper::body::Frame;
+
+        let reg = aegis_control::metrics::MetricsRegistry::init();
+        let metrics = std::sync::Arc::new(
+            aegis_control::metrics::streaming::StreamingMetrics::register(&reg).unwrap(),
+        );
+
+        let (tx, rx) =
+            tokio::sync::mpsc::channel::<Result<Frame<Bytes>, std::convert::Infallible>>(4);
+        tx.send(Ok(Frame::data(Bytes::from_static(b"hi")))).await.unwrap();
+        let mut trailers = hyper::HeaderMap::new();
+        trailers.insert("grpc-status", "0".parse().unwrap());
+        tx.send(Ok(Frame::trailers(trailers))).await.unwrap();
+        drop(tx);
+
+        let inner: DataBody = StreamBody::new(tokio_stream::wrappers::ReceiverStream::new(rx))
+            .boxed_unsync();
+        let collected = meter(inner, metrics).collect().await.unwrap();
+        let st = collected.trailers().and_then(|t| t.get("grpc-status")).cloned();
+        assert_eq!(st.expect("trailer survives MeteredStreamBody"), "0");
+        assert_eq!(&collected.to_bytes()[..], b"hi");
     }
 
     #[test]

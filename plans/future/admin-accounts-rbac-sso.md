@@ -121,6 +121,14 @@ a separate blocking plan.
 
 Pure wiring + secret hygiene. Ships on the existing one-admin model.
 
+> **Execution work-item:** [`../issues/FEAT-admin-accounts-p1-self-service-hardening.md`](../issues/FEAT-admin-accounts-p1-self-service-hardening.md)
+> — P1 is staged into **4 risk-ordered PRs** there:
+> **AA-P1a** wire the 3 simple self-service endpoints (password / session-revoke /
+> break-glass — START HERE, **S**, no boot/dev change) → **AA-P1b** TOTP
+> enrollment + recovery-code login (doc-persisted, **M**) → **AA-P1c** fleet-wide
+> rate-limit (Redis `StateBackend`, **M**) → **AA-P1d** kill committed defaults +
+> first-boot setup token (the careful one — dev/CI/bench fallout, **M**).
+
 - **Wire the dormant mutating endpoints** behind the gate (session + CSRF + `write` scope already enforced at `admin_auth_middleware.rs:148-200`):
   - `POST /api/admin/password` → existing `handle_password_change` (`api/admin.rs:42`); on success invalidate *other* sessions via the existing `invalidate_sessions` closure.
   - `POST /api/admin/totp/enroll` + `/confirm` → `provisioning_uri` + first-code verify; persist secret to the config doc (not YAML file — see [[project_config_plane_doc_vs_file]]).

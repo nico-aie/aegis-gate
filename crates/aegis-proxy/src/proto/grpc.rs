@@ -1,11 +1,16 @@
+/// Returns `true` for a gRPC `Content-Type` value (`application/grpc`,
+/// `application/grpc+proto`, `application/grpc-web`, …). Prefix match so all
+/// gRPC subtypes + params are caught — the single gRPC detection predicate.
+pub fn content_type_is_grpc(content_type: &str) -> bool {
+    content_type.starts_with("application/grpc")
+}
+
 /// Returns `true` if the request carries a gRPC content-type.
 pub fn is_grpc<B>(req: &hyper::Request<B>) -> bool {
     req.headers()
         .get(hyper::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .map(|v| {
-            v.starts_with("application/grpc")
-        })
+        .map(content_type_is_grpc)
         .unwrap_or(false)
 }
 

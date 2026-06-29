@@ -230,11 +230,18 @@ Mitigation / scoping:
 Near-term commitment is **P1 only**; P2 onward are deferred (see Status). Effort:
 **S** ≤ ~3 d, **M** ~1–2 wk, **L** ~3 wk+ (roadmap convention).
 
-- **P1 — CRITICAL · COMMITTED · S: gRPC responses stream + trailers preserved.**
-  §3.1 (`is_grpc` forces `Streaming`) + §3.3 (verify the wrapper stack forwards
-  trailers, with tests). **Unblocks unary + server-streaming + `grpc-status` with
-  no request-side change.** Smallest, highest-value increment; makes
-  `tests/protocols/05-grpc.sh` pass for real. Ships independently.
+- **P1 — CRITICAL · ✅ SHIPPED 2026-06-27 · S: gRPC responses stream + trailers preserved.**
+  §3.1 (`proto::grpc::content_type_is_grpc` forces `ResponseMode::Streaming` in
+  `classify_response_mode` AND in `forward()`'s mode pick — independent of
+  `streaming.enabled`) + the §3.1 guard (gRPC under permit exhaustion **rejects
+  503**, never `Buffer`-degrades, which would drop trailers) + §3.3 (verified the
+  wrapper stack — incl. the `MeteredStreamBody` byte-counter — forwards trailer
+  frames, with tests). **Unblocks unary + server-streaming + `grpc-status` with
+  no request-side change.** Tests: classify-forces-streaming unit; trailer
+  survival end-to-end through `forward()` (h2c mock backend); `meter()` trailer
+  preservation; 503-on-exhaustion. `tests/protocols/05-grpc.sh` is now meaningful
+  end-to-end (run against a live instance). **P2 (stream the request body) onward
+  remain deferred.**
 - **P2 — CRITICAL · DEFERRED · M: stream the request body.** §3.2 (`ReqBody`
   enum, thread `Incoming`, three call sites; `Full<Bytes>` client-type surgery,
   §5.1). **Unblocks client-streaming + bidirectional.** Behind a flag; prove
