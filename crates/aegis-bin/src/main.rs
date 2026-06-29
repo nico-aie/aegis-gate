@@ -22,7 +22,12 @@ fn main() {
         .map(|s| !matches!(s.as_str(), "run"))
         .unwrap_or(true);
     if needs_eager_tracing {
-        tracing_subscriber::fmt::init();
+        // Honour RUST_LOG (with a sane default) so CLI subcommands
+        // don't emit the same third-party TRACE flood the `run` path
+        // filters — see `otel::fmt_env_filter`.
+        tracing_subscriber::fmt()
+            .with_env_filter(otel::fmt_env_filter())
+            .init();
     }
 
     let args: Vec<String> = std::env::args().collect();

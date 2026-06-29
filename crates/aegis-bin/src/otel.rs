@@ -32,6 +32,27 @@
 //! API breaks on minor bumps; bump all four in lockstep.
 
 use aegis_core::config::WafConfig;
+use tracing_subscriber::EnvFilter;
+
+/// Default stdout-log filter directives, applied when `RUST_LOG` is
+/// unset or unparseable. Keeps the WAF's own logs at INFO and mutes
+/// the third-party HTTP plumbing (`h2`/hyper/tower/rustls/tonic) that
+/// would otherwise flood `logs/waf.json` with TRACE internals.
+///
+/// The deploy already exports a matching `RUST_LOG` (see
+/// `deploy/ansible/group_vars/all/main.yml`); these directives are the
+/// in-binary fallback so a local `cargo run` (no env) is sane too.
+const DEFAULT_LOG_DIRECTIVES: &str =
+    "info,h2=warn,hyper=warn,hyper_util=warn,tower=warn,rustls=warn,tonic=warn,maxminddb=warn";
+
+/// Build the stdout-log [`EnvFilter`]. Honours `RUST_LOG` when set so
+/// operators can tune levels without a rebuild; otherwise falls back to
+/// [`DEFAULT_LOG_DIRECTIVES`]. Every stdout sink (the OTLP-path JSON
+/// layer and the non-OTLP fallbacks) shares this so the operator's
+/// configured levels apply uniformly.
+pub(crate) fn fmt_env_filter() -> EnvFilter {
+    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_DIRECTIVES))
+}
 
 /// The pinned OTel dep set — **already wired** in
 /// `aegis-bin/Cargo.toml` under the optional `otel` feature. Kept as
@@ -89,7 +110,9 @@ pub fn init_or_default(cfg: &WafConfig) -> bool {
             }
         }
         // Feature on but no endpoint — fall through to default.
-        tracing_subscriber::fmt::init();
+        tracing_subscriber::fmt()
+            .with_env_filter(fmt_env_filter())
+            .init();
         return false;
     }
 
@@ -99,7 +122,9 @@ pub fn init_or_default(cfg: &WafConfig) -> bool {
         // `main.rs` line. If the operator set
         // `cfg.observability.otel.endpoint`, log a hint that
         // they need to rebuild with the feature.
-        tracing_subscriber::fmt::init();
+        tracing_subscriber::fmt()
+            .with_env_filter(fmt_env_filter())
+            .init();
         if let Some(otel_cfg) = cfg.observability.otel.as_ref() {
             if !otel_cfg.endpoint.is_empty() {
                 tracing::warn!(
@@ -192,10 +217,12 @@ fn install_with_otel(
             // the Jaeger smoke test). A per-layer `Targets` filter keeps
             // only the WAF's own crates and drops everything else, so a
             // trace shows the request path — not the HTTP/2 plumbing.
-            // This filter is scoped to the OTLP layer ONLY; the stdout
-            // JSON log layer below stays unfiltered (operators still get
-            // full logs). RUST_LOG/EnvFilter is a separate concern (needs
-            // the `env-filter` feature, not enabled).
+            // This `Targets` filter is scoped to the OTLP layer ONLY.
+            // The stdout JSON layer below gets its OWN filter
+            // (`fmt_env_filter`, honouring RUST_LOG). Without that, the
+            // unfiltered JSON layer pulled the registry's collection
+            // level to TRACE and flooded `logs/waf.json` with h2/hyper
+            // internals regardless of RUST_LOG.
             let otel_filter = Targets::new()
                 .with_target("aegis_proxy", LevelFilter::TRACE)
                 .with_target("aegis_security", LevelFilter::TRACE)
@@ -205,7 +232,7 @@ fn install_with_otel(
                 .with_target("waf", LevelFilter::TRACE)
                 .with_default(LevelFilter::OFF);
             let registry = tracing_subscriber::registry()
-                .with(tracing_subscriber::fmt::layer().json())
+                .with(tracing_subscriber::fmt::layer().json().with_filter(fmt_env_filter()))
                 .with(otel_layer.with_filter(otel_filter));
             if registry.try_init().is_err() {
                 // Subscribers are install-once. If something else
@@ -225,7 +252,9 @@ fn install_with_otel(
             // collector. Don't fail the boot; install the
             // stdout-only layer so the WAF starts and operators
             // see the log line that pinpoints the problem.
-            tracing_subscriber::fmt::init();
+            tracing_subscriber::fmt()
+                .with_env_filter(fmt_env_filter())
+                .init();
             tracing::warn!(
                 error = %e,
                 endpoint = %otel_cfg.endpoint,
@@ -295,5 +324,60 @@ mod tests {
         // Touch the function pointer so the linker doesn't drop
         // the symbol under default build.
         let _ = init_or_default as fn(&WafConfig) -> bool;
+    }
+}
+
+/// Behavioural coverage for the stdout log filter. Uses a *scoped*
+/// subscriber (`with_default`, not the process-global install-once
+/// path) so it can't pollute other tests, unlike the init fns above.
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::layer::{Context, SubscriberExt};
+    use tracing_subscriber::Layer;
+
+    /// Records the `target` of every event that reaches it. A
+    /// per-layer filter in front decides which events arrive, so
+    /// the captured targets are exactly what the filter let through.
+    #[derive(Clone, Default)]
+    struct CaptureTargets(Arc<Mutex<Vec<String>>>);
+
+    impl<S: tracing::Subscriber> Layer<S> for CaptureTargets {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(event.metadata().target().to_string());
+        }
+    }
+
+    /// The default directives (used when `RUST_LOG` is unset) must
+    /// mute the `h2`/hyper TRACE flood that bloated `logs/waf.json`
+    /// while still letting the WAF's own INFO logs through.
+    #[test]
+    fn default_directives_mute_h2_trace_but_keep_aegis_info() {
+        let capture = CaptureTargets::default();
+        let seen = capture.0.clone();
+        let filter = fmt_env_filter();
+        let subscriber = tracing_subscriber::registry().with(capture.with_filter(filter));
+
+        tracing::subscriber::with_default(subscriber, || {
+            // The dominant noise source in the bug report.
+            tracing::trace!(target: "h2", "framed_read");
+            tracing::trace!(target: "hyper", "send_data");
+            // The signal operators actually want.
+            tracing::info!(target: "aegis_proxy", "served request");
+        });
+
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.iter().any(|t| t == "aegis_proxy"),
+            "aegis_proxy INFO should pass the default filter: {seen:?}",
+        );
+        assert!(
+            !seen.iter().any(|t| t == "h2" || t == "hyper"),
+            "h2/hyper TRACE should be muted by the default filter: {seen:?}",
+        );
     }
 }
