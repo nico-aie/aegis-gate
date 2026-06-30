@@ -127,12 +127,23 @@ function FleetNodeBanner() {
   const peers = cluster.data?.peers || [];
   if (peers.length < 2) return null; // single node → no banner
   const ourNode = cluster.data?.our_node || 'this node';
-  // Cluster Phase 4 (§2a): the stats response self-declares whether
-  // it's a fleet-merged view. `fleet_nodes` present ⇒ traffic panels
-  // show fleet totals; absent ⇒ this node's slice. Leaderless — no
-  // leader badge.
-  const fleetNodes = stats.data?.fleet_nodes;
-  const fleetView = typeof fleetNodes === 'number' && fleetNodes > 0;
+  // Cluster Phase 4 (§2a) + SCOPE-P1a: `/api/fleet/status` self-declares
+  // whether fleet view is `configured` (publish task up) and whether a
+  // merged snapshot is currently `active`. `configured && !active` is the
+  // degraded state (enabled but no merge yet) — distinct from fleet view
+  // being off. Per-panel badges below say which panels are actually
+  // merged, so this banner no longer over-claims (e.g. the traffic chart
+  // and Upstream stay node-local even under Fleet view).
+  const scope = window.useFleetScopeApi ? window.useFleetScopeApi() : { data: null };
+  const configured = !!scope.data?.configured;
+  const active = !!scope.data?.active;
+  const fleetNodes = scope.data?.nodes ?? stats.data?.fleet_nodes;
+  const degraded = configured && !active;
+  const accent = active
+    ? 'var(--ok, #2ea043)'
+    : degraded
+      ? 'var(--warn, #d29922)'
+      : 'var(--accent)';
   return (
     <div
       className="callout"
@@ -141,19 +152,29 @@ function FleetNodeBanner() {
         display: 'flex',
         alignItems: 'center',
         gap: 10,
-        borderLeft: `3px solid ${fleetView ? 'var(--ok, #2ea043)' : 'var(--accent)'}`,
+        borderLeft: `3px solid ${accent}`,
       }}
       role="note"
     >
       <span style={{ fontSize: 16 }} aria-hidden="true">🖧</span>
       <div style={{ flex: 1, fontSize: 13 }}>
-        {fleetView ? (
+        {active ? (
           <>
             <strong>{peers.length}-node fleet — Fleet view</strong>
             <span style={{ marginLeft: 8, color: 'var(--ink-mute)' }}>
-              Traffic metrics below (RPS, Top Attackers, latency, by-detector,
-              bot mix) are merged across <code>{fleetNodes}</code>{' '}
-              node{fleetNodes === 1 ? '' : 's'}. This node: <code>{ourNode}</code>.
+              Panels tagged <span className="scope-badge scope-fleet">Fleet</span> are merged across{' '}
+              <code>{fleetNodes}</code> node{fleetNodes === 1 ? '' : 's'};{' '}
+              <span className="scope-badge scope-node">This node</span> panels (Upstream, traffic
+              chart) are <code>{ourNode}</code> only.
+            </span>
+          </>
+        ) : degraded ? (
+          <>
+            <strong>{peers.length}-node fleet — Fleet view degraded</strong>
+            <span style={{ marginLeft: 8, color: 'var(--ink-mute)' }}>
+              <code>cluster.fleet_view</code> is enabled but no merged snapshot is live yet —
+              showing <code>{ourNode}</code> only. Panels switch to{' '}
+              <span className="scope-badge scope-fleet">Fleet</span> once a merge publishes.
             </span>
           </>
         ) : (
@@ -182,6 +203,16 @@ function PageOverview() {
   const upstreamsLive = window.useUpstreamsApi
     ? window.useUpstreamsApi()
     : { data: null };
+  // SCOPE-P1a — per-panel scope badges. `configured` ⇒ cluster; `active`
+  // ⇒ a merged snapshot is live. A panel reads Fleet only when active AND
+  // the panel is fleet-capable; node-local panels (Upstream, timeseries)
+  // always badge "This node".
+  const fleetScope = window.useFleetScopeApi ? window.useFleetScopeApi() : { data: null };
+  const fleetCluster = !!fleetScope.data?.configured;
+  const fleetActive = !!fleetScope.data?.active;
+  const scopeBadge = (capable) => (
+    <window.ScopeBadge cluster={fleetCluster} fleet={fleetActive && capable} />
+  );
   // LOW-SO-01 (2026-05-12) — the 1m/5m/15m/1h pills below now
   // drive the timeseries window + bucket size so the chart and
   // its subtitle stay in sync. Buckets pick the round number
@@ -436,6 +467,7 @@ function PageOverview() {
           icon={<window.I.Activity />}
           sparkData={sparkTotal}
           sparkColor="#3B82F6"
+          scope={scopeBadge(true)}
         />
         <window.StatTile
           title="Block rate · last 10s"
@@ -445,6 +477,7 @@ function PageOverview() {
           tone="down"
           sparkData={sparkBlocked}
           sparkColor="#F6465D"
+          scope={scopeBadge(true)}
         />
         <window.StatTile
           title="Active threats"
@@ -452,6 +485,7 @@ function PageOverview() {
           sub={<>IPs over risk threshold · last 15m</>}
           icon={<window.I.Siren />}
           tone="warn"
+          scope={scopeBadge(true)}
         />
         <window.StatTile
           title="Upstream"
@@ -479,6 +513,7 @@ function PageOverview() {
             if (healthy + unhealthy === 0) return undefined;
             return unhealthy === 0 ? 'up' : 'warn';
           })()}
+          scope={scopeBadge(false)}
         />
       </div>
 

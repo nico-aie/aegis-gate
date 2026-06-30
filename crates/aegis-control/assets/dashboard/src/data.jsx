@@ -1085,6 +1085,10 @@ async function detectorsPut(body, { ifMatch } = {}) {
 // the real WAF-PROXY state"). Pages must render an honest
 // empty state when the live API returns nothing.
 function useClusterApi()  { return useApi('/api/cluster',         { intervalMs: 5000, fallback: null }); }
+// Fleet-scope status for per-panel badges + the degraded banner.
+// `{ configured, active, nodes }`: configured ⇒ cluster deployment;
+// active ⇒ a merged snapshot is currently available.
+function useFleetScopeApi() { return useApi('/api/fleet/status',   { intervalMs: 5000, fallback: null }); }
 // 2026-05-27 — cluster config-plane status: active version + per-node
 // applied version (drift). Backed by GET /api/config (ConfigStore).
 function useConfigApi()   { return useApi('/api/config',          { intervalMs: 5000, fallback: null }); }
@@ -1773,7 +1777,7 @@ Object.assign(window, {
   // HACK-T4 — Tier-B config-change timeline + rollback
   useConfigVersionsApi, configRollback, ROLLBACKABLE_ACTIONS,
   useAuditLogApi,
-  useClusterApi, useConfigApi, useSloApi, useCertsApi, useLatencyApi, useRouteLatencyApi, useDetectorLatencyApi, useAnalyticsRoutesApi,
+  useClusterApi, useFleetScopeApi, useConfigApi, useSloApi, useCertsApi, useLatencyApi, useRouteLatencyApi, useDetectorLatencyApi, useAnalyticsRoutesApi,
   useIncidentsApi, useThreatIntelFeedsApi, useGeoipStatusApi,
   incidentAck, incidentSnooze, incidentResolve,
   useAlertsApi, useGitopsApi, useUpstreamsApi, useRuntimeApi,

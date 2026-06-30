@@ -484,6 +484,32 @@ impl FleetCache {
     }
 }
 
+/// Wire shape for `GET /api/fleet/status` — lets the dashboard badge
+/// each panel and warn when fleet view is configured but degraded.
+#[derive(Serialize)]
+struct FleetStatusBody {
+    /// The publish/merge task is running (`cluster.fleet_view` enabled
+    /// + a shared backend) — i.e. this is a cluster deployment.
+    configured: bool,
+    /// A merged snapshot is currently available (cache populated).
+    /// `configured && !active` is the degraded state.
+    active: bool,
+    /// Live nodes in the merge when active; 1 otherwise.
+    nodes: usize,
+}
+
+/// Render the fleet-scope status the dashboard polls to label panels
+/// `Fleet` vs `This node` and surface a degraded banner. `configured`
+/// is `services.fleet_cache.is_some()`; `merged` is `fleet_view(..)`.
+pub fn render_fleet_status(configured: bool, merged: Option<&MergedFleet>) -> String {
+    let body = FleetStatusBody {
+        configured,
+        active: merged.is_some(),
+        nodes: merged.map(|m| m.nodes).unwrap_or(1),
+    };
+    serde_json::to_string(&body).unwrap_or_else(|_| String::from("{}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,6 +552,34 @@ mod tests {
             level: level.into(),
             strike_blocked: blocked,
         }
+    }
+
+    #[test]
+    fn render_fleet_status_reports_configured_active_nodes() {
+        // Single-node / not configured → safe defaults.
+        let s: serde_json::Value =
+            serde_json::from_str(&render_fleet_status(false, None)).unwrap();
+        assert_eq!(s["configured"], false);
+        assert_eq!(s["active"], false);
+        assert_eq!(s["nodes"], 1);
+
+        // Configured but degraded (publish task up, no merge published yet).
+        let s: serde_json::Value =
+            serde_json::from_str(&render_fleet_status(true, None)).unwrap();
+        assert_eq!(s["configured"], true);
+        assert_eq!(s["active"], false);
+        assert_eq!(s["nodes"], 1);
+
+        // Active fleet with three live nodes.
+        let merged = MergedFleet {
+            nodes: 3,
+            ..Default::default()
+        };
+        let s: serde_json::Value =
+            serde_json::from_str(&render_fleet_status(true, Some(&merged))).unwrap();
+        assert_eq!(s["configured"], true);
+        assert_eq!(s["active"], true);
+        assert_eq!(s["nodes"], 3);
     }
 
     #[test]
