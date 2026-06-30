@@ -203,16 +203,10 @@ function PageOverview() {
   const upstreamsLive = window.useUpstreamsApi
     ? window.useUpstreamsApi()
     : { data: null };
-  // SCOPE-P1a — per-panel scope badges. `configured` ⇒ cluster; `active`
-  // ⇒ a merged snapshot is live. A panel reads Fleet only when active AND
-  // the panel is fleet-capable; node-local panels (Upstream, timeseries)
-  // always badge "This node".
-  const fleetScope = window.useFleetScopeApi ? window.useFleetScopeApi() : { data: null };
-  const fleetCluster = !!fleetScope.data?.configured;
-  const fleetActive = !!fleetScope.data?.active;
-  const scopeBadge = (capable) => (
-    <window.ScopeBadge cluster={fleetCluster} fleet={fleetActive && capable} />
-  );
+  // SCOPE-P1a — per-panel scope badges. `scopeBadge(capable)` reads
+  // Fleet only when fleet view is active AND the panel is fleet-capable;
+  // node-local panels (Upstream, timeseries) pass `false`.
+  const scopeBadge = window.useScopeBadge ? window.useScopeBadge() : () => null;
   // LOW-SO-01 (2026-05-12) — the 1m/5m/15m/1h pills below now
   // drive the timeseries window + bucket size so the chart and
   // its subtitle stay in sync. Buckets pick the round number
@@ -552,7 +546,9 @@ function PageOverview() {
               {originsExpanded ? '▼' : '▶'}
             </span>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>Live attack origins</div>
+              <div style={{ fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+                Live attack origins {scopeBadge(true)}
+              </div>
               <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
                 Real-time geolocation of blocked requests · last 60s
                 {!originsExpanded && ' · collapsed'}
@@ -602,7 +598,9 @@ function PageOverview() {
         <div className="card">
           <div className="card-head">
             <div>
-              <div className="card-title">Traffic vs Blocked</div>
+              <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                Traffic vs Blocked {scopeBadge(false)}
+              </div>
               <div className="card-sub">
                 Realtime · {trafficWindow.label} window · {trafficWindow.bucketSecs}s buckets
               </div>
@@ -624,7 +622,9 @@ function PageOverview() {
         <div className="card">
           <div className="card-head">
             <div>
-              <div className="card-title">Attack distribution</div>
+              <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                Attack distribution {scopeBadge(true)}
+              </div>
               <div className="card-sub">By detector class · 15m</div>
             </div>
           </div>
@@ -646,7 +646,9 @@ function PageOverview() {
       {/* Top attackers */}
       <div className="card">
         <div className="card-head">
-          <div className="card-title">Top attacker IPs · 15m</div>
+          <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            Top attacker IPs · 15m {scopeBadge(true)}
+          </div>
           <a className="btn sm" href="#/top-attackers">View all →</a>
         </div>
         <table className="tbl tbl-compact">
@@ -11109,6 +11111,11 @@ function PageIncidents() {
   const incidents = window.useIncidentsApi ? window.useIncidentsApi() : { data: null };
   const [busy, setBusy] = useStateP(null); // alert id currently mutating
   const [filter, setFilter] = useStateP('open'); // open | snoozed | resolved | all
+  // SCOPE-P1a — the SLO engine + incident overlay are per-node with no
+  // fleet path (see FEAT-incidents-fleet-federation), so every panel
+  // here is node-local. Badge it so multi-node operators don't read one
+  // node's alerts as fleet-wide.
+  const scopeBadge = window.useScopeBadge ? window.useScopeBadge() : () => null;
 
   // Compose: prefer the enriched /api/incidents view; fall back
   // to /api/alerts when the engine isn't wired yet (test builds).
@@ -11241,6 +11248,7 @@ function PageIncidents() {
         <window.SectionHeader
           title="Incident queue"
           sub={`${filtered.length} of ${merged.length} · ${filter} filter`}
+          actions={scopeBadge(false)}
         />
         <div style={{ display: 'flex', gap: 4, padding: '0 12px 8px' }}>
           {['open', 'firing', 'acknowledged', 'snoozed', 'resolved', 'all'].map(f => (
@@ -11333,6 +11341,10 @@ function PageInvestigation() {
   const [activePivot, setActivePivot] = useStateP('');
   const [pivotKind, setPivotKind] = useStateP('auto'); // auto | ip | request_id | rule_id
   const [actionFilter, setActionFilter] = useStateP('all'); // all | block | allow | challenge
+  // SCOPE-P1a — detector breakdown, bot mix, the audit table (scope=fleet)
+  // and the derived pivot panels are all fleet-merged when fleet view is
+  // active; badge the section headers Fleet.
+  const scopeBadge = window.useScopeBadge ? window.useScopeBadge() : () => null;
   const [selected, setSelected] = useStateP(null);
 
   // Honour deep-links from the Live-Feed RequestDetail drawer:
@@ -11598,6 +11610,7 @@ function PageInvestigation() {
                 <window.SectionHeader
                   title="Detector breakdown"
                   sub={`${totalDetections.toLocaleString()} detections · last 1h · ${breakdownSource}`}
+                  actions={scopeBadge(true)}
                 />
                 {detectorBars.length === 0 ? (
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
@@ -11611,6 +11624,7 @@ function PageInvestigation() {
                 <window.SectionHeader
                   title="Bot classification mix"
                   sub={botCategories.length ? `${botCategories.reduce((s, c) => s + c.count, 0).toLocaleString()} classified · last 1h` : 'no bot signal yet'}
+                  actions={scopeBadge(true)}
                 />
                 {/* 2026-05-21 — the mix is a tier breakdown of FLAGGED
                     bots only. Classification is UA + ASN based (NOT
@@ -11668,6 +11682,7 @@ function PageInvestigation() {
               <window.SectionHeader
                 title="Recent requests"
                 sub="newest first · click a row for full request detail · audit ring (last 200)"
+                actions={scopeBadge(true)}
               />
               <div style={{ padding: '8px 16px', fontSize: 11, color: 'var(--ink-dim)', borderBottom: '1px solid var(--hairline)', lineHeight: 1.6 }}>
                 <strong>How to read a row:</strong>{' '}
@@ -11833,7 +11848,7 @@ function PageInvestigation() {
 
           {attackerRow && (
             <div className="card" style={{ marginBottom: 12 }}>
-              <window.SectionHeader title="Attacker context" sub="from /api/attacks/top" />
+              <window.SectionHeader title="Attacker context" sub="from /api/attacks/top" actions={scopeBadge(true)} />
               <div style={{ padding: 12, display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: 12 }}>
                 <div><strong>Hits</strong>: <span className="num">{attackerRow.hits}</span></div>
                 {attackerRow.country && <div><strong>Country</strong>: {attackerRow.country}</div>}
@@ -11880,6 +11895,7 @@ function PageInvestigation() {
             <window.SectionHeader
               title={`Audit timeline (newest first, ${events.length} of last 200)`}
               sub={activePivot ? `filtered to ${effectiveKind || 'pivot'}: ${activePivot}` : undefined}
+              actions={scopeBadge(true)}
             />
             <table className="tbl tbl-compact">
               <thead><tr><th>ts</th><th>action</th><th>ip</th><th>method</th><th>path</th><th>rule_id</th></tr></thead>
@@ -13392,6 +13408,10 @@ const TOP_ATTACKERS_WINDOWS = {
 
 function PageTopAttackers() {
   const [win, setWin] = useStateP('1h');
+  // SCOPE-P1a — both views are fleet-merged when fleet view is active
+  // (Identifier always; Composite RiskKey display-only since the risk
+  // fleet-merge — note reset stays node-scoped).
+  const scopeBadge = window.useScopeBadge ? window.useScopeBadge() : () => null;
   // 2026-05-19 — two view modes share the same page so operators
   // have one mental model for "who's worth investigating". The
   // legacy `identifier` view consumes /api/attacks/top
@@ -13553,6 +13573,7 @@ function PageTopAttackers() {
               }}
               label="Refresh top attackers"
             />
+            <span style={{ marginLeft: 8 }}>{scopeBadge(true)}</span>
           </h1>
           <p className="page-subtitle">
             {view === 'identifier' ? (
