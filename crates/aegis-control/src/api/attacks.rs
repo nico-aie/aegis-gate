@@ -1010,6 +1010,43 @@ impl AttacksHandler {
         serde_json::to_string(&response).unwrap_or_else(|_| String::from("{}"))
     }
 
+    /// Fleet-merged `GET /api/attacks/distribution`. Reuses the
+    /// already-summed `detector_mix` (the same map that feeds
+    /// `render_by_detector_from_fleet`) and reshapes it into the
+    /// distribution wire form — adding the `pct` legend field with
+    /// the same 1-decimal rounding and count-desc/name-asc ordering
+    /// as the node-local `distribution()`.
+    pub fn render_distribution_from_fleet(
+        &self,
+        merged: &crate::metrics::fleet_snapshot::MergedFleet,
+        window_seconds: u32,
+    ) -> String {
+        let total: u64 = merged.detector_mix.values().sum();
+        let mut categories: Vec<Category> = merged
+            .detector_mix
+            .iter()
+            .map(|(name, &count)| {
+                let pct = if total > 0 {
+                    let raw = (count as f64) * 100.0 / (total as f64);
+                    (raw * 10.0).round() / 10.0
+                } else {
+                    0.0
+                };
+                Category {
+                    name: name.clone(),
+                    count,
+                    pct,
+                }
+            })
+            .collect();
+        categories.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
+        let response = DistributionResponse {
+            window_seconds,
+            categories,
+        };
+        serde_json::to_string(&response).unwrap_or_else(|_| String::from("{}"))
+    }
+
     /// Fleet-merged `GET /api/bots/mix`.
     pub fn render_bot_mix_from_fleet(
         &self,
@@ -2030,5 +2067,50 @@ mod tests {
         assert!(serde_json::from_str::<serde_json::Value>(&by_det).unwrap()["detectors"].is_array());
         assert!(serde_json::from_str::<serde_json::Value>(&ti).unwrap()["hits"].is_array());
         assert!(serde_json::from_str::<serde_json::Value>(&bot).unwrap()["categories"].is_array());
+    }
+
+    #[test]
+    fn render_distribution_from_fleet_sums_and_sorts_detector_mix() {
+        // The fleet donut reuses the already-merged `detector_mix`
+        // (summed across nodes) instead of this node's local events,
+        // and must produce the same wire shape as `render()`:
+        // categories sorted by count desc with a 1-decimal pct.
+        let h = AttacksHandler::new(Arc::new(AttacksAggregator::new()));
+        let merged = crate::metrics::fleet_snapshot::MergedFleet {
+            detector_mix: [
+                ("sqli".to_string(), 6u64),
+                ("xss".to_string(), 3),
+                ("ai".to_string(), 1),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+
+        let resp: serde_json::Value =
+            serde_json::from_str(&h.render_distribution_from_fleet(&merged, 900)).unwrap();
+
+        assert_eq!(resp["window_seconds"], 900);
+        let cats = resp["categories"].as_array().expect("categories array");
+        assert_eq!(cats.len(), 3);
+        // Count-desc ordering: sqli (6) first.
+        assert_eq!(cats[0]["name"], "sqli");
+        assert_eq!(cats[0]["count"], 6);
+        assert_eq!(cats[0]["pct"], 60.0);
+        assert_eq!(cats[2]["name"], "ai");
+        assert_eq!(cats[2]["count"], 1);
+        // Percentages cover the whole (summed) total.
+        let total_pct: f64 = cats.iter().map(|c| c["pct"].as_f64().unwrap()).sum();
+        assert!((total_pct - 100.0).abs() < 0.05, "pct sum was {total_pct}");
+    }
+
+    #[test]
+    fn render_distribution_from_fleet_empty_is_well_formed() {
+        let h = AttacksHandler::new(Arc::new(AttacksAggregator::new()));
+        let merged = crate::metrics::fleet_snapshot::MergedFleet::default();
+        let resp: serde_json::Value =
+            serde_json::from_str(&h.render_distribution_from_fleet(&merged, 900)).unwrap();
+        assert_eq!(resp["window_seconds"], 900);
+        assert!(resp["categories"].as_array().expect("categories array").is_empty());
     }
 }

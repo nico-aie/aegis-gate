@@ -377,11 +377,11 @@ pub(crate) fn admin_router(
         }
         "/api/attacks/distribution" => {
             let window = parse_query_u32(query, "window", 900);
-            json_body_response(
-                200,
-                services.attacks.render(window),
-                "private, max-age=10",
-            )
+            let body = match fleet_view(services) {
+                Some(m) => services.attacks.render_distribution_from_fleet(&m, window),
+                None => services.attacks.render(window),
+            };
+            json_body_response(200, body, "private, max-age=10")
         }
         "/api/attacks/top" => {
             let window = parse_query_u32(query, "window", 900);
