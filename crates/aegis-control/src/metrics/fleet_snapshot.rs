@@ -67,6 +67,23 @@ pub struct SnapAttacker {
     pub asn_class: Option<String>,
 }
 
+/// One node's view of a composite RiskKey bucket `{ip, device_fp,
+/// session}`, published for the fleet-merged Top Attackers "Composite
+/// RiskKey" table. `level` is an owned `String` (the wire `RiskSnapshot`
+/// uses a `&'static str`, which can't round-trip through Redis), mapped
+/// back to the static form at render time.
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct SnapRiskBucket {
+    pub ip: String,
+    pub device_fp: Option<String>,
+    pub session: Option<String>,
+    pub score: u32,
+    pub strikes: u32,
+    pub idle_seconds: u64,
+    pub level: String,
+    pub strike_blocked: bool,
+}
+
 /// One node's live-traffic rollup, published to `fleet:snap:<node_id>`.
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct FleetSnapshot {
@@ -89,6 +106,9 @@ pub struct FleetSnapshot {
     pub bot_mix: BTreeMap<String, u64>,
     // --- top attackers (this node's bounded top-K) ---
     pub top_attackers: Vec<SnapAttacker>,
+    // --- composite RiskKey buckets (this node's bounded top-K) ---
+    #[serde(default)]
+    pub risk_buckets: Vec<SnapRiskBucket>,
 }
 
 /// Merged percentiles recomputed from the summed histogram.
@@ -116,6 +136,10 @@ pub struct MergedFleet {
     pub detector_mix: BTreeMap<String, u64>,
     pub bot_mix: BTreeMap<String, u64>,
     pub top_attackers: Vec<SnapAttacker>,
+    /// Composite RiskKey buckets deduped across nodes (display-only —
+    /// per-node enforcement state surfaced for the dashboard, not a
+    /// cluster-authoritative risk verdict).
+    pub risk_buckets: Vec<SnapRiskBucket>,
 }
 
 /// Merge a set of per-node snapshots into the fleet view. `top_k`
@@ -147,6 +171,7 @@ pub fn merge(snaps: &[FleetSnapshot], top_k: usize) -> MergedFleet {
     };
     out.latency = merge_latency(snaps);
     out.top_attackers = merge_top_attackers(snaps, top_k);
+    out.risk_buckets = merge_risk_buckets(snaps, top_k);
     out
 }
 
@@ -244,6 +269,54 @@ fn merge_top_attackers(snaps: &[FleetSnapshot], top_k: usize) -> Vec<SnapAttacke
     rows
 }
 
+/// Worst-wins ordering for the composite-RiskKey `level` pill.
+fn level_rank(level: &str) -> u8 {
+    match level {
+        "block" => 2,
+        "challenge" => 1,
+        _ => 0,
+    }
+}
+
+/// Merge per-node composite-RiskKey buckets: dedup by `{ip, device_fp,
+/// session}`, taking max score, max strikes, min idle, OR `strike_blocked`,
+/// and the worst (most-restrictive) level — then re-sort `(strikes desc,
+/// score desc)` and truncate. Display-only: surfaces per-node enforcement
+/// state, never a cluster-authoritative verdict.
+fn merge_risk_buckets(snaps: &[FleetSnapshot], top_k: usize) -> Vec<SnapRiskBucket> {
+    type Key = (String, Option<String>, Option<String>);
+    let mut by_key: BTreeMap<Key, SnapRiskBucket> = BTreeMap::new();
+    for s in snaps {
+        for r in &s.risk_buckets {
+            let key = (r.ip.clone(), r.device_fp.clone(), r.session.clone());
+            match by_key.get_mut(&key) {
+                None => {
+                    by_key.insert(key, r.clone());
+                }
+                Some(entry) => {
+                    entry.score = entry.score.max(r.score);
+                    entry.strikes = entry.strikes.max(r.strikes);
+                    entry.idle_seconds = entry.idle_seconds.min(r.idle_seconds);
+                    entry.strike_blocked |= r.strike_blocked;
+                    if level_rank(&r.level) > level_rank(&entry.level) {
+                        entry.level = r.level.clone();
+                    }
+                }
+            }
+        }
+    }
+    let mut rows: Vec<SnapRiskBucket> = by_key.into_values().collect();
+    // Sort by strikes desc, then score desc, then ip for stable ties.
+    rows.sort_by(|a, b| {
+        b.strikes
+            .cmp(&a.strikes)
+            .then_with(|| b.score.cmp(&a.score))
+            .then_with(|| a.ip.cmp(&b.ip))
+    });
+    rows.truncate(top_k);
+    rows
+}
+
 /// Build this node's snapshot from its live local sources. Reads only
 /// already-collected aggregates (no hot-path work). `action_mix` is
 /// left empty for now — its canonical source (`DecisionMetrics`) isn't
@@ -256,6 +329,7 @@ pub fn build_snapshot(
     top_k: u32,
     stats_agg: &crate::api::stats::StatsAggregator,
     attacks_agg: &crate::api::attacks::AttacksAggregator,
+    risk: &aegis_security::risk::RiskTracker,
     hist: &crate::metrics::request_duration::RequestStageHistogram,
     latency_stage: &str,
 ) -> FleetSnapshot {
@@ -303,6 +377,23 @@ pub fn build_snapshot(
         })
         .collect();
 
+    // Composite RiskKey buckets — this node's bounded top-K, deduped
+    // across the fleet at merge time. Owned `level` round-trips Redis.
+    let risk_buckets: Vec<SnapRiskBucket> = risk
+        .top(top_k as usize)
+        .into_iter()
+        .map(|r| SnapRiskBucket {
+            ip: r.ip,
+            device_fp: r.device_fp,
+            session: r.session,
+            score: r.score,
+            strikes: r.strikes,
+            idle_seconds: r.idle_seconds,
+            level: r.level.to_string(),
+            strike_blocked: r.strike_blocked,
+        })
+        .collect();
+
     FleetSnapshot {
         node_id: node_id.to_string(),
         ts_ms: chrono::Utc::now().timestamp_millis(),
@@ -317,6 +408,7 @@ pub fn build_snapshot(
         detector_mix,
         bot_mix,
         top_attackers,
+        risk_buckets,
     }
 }
 
@@ -413,6 +505,67 @@ mod tests {
                 cumulative_count: *c,
             })
             .collect()
+    }
+
+    fn rbucket(
+        ip: &str,
+        fp: Option<&str>,
+        score: u32,
+        strikes: u32,
+        idle: u64,
+        level: &str,
+        blocked: bool,
+    ) -> SnapRiskBucket {
+        SnapRiskBucket {
+            ip: ip.into(),
+            device_fp: fp.map(Into::into),
+            session: None,
+            score,
+            strikes,
+            idle_seconds: idle,
+            level: level.into(),
+            strike_blocked: blocked,
+        }
+    }
+
+    #[test]
+    fn merge_risk_buckets_dedups_composite_key_worst_wins() {
+        // Same composite key {10.0.0.1, fp=aa, session=none} seen on two
+        // nodes with divergent enforcement state → one merged row taking
+        // max score, max strikes, min idle, OR strike_blocked, worst level.
+        let mut a = snap("a");
+        a.risk_buckets = vec![
+            rbucket("10.0.0.1", Some("aa"), 40, 2, 90, "challenge", false),
+            rbucket("10.0.0.9", None, 30, 1, 5, "challenge", false),
+        ];
+        let mut b = snap("b");
+        b.risk_buckets = vec![rbucket("10.0.0.1", Some("aa"), 70, 5, 10, "block", true)];
+
+        let m = merge(&[a, b], 50);
+
+        // Two distinct composite keys survive (the shared one collapsed).
+        assert_eq!(m.risk_buckets.len(), 2);
+        // Sorted by (strikes desc, score desc): the merged 10.0.0.1 row first.
+        let top = &m.risk_buckets[0];
+        assert_eq!(top.ip, "10.0.0.1");
+        assert_eq!(top.device_fp.as_deref(), Some("aa"));
+        assert_eq!(top.score, 70, "max score");
+        assert_eq!(top.strikes, 5, "max strikes");
+        assert_eq!(top.idle_seconds, 10, "min idle");
+        assert!(top.strike_blocked, "OR strike_blocked");
+        assert_eq!(top.level, "block", "worst level wins");
+    }
+
+    #[test]
+    fn merge_risk_buckets_truncates_to_top_k() {
+        let mut a = snap("a");
+        a.risk_buckets = (0..10)
+            .map(|i| rbucket(&format!("10.0.0.{i}"), None, i, i, 0, "challenge", false))
+            .collect();
+        let m = merge(&[a], 3);
+        assert_eq!(m.risk_buckets.len(), 3);
+        // Highest strikes first.
+        assert_eq!(m.risk_buckets[0].ip, "10.0.0.9");
     }
 
     #[test]

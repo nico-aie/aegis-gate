@@ -975,7 +975,10 @@ pub(crate) fn admin_router(
         // render the Tracking page risk widget.
         "/api/risk" => {
             let limit = parse_query_u32(query, "limit", 50);
-            let body = aegis_control::api::risk::render_list(&services.risk, limit);
+            let body = match fleet_view(services) {
+                Some(m) => aegis_control::api::risk::render_list_from_fleet(&m, limit),
+                None => aegis_control::api::risk::render_list(&services.risk, limit),
+            };
             json_body_response(200, body, "private, max-age=2")
         }
 

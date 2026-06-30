@@ -51,6 +51,51 @@ pub fn render_list(tracker: &RiskTracker, limit: u32) -> String {
     serde_json::to_string(&body).unwrap_or_else(|_| String::from("{}"))
 }
 
+/// Map a snapshot's owned `level` back to the `&'static str` the wire
+/// `RiskSnapshot` expects. Mirrors the tracker's classifier output.
+fn static_level(level: &str) -> &'static str {
+    match level {
+        "block" => "block",
+        "challenge" => "challenge",
+        _ => "allow",
+    }
+}
+
+/// Fleet-merged `GET /api/risk`. Reshapes the deduped composite-RiskKey
+/// buckets from the merged fleet view into the same envelope as
+/// [`render_list`]. Display-only — buckets are merged worst-wins across
+/// nodes for visibility; `reset_key` stays node-scoped (per-node
+/// enforcement state isn't cluster-authoritative). `total_tracked`
+/// reflects the merged top-K union, since each node only publishes its
+/// own bounded top-K — not a true fleet-wide distinct count.
+pub fn render_list_from_fleet(
+    merged: &crate::metrics::fleet_snapshot::MergedFleet,
+    limit: u32,
+) -> String {
+    let limit = limit.clamp(1, 500) as usize;
+    let clients: Vec<RiskSnapshot> = merged
+        .risk_buckets
+        .iter()
+        .take(limit)
+        .map(|b| RiskSnapshot {
+            ip: b.ip.clone(),
+            device_fp: b.device_fp.clone(),
+            session: b.session.clone(),
+            score: b.score,
+            strikes: b.strikes,
+            idle_seconds: b.idle_seconds,
+            level: static_level(&b.level),
+            strike_blocked: b.strike_blocked,
+        })
+        .collect();
+    let body = RiskListResponse {
+        total_tracked: clients.len(),
+        returned: clients.len(),
+        clients,
+    };
+    serde_json::to_string(&body).unwrap_or_else(|_| String::from("{}"))
+}
+
 /// Render the detail endpoint. Returns `(status, body)` so the
 /// caller can wire 200/404 without re-parsing the JSON.
 pub fn render_detail(tracker: &RiskTracker, ip: IpAddr) -> (u16, String) {
@@ -149,6 +194,55 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["error"].as_str(), Some("not_found"));
         assert_eq!(v["ip"].as_str(), Some("8.8.8.8"));
+    }
+
+    #[test]
+    fn render_list_from_fleet_maps_buckets_to_clients() {
+        use crate::metrics::fleet_snapshot::{MergedFleet, SnapRiskBucket};
+        let merged = MergedFleet {
+            risk_buckets: vec![SnapRiskBucket {
+                ip: "10.0.0.1".into(),
+                device_fp: Some("aa".into()),
+                session: None,
+                score: 70,
+                strikes: 5,
+                idle_seconds: 10,
+                level: "block".into(),
+                strike_blocked: true,
+            }],
+            ..Default::default()
+        };
+        let body = render_list_from_fleet(&merged, 50);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["returned"].as_u64(), Some(1));
+        assert_eq!(v["total_tracked"].as_u64(), Some(1));
+        let c = &v["clients"][0];
+        assert_eq!(c["ip"].as_str(), Some("10.0.0.1"));
+        assert_eq!(c["device_fp"].as_str(), Some("aa"));
+        assert!(c.get("session").is_none(), "None session omitted from wire");
+        assert_eq!(c["score"].as_u64(), Some(70));
+        assert_eq!(c["strikes"].as_u64(), Some(5));
+        assert_eq!(c["level"].as_str(), Some("block"));
+        assert_eq!(c["strike_blocked"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn render_list_from_fleet_clamps_limit() {
+        use crate::metrics::fleet_snapshot::{MergedFleet, SnapRiskBucket};
+        let merged = MergedFleet {
+            risk_buckets: (0..10)
+                .map(|i| SnapRiskBucket {
+                    ip: format!("10.0.0.{i}"),
+                    level: "challenge".into(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        // Asked for 0 → clamped to 1.
+        let body = render_list_from_fleet(&merged, 0);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["clients"].as_array().unwrap().len(), 1);
     }
 
     #[test]
