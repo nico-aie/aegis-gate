@@ -377,11 +377,11 @@ pub(crate) fn admin_router(
         }
         "/api/attacks/distribution" => {
             let window = parse_query_u32(query, "window", 900);
-            json_body_response(
-                200,
-                services.attacks.render(window),
-                "private, max-age=10",
-            )
+            let body = match fleet_view(services) {
+                Some(m) => services.attacks.render_distribution_from_fleet(&m, window),
+                None => services.attacks.render(window),
+            };
+            json_body_response(200, body, "private, max-age=10")
         }
         "/api/attacks/top" => {
             let window = parse_query_u32(query, "window", 900);
@@ -975,7 +975,10 @@ pub(crate) fn admin_router(
         // render the Tracking page risk widget.
         "/api/risk" => {
             let limit = parse_query_u32(query, "limit", 50);
-            let body = aegis_control::api::risk::render_list(&services.risk, limit);
+            let body = match fleet_view(services) {
+                Some(m) => aegis_control::api::risk::render_list_from_fleet(&m, limit),
+                None => aegis_control::api::risk::render_list(&services.risk, limit),
+            };
             json_body_response(200, body, "private, max-age=2")
         }
 
@@ -1099,6 +1102,21 @@ pub(crate) fn admin_router(
         // D-M5: tracking
         "/api/slo" => json_body_response(200, services.tracking.render_slo(), "private, max-age=2"),
         "/api/cluster" => json_body_response(200, services.tracking.render_cluster(), "private, max-age=2"),
+        // Fleet-scope status for per-panel badges + the degraded banner.
+        // `configured` = the publish task is up (cluster deployment);
+        // `active` = a merged snapshot is currently available.
+        "/api/fleet/status" => {
+            let configured = services.fleet_cache.is_some();
+            let merged = fleet_view(services);
+            json_body_response(
+                200,
+                aegis_control::metrics::fleet_snapshot::render_fleet_status(
+                    configured,
+                    merged.as_ref(),
+                ),
+                "private, max-age=2",
+            )
+        }
         "/api/runtime" => {
             // Layer-1 — in-node runtime sizing snapshot. Stable
             // across the process lifetime (tokio runtime is fixed

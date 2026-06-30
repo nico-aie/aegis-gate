@@ -57,13 +57,42 @@ function Sparkline({ data, w = 80, h = 22, color = 'var(--brand-yellow)', fill =
   );
 }
 
+// ============= Scope badge =============
+// Labels a panel's data scope in a cluster: `fleet` ⇒ merged across all
+// nodes, otherwise this node only. Renders nothing on single-node
+// deployments (`cluster` false) where scope is moot.
+function ScopeBadge({ cluster, fleet }) {
+  if (!cluster) return null;
+  return fleet ? (
+    <span className="scope-badge scope-fleet" title="Merged across all fleet nodes">Fleet</span>
+  ) : (
+    <span className="scope-badge scope-node" title="This node only — not merged across the fleet">This node</span>
+  );
+}
+
+// Hook returning a `(capable) => <ScopeBadge/>` helper bound to the
+// current fleet status, so each page wires scope badges in one line:
+//   const scopeBadge = window.useScopeBadge();
+//   ... scope={scopeBadge(true)}   // fleet-capable panel
+// `capable` is whether the panel *can* be fleet-merged; the badge reads
+// Fleet only when fleet view is also active.
+function useScopeBadge() {
+  const scope = window.useFleetScopeApi ? window.useFleetScopeApi() : { data: null };
+  const cluster = !!scope.data?.configured;
+  const active = !!scope.data?.active;
+  return (capable) => <ScopeBadge cluster={cluster} fleet={active && !!capable} />;
+}
+
 // ============= Stat tile =============
-function StatTile({ title, value, sub, icon, tone, sparkData, sparkColor }) {
+function StatTile({ title, value, sub, icon, tone, sparkData, sparkColor, scope }) {
   return (
     <div className={`stat ${tone || ''}`}>
       <div className="stat-head">
         <span>{title}</span>
-        <span className="stat-icon">{icon}</span>
+        <span className="stat-head-right">
+          {scope}
+          <span className="stat-icon">{icon}</span>
+        </span>
       </div>
       <div className="stat-value">{value}</div>
       <div className="stat-sub">{sub}</div>
@@ -556,7 +585,7 @@ function PageTitleRefresh({ onClick, label }) {
 }
 
 Object.assign(window, {
-  I, Sparkline, StatTile, TrafficChart, Donut, WorldMap, RiskHeatmap,
+  I, Sparkline, StatTile, ScopeBadge, useScopeBadge, TrafficChart, Donut, WorldMap, RiskHeatmap,
   RiskMeter, ActionPill, TierPill, Drawer, StackedBar, BarList, SectionHeader,
   ToastContainer, aegisToast, PageTitleRefresh,
   // FIX 2026-05-04 — exposed so PageOverview can resolve country

@@ -131,6 +131,9 @@ fn spawn_fleet_snapshot_task(
     state_backend: Arc<dyn aegis_core::state::StateBackend>,
     stats_agg: Arc<aegis_control::api::stats::StatsAggregator>,
     attacks_agg: Arc<aegis_control::api::attacks::AttacksAggregator>,
+    // Composite RiskKey buckets for the fleet-merged Top Attackers table
+    // (Arc-shared with the data-plane producer; cheap to clone).
+    risk: aegis_security::risk::RiskTracker,
     hist: Arc<aegis_control::metrics::request_duration::RequestStageHistogram>,
     // F6 (2026-06-11) — the local audit ring, so the same publish tick
     // also ships this node's bounded audit tail for the fleet backfill.
@@ -176,6 +179,7 @@ fn spawn_fleet_snapshot_task(
                 top_k as u32,
                 &stats_agg,
                 &attacks_agg,
+                &risk,
                 &hist,
                 aegis_control::metrics::request_duration::stage::TOTAL,
             );
@@ -644,6 +648,7 @@ pub(crate) async fn admin_accept_loop(
         state_backend.clone(),
         services.stats_agg.clone(),
         services.attacks_agg.clone(),
+        services.risk.clone(),
         request_stage_hist.clone(),
         services.audit_ring.clone(),
         lease_store.self_id().as_str(),

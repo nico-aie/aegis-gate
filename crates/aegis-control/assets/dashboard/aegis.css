@@ -745,6 +745,25 @@ button { font-family: inherit; }
   margin-bottom: 8px;
 }
 .stat-icon { color: var(--ink-faint); }
+/* SCOPE-P1a — per-panel data-scope badges (cluster only). */
+.stat-head-right { display: inline-flex; align-items: center; gap: 6px; }
+.scope-badge {
+  font-size: 9px; font-weight: 600; letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 6px; border-radius: 999px;
+  border: 1px solid transparent; white-space: nowrap;
+  vertical-align: middle;
+}
+.scope-fleet {
+  color: var(--ok, #2EA043);
+  background: rgba(46, 160, 67, 0.12);
+  border-color: rgba(46, 160, 67, 0.35);
+}
+.scope-node {
+  color: var(--ink-mute);
+  background: rgba(125, 133, 144, 0.12);
+  border-color: rgba(125, 133, 144, 0.32);
+}
 .stat-value {
   font-family: var(--font-mono);
   font-size: 26px;
