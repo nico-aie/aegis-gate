@@ -760,6 +760,22 @@ pub(crate) async fn admin_accept_loop(
     // which hydrates in the background.
     services.incidents.hydrate().await;
 
+    // IF-P1c — periodic cross-node overlay convergence. Re-read the shared
+    // `control:waf:incidents` overlay on a timer so an ack/snooze/resolve on
+    // ANY node lands here within a tick (LWW on `updated_at`, clobber-safe).
+    // Only when a shared backend is attached; single-node / no-Redis skips.
+    if services.incidents.has_durable_backend() {
+        let incidents = services.incidents.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                incidents.refresh_from_durable().await;
+            }
+        });
+    }
+
     // 2026-06-24 (redis-interim-durability P3, A3) — spawn the per-node stats
     // counter durability: a background boot-hydrate (so the Overview top-line
     // survives a restart) + a periodic flush. Off the request path entirely;
