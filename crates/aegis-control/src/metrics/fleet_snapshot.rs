@@ -39,6 +39,12 @@ use crate::metrics::request_duration::quantile_ms;
 /// State-key prefix for per-node snapshots. The read path scans this.
 pub const FLEET_SNAP_PREFIX: &str = "fleet:snap:";
 
+/// Largest timeseries `window` served from the merged fleet view. The
+/// snapshot carries only a bounded recent slice of per-second buckets
+/// (see `FleetSnapshot::recent_seconds`); wider windows fall back to the
+/// node-local series. Matches the snapshot's aggregate window.
+pub const FLEET_TIMESERIES_MAX_WINDOW_SECS: u32 = 300;
+
 /// Build the snapshot key for a node id.
 pub fn snapshot_key(node_id: &str) -> String {
     format!("{FLEET_SNAP_PREFIX}{node_id}")
@@ -84,6 +90,16 @@ pub struct SnapRiskBucket {
     pub strike_blocked: bool,
 }
 
+/// One per-second traffic bucket, keyed by absolute unix epoch second
+/// so buckets sum across nodes by wall clock. Published sparse (only
+/// seconds with traffic) over a bounded recent window.
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct SnapSecond {
+    pub sec: i64,
+    pub total: u32,
+    pub blocked: u32,
+}
+
 /// One node's live-traffic rollup, published to `fleet:snap:<node_id>`.
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct FleetSnapshot {
@@ -109,6 +125,9 @@ pub struct FleetSnapshot {
     // --- composite RiskKey buckets (this node's bounded top-K) ---
     #[serde(default)]
     pub risk_buckets: Vec<SnapRiskBucket>,
+    // --- bounded recent per-second traffic buckets (sparse) ---
+    #[serde(default)]
+    pub recent_seconds: Vec<SnapSecond>,
 }
 
 /// Merged percentiles recomputed from the summed histogram.
@@ -140,6 +159,10 @@ pub struct MergedFleet {
     /// per-node enforcement state surfaced for the dashboard, not a
     /// cluster-authoritative risk verdict).
     pub risk_buckets: Vec<SnapRiskBucket>,
+    /// Per-second traffic buckets summed across nodes by epoch second,
+    /// sorted ascending. Bounded recent window — the timeseries fleet
+    /// path serves windows up to that bound, else falls back node-local.
+    pub timeseries_seconds: Vec<SnapSecond>,
 }
 
 /// Merge a set of per-node snapshots into the fleet view. `top_k`
@@ -172,6 +195,7 @@ pub fn merge(snaps: &[FleetSnapshot], top_k: usize) -> MergedFleet {
     out.latency = merge_latency(snaps);
     out.top_attackers = merge_top_attackers(snaps, top_k);
     out.risk_buckets = merge_risk_buckets(snaps, top_k);
+    out.timeseries_seconds = merge_timeseries(snaps);
     out
 }
 
@@ -267,6 +291,24 @@ fn merge_top_attackers(snaps: &[FleetSnapshot], top_k: usize) -> Vec<SnapAttacke
     });
     rows.truncate(top_k);
     rows
+}
+
+/// Sum per-node per-second traffic buckets by absolute epoch second.
+/// Buckets are wall-clock-keyed, so a plain sum across nodes is the
+/// correct fleet view; result is sorted ascending for stable rendering.
+fn merge_timeseries(snaps: &[FleetSnapshot]) -> Vec<SnapSecond> {
+    let mut by_sec: BTreeMap<i64, (u32, u32)> = BTreeMap::new();
+    for s in snaps {
+        for p in &s.recent_seconds {
+            let e = by_sec.entry(p.sec).or_default();
+            e.0 = e.0.saturating_add(p.total);
+            e.1 = e.1.saturating_add(p.blocked);
+        }
+    }
+    by_sec
+        .into_iter()
+        .map(|(sec, (total, blocked))| SnapSecond { sec, total, blocked })
+        .collect()
 }
 
 /// Worst-wins ordering for the composite-RiskKey `level` pill.
@@ -394,6 +436,14 @@ pub fn build_snapshot(
         })
         .collect();
 
+    // Bounded recent per-second buckets (sparse) for the fleet timeseries.
+    // Capped to the max window the fleet path serves.
+    let recent_seconds: Vec<SnapSecond> = stats_agg
+        .recent_seconds(FLEET_TIMESERIES_MAX_WINDOW_SECS)
+        .into_iter()
+        .map(|(sec, total, blocked)| SnapSecond { sec, total, blocked })
+        .collect();
+
     FleetSnapshot {
         node_id: node_id.to_string(),
         ts_ms: chrono::Utc::now().timestamp_millis(),
@@ -409,6 +459,7 @@ pub fn build_snapshot(
         bot_mix,
         top_attackers,
         risk_buckets,
+        recent_seconds,
     }
 }
 
@@ -580,6 +631,34 @@ mod tests {
         assert_eq!(s["configured"], true);
         assert_eq!(s["active"], true);
         assert_eq!(s["nodes"], 3);
+    }
+
+    #[test]
+    fn merge_timeseries_sums_buckets_by_epoch_second() {
+        // Two nodes report overlapping + distinct seconds; merge sums
+        // total/blocked per absolute second and sorts ascending.
+        let mut a = snap("a");
+        a.recent_seconds = vec![
+            SnapSecond { sec: 100, total: 10, blocked: 2 },
+            SnapSecond { sec: 101, total: 5, blocked: 1 },
+        ];
+        let mut b = snap("b");
+        b.recent_seconds = vec![
+            SnapSecond { sec: 100, total: 7, blocked: 3 }, // overlaps a@100
+            SnapSecond { sec: 102, total: 4, blocked: 0 },
+        ];
+
+        let m = merge(&[a, b], 50);
+        let ts = &m.timeseries_seconds;
+        assert_eq!(ts.len(), 3, "three distinct seconds");
+        // sorted ascending by sec
+        assert_eq!(ts[0].sec, 100);
+        assert_eq!(ts[0].total, 17, "10 + 7 summed");
+        assert_eq!(ts[0].blocked, 5, "2 + 3 summed");
+        assert_eq!(ts[1].sec, 101);
+        assert_eq!(ts[1].total, 5);
+        assert_eq!(ts[2].sec, 102);
+        assert_eq!(ts[2].total, 4);
     }
 
     #[test]

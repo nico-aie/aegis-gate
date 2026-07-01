@@ -313,6 +313,20 @@ impl StatsAggregator {
     /// successive polls return overlapping bucket starts (the chart
     /// scrolls smoothly). Step is clamped to `[1, window]` — invalid
     /// callers get a single-bucket result rather than a panic.
+    /// Sparse per-second traffic buckets within the last `retention_secs`
+    /// (only seconds that saw traffic), as `(epoch_sec, total, blocked)`
+    /// ascending. Feeds the bounded fleet-timeseries snapshot.
+    pub fn recent_seconds(&self, retention_secs: u32) -> Vec<(i64, u32, u32)> {
+        let now_sec = chrono::Utc::now().timestamp();
+        let cutoff = now_sec - i64::from(retention_secs);
+        let state = self.inner.lock().expect("stats mutex poisoned");
+        state
+            .seconds
+            .range(cutoff..)
+            .map(|(&sec, b)| (sec, b.total, b.blocked))
+            .collect()
+    }
+
     pub fn timeseries(
         &self,
         window_seconds: u32,
@@ -625,6 +639,74 @@ pub fn spawn_stats_task(
     })
 }
 
+/// Pure, deterministic bucketiser shared by the fleet timeseries path.
+/// Mirrors `StatsAggregator::timeseries` alignment (step-aligned wall-
+/// clock boundaries) but takes an explicit `now_sec` and a pre-summed
+/// per-second map, so it is testable without a clock.
+fn bucketize_seconds(
+    by_sec: &BTreeMap<i64, (u32, u32)>,
+    now_sec: i64,
+    window_seconds: u32,
+    step_seconds: u32,
+) -> TimeseriesResponse {
+    let window = window_seconds.max(1);
+    let step = if step_seconds == 0 || step_seconds > window {
+        window
+    } else {
+        step_seconds
+    };
+    let step_i64 = i64::from(step);
+    let bucket_count = (window / step) as usize;
+    let current_bucket_start = (now_sec / step_i64) * step_i64;
+    let last_end = current_bucket_start + step_i64;
+    let first_start = last_end - step_i64 * bucket_count as i64;
+
+    let mut points = Vec::with_capacity(bucket_count);
+    for i in 0..bucket_count {
+        let bucket_start = first_start + step_i64 * i as i64;
+        let bucket_end = bucket_start + step_i64;
+        let mut total = 0u32;
+        let mut blocked = 0u32;
+        for (_, (t, b)) in by_sec.range(bucket_start..bucket_end) {
+            total = total.saturating_add(*t);
+            blocked = blocked.saturating_add(*b);
+        }
+        points.push(TimeseriesPoint {
+            ts: chrono::DateTime::<chrono::Utc>::from_timestamp(bucket_start, 0)
+                .unwrap_or_default(),
+            total,
+            blocked,
+        });
+    }
+    TimeseriesResponse {
+        window_seconds: window,
+        step_seconds: step,
+        points,
+    }
+}
+
+/// Fleet-merged `GET /api/stats/timeseries`. Re-buckets the merged
+/// per-second traffic (summed across nodes) into the same wire shape as
+/// the node-local `timeseries`. The merged series is bounded to a recent
+/// window; callers serve only windows within that bound on the fleet
+/// path and fall back node-local beyond it.
+pub fn timeseries_from_fleet(
+    seconds: &[crate::metrics::fleet_snapshot::SnapSecond],
+    window_seconds: u32,
+    step_seconds: u32,
+) -> TimeseriesResponse {
+    let by_sec: BTreeMap<i64, (u32, u32)> = seconds
+        .iter()
+        .map(|s| (s.sec, (s.total, s.blocked)))
+        .collect();
+    bucketize_seconds(
+        &by_sec,
+        chrono::Utc::now().timestamp(),
+        window_seconds,
+        step_seconds,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -933,6 +1015,44 @@ mod tests {
             assert_eq!(p.total, 0);
             assert_eq!(p.blocked, 0);
         }
+    }
+
+    #[test]
+    fn bucketize_seconds_aligns_and_sums_into_step_buckets() {
+        // now=1000, window=10, step=5 → 2 buckets: [995,1000) and
+        // [1000,1005). Seconds 996, 1001, 1002 land in those buckets.
+        let by_sec: BTreeMap<i64, (u32, u32)> =
+            [(996, (3u32, 1u32)), (1001, (4, 2)), (1002, (1, 0))]
+                .into_iter()
+                .collect();
+        let ts = bucketize_seconds(&by_sec, 1000, 10, 5);
+        assert_eq!(ts.window_seconds, 10);
+        assert_eq!(ts.step_seconds, 5);
+        assert_eq!(ts.points.len(), 2);
+        assert_eq!(ts.points[0].ts.timestamp(), 995);
+        assert_eq!(ts.points[0].total, 3, "996 → first bucket");
+        assert_eq!(ts.points[0].blocked, 1);
+        assert_eq!(ts.points[1].ts.timestamp(), 1000);
+        assert_eq!(ts.points[1].total, 5, "1001 + 1002 summed");
+        assert_eq!(ts.points[1].blocked, 2);
+    }
+
+    #[test]
+    fn timeseries_from_fleet_buckets_merged_seconds() {
+        use crate::metrics::fleet_snapshot::SnapSecond;
+        // Smoke test the now()-using wrapper: recent seconds land in the
+        // newest bucket of a wide window, summing total/blocked.
+        let now = chrono::Utc::now().timestamp();
+        let seconds = vec![
+            SnapSecond { sec: now, total: 6, blocked: 2 },
+            SnapSecond { sec: now - 1, total: 4, blocked: 1 },
+        ];
+        let ts = timeseries_from_fleet(&seconds, 60, 1);
+        assert_eq!(ts.window_seconds, 60);
+        let total: u32 = ts.points.iter().map(|p| p.total).sum();
+        let blocked: u32 = ts.points.iter().map(|p| p.blocked).sum();
+        assert_eq!(total, 10);
+        assert_eq!(blocked, 3);
     }
 
     #[test]

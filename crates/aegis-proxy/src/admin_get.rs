@@ -357,7 +357,21 @@ pub(crate) fn admin_router(
         "/api/stats/timeseries" => {
             let window = parse_query_u32(query, "window", 900);
             let step = parse_query_u32(query, "step", 5);
-            let resp = services.stats_agg.timeseries(window, step);
+            // Fleet-merged only within the bounded window the snapshot
+            // carries; wider windows fall back to this node's series.
+            let resp = match fleet_view(services) {
+                Some(m)
+                    if window
+                        <= aegis_control::metrics::fleet_snapshot::FLEET_TIMESERIES_MAX_WINDOW_SECS =>
+                {
+                    aegis_control::api::stats::timeseries_from_fleet(
+                        &m.timeseries_seconds,
+                        window,
+                        step,
+                    )
+                }
+                _ => services.stats_agg.timeseries(window, step),
+            };
             let body = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".into());
             json_body_response(200, body, "private, max-age=1")
         }
