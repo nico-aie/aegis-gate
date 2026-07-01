@@ -745,6 +745,20 @@ button { font-family: inherit; }
   margin-bottom: 8px;
 }
 .stat-icon { color: var(--ink-faint); }
+/* SCOPE-P1b — fleet node-scope selector in the topbar. */
+.fleet-node-select {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; color: var(--ink-mute);
+}
+.fleet-node-select select {
+  background: var(--surface-2, rgba(125,133,144,0.10));
+  color: var(--ink);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 11px;
+  max-width: 180px;
+}
 /* SCOPE-P1a — per-panel data-scope badges (cluster only). */
 .stat-head-right { display: inline-flex; align-items: center; gap: 6px; }
 .scope-badge {

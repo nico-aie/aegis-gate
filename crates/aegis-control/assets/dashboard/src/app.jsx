@@ -176,6 +176,7 @@ function TopBar() {
       <div style={{ flex: 1 }} />
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {window.FleetNodeSelector && <window.FleetNodeSelector />}
         <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--ink-mute)' }}>
           <span className={`led ${healthTone}`} /> {healthLabel}
         </span>
