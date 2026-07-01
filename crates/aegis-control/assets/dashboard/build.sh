@@ -14,6 +14,12 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 
+# Guard against the "bare hook in an aliased module" bug class (a bare
+# `useEffect(...)` in a module that renamed it → ReferenceError on render,
+# blank console). esbuild can't catch it — it only transforms JSX. Fail
+# fast before building.
+node "$HERE/lint-hooks.mjs"
+
 # Order matters: widgets first (defines I, Sparkline, …),
 # data next (defines RULES, useTicking, …), then pages and help
 # which consume widgets+data, finally app which mounts.
