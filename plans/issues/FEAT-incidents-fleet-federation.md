@@ -1,7 +1,8 @@
 # FEAT — Incidents fleet federation (cluster-wide SLO alerts + converged overlay)
 
-> **Type:** FEAT (observability / correctness track) · **Status:** ☐ Not started — raised 2026-06-30 · **Branch:** `feat/incidents-fleet-federation-*` (per stage)
+> **Type:** FEAT (observability / correctness track) · **Status:** ✅ COMPLETE — raised 2026-06-30, shipped 2026-07-01
 > **Track ID prefix:** `IF-P1<a–d>`
+> **Shipped:** IF-P1a stable `incident_uid` (PR #105, also fixed MED-ADM-01) · IF-P1b read-side fleet roll-up + `firing_on` breadth (PR #106) · IF-P1c cross-node overlay convergence (LWW on `updated_at`, PR #107) · IF-P1d resolve auto-resurrection (re-fire OR grace-past `RESOLVE_GRACE_SECS=300`, flap-bounded) on branch `feat/incidents-fed-p1d-resolve-resurrection`.
 > **Parent / sibling:** split out of [`FEAT-cluster-mode-dashboard-scope-clarity.md`](./FEAT-cluster-mode-dashboard-scope-clarity.md) (Appendix B). That FEAT badges/labels scope across all dashboard pages; **this** one does the real federation work for Incidents. When this lands, the Investigation posture-card "firing alerts" chip (`/api/incidents`) becomes fleet-wide for free.
 > **Pattern guardrail:** [[project_api_mode_no_cluster_publish]] (mutations that forget to publish converge node-local-only), [[project_apply_and_swap_helper_guard]] (every cluster-sync path must be wired + guard-tested), [[project_config_plane_doc_vs_file]] (shared-state writes vs local).
 
@@ -66,12 +67,12 @@ Resolve the cross-node state conflicts that only exist once b/c are live.
 
 ## Acceptance
 
-- [ ] IF-P1a: node-independent `incident_uid`; single-node behavior unchanged; suite green.
-- [ ] IF-P1b: `/api/incidents` fleet roll-up dedups by uid with `firing_on` breadth; node-local fallback intact.
-- [ ] IF-P1c: ack/snooze/resolve from any node visible on all nodes; restart-durable; cluster-sync guard test added.
-- [ ] IF-P1d: resolve suppresses fleet-wide + correctly auto-resurrects; concurrent-ack + snooze semantics defined and tested.
-- [ ] Sibling SCOPE-P1 firing-alerts chip on Investigation goes fleet-wide for free; badges updated.
-- [ ] `docs/control-plane/` incidents doc notes fleet behavior; archive on completion.
+- [x] IF-P1a: node-independent `incident_uid`; single-node behavior unchanged; suite green. **PR #105** (also fixed MED-ADM-01 ack round-trip).
+- [x] IF-P1b: `/api/incidents` fleet roll-up dedups by uid with `firing_on` breadth; node-local fallback intact. **PR #106**.
+- [x] IF-P1c: ack/snooze/resolve from any node visible on all nodes; restart-durable (LWW on `updated_at`, clobber-safe). **PR #107**.
+- [x] IF-P1d: resolve auto-resurrects on re-fire OR past `RESOLVE_GRACE_SECS` (flap-bounded); evaluated against the fleet firing set in `enrich_fleet`; snooze deadline already absolute-UTC; concurrent-ack handled by P1c LWW. **This branch**.
+- [x] Sibling firing-alerts chip on Investigation goes fleet-wide for free (rides `/api/incidents`).
+- [ ] `docs/control-plane/` incidents doc notes fleet behavior; archive on completion. _(doc follow-up)_
 
 ## Out of scope
 

@@ -93,6 +93,36 @@ pub fn incident_uid(a: &SloAlert) -> String {
     format!("{:?}-{}h", a.sli, a.window_hours)
 }
 
+/// IF-P1d — how long a `resolve` suppresses an incident that is STILL
+/// firing before it auto-resurrects. Bounds how long an operator's
+/// dismissal can hide a live problem, and — being far larger than the
+/// snapshot/refresh tick — bounds any resolve↔fire flap to at most once
+/// per window (the FEAT's "never flap faster than the SLO eval tick").
+const RESOLVE_GRACE_SECS: i64 = 300;
+
+/// IF-P1d — whether a `Resolved` overlay is superseded by the incident's
+/// current fire, so it must resurface as `Firing` rather than stay hidden
+/// in the resolved bucket. True when the incident **re-fired** after the
+/// resolve (`fired_at` strictly after `resolved_at` — a genuinely new
+/// occurrence), OR when it has been continuously firing past the grace
+/// window. A same-fire resolve within the grace stays suppressed (the
+/// operator's dismissal holds; no time-based flapping). Evaluated in the
+/// enrich path where the firing set is known — fleet-wide in `enrich_fleet`.
+fn resolve_superseded(
+    status: IncidentStatus,
+    resolved_at: Option<DateTime<Utc>>,
+    fired_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> bool {
+    if status != IncidentStatus::Resolved {
+        return false;
+    }
+    let Some(resolved) = resolved_at else {
+        return false;
+    };
+    fired_at > resolved || (now - resolved).num_seconds() >= RESOLVE_GRACE_SECS
+}
+
 /// Durable write of one incident overlay (field = `alert_id`, value =
 /// JSON) to `control:waf:incidents`. Best-effort: an encode or backend
 /// error is logged and swallowed — the operator action already succeeded
@@ -347,10 +377,17 @@ impl IncidentTracker {
             .map(|a| {
                 let id = incident_uid(&a);
                 let overlay = self.get(&id);
-                let status = overlay
+                let mut status = overlay
                     .as_ref()
                     .map(|s| s.status)
                     .unwrap_or(IncidentStatus::Firing);
+                let mut incident_resolved_at = overlay.as_ref().and_then(|s| s.resolved_at);
+                // IF-P1d — a resolve that's been superseded (re-fired, or
+                // still firing past the grace) resurfaces as Firing.
+                if resolve_superseded(status, incident_resolved_at, a.fired_at, Utc::now()) {
+                    status = IncidentStatus::Firing;
+                    incident_resolved_at = None;
+                }
                 EnrichedAlert {
                     id,
                     sli: format!("{:?}", a.sli),
@@ -365,7 +402,7 @@ impl IncidentTracker {
                     acked_at: overlay.as_ref().and_then(|s| s.acked_at),
                     acked_by: overlay.as_ref().and_then(|s| s.acked_by.clone()),
                     snoozed_until: overlay.as_ref().and_then(|s| s.snoozed_until),
-                    incident_resolved_at: overlay.as_ref().and_then(|s| s.resolved_at),
+                    incident_resolved_at,
                     note: overlay.and_then(|s| s.note),
                     firing_on: Vec::new(),
                 }
@@ -386,15 +423,25 @@ impl IncidentTracker {
             .into_iter()
             .map(|inc| {
                 let overlay = self.get(&inc.uid);
-                let status = overlay
+                let mut status = overlay
                     .as_ref()
                     .map(|s| s.status)
                     .unwrap_or(IncidentStatus::Firing);
+                let mut incident_resolved_at = overlay.as_ref().and_then(|s| s.resolved_at);
+                let fired_at =
+                    DateTime::from_timestamp_millis(inc.fired_at_ms).unwrap_or_default();
+                // IF-P1d — resurrect a superseded resolve against the FLEET
+                // firing set (fired_at is the fleet-min fire; re-fired-after
+                // -resolve or still-firing-past-grace ⇒ back to Firing).
+                if resolve_superseded(status, incident_resolved_at, fired_at, Utc::now()) {
+                    status = IncidentStatus::Firing;
+                    incident_resolved_at = None;
+                }
                 EnrichedAlert {
                     id: inc.uid,
                     sli: inc.sli,
                     severity: inc.severity,
-                    fired_at: DateTime::from_timestamp_millis(inc.fired_at_ms).unwrap_or_default(),
+                    fired_at,
                     resolved_at: None,
                     burn_rate: inc.burn_rate,
                     budget_consumed_pct: inc.budget_consumed_pct,
@@ -404,7 +451,7 @@ impl IncidentTracker {
                     acked_at: overlay.as_ref().and_then(|s| s.acked_at),
                     acked_by: overlay.as_ref().and_then(|s| s.acked_by.clone()),
                     snoozed_until: overlay.as_ref().and_then(|s| s.snoozed_until),
-                    incident_resolved_at: overlay.as_ref().and_then(|s| s.resolved_at),
+                    incident_resolved_at,
                     note: overlay.and_then(|s| s.note),
                     firing_on: inc.firing_on,
                 }
@@ -455,6 +502,83 @@ mod tests {
             measured: 0.9985,
             target: 0.999,
         }
+    }
+
+    #[test]
+    fn resolve_superseded_covers_refire_and_grace() {
+        let now = DateTime::from_timestamp(1_000_000, 0).unwrap();
+        let resolved = DateTime::from_timestamp(1_000_000 - 60, 0).unwrap(); // 60s ago
+        let older = DateTime::from_timestamp(1_000_000 - 10_000, 0).unwrap(); // long ago
+
+        // Not resolved → never superseded.
+        let fired = DateTime::from_timestamp(1_000_000 - 30, 0).unwrap();
+        assert!(!resolve_superseded(
+            IncidentStatus::Acknowledged,
+            Some(resolved),
+            fired,
+            now
+        ));
+
+        // Resolved, continuous fire (fired BEFORE resolve), within grace →
+        // stays suppressed.
+        let fired_before = DateTime::from_timestamp(1_000_000 - 120, 0).unwrap();
+        assert!(!resolve_superseded(
+            IncidentStatus::Resolved,
+            Some(resolved),
+            fired_before,
+            now
+        ));
+
+        // Resolved, but RE-FIRED after the resolve → resurrect now.
+        let fired_after = DateTime::from_timestamp(1_000_000 - 30, 0).unwrap();
+        assert!(resolve_superseded(
+            IncidentStatus::Resolved,
+            Some(resolved),
+            fired_after,
+            now
+        ));
+
+        // Resolved long ago, still the same continuous fire, past the grace
+        // window → resurrect (don't hide a live incident forever).
+        assert!(resolve_superseded(
+            IncidentStatus::Resolved,
+            Some(older),
+            older, // fired at the same old time (continuous)
+            now
+        ));
+    }
+
+    #[test]
+    fn enrich_fleet_resurrects_a_refired_resolve_but_holds_a_fresh_one() {
+        use crate::metrics::fleet_snapshot::MergedIncident;
+        let uid = "DataPlaneAvailability-1h";
+        let t = IncidentTracker::new();
+        t.resolve(uid, Some("alice".into()), None); // resolved_at ≈ now
+
+        let mk = |fired_at_ms: i64| {
+            vec![MergedIncident {
+                uid: uid.into(),
+                sli: "DataPlaneAvailability".into(),
+                severity: "page".into(),
+                fired_at_ms,
+                burn_rate: 9.0,
+                budget_consumed_pct: 70.0,
+                window_hours: 1,
+                runbook_url: "".into(),
+                firing_on: vec!["node-a".into()],
+            }]
+        };
+
+        // Re-fired AFTER the resolve → resurrects to Firing.
+        let refired = (Utc::now() + chrono::Duration::seconds(5)).timestamp_millis();
+        let e = t.enrich_fleet(mk(refired));
+        assert_eq!(e[0].status, IncidentStatus::Firing, "re-fire resurrects");
+        assert!(e[0].incident_resolved_at.is_none());
+
+        // Same continuous fire (before the resolve), within grace → holds.
+        let continuous = (Utc::now() - chrono::Duration::seconds(60)).timestamp_millis();
+        let e2 = t.enrich_fleet(mk(continuous));
+        assert_eq!(e2[0].status, IncidentStatus::Resolved, "fresh resolve holds");
     }
 
     #[test]
