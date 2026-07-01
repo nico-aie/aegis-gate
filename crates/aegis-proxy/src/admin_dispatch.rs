@@ -208,11 +208,12 @@ pub(crate) async fn handle_admin_request(
     // moves the alert from `firing` to `resolved`.
     //
     // MED-ADM-01 (2026-05-12) — `req.uri().path()` returns the
-    // percent-encoded path, so ids like `<sli>-<Nh>:<ts>` arrive
-    // as `<sli>-<Nh>%3A<ts>`.  Decode here before handing to the
-    // handler so the overlay-store key matches what `enrich()`
-    // looks up via `alert_id(&a)`.  Apply exactly once at this
-    // layer; the handler MUST NOT decode again.
+    // percent-encoded path; decode here before handing to the handler so
+    // the overlay-store key matches what `enrich()` looks up via
+    // `incident_uid(&a)`.  Apply exactly once at this layer; the handler
+    // MUST NOT decode again. IF-P1a — the uid is now node-independent
+    // (`<sli>-<Nh>`, no `:<ts>`), so it no longer contains a `%3A`, but
+    // the decode stays defensive.
     if method == hyper::Method::POST && path.starts_with("/api/alerts/") {
         let suffix = &path["/api/alerts/".len()..];
         if let Some(raw_id) = suffix.strip_suffix("/ack") {
