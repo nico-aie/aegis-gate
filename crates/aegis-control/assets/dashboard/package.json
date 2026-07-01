@@ -1,0 +1,9 @@
+{
+  "name": "aegis-dashboard-lint",
+  "private": true,
+  "description": "Lint-only toolchain for the hand-bundled dashboard JSX (rules-of-hooks, tuned to the window.useX pattern).",
+  "devDependencies": {
+    "acorn": "^8.12.1",
+    "acorn-jsx": "^5.3.2"
+  }
+}
