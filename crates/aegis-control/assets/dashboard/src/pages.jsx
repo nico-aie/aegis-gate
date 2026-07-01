@@ -164,8 +164,8 @@ function FleetNodeBanner() {
             <span style={{ marginLeft: 8, color: 'var(--ink-mute)' }}>
               Panels tagged <span className="scope-badge scope-fleet">Fleet</span> are merged across{' '}
               <code>{fleetNodes}</code> node{fleetNodes === 1 ? '' : 's'};{' '}
-              <span className="scope-badge scope-node">This node</span> panels (Upstream, traffic
-              chart) are <code>{ourNode}</code> only.
+              <span className="scope-badge scope-node">This node</span> panels (e.g. Upstream, and
+              the traffic chart beyond a 5m window) are <code>{ourNode}</code> only.
             </span>
           </>
         ) : degraded ? (
@@ -599,7 +599,9 @@ function PageOverview() {
           <div className="card-head">
             <div>
               <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                Traffic vs Blocked {scopeBadge(false)}
+                {/* Fleet-merged only within the bounded window the snapshot
+                    carries (≤5m); wider windows fall back to this node. */}
+                Traffic vs Blocked {scopeBadge(trafficWindow.windowSecs <= 300)}
               </div>
               <div className="card-sub">
                 Realtime · {trafficWindow.label} window · {trafficWindow.bucketSecs}s buckets
