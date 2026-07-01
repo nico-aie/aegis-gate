@@ -1,8 +1,8 @@
 # FEAT — Cluster-mode dashboard scope clarity (node-local vs fleet-wide)
 
-> **Type:** FEAT (observability / UX track) · **Status:** ◐ In progress — raised 2026-06-30 · **Branch:** `feat/dashboard-scope-merge`
+> **Type:** FEAT (observability / UX track) · **Status:** ✅ P1a/P1b/P1c COMPLETE — raised 2026-06-30
 > **Track ID prefix:** `SCOPE-P1<a–c>`
-> **Shipped so far** (branch `feat/dashboard-scope-merge`): **P1a honesty pass DONE** — per-panel badges across all 4 pages + degraded banner (`f271df6`, `a0dcc53`); plus two P1c backend merges out of order because they were cheap/high-value — **Attack distribution** (`c57d276`, reused `detector_mix`) and **Composite RiskKey display** (`185014b`, new snapshot plumbing). **Remaining:** P1b node selector, P1c timeseries merge, and the split-out Incidents federation.
+> **Shipped:** **P1a** honesty pass (PR #102 — badges + degraded banner). **P1c** — Attack distribution + Composite RiskKey display (PR #102), traffic **timeseries** merge (PR #103, bounded 5m). **P1b** node-scope selector (branch `feat/dashboard-node-selector`: `993de29` backend + `a3e6fe5` frontend). **Only remaining:** the split-out Incidents federation ([`FEAT-incidents-fleet-federation.md`](./FEAT-incidents-fleet-federation.md)) — separate FEAT.
 > **Related memory:** [[project_health_signals_reported_not_gating]] (display-only `observed` upstream health is inherently per-node), [[feedback_two_score_model]] / [[feedback_dev_xff_single_ip_gates]] (per-IP risk is node-local enforcement state).
 
 **Goal (one line):** make the admin dashboard **honest and consistent about data scope in cluster mode** — today a single page silently mixes fleet-wide totals with one arbitrary node's panels, and several Security Ops surfaces are node-local with no indication. Fix is **tiered: label first, then add a node selector, then selectively promote panels to fleet-aware** — NOT a blanket "merge everything."
@@ -68,15 +68,16 @@ Honesty pass. **Implementation note — simpler than originally specced:** inste
 - ✅ **Incidents** + **Top Attackers → Composite RiskKey** explicitly badged so operators stop reading them as cluster truth.
 - Single-node deployments render no badges (scope is moot).
 
-### SCOPE-P1b — node-scope selector · **M**
-- Header control: `All nodes ▾ / <node-a> / <node-b> / …` (node list from the fleet snapshot keys already in Redis, `fleet:snap:*`).
-- Node-local panels respect the selection (proxy the request to / filter by the chosen node); "All nodes" shows fleet where mergeable and a per-node breakdown where not (upstream health, RiskKey).
-- Standard Grafana/Datadog pattern; this is the intended end state.
+### SCOPE-P1b — node-scope selector · **M** · ✅ DONE (this branch)
+- ✅ Topbar `All nodes / <node>` selector (`FleetNodeSelector`), hidden on single-node. Node list from `GET /api/fleet/nodes`.
+- ✅ **Pull-from-snapshot, not fan-out** (per the performance guardrail): `MergedFleet` retains the raw per-node snaps (`node_snaps`, `#[serde(skip)]`); `view_for_node` re-merges one snap, so every existing fleet renderer serves a single node. `?node=<id>` wired into all 7 fleet-capable handlers via `fleet_view_scoped`.
+- ✅ Frontend: `fleetScopeStore` + `useApiScoped` (appends `?node=`, re-fetches via `useApi`'s url-keyed effect); `'all'` = today's merged view (no default behaviour change).
+- ✅ Badge is scope-aware — a fleet-capable panel scoped to node X badges `X`, not `Fleet`. Node-local panels (Upstream, Incidents) stay `This node` (they don't honor `?node=` — would need fan-out).
 
 ### SCOPE-P1c — selective fleet-aware promotion · **M–L** (case-by-case, only where it adds real value)
 - ✅ **Attack distribution** → DONE (`c57d276`): `render_distribution_from_fleet` reshapes the already-merged `detector_mix` (no new snapshot plumbing). Done early as a cheap quick-win.
 - ✅ **Composite RiskKey** → DONE (`185014b`): `SnapRiskBucket` added to the snapshot, `merge_risk_buckets` dedups by `{ip, device_fp, session}` worst-wins (max score / max strikes / min idle / OR strike_blocked / worst level), `render_list_from_fleet`. Display-only — **reset stays node-scoped**.
-- ☐ **Request timeseries** → fleet merge (sum per-second buckets across node snapshots). Highest-value *remaining* promotion: the Overview chart still contradicts the KPI tiles above it (and the KPI sparklines ride the same node-local series). **The costly one** — needs bounded-delta publishing, not full-history.
+- ✅ **Request timeseries** → DONE (PR #103): `SnapSecond` per-second buckets (absolute-epoch-keyed → sum-by-second), `merge_timeseries` + pure `bucketize_seconds` + `timeseries_from_fleet`. **Bounded to `FLEET_TIMESERIES_MAX_WINDOW_SECS=300` sparse** (no full-history publish); windows >5m fall back node-local; the traffic-chart badge is window-aware.
 - → **Incidents federation** split out to [`FEAT-incidents-fleet-federation.md`](./FEAT-incidents-fleet-federation.md).
 - Leave upstream health per-node (rendered under the node selector).
 
@@ -97,8 +98,8 @@ Honesty pass. **Implementation note — simpler than originally specced:** inste
 ## Acceptance
 
 - [x] SCOPE-P1a: every panel badged Fleet/Node; fleet-degraded banner; Incidents + RiskKey explicitly marked node-local. ✅ `f271df6`, `a0dcc53`.
-- [ ] SCOPE-P1b: node-scope selector live; node-local panels honor it; "All nodes" shows per-node breakdown where unmergeable.
-- [ ] SCOPE-P1c: timeseries fleet-merged (or consciously deferred); incidents roll-up + RiskKey display merge scoped or split out. _Partial_ — RiskKey display ✅ `185014b`, Attack distribution ✅ `c57d276`, Incidents → own FEAT; **timeseries remaining**.
+- [x] SCOPE-P1b: node-scope selector live (`993de29` backend + `a3e6fe5` frontend); fleet panels scope via `?node=`; node-local panels stay `This node`; scope-aware badges. **DONE.**
+- [x] SCOPE-P1c: RiskKey display ✅ `185014b`, Attack distribution ✅ `c57d276`, timeseries ✅ PR #103 (bounded 5m), Incidents → own FEAT. **DONE.**
 - [ ] Guardrails honored: upstream health stays per-node; RiskKey reset stays node-scoped/fan-out; latency merges buckets not means.
 - [ ] `docs/control-plane/` dashboard doc notes per-panel scope; archive this FEAT on completion.
 

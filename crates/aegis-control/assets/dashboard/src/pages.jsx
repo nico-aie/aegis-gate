@@ -13436,8 +13436,8 @@ function PageTopAttackers() {
         { intervalMs: 5000, fallback: null },
       )
     : { data: null };
-  const risk = window.useApi
-    ? window.useApi(
+  const risk = window.useApiScoped
+    ? window.useApiScoped(
         '/api/risk?limit=50',
         { intervalMs: 5000, fallback: null },
       )
