@@ -308,6 +308,50 @@ function useApi(url, { intervalMs = 5000, fallback = null } = {}) {
   return { ...state, reload };
 }
 
+// ============= SCOPE-P1b — fleet node scope =============
+//
+// A tiny external store holding which node the dashboard is scoped to
+// ('all' = the merged fleet view, or a specific node id). Fleet-capable
+// hooks read it via `useApiScoped`, which appends `?node=<id>` so the
+// backend re-merges just that node. Changing the scope changes the URL,
+// which re-arms `useApi`'s fetch — no provider wiring needed.
+const fleetScopeStore = {
+  node: 'all',
+  listeners: new Set(),
+  get() { return this.node; },
+  set(n) {
+    const next = n || 'all';
+    if (next === this.node) return;
+    this.node = next;
+    this.listeners.forEach(l => l());
+  },
+  subscribe(l) { this.listeners.add(l); return () => this.listeners.delete(l); },
+};
+
+// `[node, setNode]` bound to the store; subscribing re-renders the caller
+// on scope change so its scoped URLs recompute.
+function useFleetNodeScope() {
+  const [, force] = useState(0);
+  useEffect(() => fleetScopeStore.subscribe(() => force(x => x + 1)), []);
+  return [fleetScopeStore.get(), (n) => fleetScopeStore.set(n)];
+}
+
+// Like `useApi`, but appends the current `?node=` scope for fleet-capable
+// endpoints. 'all' (or a URL that already pins a node) leaves the URL
+// untouched, preserving today's merged-view behaviour.
+function useApiScoped(url, opts) {
+  const [node] = useFleetNodeScope();
+  const scoped = (!node || node === 'all')
+    ? url
+    : `${url}${url.includes('?') ? '&' : '?'}node=${encodeURIComponent(node)}`;
+  return useApi(scoped, opts);
+}
+
+// Node ids available for the selector (from the current merge).
+function useFleetNodesApi() {
+  return useApi('/api/fleet/nodes', { intervalMs: 5000, fallback: { nodes: [] } });
+}
+
 // Live request stream from /dashboard/sse. Drop-in replacement for
 // useLiveFeed — produces the same row shape (id, ts, ip, method,
 // path, region, tier, risk, action, rules, cat, geo) so the Live
@@ -622,20 +666,20 @@ function useStatusApi() {
 
 // Hook: stats + timeseries for Overview
 function useStatsApi() {
-  return useApi('/api/stats', { intervalMs: 2000, fallback: null });
+  return useApiScoped('/api/stats', { intervalMs: 2000, fallback: null });
 }
 function useTimeseriesApi(window = 900, step = 5) {
-  return useApi(`/api/stats/timeseries?window=${window}&step=${step}`, { intervalMs: 5000, fallback: null });
+  return useApiScoped(`/api/stats/timeseries?window=${window}&step=${step}`, { intervalMs: 5000, fallback: null });
 }
 
 // Hook: attacks distribution + top
 function useAttacksDistributionApi(window = 900) {
-  return useApi(`/api/attacks/distribution?window=${window}`, { intervalMs: 5000, fallback: null });
+  return useApiScoped(`/api/attacks/distribution?window=${window}`, { intervalMs: 5000, fallback: null });
 }
 function useAttacksTopApi(window = 900, limit = 10) {
   // ≤3s poll so the fleet-merged gauge (publish ~2s) stays inside the
   // ≤5s budget (cluster plan §2c).
-  return useApi(`/api/attacks/top?window=${window}&limit=${limit}`, { intervalMs: 3000, fallback: null });
+  return useApiScoped(`/api/attacks/top?window=${window}&limit=${limit}`, { intervalMs: 3000, fallback: null });
 }
 // HACK-T4 — Tier-B bonus: config-change timeline. Filters
 // the audit ring to `class = Admin` events and returns them
@@ -983,10 +1027,10 @@ async function rulesSimulate(body) {
 // adapter so the page can stop using `Math.random`.
 function useAttacksByDetectorApi(window = 3600) {
   // ≤3s poll for the fleet-merged gauge (cluster plan §2c).
-  return useApi(`/api/attacks/by-detector?window=${window}`, { intervalMs: 3000, fallback: null });
+  return useApiScoped(`/api/attacks/by-detector?window=${window}`, { intervalMs: 3000, fallback: null });
 }
 function useBotMixApi(window = 3600) {
-  return useApi(`/api/bots/mix?window=${window}`, { intervalMs: 10000, fallback: null });
+  return useApiScoped(`/api/bots/mix?window=${window}`, { intervalMs: 10000, fallback: null });
 }
 function useThreatIntelApi(window = 3600, limit = 20) {
   return useApi(`/api/threat-intel/hits?window=${window}&limit=${limit}`, { intervalMs: 10000, fallback: null });
@@ -1085,6 +1129,10 @@ async function detectorsPut(body, { ifMatch } = {}) {
 // the real WAF-PROXY state"). Pages must render an honest
 // empty state when the live API returns nothing.
 function useClusterApi()  { return useApi('/api/cluster',         { intervalMs: 5000, fallback: null }); }
+// Fleet-scope status for per-panel badges + the degraded banner.
+// `{ configured, active, nodes }`: configured ⇒ cluster deployment;
+// active ⇒ a merged snapshot is currently available.
+function useFleetScopeApi() { return useApi('/api/fleet/status',   { intervalMs: 5000, fallback: null }); }
 // 2026-05-27 — cluster config-plane status: active version + per-node
 // applied version (drift). Backed by GET /api/config (ConfigStore).
 function useConfigApi()   { return useApi('/api/config',          { intervalMs: 5000, fallback: null }); }
@@ -1094,7 +1142,8 @@ function useLatencyApi()  { return useApi('/api/analytics/latency',{ intervalMs:
 function useRouteLatencyApi() { return useApi('/api/analytics/latency/routes',{ intervalMs: 5000, fallback: null }); }
 function useDetectorLatencyApi() { return useApi('/api/analytics/latency/detectors',{ intervalMs: 5000, fallback: null }); }
 function useAnalyticsRoutesApi() { return useApi('/api/analytics/routes',{ intervalMs: 10000, fallback: null }); }
-function useIncidentsApi(){ return useApi('/api/incidents',         { intervalMs: 5000, fallback: null }); }
+// IF-P1b — scoped so the node selector filters the fleet incident roll-up.
+function useIncidentsApi(){ return useApiScoped('/api/incidents',   { intervalMs: 5000, fallback: null }); }
 function useThreatIntelFeedsApi() { return useApi('/api/threat-intel/feeds', { intervalMs: 30000, fallback: null }); }
 function useGeoipStatusApi() { return useApi('/api/geoip/status',   { intervalMs: 60000, fallback: null }); }
 
@@ -1773,7 +1822,7 @@ Object.assign(window, {
   // HACK-T4 — Tier-B config-change timeline + rollback
   useConfigVersionsApi, configRollback, ROLLBACKABLE_ACTIONS,
   useAuditLogApi,
-  useClusterApi, useConfigApi, useSloApi, useCertsApi, useLatencyApi, useRouteLatencyApi, useDetectorLatencyApi, useAnalyticsRoutesApi,
+  useClusterApi, useFleetScopeApi, useFleetNodesApi, useFleetNodeScope, useApiScoped, useConfigApi, useSloApi, useCertsApi, useLatencyApi, useRouteLatencyApi, useDetectorLatencyApi, useAnalyticsRoutesApi,
   useIncidentsApi, useThreatIntelFeedsApi, useGeoipStatusApi,
   incidentAck, incidentSnooze, incidentResolve,
   useAlertsApi, useGitopsApi, useUpstreamsApi, useRuntimeApi,

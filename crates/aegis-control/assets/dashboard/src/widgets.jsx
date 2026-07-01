@@ -57,13 +57,75 @@ function Sparkline({ data, w = 80, h = 22, color = 'var(--brand-yellow)', fill =
   );
 }
 
+// ============= Scope badge =============
+// Labels a panel's data scope in a cluster: `fleet` ⇒ merged across all
+// nodes, otherwise this node only. Renders nothing on single-node
+// deployments (`cluster` false) where scope is moot.
+function ScopeBadge({ cluster, fleet, node }) {
+  if (!cluster) return null;
+  // When scoped to a single node, a fleet-capable panel is showing THAT
+  // node's data — badge the node id, not "Fleet".
+  if (fleet && node && node !== 'all') {
+    return (
+      <span className="scope-badge scope-node" title={`Scoped to node ${node}`}>{node}</span>
+    );
+  }
+  return fleet ? (
+    <span className="scope-badge scope-fleet" title="Merged across all fleet nodes">Fleet</span>
+  ) : (
+    <span className="scope-badge scope-node" title="This node only — not merged across the fleet">This node</span>
+  );
+}
+
+// Hook returning a `(capable) => <ScopeBadge/>` helper bound to the
+// current fleet status, so each page wires scope badges in one line:
+//   const scopeBadge = window.useScopeBadge();
+//   ... scope={scopeBadge(true)}   // fleet-capable panel
+// `capable` is whether the panel *can* be fleet-merged; the badge reads
+// Fleet only when fleet view is also active.
+function useScopeBadge() {
+  const scope = window.useFleetScopeApi ? window.useFleetScopeApi() : { data: null };
+  const [node] = window.useFleetNodeScope ? window.useFleetNodeScope() : ['all'];
+  const cluster = !!scope.data?.configured;
+  const active = !!scope.data?.active;
+  return (capable) => <ScopeBadge cluster={cluster} fleet={active && !!capable} node={node} />;
+}
+
+// ============= Fleet node selector (SCOPE-P1b) =============
+// Scopes fleet-capable panels to one node ('All nodes' = merged view).
+// Hidden on single-node deployments. Node-local panels (Upstream,
+// Incidents) are unaffected — they never carried the ?node= scope.
+function FleetNodeSelector() {
+  const nodesApi = window.useFleetNodesApi ? window.useFleetNodesApi() : { data: null };
+  const [node, setNode] = window.useFleetNodeScope ? window.useFleetNodeScope() : ['all', () => {}];
+  const nodes = nodesApi.data?.nodes || [];
+  // If the selected node TTL'd out of the roster, fall back to All nodes
+  // so the control never shows a stale/blank selection.
+  useEffect(() => {
+    if (node !== 'all' && nodes.length > 0 && !nodes.includes(node)) setNode('all');
+  }, [nodes, node]);
+  if (nodes.length < 2) return null; // single node → nothing to pick
+  return (
+    <label className="fleet-node-select" title="Scope fleet panels to a single node">
+      <span aria-hidden="true">🖧</span>
+      <select value={node} onChange={e => setNode(e.target.value)} aria-label="Fleet node scope">
+        <option value="all">All nodes ({nodes.length})</option>
+        {nodes.map(n => <option key={n} value={n}>{n}</option>)}
+      </select>
+    </label>
+  );
+}
+
 // ============= Stat tile =============
-function StatTile({ title, value, sub, icon, tone, sparkData, sparkColor }) {
+function StatTile({ title, value, sub, icon, tone, sparkData, sparkColor, scope }) {
   return (
     <div className={`stat ${tone || ''}`}>
       <div className="stat-head">
         <span>{title}</span>
-        <span className="stat-icon">{icon}</span>
+        <span className="stat-head-right">
+          {scope}
+          <span className="stat-icon">{icon}</span>
+        </span>
       </div>
       <div className="stat-value">{value}</div>
       <div className="stat-sub">{sub}</div>
@@ -556,7 +618,7 @@ function PageTitleRefresh({ onClick, label }) {
 }
 
 Object.assign(window, {
-  I, Sparkline, StatTile, TrafficChart, Donut, WorldMap, RiskHeatmap,
+  I, Sparkline, StatTile, ScopeBadge, useScopeBadge, FleetNodeSelector, TrafficChart, Donut, WorldMap, RiskHeatmap,
   RiskMeter, ActionPill, TierPill, Drawer, StackedBar, BarList, SectionHeader,
   ToastContainer, aegisToast, PageTitleRefresh,
   // FIX 2026-05-04 — exposed so PageOverview can resolve country

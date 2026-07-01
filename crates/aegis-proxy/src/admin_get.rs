@@ -67,6 +67,22 @@ fn fleet_view(
     services.fleet_cache.as_ref().and_then(|c| c.load())
 }
 
+/// SCOPE-P1b — the fleet view scoped by an optional `?node=<id>` query
+/// param. With `node` present, re-merges just that node's snapshot so any
+/// fleet renderer serves a single node; absent (or empty) ⇒ the full
+/// merge. An unknown/TTL'd node yields `None`, so the handler falls back
+/// to this node's local aggregators (same as fleet-off).
+fn fleet_view_scoped(
+    services: &aegis_control::dashboard_services::DashboardServices,
+    query: &str,
+) -> Option<aegis_control::metrics::fleet_snapshot::MergedFleet> {
+    let merged = fleet_view(services)?;
+    match parse_query_str(query, "node") {
+        Some(node) if !node.is_empty() => merged.view_for_node(node),
+        _ => Some(merged),
+    }
+}
+
 pub(crate) fn admin_router(
     req: hyper::Request<hyper::body::Incoming>,
     cfg: &WafConfig,
@@ -348,7 +364,7 @@ pub(crate) fn admin_router(
         "/api/stats" => {
             // Cluster Phase 3 (§2a): serve the merged fleet view when
             // the snapshot cache is populated, else this node's local.
-            let body = match fleet_view(services) {
+            let body = match fleet_view_scoped(services, query) {
                 Some(m) => services.stats.render_from_fleet(&m),
                 None => services.stats.render(),
             };
@@ -357,7 +373,21 @@ pub(crate) fn admin_router(
         "/api/stats/timeseries" => {
             let window = parse_query_u32(query, "window", 900);
             let step = parse_query_u32(query, "step", 5);
-            let resp = services.stats_agg.timeseries(window, step);
+            // Fleet-merged only within the bounded window the snapshot
+            // carries; wider windows fall back to this node's series.
+            let resp = match fleet_view_scoped(services, query) {
+                Some(m)
+                    if window
+                        <= aegis_control::metrics::fleet_snapshot::FLEET_TIMESERIES_MAX_WINDOW_SECS =>
+                {
+                    aegis_control::api::stats::timeseries_from_fleet(
+                        &m.timeseries_seconds,
+                        window,
+                        step,
+                    )
+                }
+                _ => services.stats_agg.timeseries(window, step),
+            };
             let body = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".into());
             json_body_response(200, body, "private, max-age=1")
         }
@@ -377,16 +407,16 @@ pub(crate) fn admin_router(
         }
         "/api/attacks/distribution" => {
             let window = parse_query_u32(query, "window", 900);
-            json_body_response(
-                200,
-                services.attacks.render(window),
-                "private, max-age=10",
-            )
+            let body = match fleet_view_scoped(services, query) {
+                Some(m) => services.attacks.render_distribution_from_fleet(&m, window),
+                None => services.attacks.render(window),
+            };
+            json_body_response(200, body, "private, max-age=10")
         }
         "/api/attacks/top" => {
             let window = parse_query_u32(query, "window", 900);
             let limit = parse_query_u32(query, "limit", 5);
-            let body = match fleet_view(services) {
+            let body = match fleet_view_scoped(services, query) {
                 Some(m) => services.attacks.render_top_from_fleet(&m, window, limit),
                 None => services.attacks.render_top(window, limit),
             };
@@ -544,7 +574,7 @@ pub(crate) fn admin_router(
         }
         "/api/attacks/by-detector" => {
             let window = parse_query_u32(query, "window", 900);
-            let body = match fleet_view(services) {
+            let body = match fleet_view_scoped(services, query) {
                 Some(m) => services.attacks.render_by_detector_from_fleet(&m, window),
                 None => services.attacks.render_by_detector(window),
             };
@@ -564,8 +594,14 @@ pub(crate) fn admin_router(
         // joins against today's firing list.
         "/api/incidents" => {
             let raw_json = services.tracking.render_alerts();
-            let active = services.tracking.active_alerts();
-            let overlay = services.incidents.enrich(active);
+            // IF-P1b — fleet roll-up of firing incidents (deduped by uid,
+            // with firing_on breadth) when fleet view is active; honors the
+            // ?node= scope. Overlay is still read locally (convergence =
+            // IF-P1c). Falls back to this node's active alerts otherwise.
+            let overlay = match fleet_view_scoped(services, query) {
+                Some(m) => services.incidents.enrich_fleet(m.firing_incidents),
+                None => services.incidents.enrich(services.tracking.active_alerts()),
+            };
             let body = serde_json::json!({
                 "raw_alerts": serde_json::from_str::<serde_json::Value>(&raw_json)
                     .unwrap_or(serde_json::Value::Null),
@@ -631,7 +667,7 @@ pub(crate) fn admin_router(
         }
         "/api/bots/mix" => {
             let window = parse_query_u32(query, "window", 3600);
-            let body = match fleet_view(services) {
+            let body = match fleet_view_scoped(services, query) {
                 Some(m) => services.attacks.render_bot_mix_from_fleet(&m, window),
                 None => services.attacks.render_bot_mix(window),
             };
@@ -975,7 +1011,10 @@ pub(crate) fn admin_router(
         // render the Tracking page risk widget.
         "/api/risk" => {
             let limit = parse_query_u32(query, "limit", 50);
-            let body = aegis_control::api::risk::render_list(&services.risk, limit);
+            let body = match fleet_view_scoped(services, query) {
+                Some(m) => aegis_control::api::risk::render_list_from_fleet(&m, limit),
+                None => aegis_control::api::risk::render_list(&services.risk, limit),
+            };
             json_body_response(200, body, "private, max-age=2")
         }
 
@@ -1099,6 +1138,30 @@ pub(crate) fn admin_router(
         // D-M5: tracking
         "/api/slo" => json_body_response(200, services.tracking.render_slo(), "private, max-age=2"),
         "/api/cluster" => json_body_response(200, services.tracking.render_cluster(), "private, max-age=2"),
+        // Fleet-scope status for per-panel badges + the degraded banner.
+        // `configured` = the publish task is up (cluster deployment);
+        // `active` = a merged snapshot is currently available.
+        "/api/fleet/status" => {
+            let configured = services.fleet_cache.is_some();
+            let merged = fleet_view(services);
+            json_body_response(
+                200,
+                aegis_control::metrics::fleet_snapshot::render_fleet_status(
+                    configured,
+                    merged.as_ref(),
+                ),
+                "private, max-age=2",
+            )
+        }
+        // Node ids in the current merge, for the dashboard node-selector.
+        "/api/fleet/nodes" => {
+            let merged = fleet_view(services);
+            json_body_response(
+                200,
+                aegis_control::metrics::fleet_snapshot::render_fleet_nodes(merged.as_ref()),
+                "private, max-age=2",
+            )
+        }
         "/api/runtime" => {
             // Layer-1 — in-node runtime sizing snapshot. Stable
             // across the process lifetime (tokio runtime is fixed

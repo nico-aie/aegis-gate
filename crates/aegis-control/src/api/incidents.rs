@@ -9,8 +9,8 @@
 //!
 //! ## State model
 //!
-//! Each incident is keyed by `alert_id`, derived from the
-//! `SloAlert` shape as `<sli>:<fired_at_unix>`. The tracker holds:
+//! Each incident is keyed by `incident_uid` (`<SLI>-<window>h`),
+//! node-independent so overlay converges across the fleet. The tracker holds:
 //!
 //! - `status`: `firing | acknowledged | snoozed | resolved`
 //! - `acked_at` + `acked_by` (operator user)
@@ -50,6 +50,12 @@ pub struct IncidentState {
     pub snoozed_until: Option<DateTime<Utc>>,
     pub resolved_at: Option<DateTime<Utc>>,
     pub note: Option<String>,
+    /// IF-P1c — last-mutation time, used as the last-writer-wins clock
+    /// when the cross-node refresh merges a peer's durable write. Old
+    /// persisted entries decode to the epoch (serde default), so any live
+    /// write always wins over a pre-P1c record.
+    #[serde(default)]
+    pub updated_at: DateTime<Utc>,
 }
 
 impl IncidentState {
@@ -62,25 +68,59 @@ impl IncidentState {
             snoozed_until: None,
             resolved_at: None,
             note: None,
+            updated_at: Utc::now(),
         }
     }
 }
 
 /// Stable ID for an alert.
 ///
-/// MED-OBS-01 (2026-05-12) — the format includes `window_hours`
-/// so multi-window alerts (1h / 6h / 72h on the same SLI) track
-/// as distinct incidents.  Critically, this format also matches
-/// the id the dashboard synthesizes when it POSTs to
-/// `/api/incidents/<id>/ack`: the alerts API renders
-/// `name = "{sli}-{window}h"` (see `tracking.rs::from_engine`),
-/// and the dashboard does `id = format!("{name}:{ts}")`.  Before
-/// this fix the overlay was written under the dashboard's key
-/// but `enrich()` looked it up by the bare `{sli}:{ts}` key —
-/// so ack POST returned 200 but the GET shape still reported
-/// `firing` with `acked_at: null`.
-pub fn alert_id(a: &SloAlert) -> String {
-    format!("{:?}-{}h:{}", a.sli, a.window_hours, a.fired_at.timestamp())
+/// IF-P1a (incidents fleet federation) — node-independent incident
+/// identity: `<SLI>-<window>h` (e.g. `DataPlaneAvailability-1h`).
+///
+/// The per-node fire timestamp is deliberately NOT part of the identity.
+/// The same SLI+window is ONE logical incident across the fleet (and
+/// across re-fires), so ack/snooze/resolve overlay converges by uid —
+/// the prerequisite for federating incidents cross-node. `fired_at` is
+/// still surfaced as a display field on `EnrichedAlert`, just not in the
+/// key. This now matches `tracking.rs::from_engine`, which already keys
+/// its ack-store on the bare `{:?}-{}h` (incidents.rs was the outlier
+/// that appended `:{ts}`).
+///
+/// `window_hours` stays in the key so multi-window alerts (1h / 6h / 72h
+/// on the same SLI) remain distinct incidents.
+pub fn incident_uid(a: &SloAlert) -> String {
+    format!("{:?}-{}h", a.sli, a.window_hours)
+}
+
+/// IF-P1d — how long a `resolve` suppresses an incident that is STILL
+/// firing before it auto-resurrects. Bounds how long an operator's
+/// dismissal can hide a live problem, and — being far larger than the
+/// snapshot/refresh tick — bounds any resolve↔fire flap to at most once
+/// per window (the FEAT's "never flap faster than the SLO eval tick").
+const RESOLVE_GRACE_SECS: i64 = 300;
+
+/// IF-P1d — whether a `Resolved` overlay is superseded by the incident's
+/// current fire, so it must resurface as `Firing` rather than stay hidden
+/// in the resolved bucket. True when the incident **re-fired** after the
+/// resolve (`fired_at` strictly after `resolved_at` — a genuinely new
+/// occurrence), OR when it has been continuously firing past the grace
+/// window. A same-fire resolve within the grace stays suppressed (the
+/// operator's dismissal holds; no time-based flapping). Evaluated in the
+/// enrich path where the firing set is known — fleet-wide in `enrich_fleet`.
+fn resolve_superseded(
+    status: IncidentStatus,
+    resolved_at: Option<DateTime<Utc>>,
+    fired_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> bool {
+    if status != IncidentStatus::Resolved {
+        return false;
+    }
+    let Some(resolved) = resolved_at else {
+        return false;
+    };
+    fired_at > resolved || (now - resolved).num_seconds() >= RESOLVE_GRACE_SECS
 }
 
 /// Durable write of one incident overlay (field = `alert_id`, value =
@@ -157,38 +197,72 @@ impl IncidentTracker {
         });
     }
 
-    /// Boot hydration (P1): load the durable overlay from
-    /// `control:waf:incidents` into the in-memory read cache. Runs once at
-    /// startup before serving. No-op without a backend. A decode failure on
-    /// one field is logged and skipped — one corrupt entry must not block
-    /// the rest of the overlay from loading.
-    pub async fn hydrate(&self) {
+    /// Load the durable overlay from `control:waf:incidents` and merge it
+    /// into the in-memory cache using last-writer-wins on `updated_at`.
+    /// Returns the number of entries taken from the store.
+    ///
+    /// Merge rule (IF-P1c): a peer's entry is taken only if we don't have
+    /// that uid, or the peer's `updated_at` is newer. This is clobber-safe
+    /// — a just-written local entry whose durable write is still in flight
+    /// simply isn't in the scanned set yet, and a stale durable entry never
+    /// overwrites a fresher local one. Entries missing from the store are
+    /// left untouched (removal flows through `unlink_durable`/reset, not the
+    /// refresh path).
+    async fn load_durable(&self) -> usize {
         let Some(backend) = self.backend.as_ref() else {
-            return;
+            return 0;
         };
         let fields = match backend.hscan(CONTROL_INCIDENTS_KEY).await {
             Ok(f) => f,
             Err(e) => {
-                tracing::warn!(error = %e, "incident hydrate: hscan failed");
-                return;
+                tracing::warn!(error = %e, "incident overlay load: hscan failed");
+                return 0;
             }
         };
         let mut loaded = 0usize;
         let mut s = self.state.lock().expect("incident state poisoned");
         for (id, bytes) in fields {
             match serde_json::from_slice::<IncidentState>(&bytes) {
-                Ok(state) => {
-                    s.insert(id, state);
-                    loaded += 1;
+                Ok(remote) => {
+                    let take = match s.get(&id) {
+                        None => true,
+                        Some(local) => remote.updated_at >= local.updated_at,
+                    };
+                    if take {
+                        s.insert(id, remote);
+                        loaded += 1;
+                    }
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, field = %id, "incident hydrate: decode skipped")
+                    tracing::warn!(error = %e, field = %id, "incident overlay load: decode skipped")
                 }
             }
         }
+        loaded
+    }
+
+    /// Boot hydration (P1): load the durable overlay once at startup before
+    /// serving. No-op without a backend.
+    pub async fn hydrate(&self) {
+        let loaded = self.load_durable().await;
         if loaded > 0 {
             tracing::info!(loaded, "incident overlay hydrated from durable store");
         }
+    }
+
+    /// IF-P1c — periodic cross-node convergence: re-read the shared overlay
+    /// so an ack/snooze/resolve on any node becomes visible here within one
+    /// refresh tick. Same LWW merge as `hydrate`, but quiet (runs on a
+    /// timer). No-op without a backend.
+    pub async fn refresh_from_durable(&self) {
+        self.load_durable().await;
+    }
+
+    /// Whether a shared durable backend is attached — i.e. cross-node
+    /// convergence is possible and the periodic refresh task is worth
+    /// spawning. `false` on the single-node / no-Redis path.
+    pub fn has_durable_backend(&self) -> bool {
+        self.backend.is_some()
     }
 
     /// Reset hook (sync half) — drop the in-memory overlay. Paired with
@@ -227,6 +301,7 @@ impl IncidentTracker {
         if let Some(n) = note {
             entry.note = Some(n);
         }
+        entry.updated_at = Utc::now();
         let snapshot = entry.clone();
         drop(s);
         self.spawn_persist(snapshot.clone());
@@ -245,6 +320,7 @@ impl IncidentTracker {
         if let Some(n) = note {
             entry.note = Some(n);
         }
+        entry.updated_at = Utc::now();
         let snapshot = entry.clone();
         drop(s);
         self.spawn_persist(snapshot.clone());
@@ -267,6 +343,7 @@ impl IncidentTracker {
         if let Some(n) = note {
             entry.note = Some(n);
         }
+        entry.updated_at = Utc::now();
         let snapshot = entry.clone();
         drop(s);
         self.spawn_persist(snapshot.clone());
@@ -298,12 +375,19 @@ impl IncidentTracker {
         active
             .into_iter()
             .map(|a| {
-                let id = alert_id(&a);
+                let id = incident_uid(&a);
                 let overlay = self.get(&id);
-                let status = overlay
+                let mut status = overlay
                     .as_ref()
                     .map(|s| s.status)
                     .unwrap_or(IncidentStatus::Firing);
+                let mut incident_resolved_at = overlay.as_ref().and_then(|s| s.resolved_at);
+                // IF-P1d — a resolve that's been superseded (re-fired, or
+                // still firing past the grace) resurfaces as Firing.
+                if resolve_superseded(status, incident_resolved_at, a.fired_at, Utc::now()) {
+                    status = IncidentStatus::Firing;
+                    incident_resolved_at = None;
+                }
                 EnrichedAlert {
                     id,
                     sli: format!("{:?}", a.sli),
@@ -318,8 +402,58 @@ impl IncidentTracker {
                     acked_at: overlay.as_ref().and_then(|s| s.acked_at),
                     acked_by: overlay.as_ref().and_then(|s| s.acked_by.clone()),
                     snoozed_until: overlay.as_ref().and_then(|s| s.snoozed_until),
-                    incident_resolved_at: overlay.as_ref().and_then(|s| s.resolved_at),
+                    incident_resolved_at,
                     note: overlay.and_then(|s| s.note),
+                    firing_on: Vec::new(),
+                }
+            })
+            .collect()
+    }
+
+    /// IF-P1b — compose the fleet-deduped firing incidents with our local
+    /// overlay. Same shape as [`enrich`] but the firing set is the merged
+    /// cross-node roll-up (one row per `incident_uid`, with `firing_on`
+    /// breadth). The overlay is still read locally here — cross-node
+    /// overlay convergence is IF-P1c.
+    pub fn enrich_fleet(
+        &self,
+        incidents: Vec<crate::metrics::fleet_snapshot::MergedIncident>,
+    ) -> Vec<EnrichedAlert> {
+        incidents
+            .into_iter()
+            .map(|inc| {
+                let overlay = self.get(&inc.uid);
+                let mut status = overlay
+                    .as_ref()
+                    .map(|s| s.status)
+                    .unwrap_or(IncidentStatus::Firing);
+                let mut incident_resolved_at = overlay.as_ref().and_then(|s| s.resolved_at);
+                let fired_at =
+                    DateTime::from_timestamp_millis(inc.fired_at_ms).unwrap_or_default();
+                // IF-P1d — resurrect a superseded resolve against the FLEET
+                // firing set (fired_at is the fleet-min fire; re-fired-after
+                // -resolve or still-firing-past-grace ⇒ back to Firing).
+                if resolve_superseded(status, incident_resolved_at, fired_at, Utc::now()) {
+                    status = IncidentStatus::Firing;
+                    incident_resolved_at = None;
+                }
+                EnrichedAlert {
+                    id: inc.uid,
+                    sli: inc.sli,
+                    severity: inc.severity,
+                    fired_at,
+                    resolved_at: None,
+                    burn_rate: inc.burn_rate,
+                    budget_consumed_pct: inc.budget_consumed_pct,
+                    window_hours: inc.window_hours,
+                    runbook_url: inc.runbook_url,
+                    status,
+                    acked_at: overlay.as_ref().and_then(|s| s.acked_at),
+                    acked_by: overlay.as_ref().and_then(|s| s.acked_by.clone()),
+                    snoozed_until: overlay.as_ref().and_then(|s| s.snoozed_until),
+                    incident_resolved_at,
+                    note: overlay.and_then(|s| s.note),
+                    firing_on: inc.firing_on,
                 }
             })
             .collect()
@@ -344,6 +478,10 @@ pub struct EnrichedAlert {
     pub snoozed_until: Option<DateTime<Utc>>,
     pub incident_resolved_at: Option<DateTime<Utc>>,
     pub note: Option<String>,
+    /// IF-P1b — node ids currently firing this incident across the fleet.
+    /// Empty on the node-local path; populated by `enrich_fleet`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub firing_on: Vec<String>,
 }
 
 #[cfg(test)]
@@ -367,10 +505,141 @@ mod tests {
     }
 
     #[test]
+    fn resolve_superseded_covers_refire_and_grace() {
+        let now = DateTime::from_timestamp(1_000_000, 0).unwrap();
+        let resolved = DateTime::from_timestamp(1_000_000 - 60, 0).unwrap(); // 60s ago
+        let older = DateTime::from_timestamp(1_000_000 - 10_000, 0).unwrap(); // long ago
+
+        // Not resolved → never superseded.
+        let fired = DateTime::from_timestamp(1_000_000 - 30, 0).unwrap();
+        assert!(!resolve_superseded(
+            IncidentStatus::Acknowledged,
+            Some(resolved),
+            fired,
+            now
+        ));
+
+        // Resolved, continuous fire (fired BEFORE resolve), within grace →
+        // stays suppressed.
+        let fired_before = DateTime::from_timestamp(1_000_000 - 120, 0).unwrap();
+        assert!(!resolve_superseded(
+            IncidentStatus::Resolved,
+            Some(resolved),
+            fired_before,
+            now
+        ));
+
+        // Resolved, but RE-FIRED after the resolve → resurrect now.
+        let fired_after = DateTime::from_timestamp(1_000_000 - 30, 0).unwrap();
+        assert!(resolve_superseded(
+            IncidentStatus::Resolved,
+            Some(resolved),
+            fired_after,
+            now
+        ));
+
+        // Resolved long ago, still the same continuous fire, past the grace
+        // window → resurrect (don't hide a live incident forever).
+        assert!(resolve_superseded(
+            IncidentStatus::Resolved,
+            Some(older),
+            older, // fired at the same old time (continuous)
+            now
+        ));
+    }
+
+    #[test]
+    fn enrich_fleet_resurrects_a_refired_resolve_but_holds_a_fresh_one() {
+        use crate::metrics::fleet_snapshot::MergedIncident;
+        let uid = "DataPlaneAvailability-1h";
+        let t = IncidentTracker::new();
+        t.resolve(uid, Some("alice".into()), None); // resolved_at ≈ now
+
+        let mk = |fired_at_ms: i64| {
+            vec![MergedIncident {
+                uid: uid.into(),
+                sli: "DataPlaneAvailability".into(),
+                severity: "page".into(),
+                fired_at_ms,
+                burn_rate: 9.0,
+                budget_consumed_pct: 70.0,
+                window_hours: 1,
+                runbook_url: "".into(),
+                firing_on: vec!["node-a".into()],
+            }]
+        };
+
+        // Re-fired AFTER the resolve → resurrects to Firing.
+        let refired = (Utc::now() + chrono::Duration::seconds(5)).timestamp_millis();
+        let e = t.enrich_fleet(mk(refired));
+        assert_eq!(e[0].status, IncidentStatus::Firing, "re-fire resurrects");
+        assert!(e[0].incident_resolved_at.is_none());
+
+        // Same continuous fire (before the resolve), within grace → holds.
+        let continuous = (Utc::now() - chrono::Duration::seconds(60)).timestamp_millis();
+        let e2 = t.enrich_fleet(mk(continuous));
+        assert_eq!(e2[0].status, IncidentStatus::Resolved, "fresh resolve holds");
+    }
+
+    #[test]
+    fn enrich_fleet_composes_merged_incidents_with_local_overlay() {
+        use crate::metrics::fleet_snapshot::MergedIncident;
+        let t = IncidentTracker::new();
+        // Ack the incident by its uid.
+        t.ack("DataPlaneAvailability-1h", Some("alice".into()), None);
+
+        let merged = vec![MergedIncident {
+            uid: "DataPlaneAvailability-1h".into(),
+            sli: "DataPlaneAvailability".into(),
+            severity: "page".into(),
+            fired_at_ms: 1_700_000_000_000,
+            burn_rate: 9.0,
+            budget_consumed_pct: 70.0,
+            window_hours: 1,
+            runbook_url: "".into(),
+            firing_on: vec!["node-a".into(), "node-b".into()],
+        }];
+        let enriched = t.enrich_fleet(merged);
+        assert_eq!(enriched.len(), 1);
+        assert_eq!(enriched[0].id, "DataPlaneAvailability-1h");
+        assert_eq!(enriched[0].status, IncidentStatus::Acknowledged);
+        assert_eq!(enriched[0].acked_by.as_deref(), Some("alice"));
+        assert_eq!(
+            enriched[0].firing_on,
+            vec!["node-a".to_string(), "node-b".to_string()]
+        );
+        assert_eq!(enriched[0].budget_consumed_pct, 70.0);
+    }
+
+    #[test]
+    fn incident_uid_is_node_independent_across_fire_times() {
+        // The same SLI+window firing at different wall-clock times (i.e.
+        // on different fleet nodes) must share ONE identity, so an ack on
+        // any node's fire converges with every other node's view.
+        let a1 = alert(SliKind::DataPlaneAvailability, 1700000000);
+        let a2 = alert(SliKind::DataPlaneAvailability, 1700009999); // later fire
+        assert_eq!(incident_uid(&a1), incident_uid(&a2));
+        assert!(
+            !incident_uid(&a1).contains(':'),
+            "uid must not carry a per-node fire timestamp"
+        );
+
+        // Ack keyed by the uid is visible when enriching a *different*
+        // node's fire of the same incident.
+        let t = IncidentTracker::new();
+        t.ack(&incident_uid(&a1), Some("alice".into()), None);
+        let enriched = t.enrich(vec![a2]);
+        assert_eq!(enriched.len(), 1);
+        assert_eq!(enriched[0].id, incident_uid(&a1));
+        assert_eq!(enriched[0].status, IncidentStatus::Acknowledged);
+        assert_eq!(enriched[0].acked_by.as_deref(), Some("alice"));
+    }
+
+    #[test]
     fn ack_marks_acknowledged_with_timestamp() {
         let t = IncidentTracker::new();
         let a = alert(SliKind::DataPlaneAvailability, 1700000000);
-        let id = alert_id(&a);
+        let id = incident_uid(&a);
         let s = t.ack(&id, Some("alice".into()), Some("looking at it".into()));
         assert_eq!(s.status, IncidentStatus::Acknowledged);
         assert!(s.acked_at.is_some());
@@ -382,7 +651,7 @@ mod tests {
     fn snooze_with_future_deadline_hides_in_active_view() {
         let t = IncidentTracker::new();
         let a = alert(SliKind::DataPlaneAvailability, 1700000000);
-        let id = alert_id(&a);
+        let id = incident_uid(&a);
         let until = Utc::now() + chrono::Duration::minutes(15);
         t.snooze(&id, until, None);
         let got = t.get(&id).unwrap();
@@ -394,7 +663,7 @@ mod tests {
     fn snooze_with_past_deadline_auto_clears_to_firing() {
         let t = IncidentTracker::new();
         let a = alert(SliKind::DataPlaneAvailability, 1700000000);
-        let id = alert_id(&a);
+        let id = incident_uid(&a);
         let past = Utc::now() - chrono::Duration::minutes(1);
         t.snooze(&id, past, None);
         let got = t.get(&id).unwrap();
@@ -407,7 +676,7 @@ mod tests {
     fn resolve_marks_resolved_with_timestamp() {
         let t = IncidentTracker::new();
         let a = alert(SliKind::DataPlaneAvailability, 1700000000);
-        let id = alert_id(&a);
+        let id = incident_uid(&a);
         t.resolve(&id, Some("bob".into()), None);
         let got = t.get(&id).unwrap();
         assert_eq!(got.status, IncidentStatus::Resolved);
@@ -481,7 +750,7 @@ mod tests {
         let be = backend();
         let t = IncidentTracker::with_backend(Some(be.clone() as Arc<dyn StateBackend>));
         let a = alert(SliKind::DataPlaneAvailability, 1700000000);
-        let id = alert_id(&a);
+        let id = incident_uid(&a);
         t.ack(&id, Some("alice".into()), Some("triaging".into()));
         // The write is fire-and-forget; await it.
         let beq = be.clone();
@@ -496,12 +765,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refresh_converges_ack_from_a_peer_node() {
+        // IF-P1c — node-1 acks; node-2 (a distinct tracker on the SAME
+        // shared backend) must see the ack after a refresh, without a
+        // restart. This is cross-node overlay convergence.
+        let be = backend();
+        let node1 = IncidentTracker::with_backend(Some(be.clone() as Arc<dyn StateBackend>));
+        let node2 = IncidentTracker::with_backend(Some(be.clone() as Arc<dyn StateBackend>));
+        let id = "DataPlaneAvailability-1h";
+
+        node1.ack(id, Some("alice".into()), None);
+        // Await the fire-and-forget durable write.
+        let beq = be.clone();
+        wait_until(|| {
+            beq.hashes.lock().unwrap()
+                .get(CONTROL_INCIDENTS_KEY)
+                .map(|h| h.contains_key(id))
+                .unwrap_or(false)
+        })
+        .await;
+
+        // node-2 hasn't seen it yet.
+        assert!(node2.get(id).is_none(), "peer not yet converged");
+        node2.refresh_from_durable().await;
+        let got = node2.get(id).expect("converged after refresh");
+        assert_eq!(got.status, IncidentStatus::Acknowledged);
+        assert_eq!(got.acked_by.as_deref(), Some("alice"));
+    }
+
+    #[tokio::test]
+    async fn refresh_lww_keeps_fresher_local_write() {
+        // A stale durable entry must NOT clobber a newer local write.
+        let be = backend();
+        let id = "DataPlaneAvailability-1h";
+        // Seed the store with an OLD acked entry (epoch-ish updated_at).
+        let stale = IncidentState {
+            alert_id: id.into(),
+            status: IncidentStatus::Acknowledged,
+            acked_at: Some(Utc::now()),
+            acked_by: Some("old-owner".into()),
+            snoozed_until: None,
+            resolved_at: None,
+            note: None,
+            updated_at: DateTime::from_timestamp(1, 0).unwrap(),
+        };
+        persist_to(&(be.clone() as Arc<dyn StateBackend>), &stale).await;
+
+        let node = IncidentTracker::with_backend(Some(be.clone() as Arc<dyn StateBackend>));
+        // Fresh local resolve (updated_at = now, newer than the stale entry).
+        node.resolve(id, Some("new-owner".into()), None);
+        node.refresh_from_durable().await;
+
+        let got = node.get(id).expect("present");
+        assert_eq!(got.status, IncidentStatus::Resolved, "fresher local write wins");
+        assert_eq!(got.acked_by.as_deref(), Some("new-owner"));
+    }
+
+    #[tokio::test]
     async fn ack_overlay_survives_a_simulated_restart() {
         // Write through tracker1, then hydrate a fresh tracker2 from the
         // SAME backend — the ack must reappear (the durability contract).
         let be = backend();
         let a = alert(SliKind::DataPlaneAvailability, 1700000001);
-        let id = alert_id(&a);
+        let id = incident_uid(&a);
         let acked = IncidentState {
             alert_id: id.clone(),
             status: IncidentStatus::Acknowledged,
@@ -510,6 +836,7 @@ mod tests {
             snoozed_until: None,
             resolved_at: None,
             note: Some("owned".into()),
+            updated_at: Utc::now(),
         };
         persist_to(&(be.clone() as Arc<dyn StateBackend>), &acked).await;
 
@@ -527,7 +854,7 @@ mod tests {
         let be = backend();
         let t = IncidentTracker::with_backend(Some(be.clone() as Arc<dyn StateBackend>));
         let a = alert(SliKind::DataPlaneAvailability, 1700000002);
-        let id = alert_id(&a);
+        let id = incident_uid(&a);
         t.ack(&id, Some("dave".into()), None);
         let beq = be.clone();
         let idq = id.clone();
@@ -554,6 +881,7 @@ mod tests {
             status: IncidentStatus::Resolved,
             acked_at: None, acked_by: None, snoozed_until: None,
             resolved_at: Some(Utc::now()), note: None,
+            updated_at: Utc::now(),
         };
         persist_to(&(be.clone() as Arc<dyn StateBackend>), &good).await;
         // Inject a corrupt field directly.
@@ -573,7 +901,7 @@ mod tests {
         // hooks are harmless no-ops (no panic, nothing to load/clear).
         let t = IncidentTracker::new();
         let a = alert(SliKind::DataPlaneAvailability, 1700000003);
-        let id = alert_id(&a);
+        let id = incident_uid(&a);
         let s = t.ack(&id, Some("erin".into()), None);
         assert_eq!(s.status, IncidentStatus::Acknowledged);
         t.hydrate().await; // no-op
@@ -588,7 +916,7 @@ mod tests {
         let t = IncidentTracker::new();
         let a1 = alert(SliKind::DataPlaneAvailability, 1700000000);
         let a2 = alert(SliKind::WafOverheadP99, 1700000050);
-        let id1 = alert_id(&a1);
+        let id1 = incident_uid(&a1);
         t.ack(&id1, Some("alice".into()), None);
         let enriched = t.enrich(vec![a1, a2]);
         assert_eq!(enriched.len(), 2);
@@ -599,18 +927,15 @@ mod tests {
     }
 
     #[test]
-    fn alert_id_is_stable_for_same_alert() {
+    fn incident_uid_is_stable_for_same_alert() {
         let a1 = alert(SliKind::DataPlaneAvailability, 1700000000);
         let a2 = alert(SliKind::DataPlaneAvailability, 1700000000);
-        assert_eq!(alert_id(&a1), alert_id(&a2));
+        assert_eq!(incident_uid(&a1), incident_uid(&a2));
     }
 
-    #[test]
-    fn alert_id_differs_for_different_fired_at() {
-        let a1 = alert(SliKind::DataPlaneAvailability, 1700000000);
-        let a2 = alert(SliKind::DataPlaneAvailability, 1700000001);
-        assert_ne!(alert_id(&a1), alert_id(&a2));
-    }
+    // IF-P1a — the inverse of the old `differs_for_different_fired_at`:
+    // node-independence is asserted by
+    // `incident_uid_is_node_independent_across_fire_times` above.
 
     // MED-OBS-01 (2026-05-12) regression coverage.
 
@@ -630,26 +955,25 @@ mod tests {
     }
 
     #[test]
-    fn alert_id_format_includes_window_hours_and_timestamp() {
-        // Must match the dashboard-synthesized id:
-        //   alerts API name = "<SliKind>-<N>h"
-        //   dashboard id    = "<name>:<ts>"
-        // → "<SliKind>-<N>h:<ts>"
+    fn incident_uid_format_is_sli_and_window_without_timestamp() {
+        // IF-P1a — the uid is node-independent: "<SliKind>-<N>h", no
+        // trailing ":<ts>". Matches `tracking.rs::from_engine`'s name/id
+        // and the dashboard's `id = a.id || name` synthesis.
         let a = alert_with_window(SliKind::DataPlaneAvailability, 1778570234, 1);
         assert_eq!(
-            alert_id(&a),
-            "DataPlaneAvailability-1h:1778570234",
-            "format must match the dashboard ack URL synthesis"
+            incident_uid(&a),
+            "DataPlaneAvailability-1h",
+            "uid must be node-independent (no fire timestamp)"
         );
     }
 
     #[test]
-    fn alert_id_differs_for_different_window_hours_on_same_sli() {
+    fn incident_uid_differs_for_different_window_hours_on_same_sli() {
         let a1 = alert_with_window(SliKind::DataPlaneAvailability, 1700000000, 1);
         let a72 = alert_with_window(SliKind::DataPlaneAvailability, 1700000000, 72);
         assert_ne!(
-            alert_id(&a1),
-            alert_id(&a72),
+            incident_uid(&a1),
+            incident_uid(&a72),
             "multi-window alerts must track as distinct incidents"
         );
     }
@@ -658,11 +982,11 @@ mod tests {
     fn ack_then_enrich_returns_acknowledged_status() {
         // The MED-OBS-01 regression: the ack handler writes the
         // overlay under whatever id the path param carries, then
-        // enrich() looks it up by `alert_id(&a)`.  Before the fix
+        // enrich() looks it up by `incident_uid(&a)`.  Before the fix
         // these two strings disagreed; after the fix they match.
         let tracker = IncidentTracker::new();
         let a = alert_with_window(SliKind::DataPlaneAvailability, 1778570234, 1);
-        let stored_id = alert_id(&a);
+        let stored_id = incident_uid(&a);
         tracker.ack(&stored_id, Some("admin".into()), None);
 
         let enriched = tracker.enrich(vec![a]);

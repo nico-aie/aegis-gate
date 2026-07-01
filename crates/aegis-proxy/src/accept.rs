@@ -131,6 +131,11 @@ fn spawn_fleet_snapshot_task(
     state_backend: Arc<dyn aegis_core::state::StateBackend>,
     stats_agg: Arc<aegis_control::api::stats::StatsAggregator>,
     attacks_agg: Arc<aegis_control::api::attacks::AttacksAggregator>,
+    // Composite RiskKey buckets for the fleet-merged Top Attackers table
+    // (Arc-shared with the data-plane producer; cheap to clone).
+    risk: aegis_security::risk::RiskTracker,
+    // IF-P1b — firing SLO alerts for the fleet Incidents roll-up.
+    tracking: Arc<aegis_control::api::tracking::TrackingHandler>,
     hist: Arc<aegis_control::metrics::request_duration::RequestStageHistogram>,
     // F6 (2026-06-11) — the local audit ring, so the same publish tick
     // also ships this node's bounded audit tail for the fleet backfill.
@@ -170,12 +175,15 @@ fn spawn_fleet_snapshot_task(
             tick.tick().await;
             // 1. Build + publish our own snapshot (best-effort, off the
             //    hot path — reads already-collected local aggregates).
+            let firing = tracking.active_alerts();
             let snap = fs::build_snapshot(
                 &node,
                 FLEET_SNAPSHOT_WINDOW_SECS,
                 top_k as u32,
                 &stats_agg,
                 &attacks_agg,
+                &risk,
+                &firing,
                 &hist,
                 aegis_control::metrics::request_duration::stage::TOTAL,
             );
@@ -644,6 +652,8 @@ pub(crate) async fn admin_accept_loop(
         state_backend.clone(),
         services.stats_agg.clone(),
         services.attacks_agg.clone(),
+        services.risk.clone(),
+        services.tracking.clone(),
         request_stage_hist.clone(),
         services.audit_ring.clone(),
         lease_store.self_id().as_str(),
@@ -749,6 +759,22 @@ pub(crate) async fn admin_accept_loop(
     // brief await at boot is acceptable — unlike the large risk hash (A2),
     // which hydrates in the background.
     services.incidents.hydrate().await;
+
+    // IF-P1c — periodic cross-node overlay convergence. Re-read the shared
+    // `control:waf:incidents` overlay on a timer so an ack/snooze/resolve on
+    // ANY node lands here within a tick (LWW on `updated_at`, clobber-safe).
+    // Only when a shared backend is attached; single-node / no-Redis skips.
+    if services.incidents.has_durable_backend() {
+        let incidents = services.incidents.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                incidents.refresh_from_durable().await;
+            }
+        });
+    }
 
     // 2026-06-24 (redis-interim-durability P3, A3) — spawn the per-node stats
     // counter durability: a background boot-hydrate (so the Overview top-line

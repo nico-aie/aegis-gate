@@ -39,6 +39,12 @@ use crate::metrics::request_duration::quantile_ms;
 /// State-key prefix for per-node snapshots. The read path scans this.
 pub const FLEET_SNAP_PREFIX: &str = "fleet:snap:";
 
+/// Largest timeseries `window` served from the merged fleet view. The
+/// snapshot carries only a bounded recent slice of per-second buckets
+/// (see `FleetSnapshot::recent_seconds`); wider windows fall back to the
+/// node-local series. Matches the snapshot's aggregate window.
+pub const FLEET_TIMESERIES_MAX_WINDOW_SECS: u32 = 300;
+
 /// Build the snapshot key for a node id.
 pub fn snapshot_key(node_id: &str) -> String {
     format!("{FLEET_SNAP_PREFIX}{node_id}")
@@ -67,6 +73,69 @@ pub struct SnapAttacker {
     pub asn_class: Option<String>,
 }
 
+/// One node's view of a composite RiskKey bucket `{ip, device_fp,
+/// session}`, published for the fleet-merged Top Attackers "Composite
+/// RiskKey" table. `level` is an owned `String` (the wire `RiskSnapshot`
+/// uses a `&'static str`, which can't round-trip through Redis), mapped
+/// back to the static form at render time.
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct SnapRiskBucket {
+    pub ip: String,
+    pub device_fp: Option<String>,
+    pub session: Option<String>,
+    pub score: u32,
+    pub strikes: u32,
+    pub idle_seconds: u64,
+    pub level: String,
+    pub strike_blocked: bool,
+}
+
+/// One per-second traffic bucket, keyed by absolute unix epoch second
+/// so buckets sum across nodes by wall clock. Published sparse (only
+/// seconds with traffic) over a bounded recent window.
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct SnapSecond {
+    pub sec: i64,
+    pub total: u32,
+    pub blocked: u32,
+}
+
+/// One node's view of a firing SLO incident, published for the fleet
+/// Incidents roll-up (IF-P1b). Keyed by the node-independent
+/// `incident_uid` (`<SLI>-<window>h`) so the same incident firing on
+/// multiple nodes dedups to one row.
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct SnapIncident {
+    pub uid: String,
+    pub sli: String,
+    pub severity: String,
+    pub fired_at_ms: i64,
+    pub burn_rate: f64,
+    pub budget_consumed_pct: f64,
+    pub window_hours: u64,
+    pub runbook_url: String,
+    pub node_id: String,
+}
+
+/// One firing incident deduped across the fleet — one row per
+/// `incident_uid`, carrying the breadth of nodes it fired on.
+#[derive(Clone, Debug, Serialize, Default)]
+pub struct MergedIncident {
+    pub uid: String,
+    pub sli: String,
+    pub severity: String,
+    /// Earliest fire across nodes (min).
+    pub fired_at_ms: i64,
+    /// Worst burn rate across nodes (max).
+    pub burn_rate: f64,
+    /// Worst budget burn across nodes (max).
+    pub budget_consumed_pct: f64,
+    pub window_hours: u64,
+    pub runbook_url: String,
+    /// Node ids currently firing this incident, sorted.
+    pub firing_on: Vec<String>,
+}
+
 /// One node's live-traffic rollup, published to `fleet:snap:<node_id>`.
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct FleetSnapshot {
@@ -89,6 +158,15 @@ pub struct FleetSnapshot {
     pub bot_mix: BTreeMap<String, u64>,
     // --- top attackers (this node's bounded top-K) ---
     pub top_attackers: Vec<SnapAttacker>,
+    // --- composite RiskKey buckets (this node's bounded top-K) ---
+    #[serde(default)]
+    pub risk_buckets: Vec<SnapRiskBucket>,
+    // --- bounded recent per-second traffic buckets (sparse) ---
+    #[serde(default)]
+    pub recent_seconds: Vec<SnapSecond>,
+    // --- firing SLO incidents (this node) for the fleet roll-up ---
+    #[serde(default)]
+    pub firing_incidents: Vec<SnapIncident>,
 }
 
 /// Merged percentiles recomputed from the summed histogram.
@@ -116,6 +194,24 @@ pub struct MergedFleet {
     pub detector_mix: BTreeMap<String, u64>,
     pub bot_mix: BTreeMap<String, u64>,
     pub top_attackers: Vec<SnapAttacker>,
+    /// Composite RiskKey buckets deduped across nodes (display-only —
+    /// per-node enforcement state surfaced for the dashboard, not a
+    /// cluster-authoritative risk verdict).
+    pub risk_buckets: Vec<SnapRiskBucket>,
+    /// Per-second traffic buckets summed across nodes by epoch second,
+    /// sorted ascending. Bounded recent window — the timeseries fleet
+    /// path serves windows up to that bound, else falls back node-local.
+    pub timeseries_seconds: Vec<SnapSecond>,
+    /// Firing SLO incidents deduped across the fleet by `incident_uid`
+    /// (IF-P1b), each with the nodes it's firing on.
+    pub firing_incidents: Vec<MergedIncident>,
+    /// SCOPE-P1b — the raw per-node snapshots this view was merged from,
+    /// retained so the dashboard node-selector can scope any panel to a
+    /// single node (re-merge a one-element slice). Internal only —
+    /// `#[serde(skip)]` keeps it out of every wire shape and out of the
+    /// `render_fleet_status` payload.
+    #[serde(skip)]
+    pub node_snaps: Vec<FleetSnapshot>,
 }
 
 /// Merge a set of per-node snapshots into the fleet view. `top_k`
@@ -147,7 +243,43 @@ pub fn merge(snaps: &[FleetSnapshot], top_k: usize) -> MergedFleet {
     };
     out.latency = merge_latency(snaps);
     out.top_attackers = merge_top_attackers(snaps, top_k);
+    out.risk_buckets = merge_risk_buckets(snaps, top_k);
+    out.timeseries_seconds = merge_timeseries(snaps);
+    out.firing_incidents = merge_incidents(snaps);
+    out.node_snaps = snaps.to_vec();
     out
+}
+
+/// Generous top-K for a single-node re-merge. Each node's snapshot is
+/// already bounded to the configured `top_attackers_k` at publish time,
+/// so this never truncates below what the node published.
+pub const NODE_VIEW_TOP_K: usize = 200;
+
+impl MergedFleet {
+    /// Node ids present in this merged view (sorted, deduped).
+    pub fn node_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.node_snaps.iter().map(|s| s.node_id.clone()).collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    /// Re-merge just `node_id`'s snapshot into a single-node view, so any
+    /// fleet renderer can serve one node. `None` if that node isn't in the
+    /// current merge (TTL'd out / unknown).
+    pub fn view_for_node(&self, node_id: &str) -> Option<MergedFleet> {
+        let one: Vec<FleetSnapshot> = self
+            .node_snaps
+            .iter()
+            .filter(|s| s.node_id == node_id)
+            .cloned()
+            .collect();
+        if one.is_empty() {
+            None
+        } else {
+            Some(merge(&one, NODE_VIEW_TOP_K))
+        }
+    }
 }
 
 fn sum_into(dst: &mut BTreeMap<String, u64>, src: &BTreeMap<String, u64>) {
@@ -244,6 +376,130 @@ fn merge_top_attackers(snaps: &[FleetSnapshot], top_k: usize) -> Vec<SnapAttacke
     rows
 }
 
+/// Worst-wins ordering for SLO alert severity (page > ticket > other).
+fn severity_rank(sev: &str) -> u8 {
+    match sev {
+        "page" | "critical" => 2,
+        "ticket" | "warn" => 1,
+        _ => 0,
+    }
+}
+
+/// Dedup per-node firing incidents by `incident_uid`: one row per logical
+/// incident, carrying the sorted `firing_on` node list, the earliest fire
+/// (min), the worst budget burn (max), and the worst severity. Sorted by
+/// budget desc then uid for a stable, severity-forward queue.
+fn merge_incidents(snaps: &[FleetSnapshot]) -> Vec<MergedIncident> {
+    let mut by_uid: BTreeMap<String, MergedIncident> = BTreeMap::new();
+    for s in snaps {
+        for inc in &s.firing_incidents {
+            let entry = by_uid.entry(inc.uid.clone()).or_insert_with(|| MergedIncident {
+                uid: inc.uid.clone(),
+                sli: inc.sli.clone(),
+                severity: inc.severity.clone(),
+                fired_at_ms: inc.fired_at_ms,
+                burn_rate: inc.burn_rate,
+                budget_consumed_pct: inc.budget_consumed_pct,
+                window_hours: inc.window_hours,
+                runbook_url: inc.runbook_url.clone(),
+                firing_on: Vec::new(),
+            });
+            if inc.fired_at_ms < entry.fired_at_ms {
+                entry.fired_at_ms = inc.fired_at_ms;
+            }
+            if inc.burn_rate > entry.burn_rate {
+                entry.burn_rate = inc.burn_rate;
+            }
+            if inc.budget_consumed_pct > entry.budget_consumed_pct {
+                entry.budget_consumed_pct = inc.budget_consumed_pct;
+            }
+            if severity_rank(&inc.severity) > severity_rank(&entry.severity) {
+                entry.severity = inc.severity.clone();
+            }
+            if !inc.node_id.is_empty() && !entry.firing_on.contains(&inc.node_id) {
+                entry.firing_on.push(inc.node_id.clone());
+            }
+        }
+    }
+    let mut rows: Vec<MergedIncident> = by_uid.into_values().collect();
+    for r in &mut rows {
+        r.firing_on.sort();
+    }
+    rows.sort_by(|a, b| {
+        b.budget_consumed_pct
+            .partial_cmp(&a.budget_consumed_pct)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.uid.cmp(&b.uid))
+    });
+    rows
+}
+
+/// Sum per-node per-second traffic buckets by absolute epoch second.
+/// Buckets are wall-clock-keyed, so a plain sum across nodes is the
+/// correct fleet view; result is sorted ascending for stable rendering.
+fn merge_timeseries(snaps: &[FleetSnapshot]) -> Vec<SnapSecond> {
+    let mut by_sec: BTreeMap<i64, (u32, u32)> = BTreeMap::new();
+    for s in snaps {
+        for p in &s.recent_seconds {
+            let e = by_sec.entry(p.sec).or_default();
+            e.0 = e.0.saturating_add(p.total);
+            e.1 = e.1.saturating_add(p.blocked);
+        }
+    }
+    by_sec
+        .into_iter()
+        .map(|(sec, (total, blocked))| SnapSecond { sec, total, blocked })
+        .collect()
+}
+
+/// Worst-wins ordering for the composite-RiskKey `level` pill.
+fn level_rank(level: &str) -> u8 {
+    match level {
+        "block" => 2,
+        "challenge" => 1,
+        _ => 0,
+    }
+}
+
+/// Merge per-node composite-RiskKey buckets: dedup by `{ip, device_fp,
+/// session}`, taking max score, max strikes, min idle, OR `strike_blocked`,
+/// and the worst (most-restrictive) level — then re-sort `(strikes desc,
+/// score desc)` and truncate. Display-only: surfaces per-node enforcement
+/// state, never a cluster-authoritative verdict.
+fn merge_risk_buckets(snaps: &[FleetSnapshot], top_k: usize) -> Vec<SnapRiskBucket> {
+    type Key = (String, Option<String>, Option<String>);
+    let mut by_key: BTreeMap<Key, SnapRiskBucket> = BTreeMap::new();
+    for s in snaps {
+        for r in &s.risk_buckets {
+            let key = (r.ip.clone(), r.device_fp.clone(), r.session.clone());
+            match by_key.get_mut(&key) {
+                None => {
+                    by_key.insert(key, r.clone());
+                }
+                Some(entry) => {
+                    entry.score = entry.score.max(r.score);
+                    entry.strikes = entry.strikes.max(r.strikes);
+                    entry.idle_seconds = entry.idle_seconds.min(r.idle_seconds);
+                    entry.strike_blocked |= r.strike_blocked;
+                    if level_rank(&r.level) > level_rank(&entry.level) {
+                        entry.level = r.level.clone();
+                    }
+                }
+            }
+        }
+    }
+    let mut rows: Vec<SnapRiskBucket> = by_key.into_values().collect();
+    // Sort by strikes desc, then score desc, then ip for stable ties.
+    rows.sort_by(|a, b| {
+        b.strikes
+            .cmp(&a.strikes)
+            .then_with(|| b.score.cmp(&a.score))
+            .then_with(|| a.ip.cmp(&b.ip))
+    });
+    rows.truncate(top_k);
+    rows
+}
+
 /// Build this node's snapshot from its live local sources. Reads only
 /// already-collected aggregates (no hot-path work). `action_mix` is
 /// left empty for now — its canonical source (`DecisionMetrics`) isn't
@@ -256,6 +512,8 @@ pub fn build_snapshot(
     top_k: u32,
     stats_agg: &crate::api::stats::StatsAggregator,
     attacks_agg: &crate::api::attacks::AttacksAggregator,
+    risk: &aegis_security::risk::RiskTracker,
+    firing: &[crate::slo::SloAlert],
     hist: &crate::metrics::request_duration::RequestStageHistogram,
     latency_stage: &str,
 ) -> FleetSnapshot {
@@ -303,6 +561,48 @@ pub fn build_snapshot(
         })
         .collect();
 
+    // Composite RiskKey buckets — this node's bounded top-K, deduped
+    // across the fleet at merge time. Owned `level` round-trips Redis.
+    let risk_buckets: Vec<SnapRiskBucket> = risk
+        .top(top_k as usize)
+        .into_iter()
+        .map(|r| SnapRiskBucket {
+            ip: r.ip,
+            device_fp: r.device_fp,
+            session: r.session,
+            score: r.score,
+            strikes: r.strikes,
+            idle_seconds: r.idle_seconds,
+            level: r.level.to_string(),
+            strike_blocked: r.strike_blocked,
+        })
+        .collect();
+
+    // Bounded recent per-second buckets (sparse) for the fleet timeseries.
+    // Capped to the max window the fleet path serves.
+    let recent_seconds: Vec<SnapSecond> = stats_agg
+        .recent_seconds(FLEET_TIMESERIES_MAX_WINDOW_SECS)
+        .into_iter()
+        .map(|(sec, total, blocked)| SnapSecond { sec, total, blocked })
+        .collect();
+
+    // Firing SLO incidents (this node), keyed by node-independent
+    // incident_uid so the merge dedups the same incident across nodes.
+    let firing_incidents: Vec<SnapIncident> = firing
+        .iter()
+        .map(|a| SnapIncident {
+            uid: crate::api::incidents::incident_uid(a),
+            sli: format!("{:?}", a.sli),
+            severity: format!("{:?}", a.severity).to_lowercase(),
+            fired_at_ms: a.fired_at.timestamp_millis(),
+            burn_rate: a.burn_rate,
+            budget_consumed_pct: a.budget_consumed_pct,
+            window_hours: a.window_hours,
+            runbook_url: a.runbook_url.clone(),
+            node_id: node_id.to_string(),
+        })
+        .collect();
+
     FleetSnapshot {
         node_id: node_id.to_string(),
         ts_ms: chrono::Utc::now().timestamp_millis(),
@@ -317,6 +617,9 @@ pub fn build_snapshot(
         detector_mix,
         bot_mix,
         top_attackers,
+        risk_buckets,
+        recent_seconds,
+        firing_incidents,
     }
 }
 
@@ -392,6 +695,40 @@ impl FleetCache {
     }
 }
 
+/// Wire shape for `GET /api/fleet/status` — lets the dashboard badge
+/// each panel and warn when fleet view is configured but degraded.
+#[derive(Serialize)]
+struct FleetStatusBody {
+    /// The publish/merge task is running (`cluster.fleet_view` enabled
+    /// + a shared backend) — i.e. this is a cluster deployment.
+    configured: bool,
+    /// A merged snapshot is currently available (cache populated).
+    /// `configured && !active` is the degraded state.
+    active: bool,
+    /// Live nodes in the merge when active; 1 otherwise.
+    nodes: usize,
+}
+
+/// Render the fleet-scope status the dashboard polls to label panels
+/// `Fleet` vs `This node` and surface a degraded banner. `configured`
+/// is `services.fleet_cache.is_some()`; `merged` is `fleet_view(..)`.
+pub fn render_fleet_status(configured: bool, merged: Option<&MergedFleet>) -> String {
+    let body = FleetStatusBody {
+        configured,
+        active: merged.is_some(),
+        nodes: merged.map(|m| m.nodes).unwrap_or(1),
+    };
+    serde_json::to_string(&body).unwrap_or_else(|_| String::from("{}"))
+}
+
+/// Render `GET /api/fleet/nodes` — the node ids in the current merge, for
+/// the dashboard node-selector. Empty list when no merge is live.
+pub fn render_fleet_nodes(merged: Option<&MergedFleet>) -> String {
+    let nodes = merged.map(|m| m.node_ids()).unwrap_or_default();
+    serde_json::to_string(&serde_json::json!({ "nodes": nodes }))
+        .unwrap_or_else(|_| String::from("{\"nodes\":[]}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,6 +750,207 @@ mod tests {
                 cumulative_count: *c,
             })
             .collect()
+    }
+
+    fn rbucket(
+        ip: &str,
+        fp: Option<&str>,
+        score: u32,
+        strikes: u32,
+        idle: u64,
+        level: &str,
+        blocked: bool,
+    ) -> SnapRiskBucket {
+        SnapRiskBucket {
+            ip: ip.into(),
+            device_fp: fp.map(Into::into),
+            session: None,
+            score,
+            strikes,
+            idle_seconds: idle,
+            level: level.into(),
+            strike_blocked: blocked,
+        }
+    }
+
+    #[test]
+    fn render_fleet_status_reports_configured_active_nodes() {
+        // Single-node / not configured → safe defaults.
+        let s: serde_json::Value =
+            serde_json::from_str(&render_fleet_status(false, None)).unwrap();
+        assert_eq!(s["configured"], false);
+        assert_eq!(s["active"], false);
+        assert_eq!(s["nodes"], 1);
+
+        // Configured but degraded (publish task up, no merge published yet).
+        let s: serde_json::Value =
+            serde_json::from_str(&render_fleet_status(true, None)).unwrap();
+        assert_eq!(s["configured"], true);
+        assert_eq!(s["active"], false);
+        assert_eq!(s["nodes"], 1);
+
+        // Active fleet with three live nodes.
+        let merged = MergedFleet {
+            nodes: 3,
+            ..Default::default()
+        };
+        let s: serde_json::Value =
+            serde_json::from_str(&render_fleet_status(true, Some(&merged))).unwrap();
+        assert_eq!(s["configured"], true);
+        assert_eq!(s["active"], true);
+        assert_eq!(s["nodes"], 3);
+    }
+
+    #[test]
+    fn render_fleet_nodes_lists_node_ids() {
+        let m = merge(&[snap("b"), snap("a")], 50);
+        let v: serde_json::Value = serde_json::from_str(&render_fleet_nodes(Some(&m))).unwrap();
+        assert_eq!(v["nodes"][0], "a");
+        assert_eq!(v["nodes"][1], "b");
+        // No merge → empty list.
+        let v: serde_json::Value = serde_json::from_str(&render_fleet_nodes(None)).unwrap();
+        assert!(v["nodes"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn merged_view_scopes_to_a_single_node() {
+        let mut a = snap("a");
+        a.request_rate = 10.0;
+        a.blocks_total = 3;
+        a.recent_seconds = vec![SnapSecond { sec: 100, total: 8, blocked: 2 }];
+        let mut b = snap("b");
+        b.request_rate = 5.0;
+        b.blocks_total = 7;
+        b.recent_seconds = vec![SnapSecond { sec: 100, total: 4, blocked: 1 }];
+
+        let m = merge(&[a, b], 50);
+        // Fleet view = both nodes.
+        assert_eq!(m.nodes, 2);
+        assert_eq!(m.request_rate, 15.0);
+        assert_eq!(m.node_ids(), vec!["a".to_string(), "b".to_string()]);
+
+        // Scoped to node "b" only.
+        let vb = m.view_for_node("b").expect("node b present");
+        assert_eq!(vb.nodes, 1);
+        assert_eq!(vb.request_rate, 5.0);
+        assert_eq!(vb.blocks_total, 7);
+        assert_eq!(vb.timeseries_seconds.len(), 1);
+        assert_eq!(vb.timeseries_seconds[0].total, 4, "only node b's traffic");
+
+        // Unknown node → None.
+        assert!(m.view_for_node("ghost").is_none());
+    }
+
+    fn sincident(uid: &str, node: &str, budget: f64, fired_ms: i64, sev: &str) -> SnapIncident {
+        SnapIncident {
+            uid: uid.into(),
+            sli: "DataPlaneAvailability".into(),
+            severity: sev.into(),
+            fired_at_ms: fired_ms,
+            burn_rate: budget / 10.0,
+            budget_consumed_pct: budget,
+            window_hours: 1,
+            runbook_url: "".into(),
+            node_id: node.into(),
+        }
+    }
+
+    #[test]
+    fn merge_incidents_dedups_by_uid_with_firing_on_breadth() {
+        // Same incident firing on two nodes → one row listing both nodes,
+        // earliest fire, worst budget + severity. A distinct uid stays
+        // separate.
+        let mut a = snap("node-a");
+        a.firing_incidents = vec![
+            sincident("DataPlaneAvailability-1h", "node-a", 40.0, 2000, "ticket"),
+            sincident("WafOverheadP99-1h", "node-a", 10.0, 3000, "ticket"),
+        ];
+        let mut b = snap("node-b");
+        b.firing_incidents = vec![sincident(
+            "DataPlaneAvailability-1h",
+            "node-b",
+            70.0,
+            1500,
+            "page",
+        )];
+
+        let m = merge(&[a, b], 50);
+        assert_eq!(m.firing_incidents.len(), 2, "two distinct incidents");
+        // Highest budget first → the shared DataPlaneAvailability row.
+        let top = &m.firing_incidents[0];
+        assert_eq!(top.uid, "DataPlaneAvailability-1h");
+        assert_eq!(top.firing_on, vec!["node-a".to_string(), "node-b".to_string()]);
+        assert_eq!(top.budget_consumed_pct, 70.0, "worst budget");
+        assert_eq!(top.fired_at_ms, 1500, "earliest fire");
+        assert_eq!(top.severity, "page", "worst severity");
+    }
+
+    #[test]
+    fn merge_timeseries_sums_buckets_by_epoch_second() {
+        // Two nodes report overlapping + distinct seconds; merge sums
+        // total/blocked per absolute second and sorts ascending.
+        let mut a = snap("a");
+        a.recent_seconds = vec![
+            SnapSecond { sec: 100, total: 10, blocked: 2 },
+            SnapSecond { sec: 101, total: 5, blocked: 1 },
+        ];
+        let mut b = snap("b");
+        b.recent_seconds = vec![
+            SnapSecond { sec: 100, total: 7, blocked: 3 }, // overlaps a@100
+            SnapSecond { sec: 102, total: 4, blocked: 0 },
+        ];
+
+        let m = merge(&[a, b], 50);
+        let ts = &m.timeseries_seconds;
+        assert_eq!(ts.len(), 3, "three distinct seconds");
+        // sorted ascending by sec
+        assert_eq!(ts[0].sec, 100);
+        assert_eq!(ts[0].total, 17, "10 + 7 summed");
+        assert_eq!(ts[0].blocked, 5, "2 + 3 summed");
+        assert_eq!(ts[1].sec, 101);
+        assert_eq!(ts[1].total, 5);
+        assert_eq!(ts[2].sec, 102);
+        assert_eq!(ts[2].total, 4);
+    }
+
+    #[test]
+    fn merge_risk_buckets_dedups_composite_key_worst_wins() {
+        // Same composite key {10.0.0.1, fp=aa, session=none} seen on two
+        // nodes with divergent enforcement state → one merged row taking
+        // max score, max strikes, min idle, OR strike_blocked, worst level.
+        let mut a = snap("a");
+        a.risk_buckets = vec![
+            rbucket("10.0.0.1", Some("aa"), 40, 2, 90, "challenge", false),
+            rbucket("10.0.0.9", None, 30, 1, 5, "challenge", false),
+        ];
+        let mut b = snap("b");
+        b.risk_buckets = vec![rbucket("10.0.0.1", Some("aa"), 70, 5, 10, "block", true)];
+
+        let m = merge(&[a, b], 50);
+
+        // Two distinct composite keys survive (the shared one collapsed).
+        assert_eq!(m.risk_buckets.len(), 2);
+        // Sorted by (strikes desc, score desc): the merged 10.0.0.1 row first.
+        let top = &m.risk_buckets[0];
+        assert_eq!(top.ip, "10.0.0.1");
+        assert_eq!(top.device_fp.as_deref(), Some("aa"));
+        assert_eq!(top.score, 70, "max score");
+        assert_eq!(top.strikes, 5, "max strikes");
+        assert_eq!(top.idle_seconds, 10, "min idle");
+        assert!(top.strike_blocked, "OR strike_blocked");
+        assert_eq!(top.level, "block", "worst level wins");
+    }
+
+    #[test]
+    fn merge_risk_buckets_truncates_to_top_k() {
+        let mut a = snap("a");
+        a.risk_buckets = (0..10)
+            .map(|i| rbucket(&format!("10.0.0.{i}"), None, i, i, 0, "challenge", false))
+            .collect();
+        let m = merge(&[a], 3);
+        assert_eq!(m.risk_buckets.len(), 3);
+        // Highest strikes first.
+        assert_eq!(m.risk_buckets[0].ip, "10.0.0.9");
     }
 
     #[test]
