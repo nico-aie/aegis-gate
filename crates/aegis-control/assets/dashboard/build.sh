@@ -14,6 +14,17 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 
+# Rules-of-hooks guard — catches the two ways hooks have broken the console
+# at runtime (bare hook in an aliased module → blank page; hook after an
+# early return → React #310). esbuild can't see either (it only transforms
+# JSX). Tuned to this codebase's `window.useX()` pattern, which
+# eslint-plugin-react-hooks does NOT recognize. See lint-hooks.mjs.
+# Bootstrap the tiny lint toolchain (acorn + acorn-jsx) on first run.
+if [ ! -d "$HERE/node_modules/acorn" ]; then
+  npm install --no-audit --no-fund --loglevel=error
+fi
+node "$HERE/lint-hooks.mjs"
+
 # Order matters: widgets first (defines I, Sparkline, …),
 # data next (defines RULES, useTicking, …), then pages and help
 # which consume widgets+data, finally app which mounts.
