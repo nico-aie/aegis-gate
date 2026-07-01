@@ -11145,7 +11145,10 @@ function PageIncidents() {
     const name = a.name || a.sli || a.kind || 'unknown';
     const fired_at = a.since || a.fired_at;
     const { sli, window: sliWindow } = sliFromAlertName(name);
-    const id = a.id || `${name}:${fired_at ? Date.parse(fired_at) / 1000 | 0 : 0}`;
+    // IF-P1a — the incident id is node-independent (`<SLI>-<window>h`,
+    // == the raw alert `name`); no `:${ts}` suffix, so ack/snooze/resolve
+    // address the same overlay bucket the backend keys on across the fleet.
+    const id = a.id || name;
     const o = overlayById.get(id) || overlayById.get(name);
     return {
       id,

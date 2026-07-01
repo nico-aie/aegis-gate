@@ -9,8 +9,8 @@
 //!
 //! ## State model
 //!
-//! Each incident is keyed by `alert_id`, derived from the
-//! `SloAlert` shape as `<sli>:<fired_at_unix>`. The tracker holds:
+//! Each incident is keyed by `incident_uid` (`<SLI>-<window>h`),
+//! node-independent so overlay converges across the fleet. The tracker holds:
 //!
 //! - `status`: `firing | acknowledged | snoozed | resolved`
 //! - `acked_at` + `acked_by` (operator user)
@@ -68,19 +68,22 @@ impl IncidentState {
 
 /// Stable ID for an alert.
 ///
-/// MED-OBS-01 (2026-05-12) — the format includes `window_hours`
-/// so multi-window alerts (1h / 6h / 72h on the same SLI) track
-/// as distinct incidents.  Critically, this format also matches
-/// the id the dashboard synthesizes when it POSTs to
-/// `/api/incidents/<id>/ack`: the alerts API renders
-/// `name = "{sli}-{window}h"` (see `tracking.rs::from_engine`),
-/// and the dashboard does `id = format!("{name}:{ts}")`.  Before
-/// this fix the overlay was written under the dashboard's key
-/// but `enrich()` looked it up by the bare `{sli}:{ts}` key —
-/// so ack POST returned 200 but the GET shape still reported
-/// `firing` with `acked_at: null`.
-pub fn alert_id(a: &SloAlert) -> String {
-    format!("{:?}-{}h:{}", a.sli, a.window_hours, a.fired_at.timestamp())
+/// IF-P1a (incidents fleet federation) — node-independent incident
+/// identity: `<SLI>-<window>h` (e.g. `DataPlaneAvailability-1h`).
+///
+/// The per-node fire timestamp is deliberately NOT part of the identity.
+/// The same SLI+window is ONE logical incident across the fleet (and
+/// across re-fires), so ack/snooze/resolve overlay converges by uid —
+/// the prerequisite for federating incidents cross-node. `fired_at` is
+/// still surfaced as a display field on `EnrichedAlert`, just not in the
+/// key. This now matches `tracking.rs::from_engine`, which already keys
+/// its ack-store on the bare `{:?}-{}h` (incidents.rs was the outlier
+/// that appended `:{ts}`).
+///
+/// `window_hours` stays in the key so multi-window alerts (1h / 6h / 72h
+/// on the same SLI) remain distinct incidents.
+pub fn incident_uid(a: &SloAlert) -> String {
+    format!("{:?}-{}h", a.sli, a.window_hours)
 }
 
 /// Durable write of one incident overlay (field = `alert_id`, value =
@@ -298,7 +301,7 @@ impl IncidentTracker {
         active
             .into_iter()
             .map(|a| {
-                let id = alert_id(&a);
+                let id = incident_uid(&a);
                 let overlay = self.get(&id);
                 let status = overlay
                     .as_ref()
@@ -367,10 +370,34 @@ mod tests {
     }
 
     #[test]
+    fn incident_uid_is_node_independent_across_fire_times() {
+        // The same SLI+window firing at different wall-clock times (i.e.
+        // on different fleet nodes) must share ONE identity, so an ack on
+        // any node's fire converges with every other node's view.
+        let a1 = alert(SliKind::DataPlaneAvailability, 1700000000);
+        let a2 = alert(SliKind::DataPlaneAvailability, 1700009999); // later fire
+        assert_eq!(incident_uid(&a1), incident_uid(&a2));
+        assert!(
+            !incident_uid(&a1).contains(':'),
+            "uid must not carry a per-node fire timestamp"
+        );
+
+        // Ack keyed by the uid is visible when enriching a *different*
+        // node's fire of the same incident.
+        let t = IncidentTracker::new();
+        t.ack(&incident_uid(&a1), Some("alice".into()), None);
+        let enriched = t.enrich(vec![a2]);
+        assert_eq!(enriched.len(), 1);
+        assert_eq!(enriched[0].id, incident_uid(&a1));
+        assert_eq!(enriched[0].status, IncidentStatus::Acknowledged);
+        assert_eq!(enriched[0].acked_by.as_deref(), Some("alice"));
+    }
+
+    #[test]
     fn ack_marks_acknowledged_with_timestamp() {
         let t = IncidentTracker::new();
         let a = alert(SliKind::DataPlaneAvailability, 1700000000);
-        let id = alert_id(&a);
+        let id = incident_uid(&a);
         let s = t.ack(&id, Some("alice".into()), Some("looking at it".into()));
         assert_eq!(s.status, IncidentStatus::Acknowledged);
         assert!(s.acked_at.is_some());
@@ -382,7 +409,7 @@ mod tests {
     fn snooze_with_future_deadline_hides_in_active_view() {
         let t = IncidentTracker::new();
         let a = alert(SliKind::DataPlaneAvailability, 1700000000);
-        let id = alert_id(&a);
+        let id = incident_uid(&a);
         let until = Utc::now() + chrono::Duration::minutes(15);
         t.snooze(&id, until, None);
         let got = t.get(&id).unwrap();
@@ -394,7 +421,7 @@ mod tests {
     fn snooze_with_past_deadline_auto_clears_to_firing() {
         let t = IncidentTracker::new();
         let a = alert(SliKind::DataPlaneAvailability, 1700000000);
-        let id = alert_id(&a);
+        let id = incident_uid(&a);
         let past = Utc::now() - chrono::Duration::minutes(1);
         t.snooze(&id, past, None);
         let got = t.get(&id).unwrap();
@@ -407,7 +434,7 @@ mod tests {
     fn resolve_marks_resolved_with_timestamp() {
         let t = IncidentTracker::new();
         let a = alert(SliKind::DataPlaneAvailability, 1700000000);
-        let id = alert_id(&a);
+        let id = incident_uid(&a);
         t.resolve(&id, Some("bob".into()), None);
         let got = t.get(&id).unwrap();
         assert_eq!(got.status, IncidentStatus::Resolved);
@@ -481,7 +508,7 @@ mod tests {
         let be = backend();
         let t = IncidentTracker::with_backend(Some(be.clone() as Arc<dyn StateBackend>));
         let a = alert(SliKind::DataPlaneAvailability, 1700000000);
-        let id = alert_id(&a);
+        let id = incident_uid(&a);
         t.ack(&id, Some("alice".into()), Some("triaging".into()));
         // The write is fire-and-forget; await it.
         let beq = be.clone();
@@ -501,7 +528,7 @@ mod tests {
         // SAME backend — the ack must reappear (the durability contract).
         let be = backend();
         let a = alert(SliKind::DataPlaneAvailability, 1700000001);
-        let id = alert_id(&a);
+        let id = incident_uid(&a);
         let acked = IncidentState {
             alert_id: id.clone(),
             status: IncidentStatus::Acknowledged,
@@ -527,7 +554,7 @@ mod tests {
         let be = backend();
         let t = IncidentTracker::with_backend(Some(be.clone() as Arc<dyn StateBackend>));
         let a = alert(SliKind::DataPlaneAvailability, 1700000002);
-        let id = alert_id(&a);
+        let id = incident_uid(&a);
         t.ack(&id, Some("dave".into()), None);
         let beq = be.clone();
         let idq = id.clone();
@@ -573,7 +600,7 @@ mod tests {
         // hooks are harmless no-ops (no panic, nothing to load/clear).
         let t = IncidentTracker::new();
         let a = alert(SliKind::DataPlaneAvailability, 1700000003);
-        let id = alert_id(&a);
+        let id = incident_uid(&a);
         let s = t.ack(&id, Some("erin".into()), None);
         assert_eq!(s.status, IncidentStatus::Acknowledged);
         t.hydrate().await; // no-op
@@ -588,7 +615,7 @@ mod tests {
         let t = IncidentTracker::new();
         let a1 = alert(SliKind::DataPlaneAvailability, 1700000000);
         let a2 = alert(SliKind::WafOverheadP99, 1700000050);
-        let id1 = alert_id(&a1);
+        let id1 = incident_uid(&a1);
         t.ack(&id1, Some("alice".into()), None);
         let enriched = t.enrich(vec![a1, a2]);
         assert_eq!(enriched.len(), 2);
@@ -599,18 +626,15 @@ mod tests {
     }
 
     #[test]
-    fn alert_id_is_stable_for_same_alert() {
+    fn incident_uid_is_stable_for_same_alert() {
         let a1 = alert(SliKind::DataPlaneAvailability, 1700000000);
         let a2 = alert(SliKind::DataPlaneAvailability, 1700000000);
-        assert_eq!(alert_id(&a1), alert_id(&a2));
+        assert_eq!(incident_uid(&a1), incident_uid(&a2));
     }
 
-    #[test]
-    fn alert_id_differs_for_different_fired_at() {
-        let a1 = alert(SliKind::DataPlaneAvailability, 1700000000);
-        let a2 = alert(SliKind::DataPlaneAvailability, 1700000001);
-        assert_ne!(alert_id(&a1), alert_id(&a2));
-    }
+    // IF-P1a — the inverse of the old `differs_for_different_fired_at`:
+    // node-independence is asserted by
+    // `incident_uid_is_node_independent_across_fire_times` above.
 
     // MED-OBS-01 (2026-05-12) regression coverage.
 
@@ -630,26 +654,25 @@ mod tests {
     }
 
     #[test]
-    fn alert_id_format_includes_window_hours_and_timestamp() {
-        // Must match the dashboard-synthesized id:
-        //   alerts API name = "<SliKind>-<N>h"
-        //   dashboard id    = "<name>:<ts>"
-        // → "<SliKind>-<N>h:<ts>"
+    fn incident_uid_format_is_sli_and_window_without_timestamp() {
+        // IF-P1a — the uid is node-independent: "<SliKind>-<N>h", no
+        // trailing ":<ts>". Matches `tracking.rs::from_engine`'s name/id
+        // and the dashboard's `id = a.id || name` synthesis.
         let a = alert_with_window(SliKind::DataPlaneAvailability, 1778570234, 1);
         assert_eq!(
-            alert_id(&a),
-            "DataPlaneAvailability-1h:1778570234",
-            "format must match the dashboard ack URL synthesis"
+            incident_uid(&a),
+            "DataPlaneAvailability-1h",
+            "uid must be node-independent (no fire timestamp)"
         );
     }
 
     #[test]
-    fn alert_id_differs_for_different_window_hours_on_same_sli() {
+    fn incident_uid_differs_for_different_window_hours_on_same_sli() {
         let a1 = alert_with_window(SliKind::DataPlaneAvailability, 1700000000, 1);
         let a72 = alert_with_window(SliKind::DataPlaneAvailability, 1700000000, 72);
         assert_ne!(
-            alert_id(&a1),
-            alert_id(&a72),
+            incident_uid(&a1),
+            incident_uid(&a72),
             "multi-window alerts must track as distinct incidents"
         );
     }
@@ -658,11 +681,11 @@ mod tests {
     fn ack_then_enrich_returns_acknowledged_status() {
         // The MED-OBS-01 regression: the ack handler writes the
         // overlay under whatever id the path param carries, then
-        // enrich() looks it up by `alert_id(&a)`.  Before the fix
+        // enrich() looks it up by `incident_uid(&a)`.  Before the fix
         // these two strings disagreed; after the fix they match.
         let tracker = IncidentTracker::new();
         let a = alert_with_window(SliKind::DataPlaneAvailability, 1778570234, 1);
-        let stored_id = alert_id(&a);
+        let stored_id = incident_uid(&a);
         tracker.ack(&stored_id, Some("admin".into()), None);
 
         let enriched = tracker.enrich(vec![a]);
