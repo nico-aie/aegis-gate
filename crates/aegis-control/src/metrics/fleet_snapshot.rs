@@ -163,6 +163,13 @@ pub struct MergedFleet {
     /// sorted ascending. Bounded recent window — the timeseries fleet
     /// path serves windows up to that bound, else falls back node-local.
     pub timeseries_seconds: Vec<SnapSecond>,
+    /// SCOPE-P1b — the raw per-node snapshots this view was merged from,
+    /// retained so the dashboard node-selector can scope any panel to a
+    /// single node (re-merge a one-element slice). Internal only —
+    /// `#[serde(skip)]` keeps it out of every wire shape and out of the
+    /// `render_fleet_status` payload.
+    #[serde(skip)]
+    pub node_snaps: Vec<FleetSnapshot>,
 }
 
 /// Merge a set of per-node snapshots into the fleet view. `top_k`
@@ -196,7 +203,40 @@ pub fn merge(snaps: &[FleetSnapshot], top_k: usize) -> MergedFleet {
     out.top_attackers = merge_top_attackers(snaps, top_k);
     out.risk_buckets = merge_risk_buckets(snaps, top_k);
     out.timeseries_seconds = merge_timeseries(snaps);
+    out.node_snaps = snaps.to_vec();
     out
+}
+
+/// Generous top-K for a single-node re-merge. Each node's snapshot is
+/// already bounded to the configured `top_attackers_k` at publish time,
+/// so this never truncates below what the node published.
+pub const NODE_VIEW_TOP_K: usize = 200;
+
+impl MergedFleet {
+    /// Node ids present in this merged view (sorted, deduped).
+    pub fn node_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.node_snaps.iter().map(|s| s.node_id.clone()).collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    /// Re-merge just `node_id`'s snapshot into a single-node view, so any
+    /// fleet renderer can serve one node. `None` if that node isn't in the
+    /// current merge (TTL'd out / unknown).
+    pub fn view_for_node(&self, node_id: &str) -> Option<MergedFleet> {
+        let one: Vec<FleetSnapshot> = self
+            .node_snaps
+            .iter()
+            .filter(|s| s.node_id == node_id)
+            .cloned()
+            .collect();
+        if one.is_empty() {
+            None
+        } else {
+            Some(merge(&one, NODE_VIEW_TOP_K))
+        }
+    }
 }
 
 fn sum_into(dst: &mut BTreeMap<String, u64>, src: &BTreeMap<String, u64>) {
@@ -561,6 +601,14 @@ pub fn render_fleet_status(configured: bool, merged: Option<&MergedFleet>) -> St
     serde_json::to_string(&body).unwrap_or_else(|_| String::from("{}"))
 }
 
+/// Render `GET /api/fleet/nodes` — the node ids in the current merge, for
+/// the dashboard node-selector. Empty list when no merge is live.
+pub fn render_fleet_nodes(merged: Option<&MergedFleet>) -> String {
+    let nodes = merged.map(|m| m.node_ids()).unwrap_or_default();
+    serde_json::to_string(&serde_json::json!({ "nodes": nodes }))
+        .unwrap_or_else(|_| String::from("{\"nodes\":[]}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -631,6 +679,46 @@ mod tests {
         assert_eq!(s["configured"], true);
         assert_eq!(s["active"], true);
         assert_eq!(s["nodes"], 3);
+    }
+
+    #[test]
+    fn render_fleet_nodes_lists_node_ids() {
+        let m = merge(&[snap("b"), snap("a")], 50);
+        let v: serde_json::Value = serde_json::from_str(&render_fleet_nodes(Some(&m))).unwrap();
+        assert_eq!(v["nodes"][0], "a");
+        assert_eq!(v["nodes"][1], "b");
+        // No merge → empty list.
+        let v: serde_json::Value = serde_json::from_str(&render_fleet_nodes(None)).unwrap();
+        assert!(v["nodes"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn merged_view_scopes_to_a_single_node() {
+        let mut a = snap("a");
+        a.request_rate = 10.0;
+        a.blocks_total = 3;
+        a.recent_seconds = vec![SnapSecond { sec: 100, total: 8, blocked: 2 }];
+        let mut b = snap("b");
+        b.request_rate = 5.0;
+        b.blocks_total = 7;
+        b.recent_seconds = vec![SnapSecond { sec: 100, total: 4, blocked: 1 }];
+
+        let m = merge(&[a, b], 50);
+        // Fleet view = both nodes.
+        assert_eq!(m.nodes, 2);
+        assert_eq!(m.request_rate, 15.0);
+        assert_eq!(m.node_ids(), vec!["a".to_string(), "b".to_string()]);
+
+        // Scoped to node "b" only.
+        let vb = m.view_for_node("b").expect("node b present");
+        assert_eq!(vb.nodes, 1);
+        assert_eq!(vb.request_rate, 5.0);
+        assert_eq!(vb.blocks_total, 7);
+        assert_eq!(vb.timeseries_seconds.len(), 1);
+        assert_eq!(vb.timeseries_seconds[0].total, 4, "only node b's traffic");
+
+        // Unknown node → None.
+        assert!(m.view_for_node("ghost").is_none());
     }
 
     #[test]
