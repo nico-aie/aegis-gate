@@ -2,7 +2,7 @@
 
 > **Type:** FEAT (observability / UX track) · **Status:** ◐ In progress — raised 2026-06-30 · **Branch:** `feat/dashboard-scope-merge`
 > **Track ID prefix:** `SCOPE-P1<a–c>`
-> **Shipped so far** (branch `feat/dashboard-scope-merge`): **P1a honesty pass DONE** — per-panel badges across all 4 pages + degraded banner (`f271df6`, `a0dcc53`); plus two P1c backend merges out of order because they were cheap/high-value — **Attack distribution** (`c57d276`, reused `detector_mix`) and **Composite RiskKey display** (`185014b`, new snapshot plumbing). **Remaining:** P1b node selector, P1c timeseries merge, and the split-out Incidents federation.
+> **Shipped so far:** **P1a honesty pass DONE** (PR #102 — per-panel badges across all 4 pages + degraded banner). **P1c DONE** — Attack distribution (PR #102), Composite RiskKey display (PR #102), and traffic **timeseries** fleet merge (PR #103, bounded to 5m window, window-aware badge). **Remaining:** **P1b node selector** (this branch), and the split-out Incidents federation (own FEAT).
 > **Related memory:** [[project_health_signals_reported_not_gating]] (display-only `observed` upstream health is inherently per-node), [[feedback_two_score_model]] / [[feedback_dev_xff_single_ip_gates]] (per-IP risk is node-local enforcement state).
 
 **Goal (one line):** make the admin dashboard **honest and consistent about data scope in cluster mode** — today a single page silently mixes fleet-wide totals with one arbitrary node's panels, and several Security Ops surfaces are node-local with no indication. Fix is **tiered: label first, then add a node selector, then selectively promote panels to fleet-aware** — NOT a blanket "merge everything."
@@ -76,7 +76,7 @@ Honesty pass. **Implementation note — simpler than originally specced:** inste
 ### SCOPE-P1c — selective fleet-aware promotion · **M–L** (case-by-case, only where it adds real value)
 - ✅ **Attack distribution** → DONE (`c57d276`): `render_distribution_from_fleet` reshapes the already-merged `detector_mix` (no new snapshot plumbing). Done early as a cheap quick-win.
 - ✅ **Composite RiskKey** → DONE (`185014b`): `SnapRiskBucket` added to the snapshot, `merge_risk_buckets` dedups by `{ip, device_fp, session}` worst-wins (max score / max strikes / min idle / OR strike_blocked / worst level), `render_list_from_fleet`. Display-only — **reset stays node-scoped**.
-- ☐ **Request timeseries** → fleet merge (sum per-second buckets across node snapshots). Highest-value *remaining* promotion: the Overview chart still contradicts the KPI tiles above it (and the KPI sparklines ride the same node-local series). **The costly one** — needs bounded-delta publishing, not full-history.
+- ✅ **Request timeseries** → DONE (PR #103): `SnapSecond` per-second buckets (absolute-epoch-keyed → sum-by-second), `merge_timeseries` + pure `bucketize_seconds` + `timeseries_from_fleet`. **Bounded to `FLEET_TIMESERIES_MAX_WINDOW_SECS=300` sparse** (no full-history publish); windows >5m fall back node-local; the traffic-chart badge is window-aware.
 - → **Incidents federation** split out to [`FEAT-incidents-fleet-federation.md`](./FEAT-incidents-fleet-federation.md).
 - Leave upstream health per-node (rendered under the node selector).
 
@@ -98,7 +98,7 @@ Honesty pass. **Implementation note — simpler than originally specced:** inste
 
 - [x] SCOPE-P1a: every panel badged Fleet/Node; fleet-degraded banner; Incidents + RiskKey explicitly marked node-local. ✅ `f271df6`, `a0dcc53`.
 - [ ] SCOPE-P1b: node-scope selector live; node-local panels honor it; "All nodes" shows per-node breakdown where unmergeable.
-- [ ] SCOPE-P1c: timeseries fleet-merged (or consciously deferred); incidents roll-up + RiskKey display merge scoped or split out. _Partial_ — RiskKey display ✅ `185014b`, Attack distribution ✅ `c57d276`, Incidents → own FEAT; **timeseries remaining**.
+- [x] SCOPE-P1c: RiskKey display ✅ `185014b`, Attack distribution ✅ `c57d276`, timeseries ✅ PR #103 (bounded 5m), Incidents → own FEAT. **DONE.**
 - [ ] Guardrails honored: upstream health stays per-node; RiskKey reset stays node-scoped/fan-out; latency merges buckets not means.
 - [ ] `docs/control-plane/` dashboard doc notes per-panel scope; archive this FEAT on completion.
 
