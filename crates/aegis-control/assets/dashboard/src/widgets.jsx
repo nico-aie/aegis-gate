@@ -100,8 +100,9 @@ function FleetNodeSelector() {
   const [node, setNode] = window.useFleetNodeScope ? window.useFleetNodeScope() : ['all', () => {}];
   const nodes = nodesApi.data?.nodes || [];
   // If the selected node TTL'd out of the roster, fall back to All nodes
-  // so the control never shows a stale/blank selection.
-  useEffect(() => {
+  // so the control never shows a stale/blank selection. (widgets.jsx
+  // aliases the React hooks as *W — bare `useEffect` is undefined here.)
+  useEffectW(() => {
     if (node !== 'all' && nodes.length > 0 && !nodes.includes(node)) setNode('all');
   }, [nodes, node]);
   if (nodes.length < 2) return null; // single node → nothing to pick

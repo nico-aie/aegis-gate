@@ -72,6 +72,13 @@ The Alerts view shows:
 - Audit sink lag + drops
 - Cert expiry timeline
 
+In a cluster, incidents are **federated**: the same SLI+window firing on
+several nodes shows as one row (with a `firing_on` node-breadth pill), and
+ack/snooze/resolve converge across nodes. See
+[`ha-clustering.md`](../operations/ha-clustering.md) §"Cross-node console
+sync" for the fleet incident semantics (identity, convergence, resolve
+auto-resurrection).
+
 See [`dashboard.md`](../control-plane/dashboard.md).
 
 ## Alert routing
