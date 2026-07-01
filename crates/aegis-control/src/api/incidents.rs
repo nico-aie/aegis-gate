@@ -50,6 +50,12 @@ pub struct IncidentState {
     pub snoozed_until: Option<DateTime<Utc>>,
     pub resolved_at: Option<DateTime<Utc>>,
     pub note: Option<String>,
+    /// IF-P1c — last-mutation time, used as the last-writer-wins clock
+    /// when the cross-node refresh merges a peer's durable write. Old
+    /// persisted entries decode to the epoch (serde default), so any live
+    /// write always wins over a pre-P1c record.
+    #[serde(default)]
+    pub updated_at: DateTime<Utc>,
 }
 
 impl IncidentState {
@@ -62,6 +68,7 @@ impl IncidentState {
             snoozed_until: None,
             resolved_at: None,
             note: None,
+            updated_at: Utc::now(),
         }
     }
 }
@@ -160,38 +167,72 @@ impl IncidentTracker {
         });
     }
 
-    /// Boot hydration (P1): load the durable overlay from
-    /// `control:waf:incidents` into the in-memory read cache. Runs once at
-    /// startup before serving. No-op without a backend. A decode failure on
-    /// one field is logged and skipped — one corrupt entry must not block
-    /// the rest of the overlay from loading.
-    pub async fn hydrate(&self) {
+    /// Load the durable overlay from `control:waf:incidents` and merge it
+    /// into the in-memory cache using last-writer-wins on `updated_at`.
+    /// Returns the number of entries taken from the store.
+    ///
+    /// Merge rule (IF-P1c): a peer's entry is taken only if we don't have
+    /// that uid, or the peer's `updated_at` is newer. This is clobber-safe
+    /// — a just-written local entry whose durable write is still in flight
+    /// simply isn't in the scanned set yet, and a stale durable entry never
+    /// overwrites a fresher local one. Entries missing from the store are
+    /// left untouched (removal flows through `unlink_durable`/reset, not the
+    /// refresh path).
+    async fn load_durable(&self) -> usize {
         let Some(backend) = self.backend.as_ref() else {
-            return;
+            return 0;
         };
         let fields = match backend.hscan(CONTROL_INCIDENTS_KEY).await {
             Ok(f) => f,
             Err(e) => {
-                tracing::warn!(error = %e, "incident hydrate: hscan failed");
-                return;
+                tracing::warn!(error = %e, "incident overlay load: hscan failed");
+                return 0;
             }
         };
         let mut loaded = 0usize;
         let mut s = self.state.lock().expect("incident state poisoned");
         for (id, bytes) in fields {
             match serde_json::from_slice::<IncidentState>(&bytes) {
-                Ok(state) => {
-                    s.insert(id, state);
-                    loaded += 1;
+                Ok(remote) => {
+                    let take = match s.get(&id) {
+                        None => true,
+                        Some(local) => remote.updated_at >= local.updated_at,
+                    };
+                    if take {
+                        s.insert(id, remote);
+                        loaded += 1;
+                    }
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, field = %id, "incident hydrate: decode skipped")
+                    tracing::warn!(error = %e, field = %id, "incident overlay load: decode skipped")
                 }
             }
         }
+        loaded
+    }
+
+    /// Boot hydration (P1): load the durable overlay once at startup before
+    /// serving. No-op without a backend.
+    pub async fn hydrate(&self) {
+        let loaded = self.load_durable().await;
         if loaded > 0 {
             tracing::info!(loaded, "incident overlay hydrated from durable store");
         }
+    }
+
+    /// IF-P1c — periodic cross-node convergence: re-read the shared overlay
+    /// so an ack/snooze/resolve on any node becomes visible here within one
+    /// refresh tick. Same LWW merge as `hydrate`, but quiet (runs on a
+    /// timer). No-op without a backend.
+    pub async fn refresh_from_durable(&self) {
+        self.load_durable().await;
+    }
+
+    /// Whether a shared durable backend is attached — i.e. cross-node
+    /// convergence is possible and the periodic refresh task is worth
+    /// spawning. `false` on the single-node / no-Redis path.
+    pub fn has_durable_backend(&self) -> bool {
+        self.backend.is_some()
     }
 
     /// Reset hook (sync half) — drop the in-memory overlay. Paired with
@@ -230,6 +271,7 @@ impl IncidentTracker {
         if let Some(n) = note {
             entry.note = Some(n);
         }
+        entry.updated_at = Utc::now();
         let snapshot = entry.clone();
         drop(s);
         self.spawn_persist(snapshot.clone());
@@ -248,6 +290,7 @@ impl IncidentTracker {
         if let Some(n) = note {
             entry.note = Some(n);
         }
+        entry.updated_at = Utc::now();
         let snapshot = entry.clone();
         drop(s);
         self.spawn_persist(snapshot.clone());
@@ -270,6 +313,7 @@ impl IncidentTracker {
         if let Some(n) = note {
             entry.note = Some(n);
         }
+        entry.updated_at = Utc::now();
         let snapshot = entry.clone();
         drop(s);
         self.spawn_persist(snapshot.clone());
@@ -597,6 +641,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refresh_converges_ack_from_a_peer_node() {
+        // IF-P1c — node-1 acks; node-2 (a distinct tracker on the SAME
+        // shared backend) must see the ack after a refresh, without a
+        // restart. This is cross-node overlay convergence.
+        let be = backend();
+        let node1 = IncidentTracker::with_backend(Some(be.clone() as Arc<dyn StateBackend>));
+        let node2 = IncidentTracker::with_backend(Some(be.clone() as Arc<dyn StateBackend>));
+        let id = "DataPlaneAvailability-1h";
+
+        node1.ack(id, Some("alice".into()), None);
+        // Await the fire-and-forget durable write.
+        let beq = be.clone();
+        wait_until(|| {
+            beq.hashes.lock().unwrap()
+                .get(CONTROL_INCIDENTS_KEY)
+                .map(|h| h.contains_key(id))
+                .unwrap_or(false)
+        })
+        .await;
+
+        // node-2 hasn't seen it yet.
+        assert!(node2.get(id).is_none(), "peer not yet converged");
+        node2.refresh_from_durable().await;
+        let got = node2.get(id).expect("converged after refresh");
+        assert_eq!(got.status, IncidentStatus::Acknowledged);
+        assert_eq!(got.acked_by.as_deref(), Some("alice"));
+    }
+
+    #[tokio::test]
+    async fn refresh_lww_keeps_fresher_local_write() {
+        // A stale durable entry must NOT clobber a newer local write.
+        let be = backend();
+        let id = "DataPlaneAvailability-1h";
+        // Seed the store with an OLD acked entry (epoch-ish updated_at).
+        let stale = IncidentState {
+            alert_id: id.into(),
+            status: IncidentStatus::Acknowledged,
+            acked_at: Some(Utc::now()),
+            acked_by: Some("old-owner".into()),
+            snoozed_until: None,
+            resolved_at: None,
+            note: None,
+            updated_at: DateTime::from_timestamp(1, 0).unwrap(),
+        };
+        persist_to(&(be.clone() as Arc<dyn StateBackend>), &stale).await;
+
+        let node = IncidentTracker::with_backend(Some(be.clone() as Arc<dyn StateBackend>));
+        // Fresh local resolve (updated_at = now, newer than the stale entry).
+        node.resolve(id, Some("new-owner".into()), None);
+        node.refresh_from_durable().await;
+
+        let got = node.get(id).expect("present");
+        assert_eq!(got.status, IncidentStatus::Resolved, "fresher local write wins");
+        assert_eq!(got.acked_by.as_deref(), Some("new-owner"));
+    }
+
+    #[tokio::test]
     async fn ack_overlay_survives_a_simulated_restart() {
         // Write through tracker1, then hydrate a fresh tracker2 from the
         // SAME backend — the ack must reappear (the durability contract).
@@ -611,6 +712,7 @@ mod tests {
             snoozed_until: None,
             resolved_at: None,
             note: Some("owned".into()),
+            updated_at: Utc::now(),
         };
         persist_to(&(be.clone() as Arc<dyn StateBackend>), &acked).await;
 
@@ -655,6 +757,7 @@ mod tests {
             status: IncidentStatus::Resolved,
             acked_at: None, acked_by: None, snoozed_until: None,
             resolved_at: Some(Utc::now()), note: None,
+            updated_at: Utc::now(),
         };
         persist_to(&(be.clone() as Arc<dyn StateBackend>), &good).await;
         // Inject a corrupt field directly.
