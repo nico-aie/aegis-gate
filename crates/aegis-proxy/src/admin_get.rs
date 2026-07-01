@@ -594,8 +594,14 @@ pub(crate) fn admin_router(
         // joins against today's firing list.
         "/api/incidents" => {
             let raw_json = services.tracking.render_alerts();
-            let active = services.tracking.active_alerts();
-            let overlay = services.incidents.enrich(active);
+            // IF-P1b — fleet roll-up of firing incidents (deduped by uid,
+            // with firing_on breadth) when fleet view is active; honors the
+            // ?node= scope. Overlay is still read locally (convergence =
+            // IF-P1c). Falls back to this node's active alerts otherwise.
+            let overlay = match fleet_view_scoped(services, query) {
+                Some(m) => services.incidents.enrich_fleet(m.firing_incidents),
+                None => services.incidents.enrich(services.tracking.active_alerts()),
+            };
             let body = serde_json::json!({
                 "raw_alerts": serde_json::from_str::<serde_json::Value>(&raw_json)
                     .unwrap_or(serde_json::Value::Null),

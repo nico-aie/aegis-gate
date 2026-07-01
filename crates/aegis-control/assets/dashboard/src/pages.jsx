@@ -11113,10 +11113,9 @@ function PageIncidents() {
   const incidents = window.useIncidentsApi ? window.useIncidentsApi() : { data: null };
   const [busy, setBusy] = useStateP(null); // alert id currently mutating
   const [filter, setFilter] = useStateP('open'); // open | snoozed | resolved | all
-  // SCOPE-P1a — the SLO engine + incident overlay are per-node with no
-  // fleet path (see FEAT-incidents-fleet-federation), so every panel
-  // here is node-local. Badge it so multi-node operators don't read one
-  // node's alerts as fleet-wide.
+  // IF-P1b — the firing list is now a fleet roll-up (deduped by uid, with
+  // per-row firing_on breadth), so the queue is fleet-capable. Note: the
+  // ack/snooze/resolve OVERLAY still resolves per-node until IF-P1c.
   const scopeBadge = window.useScopeBadge ? window.useScopeBadge() : () => null;
 
   // Compose: prefer the enriched /api/incidents view; fall back
@@ -11135,39 +11134,62 @@ function PageIncidents() {
     return m ? { sli: m[1], window: m[2] } : { sli: name, window: '' };
   }
 
-  // Derive a unified "incident list" from raw alerts + overlay.
-  // 2026-05-12 — the firing-alerts shape from `/api/incidents`
-  // surfaces `name` / `since` / `severity` / `runbook_url`
-  // (NOT `sli` / `fired_at` / `budget_consumed_pct`). The
-  // earlier reader pulled the wrong field names and rendered
-  // `unknown` / `—` for every row. MED-SO-03.
-  const merged = (Array.isArray(rawAlerts) ? rawAlerts : []).map(a => {
-    const name = a.name || a.sli || a.kind || 'unknown';
-    const fired_at = a.since || a.fired_at;
-    const { sli, window: sliWindow } = sliFromAlertName(name);
-    // IF-P1a — the incident id is node-independent (`<SLI>-<window>h`,
-    // == the raw alert `name`); no `:${ts}` suffix, so ack/snooze/resolve
-    // address the same overlay bucket the backend keys on across the fleet.
-    const id = a.id || name;
-    const o = overlayById.get(id) || overlayById.get(name);
-    return {
-      id,
-      name,
-      sli,
-      sli_window: sliWindow,
-      severity: (a.severity || 'warn').toLowerCase(),
-      fired_at,
-      burn_rate: a.burn_rate,
-      budget_consumed_pct: a.budget_consumed_pct,
-      window_hours: a.window_hours,
-      runbook_url: a.runbook_url,
-      status: o?.status || o?.state || 'firing',
-      acked_at: o?.acked_at,
-      acked_by: o?.acked_by,
-      snoozed_until: o?.snoozed_until,
-      note: o?.note,
-    };
-  });
+  // Derive a unified "incident list".
+  // IF-P1b — when the enriched /api/incidents view is populated it IS the
+  // authoritative firing list: fleet-rolled-up (deduped by uid) with a
+  // `firing_on` node breadth. Build rows from it directly. Fall back to
+  // the raw /api/alerts shape only when the enriched view is empty (engine
+  // not wired / older backend). MED-SO-03: the raw shape surfaces `name` /
+  // `since` / `severity` (NOT `sli` / `fired_at` / `budget_consumed_pct`).
+  const merged = overlay.length > 0
+    ? overlay.map(i => {
+        const name = i.id;
+        const { sli, window: sliWindow } = sliFromAlertName(name);
+        return {
+          id: i.id,
+          name,
+          sli: i.sli || sli,
+          sli_window: sliWindow,
+          severity: (i.severity || 'warn').toLowerCase(),
+          fired_at: i.fired_at,
+          burn_rate: i.burn_rate,
+          budget_consumed_pct: i.budget_consumed_pct,
+          window_hours: i.window_hours,
+          runbook_url: i.runbook_url,
+          status: i.status || 'firing',
+          acked_at: i.acked_at,
+          acked_by: i.acked_by,
+          snoozed_until: i.snoozed_until,
+          note: i.note,
+          firing_on: Array.isArray(i.firing_on) ? i.firing_on : [],
+        };
+      })
+    : (Array.isArray(rawAlerts) ? rawAlerts : []).map(a => {
+        const name = a.name || a.sli || a.kind || 'unknown';
+        const fired_at = a.since || a.fired_at;
+        const { sli, window: sliWindow } = sliFromAlertName(name);
+        // IF-P1a — id is node-independent (`<SLI>-<window>h` == name).
+        const id = a.id || name;
+        const o = overlayById.get(id) || overlayById.get(name);
+        return {
+          id,
+          name,
+          sli,
+          sli_window: sliWindow,
+          severity: (a.severity || 'warn').toLowerCase(),
+          fired_at,
+          burn_rate: a.burn_rate,
+          budget_consumed_pct: a.budget_consumed_pct,
+          window_hours: a.window_hours,
+          runbook_url: a.runbook_url,
+          status: o?.status || o?.state || 'firing',
+          acked_at: o?.acked_at,
+          acked_by: o?.acked_by,
+          snoozed_until: o?.snoozed_until,
+          note: o?.note,
+          firing_on: [],
+        };
+      });
 
   const counts = merged.reduce((acc, m) => ({ ...acc, [m.status]: (acc[m.status] || 0) + 1 }), {});
   const filtered = merged.filter(m => {
@@ -11253,7 +11275,7 @@ function PageIncidents() {
         <window.SectionHeader
           title="Incident queue"
           sub={`${filtered.length} of ${merged.length} · ${filter} filter`}
-          actions={scopeBadge(false)}
+          actions={scopeBadge(true)}
         />
         <div style={{ display: 'flex', gap: 4, padding: '0 12px 8px' }}>
           {['open', 'firing', 'acknowledged', 'snoozed', 'resolved', 'all'].map(f => (
@@ -11294,6 +11316,16 @@ function PageIncidents() {
                     <code style={{ fontSize: 11 }}>{m.sli}</code>
                     {m.sli_window && (
                       <span className="pill neutral" style={{ fontSize: 9, marginLeft: 4, padding: '0 6px' }}>{m.sli_window}</span>
+                    )}
+                    {/* IF-P1b — fleet breadth: how many nodes are firing this incident. */}
+                    {Array.isArray(m.firing_on) && m.firing_on.length > 1 && (
+                      <span
+                        className="scope-badge scope-fleet"
+                        style={{ marginLeft: 4 }}
+                        title={`Firing on ${m.firing_on.length} nodes: ${m.firing_on.join(', ')}`}
+                      >
+                        {m.firing_on.length} nodes
+                      </span>
                     )}
                   </td>
                   <td title={m.fired_at}>{fmtRel(m.fired_at)}</td>
