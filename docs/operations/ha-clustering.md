@@ -196,8 +196,13 @@ is safe — certs have weeks of validity.
 |---|---|---|---|
 | **Config / modes / risk / block-list** | versioned doc + shared `g:*` keys, polled | (always on with Redis) | local fallback; converges on heal |
 | **Live events** (≤ 5 s SLA) | Redis pub/sub fanout → each node's dashboard SSE | `cluster.fleet_events.enabled` | cross-node feed stops; each dashboard shows its **own** events (still ≤ 5 s) |
-| **Traffic metrics** (RPS, p50/95/99, top-attackers, by-detector, bot-mix) | TTL'd `fleet:snap:<node>` snapshots, scan + merge on read | `cluster.fleet_view.enabled` | `SCAN` empty → panels fall back to **local** ("This node") |
+| **Traffic metrics** (RPS, block-rate, threats, top-attackers, by-detector, bot-mix, attack-distribution, RiskKey display, timeseries) | TTL'd `fleet:snap:<node>` snapshots, scan + merge on read | `cluster.fleet_view.enabled` | `SCAN` empty → panels fall back to **local** ("This node") |
+| **Incidents** (firing SLO alerts + ack/snooze/resolve) | firing set in `fleet:snap:*` (dedup by `incident_uid`); overlay in `control:waf:incidents`, LWW-converged on a 5 s tick | `cluster.fleet_view.enabled` (firing set) + Redis (overlay) | firing set → local; overlay → last-hydrated, converges on heal |
 | **Forensic audit log** | per-node `waf_audit.log` (+ SigNoz), correlated by `request_id` | (always) | unaffected — local files are the source of truth |
+
+**Per-panel scope is explicit.** Every dashboard panel is badged `Fleet` (merged across nodes), `This node` (node-local — Upstream health, cache, GeoIP status, and the traffic chart beyond a 5 m window), or `<node-id>` when the topbar **node selector** scopes fleet panels to one node (`?node=<id>` re-merges that node's snapshot; unknown/TTL'd node falls back to local). A degraded banner shows when `fleet_view` is configured but no merge has published yet. The timeseries fleet path is bounded to `FLEET_TIMESERIES_MAX_WINDOW_SECS` (300 s / 5 m); wider windows stay node-local by design (bounded snapshot payload). RiskKey **display** merges across nodes, but per-IP risk **reset** stays node-scoped — enforcement state is not cluster-authoritative.
+
+**Incident semantics.** Identity is node-independent (`incident_uid = <SLI>-<window>h`, no per-node fire timestamp), so the same SLI+window firing on N nodes is **one** incident with a `firing_on: [nodes]` breadth. Ack/snooze/resolve converge across nodes within one 5 s refresh tick (last-writer-wins on `updated_at`, clobber-safe). A `resolve` auto-resurrects when the incident **re-fires** after it (fleet-min `fired_at` past `resolved_at`) or has been continuously firing past `RESOLVE_GRACE_SECS` (300 s) — so a dismissal never hides a live problem forever, and flapping is bounded to at most once per grace window.
 
 The fleet-event feed is a **lossy live monitor**, not the durable record.
 For the complete fleet audit trail, every response carries
