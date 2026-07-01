@@ -124,9 +124,6 @@ function colorFor(name) { return CAT_COLOR[name] || stableHueColor(name); }
 function FleetNodeBanner() {
   const cluster = window.useClusterApi ? window.useClusterApi() : { data: null };
   const stats = window.useStatsApi ? window.useStatsApi() : { data: null };
-  const peers = cluster.data?.peers || [];
-  if (peers.length < 2) return null; // single node → no banner
-  const ourNode = cluster.data?.our_node || 'this node';
   // Cluster Phase 4 (§2a) + SCOPE-P1a: `/api/fleet/status` self-declares
   // whether fleet view is `configured` (publish task up) and whether a
   // merged snapshot is currently `active`. `configured && !active` is the
@@ -134,7 +131,14 @@ function FleetNodeBanner() {
   // being off. Per-panel badges below say which panels are actually
   // merged, so this banner no longer over-claims (e.g. the traffic chart
   // and Upstream stay node-local even under Fleet view).
+  //
+  // NB: this hook MUST precede the single-node early return below —
+  // calling it after a conditional return varies the hook count between
+  // renders (React #310) as the cluster roster loads.
   const scope = window.useFleetScopeApi ? window.useFleetScopeApi() : { data: null };
+  const peers = cluster.data?.peers || [];
+  if (peers.length < 2) return null; // single node → no banner
+  const ourNode = cluster.data?.our_node || 'this node';
   const configured = !!scope.data?.configured;
   const active = !!scope.data?.active;
   const fleetNodes = scope.data?.nodes ?? stats.data?.fleet_nodes;
