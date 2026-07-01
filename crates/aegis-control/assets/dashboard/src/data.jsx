@@ -1142,7 +1142,8 @@ function useLatencyApi()  { return useApi('/api/analytics/latency',{ intervalMs:
 function useRouteLatencyApi() { return useApi('/api/analytics/latency/routes',{ intervalMs: 5000, fallback: null }); }
 function useDetectorLatencyApi() { return useApi('/api/analytics/latency/detectors',{ intervalMs: 5000, fallback: null }); }
 function useAnalyticsRoutesApi() { return useApi('/api/analytics/routes',{ intervalMs: 10000, fallback: null }); }
-function useIncidentsApi(){ return useApi('/api/incidents',         { intervalMs: 5000, fallback: null }); }
+// IF-P1b — scoped so the node selector filters the fleet incident roll-up.
+function useIncidentsApi(){ return useApiScoped('/api/incidents',   { intervalMs: 5000, fallback: null }); }
 function useThreatIntelFeedsApi() { return useApi('/api/threat-intel/feeds', { intervalMs: 30000, fallback: null }); }
 function useGeoipStatusApi() { return useApi('/api/geoip/status',   { intervalMs: 60000, fallback: null }); }
 

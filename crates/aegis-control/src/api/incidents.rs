@@ -323,6 +323,46 @@ impl IncidentTracker {
                     snoozed_until: overlay.as_ref().and_then(|s| s.snoozed_until),
                     incident_resolved_at: overlay.as_ref().and_then(|s| s.resolved_at),
                     note: overlay.and_then(|s| s.note),
+                    firing_on: Vec::new(),
+                }
+            })
+            .collect()
+    }
+
+    /// IF-P1b — compose the fleet-deduped firing incidents with our local
+    /// overlay. Same shape as [`enrich`] but the firing set is the merged
+    /// cross-node roll-up (one row per `incident_uid`, with `firing_on`
+    /// breadth). The overlay is still read locally here — cross-node
+    /// overlay convergence is IF-P1c.
+    pub fn enrich_fleet(
+        &self,
+        incidents: Vec<crate::metrics::fleet_snapshot::MergedIncident>,
+    ) -> Vec<EnrichedAlert> {
+        incidents
+            .into_iter()
+            .map(|inc| {
+                let overlay = self.get(&inc.uid);
+                let status = overlay
+                    .as_ref()
+                    .map(|s| s.status)
+                    .unwrap_or(IncidentStatus::Firing);
+                EnrichedAlert {
+                    id: inc.uid,
+                    sli: inc.sli,
+                    severity: inc.severity,
+                    fired_at: DateTime::from_timestamp_millis(inc.fired_at_ms).unwrap_or_default(),
+                    resolved_at: None,
+                    burn_rate: inc.burn_rate,
+                    budget_consumed_pct: inc.budget_consumed_pct,
+                    window_hours: inc.window_hours,
+                    runbook_url: inc.runbook_url,
+                    status,
+                    acked_at: overlay.as_ref().and_then(|s| s.acked_at),
+                    acked_by: overlay.as_ref().and_then(|s| s.acked_by.clone()),
+                    snoozed_until: overlay.as_ref().and_then(|s| s.snoozed_until),
+                    incident_resolved_at: overlay.as_ref().and_then(|s| s.resolved_at),
+                    note: overlay.and_then(|s| s.note),
+                    firing_on: inc.firing_on,
                 }
             })
             .collect()
@@ -347,6 +387,10 @@ pub struct EnrichedAlert {
     pub snoozed_until: Option<DateTime<Utc>>,
     pub incident_resolved_at: Option<DateTime<Utc>>,
     pub note: Option<String>,
+    /// IF-P1b — node ids currently firing this incident across the fleet.
+    /// Empty on the node-local path; populated by `enrich_fleet`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub firing_on: Vec<String>,
 }
 
 #[cfg(test)]
@@ -367,6 +411,36 @@ mod tests {
             measured: 0.9985,
             target: 0.999,
         }
+    }
+
+    #[test]
+    fn enrich_fleet_composes_merged_incidents_with_local_overlay() {
+        use crate::metrics::fleet_snapshot::MergedIncident;
+        let t = IncidentTracker::new();
+        // Ack the incident by its uid.
+        t.ack("DataPlaneAvailability-1h", Some("alice".into()), None);
+
+        let merged = vec![MergedIncident {
+            uid: "DataPlaneAvailability-1h".into(),
+            sli: "DataPlaneAvailability".into(),
+            severity: "page".into(),
+            fired_at_ms: 1_700_000_000_000,
+            burn_rate: 9.0,
+            budget_consumed_pct: 70.0,
+            window_hours: 1,
+            runbook_url: "".into(),
+            firing_on: vec!["node-a".into(), "node-b".into()],
+        }];
+        let enriched = t.enrich_fleet(merged);
+        assert_eq!(enriched.len(), 1);
+        assert_eq!(enriched[0].id, "DataPlaneAvailability-1h");
+        assert_eq!(enriched[0].status, IncidentStatus::Acknowledged);
+        assert_eq!(enriched[0].acked_by.as_deref(), Some("alice"));
+        assert_eq!(
+            enriched[0].firing_on,
+            vec!["node-a".to_string(), "node-b".to_string()]
+        );
+        assert_eq!(enriched[0].budget_consumed_pct, 70.0);
     }
 
     #[test]

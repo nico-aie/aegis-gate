@@ -100,6 +100,42 @@ pub struct SnapSecond {
     pub blocked: u32,
 }
 
+/// One node's view of a firing SLO incident, published for the fleet
+/// Incidents roll-up (IF-P1b). Keyed by the node-independent
+/// `incident_uid` (`<SLI>-<window>h`) so the same incident firing on
+/// multiple nodes dedups to one row.
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct SnapIncident {
+    pub uid: String,
+    pub sli: String,
+    pub severity: String,
+    pub fired_at_ms: i64,
+    pub burn_rate: f64,
+    pub budget_consumed_pct: f64,
+    pub window_hours: u64,
+    pub runbook_url: String,
+    pub node_id: String,
+}
+
+/// One firing incident deduped across the fleet — one row per
+/// `incident_uid`, carrying the breadth of nodes it fired on.
+#[derive(Clone, Debug, Serialize, Default)]
+pub struct MergedIncident {
+    pub uid: String,
+    pub sli: String,
+    pub severity: String,
+    /// Earliest fire across nodes (min).
+    pub fired_at_ms: i64,
+    /// Worst burn rate across nodes (max).
+    pub burn_rate: f64,
+    /// Worst budget burn across nodes (max).
+    pub budget_consumed_pct: f64,
+    pub window_hours: u64,
+    pub runbook_url: String,
+    /// Node ids currently firing this incident, sorted.
+    pub firing_on: Vec<String>,
+}
+
 /// One node's live-traffic rollup, published to `fleet:snap:<node_id>`.
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct FleetSnapshot {
@@ -128,6 +164,9 @@ pub struct FleetSnapshot {
     // --- bounded recent per-second traffic buckets (sparse) ---
     #[serde(default)]
     pub recent_seconds: Vec<SnapSecond>,
+    // --- firing SLO incidents (this node) for the fleet roll-up ---
+    #[serde(default)]
+    pub firing_incidents: Vec<SnapIncident>,
 }
 
 /// Merged percentiles recomputed from the summed histogram.
@@ -163,6 +202,9 @@ pub struct MergedFleet {
     /// sorted ascending. Bounded recent window — the timeseries fleet
     /// path serves windows up to that bound, else falls back node-local.
     pub timeseries_seconds: Vec<SnapSecond>,
+    /// Firing SLO incidents deduped across the fleet by `incident_uid`
+    /// (IF-P1b), each with the nodes it's firing on.
+    pub firing_incidents: Vec<MergedIncident>,
     /// SCOPE-P1b — the raw per-node snapshots this view was merged from,
     /// retained so the dashboard node-selector can scope any panel to a
     /// single node (re-merge a one-element slice). Internal only —
@@ -203,6 +245,7 @@ pub fn merge(snaps: &[FleetSnapshot], top_k: usize) -> MergedFleet {
     out.top_attackers = merge_top_attackers(snaps, top_k);
     out.risk_buckets = merge_risk_buckets(snaps, top_k);
     out.timeseries_seconds = merge_timeseries(snaps);
+    out.firing_incidents = merge_incidents(snaps);
     out.node_snaps = snaps.to_vec();
     out
 }
@@ -333,6 +376,64 @@ fn merge_top_attackers(snaps: &[FleetSnapshot], top_k: usize) -> Vec<SnapAttacke
     rows
 }
 
+/// Worst-wins ordering for SLO alert severity (page > ticket > other).
+fn severity_rank(sev: &str) -> u8 {
+    match sev {
+        "page" | "critical" => 2,
+        "ticket" | "warn" => 1,
+        _ => 0,
+    }
+}
+
+/// Dedup per-node firing incidents by `incident_uid`: one row per logical
+/// incident, carrying the sorted `firing_on` node list, the earliest fire
+/// (min), the worst budget burn (max), and the worst severity. Sorted by
+/// budget desc then uid for a stable, severity-forward queue.
+fn merge_incidents(snaps: &[FleetSnapshot]) -> Vec<MergedIncident> {
+    let mut by_uid: BTreeMap<String, MergedIncident> = BTreeMap::new();
+    for s in snaps {
+        for inc in &s.firing_incidents {
+            let entry = by_uid.entry(inc.uid.clone()).or_insert_with(|| MergedIncident {
+                uid: inc.uid.clone(),
+                sli: inc.sli.clone(),
+                severity: inc.severity.clone(),
+                fired_at_ms: inc.fired_at_ms,
+                burn_rate: inc.burn_rate,
+                budget_consumed_pct: inc.budget_consumed_pct,
+                window_hours: inc.window_hours,
+                runbook_url: inc.runbook_url.clone(),
+                firing_on: Vec::new(),
+            });
+            if inc.fired_at_ms < entry.fired_at_ms {
+                entry.fired_at_ms = inc.fired_at_ms;
+            }
+            if inc.burn_rate > entry.burn_rate {
+                entry.burn_rate = inc.burn_rate;
+            }
+            if inc.budget_consumed_pct > entry.budget_consumed_pct {
+                entry.budget_consumed_pct = inc.budget_consumed_pct;
+            }
+            if severity_rank(&inc.severity) > severity_rank(&entry.severity) {
+                entry.severity = inc.severity.clone();
+            }
+            if !inc.node_id.is_empty() && !entry.firing_on.contains(&inc.node_id) {
+                entry.firing_on.push(inc.node_id.clone());
+            }
+        }
+    }
+    let mut rows: Vec<MergedIncident> = by_uid.into_values().collect();
+    for r in &mut rows {
+        r.firing_on.sort();
+    }
+    rows.sort_by(|a, b| {
+        b.budget_consumed_pct
+            .partial_cmp(&a.budget_consumed_pct)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.uid.cmp(&b.uid))
+    });
+    rows
+}
+
 /// Sum per-node per-second traffic buckets by absolute epoch second.
 /// Buckets are wall-clock-keyed, so a plain sum across nodes is the
 /// correct fleet view; result is sorted ascending for stable rendering.
@@ -412,6 +513,7 @@ pub fn build_snapshot(
     stats_agg: &crate::api::stats::StatsAggregator,
     attacks_agg: &crate::api::attacks::AttacksAggregator,
     risk: &aegis_security::risk::RiskTracker,
+    firing: &[crate::slo::SloAlert],
     hist: &crate::metrics::request_duration::RequestStageHistogram,
     latency_stage: &str,
 ) -> FleetSnapshot {
@@ -484,6 +586,23 @@ pub fn build_snapshot(
         .map(|(sec, total, blocked)| SnapSecond { sec, total, blocked })
         .collect();
 
+    // Firing SLO incidents (this node), keyed by node-independent
+    // incident_uid so the merge dedups the same incident across nodes.
+    let firing_incidents: Vec<SnapIncident> = firing
+        .iter()
+        .map(|a| SnapIncident {
+            uid: crate::api::incidents::incident_uid(a),
+            sli: format!("{:?}", a.sli),
+            severity: format!("{:?}", a.severity).to_lowercase(),
+            fired_at_ms: a.fired_at.timestamp_millis(),
+            burn_rate: a.burn_rate,
+            budget_consumed_pct: a.budget_consumed_pct,
+            window_hours: a.window_hours,
+            runbook_url: a.runbook_url.clone(),
+            node_id: node_id.to_string(),
+        })
+        .collect();
+
     FleetSnapshot {
         node_id: node_id.to_string(),
         ts_ms: chrono::Utc::now().timestamp_millis(),
@@ -500,6 +619,7 @@ pub fn build_snapshot(
         top_attackers,
         risk_buckets,
         recent_seconds,
+        firing_incidents,
     }
 }
 
@@ -719,6 +839,50 @@ mod tests {
 
         // Unknown node → None.
         assert!(m.view_for_node("ghost").is_none());
+    }
+
+    fn sincident(uid: &str, node: &str, budget: f64, fired_ms: i64, sev: &str) -> SnapIncident {
+        SnapIncident {
+            uid: uid.into(),
+            sli: "DataPlaneAvailability".into(),
+            severity: sev.into(),
+            fired_at_ms: fired_ms,
+            burn_rate: budget / 10.0,
+            budget_consumed_pct: budget,
+            window_hours: 1,
+            runbook_url: "".into(),
+            node_id: node.into(),
+        }
+    }
+
+    #[test]
+    fn merge_incidents_dedups_by_uid_with_firing_on_breadth() {
+        // Same incident firing on two nodes → one row listing both nodes,
+        // earliest fire, worst budget + severity. A distinct uid stays
+        // separate.
+        let mut a = snap("node-a");
+        a.firing_incidents = vec![
+            sincident("DataPlaneAvailability-1h", "node-a", 40.0, 2000, "ticket"),
+            sincident("WafOverheadP99-1h", "node-a", 10.0, 3000, "ticket"),
+        ];
+        let mut b = snap("node-b");
+        b.firing_incidents = vec![sincident(
+            "DataPlaneAvailability-1h",
+            "node-b",
+            70.0,
+            1500,
+            "page",
+        )];
+
+        let m = merge(&[a, b], 50);
+        assert_eq!(m.firing_incidents.len(), 2, "two distinct incidents");
+        // Highest budget first → the shared DataPlaneAvailability row.
+        let top = &m.firing_incidents[0];
+        assert_eq!(top.uid, "DataPlaneAvailability-1h");
+        assert_eq!(top.firing_on, vec!["node-a".to_string(), "node-b".to_string()]);
+        assert_eq!(top.budget_consumed_pct, 70.0, "worst budget");
+        assert_eq!(top.fired_at_ms, 1500, "earliest fire");
+        assert_eq!(top.severity, "page", "worst severity");
     }
 
     #[test]

@@ -134,6 +134,8 @@ fn spawn_fleet_snapshot_task(
     // Composite RiskKey buckets for the fleet-merged Top Attackers table
     // (Arc-shared with the data-plane producer; cheap to clone).
     risk: aegis_security::risk::RiskTracker,
+    // IF-P1b — firing SLO alerts for the fleet Incidents roll-up.
+    tracking: Arc<aegis_control::api::tracking::TrackingHandler>,
     hist: Arc<aegis_control::metrics::request_duration::RequestStageHistogram>,
     // F6 (2026-06-11) — the local audit ring, so the same publish tick
     // also ships this node's bounded audit tail for the fleet backfill.
@@ -173,6 +175,7 @@ fn spawn_fleet_snapshot_task(
             tick.tick().await;
             // 1. Build + publish our own snapshot (best-effort, off the
             //    hot path — reads already-collected local aggregates).
+            let firing = tracking.active_alerts();
             let snap = fs::build_snapshot(
                 &node,
                 FLEET_SNAPSHOT_WINDOW_SECS,
@@ -180,6 +183,7 @@ fn spawn_fleet_snapshot_task(
                 &stats_agg,
                 &attacks_agg,
                 &risk,
+                &firing,
                 &hist,
                 aegis_control::metrics::request_duration::stage::TOTAL,
             );
@@ -649,6 +653,7 @@ pub(crate) async fn admin_accept_loop(
         services.stats_agg.clone(),
         services.attacks_agg.clone(),
         services.risk.clone(),
+        services.tracking.clone(),
         request_stage_hist.clone(),
         services.audit_ring.clone(),
         lease_store.self_id().as_str(),
