@@ -320,18 +320,115 @@ components:
       properties:
         id:
           type: string
-          example: "owasp-sqli-001"
+          example: "block-admin-path"
         body:
           type: string
-          example: "rule \"sqli\" { ... }"
+          description: "YAML rule DSL — see docs/operator/rules-dsl.md"
+          example: "- id: block-admin-path\n  priority: 100\n  when:\n    path_matches:\n      contains: \"/admin\"\n  then:\n    block:\n      status: 403\n"
         enabled: { type: boolean }
 
     RulePutBody:
       type: object
       required: [body, enabled]
       properties:
-        body: { type: string }
+        body: { type: string, description: "YAML rule DSL — see docs/operator/rules-dsl.md" }
         enabled: { type: boolean }
+
+    RuleValidateBody:
+      type: object
+      required: [body]
+      properties:
+        id:
+          type: string
+          description: Optional — enables id-shape + form-id/body-id checks
+        body:
+          type: string
+          description: "YAML rule DSL to validate"
+
+    RuleValidateMessage:
+      type: object
+      required: [line, message]
+      properties:
+        line: { type: integer, description: "1-based; 0 when not line-attributable" }
+        message: { type: string }
+
+    RuleValidateResult:
+      type: object
+      required: [ok, errors, warnings]
+      properties:
+        ok: { type: boolean }
+        errors:
+          type: array
+          items: { $ref: '#/components/schemas/RuleValidateMessage' }
+        warnings:
+          type: array
+          items: { $ref: '#/components/schemas/RuleValidateMessage' }
+
+    SimulateRequest:
+      type: object
+      required: [path]
+      properties:
+        method: { type: string, description: "Defaults to GET", example: "POST" }
+        path: { type: string, description: "Path including query string", example: "/submit?test=zxc" }
+        host: { type: string, description: "Host header; defaults to localhost" }
+        headers:
+          type: object
+          additionalProperties: { type: string }
+        body: { type: string, description: "Optional UTF-8 request body" }
+        peer_ip:
+          type: string
+          description: "Simulated client IP (exercises ip_in rules); defaults to 127.0.0.1"
+          example: "203.0.113.10"
+
+    SimulatedMatchedRule:
+      type: object
+      required: [id, action, terminal, enforced]
+      properties:
+        id: { type: string }
+        action:
+          type: string
+          enum: [allow, block, challenge, rate_limit, log_only, raise_risk]
+        status: { type: integer, nullable: true, description: "block status when action=block" }
+        terminal: { type: boolean }
+        enforced:
+          type: boolean
+          description: "false for challenge/rate_limit/log_only/raise_risk — v1 enforces allow/block only"
+
+    SimulateResponse:
+      type: object
+      required: [decision_action, risk_score, detectors_fired, signals, tier,
+                 muted_detectors, detectors_bypassed, route_scoped_rules_skipped]
+      properties:
+        decision_action: { type: string, enum: [allow, block] }
+        rule_id:
+          type: string
+          nullable: true
+          description: "Id that drove the decision (detector or rule). Legacy — prefer matched_rule / first_detector."
+        risk_score: { type: integer }
+        detectors_fired:
+          type: array
+          items: { type: string }
+        signals:
+          type: array
+          items:
+            type: object
+            properties:
+              class: { type: string }
+              detail: { type: string }
+        tier: { type: string }
+        muted_detectors:
+          type: array
+          items: { type: string }
+        matched_rule:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/SimulatedMatchedRule' }]
+        first_detector: { type: string, nullable: true }
+        detectors_bypassed:
+          type: boolean
+          description: "true when an explicit allow rule skipped the detector chain"
+        route_scoped_rules_skipped:
+          type: array
+          items: { type: string }
 
     AccessListEntry:
       type: object
@@ -1284,6 +1381,58 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MutationOk' }
+
+  /api/rules/validate:
+    post:
+      tags: [Rules]
+      summary: Validate a rule body without saving (read-only)
+      description: >
+        Runs the exact checks the save path enforces — DSL parse + lint,
+        id shape, and form-id/body-id match (id checks only when `id` is
+        supplied). Always 200 with `{ok, errors, warnings}`; an invalid
+        rule is a successful validation, not an HTTP error.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RuleValidateBody' }
+      responses:
+        '200':
+          description: Validation result (ok may be false)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RuleValidateResult' }
+
+  /api/rules/simulate:
+    post:
+      tags: [Rules]
+      summary: Replay a synthetic request against the live rules + detector chain
+      description: >
+        No side effects — no risk increment, no rate-limit consumption, no
+        audit emit. Mirrors data-plane precedence: an explicit terminal
+        `allow` rule match bypasses the detector chain; the per-request
+        detector threshold gate blocks next; then a matching
+        `block {status}` rule. Challenge / rate_limit / log_only /
+        raise_risk matches are reported with `enforced: false` (the v1
+        forward path enforces allow/block only). Evaluates at global
+        scope — route-scoped rules are listed in
+        `route_scoped_rules_skipped`, not evaluated.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SimulateRequest' }
+      responses:
+        '200':
+          description: Simulated decision
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SimulateResponse' }
+        '503':
+          description: Detector list not wired (test bundle)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   # ----------------------------------------------------------------- Lists
   /api/blacklist:

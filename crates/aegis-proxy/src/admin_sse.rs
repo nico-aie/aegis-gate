@@ -58,13 +58,17 @@ pub const PREAMBLE: &str =
 ///
 /// `query` is the raw request query string (without the
 /// leading `?`); recognised filter keys come from
-/// [`EventFilter::parse_query`].
+/// [`EventFilter::parse_query`]. `self_node` is this node's
+/// cluster identity (roster id) — it lets a `?node=` scope match
+/// local events, which carry no `origin_node` stamp; `None`
+/// (single-node) restricts a node scope to stamped events only.
 pub fn sse_response(
     bus: &AuditBus,
     fleet_bus: Option<&AuditBus>,
     query: &str,
+    self_node: Option<String>,
 ) -> Response<UnsyncBoxBody<Bytes, Infallible>> {
-    let filter = EventFilter::parse_query(query);
+    let filter = EventFilter::parse_query(query).with_self_node(self_node);
     let rx = bus.subscribe();
     // Cluster Phase 2 (§2b): when a fleet-event bus is wired, merge
     // peers' events into this node's SSE feed so any node's console
@@ -383,7 +387,7 @@ mod tests {
     #[tokio::test]
     async fn sse_response_sets_streaming_headers() {
         let bus = AuditBus::new(8);
-        let resp = sse_response(&bus, None, "");
+        let resp = sse_response(&bus, None, "", None);
         assert_eq!(resp.status(), 200);
         let h = resp.headers();
         assert_eq!(
@@ -397,7 +401,7 @@ mod tests {
     #[tokio::test]
     async fn sse_response_honours_class_filter_from_query() {
         let bus = AuditBus::new(16);
-        let resp = sse_response(&bus, None, "class=detection");
+        let resp = sse_response(&bus, None, "class=detection", None);
         bus.emit(ev("a", AuditClass::Admin));
         bus.emit(ev("d", AuditClass::Detection));
         let body = resp.into_body();
@@ -405,5 +409,52 @@ mod tests {
         assert_eq!(frames[0], PREAMBLE);
         assert!(frames[1].contains("\"d\""), "{:?}", frames[1]);
         assert!(!frames[1].contains("\"a\""));
+    }
+
+    /// P1 (2026-07-02) — a `?node=` scope applies to BOTH arms of the
+    /// merged stream: local (unstamped) events are dropped when scoped
+    /// to a peer, and fleet events are kept/dropped by their
+    /// `fields.origin_node` stamp.
+    #[tokio::test]
+    async fn sse_response_scopes_both_stream_arms_by_node() {
+        let bus = AuditBus::new(16); // local arm — this node is node-a
+        let fleet = AuditBus::new(16); // fleet arm — peers, origin-stamped
+
+        let resp = sse_response(&bus, Some(&fleet), "node=node-b", Some("node-a".into()));
+
+        // Local event (no stamp → node-a) — scoped out.
+        bus.emit(ev("local-req", AuditClass::Detection));
+        // Peer node-c — scoped out; peer node-b — kept.
+        let mut from_c = ev("peer-c-req", AuditClass::Detection);
+        from_c.fields = serde_json::json!({ "origin_node": "node-c" });
+        fleet.emit(from_c);
+        let mut from_b = ev("peer-b-req", AuditClass::Detection);
+        from_b.fields = serde_json::json!({ "origin_node": "node-b" });
+        fleet.emit(from_b);
+
+        let frames = collect_n_frames(resp.into_body(), 2).await;
+        assert_eq!(frames[0], PREAMBLE);
+        assert!(frames[1].contains("peer-b-req"), "{:?}", frames[1]);
+        assert!(!frames[1].contains("local-req"));
+        assert!(!frames[1].contains("peer-c-req"));
+    }
+
+    /// Scoped to SELF: local events pass, peers' events are dropped.
+    #[tokio::test]
+    async fn sse_response_scoped_to_self_keeps_local_drops_peers() {
+        let bus = AuditBus::new(16);
+        let fleet = AuditBus::new(16);
+
+        let resp = sse_response(&bus, Some(&fleet), "node=node-a", Some("node-a".into()));
+
+        let mut from_b = ev("peer-b-req", AuditClass::Detection);
+        from_b.fields = serde_json::json!({ "origin_node": "node-b" });
+        fleet.emit(from_b);
+        bus.emit(ev("local-req", AuditClass::Detection));
+
+        let frames = collect_n_frames(resp.into_body(), 2).await;
+        assert_eq!(frames[0], PREAMBLE);
+        assert!(frames[1].contains("local-req"), "{:?}", frames[1]);
+        assert!(!frames[1].contains("peer-b-req"));
     }
 }

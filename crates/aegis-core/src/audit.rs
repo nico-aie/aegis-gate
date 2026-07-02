@@ -273,11 +273,27 @@ fn deserialize_risk_score<'de, D: serde::Deserializer<'de>>(
     Option::<u32>::deserialize(d)
 }
 
+/// `fields` key carrying the originating node id on fleet-published
+/// events. Stamped by the cluster fleet-event publisher
+/// (`aegis-proxy::fleet_events::stamp_origin`) — deliberately NOT a
+/// first-class `AuditEvent` field (~128 construction sites; local
+/// events never carry it, and that absence is the echo-drop guard's
+/// signal). Readers (SSE node filter, subscriber echo-drop, dashboard
+/// row badge) all go through [`AuditEvent::origin_node`].
+pub const ORIGIN_NODE_FIELD: &str = "origin_node";
+
 impl AuditEvent {
     /// 2026-05-17 F-CRITICAL-001: in-memory accessor for callers
     /// that need a `DateTime<Utc>`. The wire shape is `ts_ms`.
     pub fn timestamp(&self) -> chrono::DateTime<chrono::Utc> {
         self.ts
+    }
+
+    /// P1 (2026-07-02) — the fleet origin stamp
+    /// (`fields.origin_node`), or `None` for local / unstamped
+    /// events. "This node's" events are exactly the `None` ones.
+    pub fn origin_node(&self) -> Option<&str> {
+        self.fields.get(ORIGIN_NODE_FIELD).and_then(|v| v.as_str())
     }
 
     /// 2026-05-18 F-CRITICAL-003 (Phase C.2): populate the three
@@ -354,6 +370,39 @@ mod tests {
         let json = serde_json::to_string(&ev).unwrap();
         assert!(json.contains("\"schema_version\":1"));
         assert!(json.contains("\"class\":\"detection\""));
+    }
+
+    /// P1 (2026-07-02) — shared accessor for the fleet origin stamp.
+    /// The fleet publisher writes `fields.origin_node` on cross-node
+    /// events (see `aegis-proxy::fleet_events::stamp_origin`); the SSE
+    /// node filter and the echo-drop guard both read it through this
+    /// one accessor so the key can't drift between readers.
+    #[test]
+    fn origin_node_reads_the_fleet_stamp() {
+        let mut ev = AuditEvent {
+            schema_version: 1,
+            ts: chrono::Utc::now(),
+            request_id: "req-origin".into(),
+            class: AuditClass::Detection,
+            tenant_id: None,
+            tier: None,
+            action: "block".into(),
+            reason: "test".into(),
+            client_ip: "1.2.3.4".into(),
+            route_id: None,
+            rule_id: None,
+            risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
+            fields: serde_json::json!({ ORIGIN_NODE_FIELD: "node-A", "other": 1 }),
+        };
+        assert_eq!(ev.origin_node(), Some("node-A"));
+        // Local events (no stamp / null fields) have no origin.
+        ev.fields = serde_json::Value::Null;
+        assert_eq!(ev.origin_node(), None);
+        ev.fields = serde_json::json!({ "other": 1 });
+        assert_eq!(ev.origin_node(), None);
     }
 
     /// 2026-05-18 F-CRITICAL-003 (Phase C.2): the three new §6

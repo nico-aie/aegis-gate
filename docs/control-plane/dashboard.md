@@ -64,6 +64,8 @@ session cookie + matching CSRF token for mutating methods. See
 | `/api/live` | SSE stream of audit events | session |
 | `/api/config` | `GET` effective config; `PUT` proposed config | session + CSRF |
 | `/api/rules` | CRUD rules | session + CSRF |
+| `/api/rules/validate` | Pre-save rule validation (read-only, same checks as save) | session |
+| `/api/rules/simulate` | Replay a synthetic request against live rules + detectors | session |
 | `/api/secrets` | List secret references (never values) | session |
 | `/api/audit` | Query audit log with filters + hash verification | session |
 | `/metrics` | Prometheus scrape | network ACL + optional bearer |
@@ -90,8 +92,12 @@ session cookie + matching CSRF token for mutating methods. See
   health color.
 - **Upstreams** — pool members, LB algorithm, active/passive health,
   circuit-breaker state.
-- **Rules** — rule list with priority, scope, recent match counts,
-  inline editor with diff view.
+- **Rules** — rule list with priority, scope, inline YAML editor with
+  quick templates, syntax help, AI drafting (Copilot), and pre-save
+  validation; a **Simulator** tab replays synthetic requests (method,
+  path, body, Host, headers, peer IP) against the live custom rules +
+  detector chain. DSL reference:
+  [rules-dsl.md](../operator/rules-dsl.md).
 - **Config** — full effective config (secrets redacted), diff view,
   apply or GitOps PR flow.
 - **Audit** — query by class/actor/time; hash-chain verification status.

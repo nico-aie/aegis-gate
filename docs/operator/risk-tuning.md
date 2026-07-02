@@ -43,10 +43,10 @@
 | Make a detector quieter without disabling it | Move it to `log_only` mode | Settings → set_profile, or `PUT /__waf_control/set_profile` |
 | Block sooner (be more aggressive) | Lower `risk.thresholds.challenge_at` / `block_at` | `cfg.risk.thresholds` in YAML, or Settings → Risk thresholds |
 | Block later (be more permissive) | Raise the same thresholds | Same |
-| Bias scoring on a specific route | Add a custom rule with `RaiseRisk(delta)` | Rules page, or `POST /api/rules` |
+| Hard-block or allow a specific pattern | Custom `block` / `allow` rule (the v1 engine enforces these two; `raise_risk` is parsed but not yet fed into the score gate — see [rules-dsl.md](rules-dsl.md)) | Rules page, or `POST /api/rules` |
 | Suppress a specific detector on a specific endpoint | Per-tier override on the Detectors page | Detectors → Edit row → tier |
 | Allow legitimate redirect targets | `cfg.detectors.open_redirect.allowed_domains` | YAML only (boot-time) |
-| Test a tightening change without taking traffic | Run the [Simulator](../control-plane/dashboard.md#simulator) on the candidate config | Simulator page |
+| Test a tightening change without taking traffic | Replay representative requests in the [Simulator](rules-dsl.md#testing-rules--the-simulator) | Rules → Simulator tab |
 
 If the table doesn't cover your case, read [§ Why scores aren't editable](#why-scores-arent-editable) and the per-knob sections below before opening a feature request.
 
@@ -262,10 +262,10 @@ See [`profiles.md`](./profiles.md) for the empirical comparison + per-knob trade
 |---|---|---|---|
 | Detector firing on legitimate traffic | `log_only` for that detector class | Per-tier override on the affected tier | Allow rule for the specific UA / route |
 | WAF blocking too aggressively | Raise `challenge_at` to 50 | Raise `block_at` to 90 | Move from `prod-strict` to `prod-balanced` profile |
-| WAF blocking too permissively | Lower `challenge_at` to 30 | Add `RaiseRisk(25)` rule on the affected detector | Move from `prod-balanced` to `prod-strict` profile |
+| WAF blocking too permissively | Lower `challenge_at` to 30 | Add a scoped `block` rule for the offending pattern | Move from `prod-balanced` to `prod-strict` profile |
 | Scanner from internal IP being banned | Whitelist the IP via Allow rule | Move the `recon` detector to `log_only` | Strikes-window reset — surgical (`POST /api/risk/reset_key` for one bucket) or IP-wide (`POST /api/risk/<ip>/reset`) |
 | OAuth callback to partner domain blocked | Add domain to `open_redirect.allowed_domains` | (rare) move `open_redirect` to `log_only` | (rare) disable `open_redirect` for the OAuth route via per-tier override |
-| Specific detector should escalate faster on `/admin/**` | `RaiseRisk(delta: 25)` rule scoped to route | Lower `block_at` globally | (don't) edit the score |
+| Specific pattern should hard-fail on `/admin/**` | Route-scoped `block` rule (note: `raise_risk` rules parse but aren't fed into the score gate yet — [rules-dsl.md](rules-dsl.md)) | Lower `block_at` globally | (don't) edit the score |
 | Detector seems too noisy site-wide | Read its per-detector doc — many take a config knob | `log_only` until you've audited the noise | Raise thresholds globally |
 
 ---
@@ -275,17 +275,20 @@ See [`profiles.md`](./profiles.md) for the empirical comparison + per-knob trade
 ```sh
 # Confirm the YAML parses + lints cleanly.
 target/release/waf validate --config config/active.yaml
-
-# Run the simulator on the candidate config — drives synthetic traffic
-# from the audit corpus and reports per-class fire rates.
-target/release/waf simulate --config config/candidate.yaml --duration 60s
-
-# Once happy, hot-reload (no restart needed for thresholds, mode, or
-# per-tier overrides; allowed_domains needs a full reload).
-target/release/waf reload
 ```
 
-The simulator (also reachable on the Simulator page) lets you compare candidate vs current config side-by-side before turning anything on. Use it for any threshold change ≥10 points or any per-tier override.
+Then probe the change with the dashboard **Simulator** (Rules →
+Simulator, or `POST /api/rules/simulate`): replay representative
+requests — method, path, body, Host, headers, and peer IP — against the
+**live** rules + detector chain and check the verdict, fired detectors,
+and per-request score before relying on it. Threshold, mode, and
+per-tier override changes made through the dashboard apply live
+(audit-mutated, no restart); file edits are picked up by the config
+watcher. Probe before/after any threshold change ≥10 points or any
+per-tier override.
+
+> The simulator evaluates single requests statelessly — it does not
+> replay the audit corpus or simulate the cumulative-risk band.
 
 ---
 

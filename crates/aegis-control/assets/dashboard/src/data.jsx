@@ -487,6 +487,11 @@ function mapAuditToLiveRow(ev, seq) {
     ts: fmtTs(epoch),
     epoch,
     ip,
+    // P2 (2026-07-02) — node attribution. Fleet-SSE events carry
+    // `fields.origin_node` (fleet_events stamp); fleet-audit backfill
+    // rows carry `fields.node_id` (ring-ingest stamp). Local rows carry
+    // neither → null = "this node".
+    node: f.origin_node || f.node_id || null,
     geo: null,
     method: f.method || ev.method || 'GET',
     path: f.path || ev.path || '/',
@@ -512,9 +517,20 @@ function mapAuditToLiveRow(ev, seq) {
 function useRealLiveFeed(maxLen = 60, paused = false) {
   const [events, setEvents] = useState([]);
   const [connected, setConnected] = useState(false);
+  // P2 (2026-07-02) — honor the Cluster-nodes scope selector. 'all'
+  // keeps today's fleet-merged stream; a node id scopes the SSE stream
+  // server-side (?node=) and the backfill client-side (the audit merge
+  // has no node param; its rows are node_id-stamped, so we filter).
+  const [scopeNode] = useFleetNodeScope();
 
-  // Backfill once on mount.  Filter to real request decisions
-  // (block / allow / challenge / rate_limit / timeout /
+  // Scope change → clear the buffer so rows from the previous scope
+  // don't linger (the effects below re-backfill + reconnect).
+  useEffect(() => {
+    setEvents([]);
+  }, [scopeNode]);
+
+  // Backfill on mount + on scope change.  Filter to real request
+  // decisions (block / allow / challenge / rate_limit / timeout /
   // circuit_breaker) so the SSE-internal connect / heartbeat
   // events don't pad the visible buffer.
   useEffect(() => {
@@ -539,7 +555,11 @@ function useRealLiveFeed(maxLen = 60, paused = false) {
         // from the Live Feed (Audit Trail keeps them).
         const backfilled = data.events
           .filter(ev => REAL_ACTIONS.has(ev.action) && !FEED_HIDDEN_ACTIONS.has(ev.action))
-          .map(ev => mapAuditToLiveRow(ev, ++_realLiveSeq));
+          .map(ev => mapAuditToLiveRow(ev, ++_realLiveSeq))
+          // P2 — node scope: fleet-merge rows are node_id-stamped, so a
+          // scoped view keeps only that node's rows. Unstamped rows
+          // (single-node ring fallback) are kept — no fleet = no peers.
+          .filter(row => scopeNode === 'all' || row.node === null || row.node === scopeNode);
         if (backfilled.length > 0) {
           setEvents(prev => {
             // Preserve any SSE rows that already arrived; merge by epoch.
@@ -551,13 +571,19 @@ function useRealLiveFeed(maxLen = 60, paused = false) {
       })
       .catch(() => { /* backfill failed — SSE alone is fine */ });
     return () => { cancelled = true; };
-  }, [maxLen]);
+  }, [maxLen, scopeNode]);
 
   useEffect(() => {
     if (paused) return;
     let es;
     try {
-      es = new EventSource('/dashboard/sse', { withCredentials: true });
+      // P2 — pass the node scope to the server-side SSE filter
+      // (EventFilter ?node=). The server matches local events via its
+      // own identity, so the client never guesses which node is self.
+      const sseUrl = scopeNode === 'all'
+        ? '/dashboard/sse'
+        : `/dashboard/sse?node=${encodeURIComponent(scopeNode)}`;
+      es = new EventSource(sseUrl, { withCredentials: true });
       es.onopen = () => setConnected(true);
       es.onerror = () => setConnected(false);
       es.onmessage = (e) => {
@@ -603,6 +629,9 @@ function useRealLiveFeed(maxLen = 60, paused = false) {
             ts: fmtTs(epoch),
             epoch,
             ip,
+            // P2 — node attribution: fleet-SSE peers carry
+            // fields.origin_node; local rows carry neither key → null.
+            node: f.origin_node || f.node_id || null,
             geo: null,
             method: f.method || ev.method || 'GET',
             path: f.path || ev.path || '/',
@@ -635,7 +664,7 @@ function useRealLiveFeed(maxLen = 60, paused = false) {
       // EventSource not available; leave events empty
     }
     return () => { if (es) es.close(); };
-  }, [paused, maxLen]);
+  }, [paused, maxLen, scopeNode]);
   return { events, connected };
 }
 
@@ -1456,6 +1485,21 @@ async function rulesGenerate({ intent, id }) {
   });
   return r.json().catch(() => ({ error: `HTTP ${r.status}` }));
 }
+// P4 (2026-07-02) — pre-save validation. POST {id?, body} to
+// /api/rules/validate; returns {ok, errors:[{line,message}], warnings:[…]}
+// (200 even when ok:false — invalid DSL is a successful validation).
+// Runs the exact checks the save path enforces, so validate-ok →
+// save-rejected can't happen (409 rule_exists aside).
+async function rulesValidate({ id, body }) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch('/api/rules/validate', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+    body: JSON.stringify({ id, body }),
+  });
+  return r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+}
 async function rulesPut(id, body) {
   const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
   const r = await fetch(`/api/rules/${encodeURIComponent(id)}`, {
@@ -1857,7 +1901,7 @@ Object.assign(window, {
   // TI-T — audit-mutated tier edits
   tierPut,
   useRoutesApi, useTiersApi,
-  rulesPost, rulesPut, rulesDelete, rulesToggle, rulesGenerate, waitForVersion, waitForApplied, currentConfigVersion,
+  rulesPost, rulesPut, rulesDelete, rulesToggle, rulesGenerate, rulesValidate, waitForVersion, waitForApplied, currentConfigVersion,
   fetchConfigState, notifyConfigConvergence,
   // Optimistic overlay (instant UI + reconcile) for rules/pools/routes
   useOptimisticOverlay, applyOverlayList, applyOverlayMap, overlayMatches,
