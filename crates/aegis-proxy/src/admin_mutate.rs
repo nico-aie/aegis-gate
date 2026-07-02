@@ -6227,6 +6227,97 @@ pub(crate) async fn handle_ddos_put(
     }
 }
 
+/// `PUT /api/gates/ddos/mode` (2026-07-02) — flip the DDoS gate's
+/// **interop mode override** between `enforce` and `log_only` from the
+/// dashboard, so a `set_profile log_only` on `ddos` can be re-enforced
+/// without the loopback `/__waf_control/set_profile`. Audit-mutated +
+/// CSRF-gated (mirrors `handle_mode_put`); publishes the new mode map
+/// fleet-wide so peers converge. This targets the interop `ModeStore`
+/// only — the config-level `ddos.observe_only` flag is a separate
+/// dry-run source, toggled via `PUT /api/gates/ddos`.
+pub(crate) async fn handle_ddos_mode_put<B>(
+    req: hyper::Request<B>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>>
+where
+    B: hyper::body::Body<Data = Bytes>,
+{
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "ddos-mode-put");
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+    let parsed: serde_json::Value =
+        serde_json::from_str(if body_str.is_empty() { "{}" } else { body_str })
+            .unwrap_or(serde_json::Value::Null);
+    let mode_str = parsed.get("mode").and_then(|v| v.as_str()).unwrap_or("");
+
+    let Some(rt) = services.interop.as_ref() else {
+        // No interop runtime (test bundle) → the mode store the data
+        // plane reads isn't wired, so there's nothing to toggle.
+        return json_response(
+            503,
+            &serde_json::json!({
+                "ok": false,
+                "error": "interop runtime not wired — DDoS mode override unavailable",
+            }),
+        );
+    };
+
+    let before = serde_json::json!({
+        "mode": aegis_control::interop::rule_map::mode_for_rule(&rt.modes, Some("ddos")).as_str(),
+    });
+    let modes = rt.modes.clone();
+    let mode_owned = mode_str.to_string();
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/gates/ddos/mode",
+        action: "ddos_mode_set",
+        reason: "operator toggled DDoS gate enforce/log-only",
+    };
+    let outcome = services
+        .mutate
+        .apply::<_, aegis_control::interop::headers::Mode, aegis_control::api::mutation::MutationError>(
+            &req_ctx,
+            before,
+            serde_json::json!({ "mode": mode_owned }),
+            || {
+                aegis_control::api::gates::set_feature_mode(&modes, "ddos", &mode_owned)
+                    .map_err(aegis_control::api::mutation::MutationError::Validation)
+            },
+        );
+    match outcome {
+        Ok(o) => {
+            // Converge the new mode map across the fleet (mirrors the A0
+            // fix in handle_mode_put). Best-effort; no-op single-node.
+            rt.control.publish_modes().await;
+            let effective =
+                aegis_control::interop::rule_map::mode_for_rule(&rt.modes, Some("ddos"));
+            json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "mode": o.value.as_str(),
+                    "effective_mode": effective.as_str(),
+                    "request_id": pre.request_id,
+                }),
+            )
+        }
+        Err(e) => mutation_error_response(e),
+    }
+}
+
 /// `PUT /api/rate-limit` — hot-swap the per-IP token-bucket
 /// limiter config. Audit-mutated through `AuditedMutate`.
 /// Per-IP timestamp state preserved.

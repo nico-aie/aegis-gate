@@ -243,6 +243,29 @@ pub fn render_get(runtime: Option<&Arc<DdosRuntime>>, effective_mode: &str) -> S
     serde_json::to_string(&view).unwrap_or_else(|_| String::from("{}"))
 }
 
+/// PR (2026-07-02) — set one feature's interop mode override from the
+/// admin surface, so a `set_profile log_only` on a gate (e.g. `ddos`)
+/// can be re-enforced from the dashboard instead of the loopback
+/// `/__waf_control/set_profile`. Parses `enforce` / `log_only` (rejects
+/// anything else without touching the store) and installs an EXPLICIT
+/// per-feature override — so the feature enforces even when the global
+/// default is log_only. The caller then `publish_modes()` to converge
+/// the fleet. Returns the applied `Mode`.
+pub fn set_feature_mode(
+    modes: &crate::interop::mode::ModeStore,
+    feature: &str,
+    mode_str: &str,
+) -> Result<crate::interop::headers::Mode, String> {
+    use crate::interop::headers::Mode;
+    let mode = match mode_str {
+        "enforce" => Mode::Enforce,
+        "log_only" => Mode::LogOnly,
+        other => return Err(format!("mode must be 'enforce' or 'log_only', got '{other}'")),
+    };
+    modes.set_feature(feature.to_string(), mode);
+    Ok(mode)
+}
+
 // =====================================================================
 // Rate-limit gate read + write surface
 // =====================================================================
