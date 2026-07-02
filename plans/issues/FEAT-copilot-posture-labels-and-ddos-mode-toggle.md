@@ -1,6 +1,12 @@
 # Copilot Live-Posture window labels + DDoS enforce/log-only toggle from the UI
 
-**Status:** 🔵 PLANNED
+**Status:** 🟢 A + B shipped (TDD, `feat/copilot-posture-labels-ddos-mode-toggle`, 2026-07-02)
+
+Notes: enforce = explicit override (predictable even under a global
+log_only default); enforce is single-click (restorative), log-only is
+two-click armed (reduces protection). Live Posture got per-tile window
+sublabels + a header caption. Backend helper `set_feature_mode` TDD'd
+(4 tests); endpoint `PUT /api/gates/ddos/mode` mirrors handle_mode_put.
 **Date:** 2026-07-02
 **Reported by:** Nico — (1) Copilot "Live posture" reads 0/none while the 60-min
 brief is full → the tiles' real time windows aren't labeled; (2) after a
