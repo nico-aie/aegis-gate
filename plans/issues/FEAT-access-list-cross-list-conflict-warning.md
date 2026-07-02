@@ -1,6 +1,11 @@
 # Access lists — surface (don't block) same-entry-on-both-lists conflicts
 
-**Status:** 🔵 PLANNED
+**Status:** 🟢 P1–P3 shipped (TDD, `feat/access-list-conflict-warning`, 2026-07-02)
+
+Bundled: the same branch also fixes an unrelated UX bug Nico flagged —
+the Investigation drawer's 5-action footer overflowed the 480px drawer
+and the Copilot FAB (z-index 1001) overlapped it. Fix: `.drawer-foot`
+flex-wrap + raise `.drawer`/`.drawer-backdrop` above the FAB (1003/1002).
 **Date:** 2026-07-02
 **Reported by:** Nico ("are we good if a user adds the same item to both whitelist and blacklist?")
 
