@@ -706,6 +706,70 @@ mod tests {
         assert!(!f.matches(&ev_filter("b", "1.1.1.1", None, &[])));
     }
 
+    // ---- PR-B P1 (2026-07-02) — risk_key filter ------------------------
+    //
+    // `fields.risk_key.key_hash` is the stable 16-hex composite-bucket id
+    // (`blake3(ip|device_fp|session)` truncated — data_plane.rs
+    // `risk_key_audit_value`), stamped on every allow, detector block,
+    // risk-score block, challenge and 429. A `risk_key` filter lets the
+    // Investigation page pivot on one device/session bucket.
+
+    fn ev_with_risk_key(id: &str, key_hash: Option<&str>) -> AuditEvent {
+        let mut e = ev(id);
+        if let Some(kh) = key_hash {
+            e.fields = serde_json::json!({
+                "risk_key": {
+                    "ip": "1.1.1.1",
+                    "device_fp": null,
+                    "session_present": false,
+                    "key_hash": kh,
+                },
+            });
+        }
+        e
+    }
+
+    #[test]
+    fn audit_filter_risk_key_matches_bucket_hash() {
+        let f = AuditFilter {
+            risk_key: Some("a1b2c3d4e5f60718".into()),
+            ..Default::default()
+        };
+        assert!(!f.is_empty(), "a risk_key filter is not an empty filter");
+        assert!(f.matches(&ev_with_risk_key("a", Some("a1b2c3d4e5f60718"))));
+        // Hex — compare case-insensitively.
+        assert!(f.matches(&ev_with_risk_key("b", Some("A1B2C3D4E5F60718"))));
+        assert!(!f.matches(&ev_with_risk_key("c", Some("ffffffffffffffff"))));
+    }
+
+    #[test]
+    fn audit_filter_risk_key_never_matches_rows_without_the_field() {
+        // Early-path rows (blacklist / connect-denied) and admin/system
+        // events carry no risk_key — they must be excluded, not matched.
+        let f = AuditFilter {
+            risk_key: Some("a1b2c3d4e5f60718".into()),
+            ..Default::default()
+        };
+        assert!(!f.matches(&ev_with_risk_key("a", None)), "null fields");
+        let mut other = ev("b");
+        other.fields = serde_json::json!({ "detectors": ["sqli"] });
+        assert!(!f.matches(&other), "fields object without risk_key");
+    }
+
+    #[test]
+    fn audit_filter_risk_key_and_combines_with_other_fields() {
+        let f = AuditFilter {
+            ip: Some("1.1.1.1".into()),
+            risk_key: Some("a1b2c3d4e5f60718".into()),
+            ..Default::default()
+        };
+        // ev() fixtures carry client_ip 1.1.1.1.
+        assert!(f.matches(&ev_with_risk_key("a", Some("a1b2c3d4e5f60718"))));
+        let mut wrong_ip = ev_with_risk_key("b", Some("a1b2c3d4e5f60718"));
+        wrong_ip.client_ip = "9.9.9.9".into();
+        assert!(!f.matches(&wrong_ip), "AND semantics with the ip filter");
+    }
+
     #[test]
     fn audit_filter_rule_id_matches_top_level_or_detectors_array() {
         let f = AuditFilter {
