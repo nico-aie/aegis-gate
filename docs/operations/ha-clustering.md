@@ -204,6 +204,21 @@ is safe — certs have weeks of validity.
 
 **Incident semantics.** Identity is node-independent (`incident_uid = <SLI>-<window>h`, no per-node fire timestamp), so the same SLI+window firing on N nodes is **one** incident with a `firing_on: [nodes]` breadth. Ack/snooze/resolve converge across nodes within one 5 s refresh tick (last-writer-wins on `updated_at`, clobber-safe). A `resolve` auto-resurrects when the incident **re-fires** after it (fleet-min `fired_at` past `resolved_at`) or has been continuously firing past `RESOLVE_GRACE_SECS` (300 s) — so a dismissal never hides a live problem forever, and flapping is bounded to at most once per grace window.
 
+**Live feed node scope (2026-07-02).** The Live Feed honors the topbar
+node selector too: scoping to a node re-opens the SSE stream as
+`/dashboard/sse?node=<id>` and the server filters both arms of the
+merged stream — remote events by their `fields.origin_node` stamp
+(written by the fleet publisher), local events by this node's roster
+identity (local events carry **no** stamp; absence means "this node").
+Unscoped ('all') the feed is the merged fleet view and says so
+(`fleet-wide · N nodes` pill); each row carries a Node badge (`local`
+= this node's own traffic). Two caveats: the fleet publisher is
+**rate-capped** (`cluster.fleet_events.max_publish_rate_per_s`), so a
+view scoped to a *remote* node is a best-effort sample — that node's
+own console has its complete feed (use the `?node=` deep-link); and on
+single-node deployments (no roster) a `node=` scope only matches
+stamped events, so it effectively shows nothing rather than guessing.
+
 The fleet-event feed is a **lossy live monitor**, not the durable record.
 For the complete fleet audit trail, every response carries
 `X-WAF-Request-Id` and every node stamps it into `waf_audit.log`; merge
