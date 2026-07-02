@@ -987,6 +987,22 @@ mod tests {
         assert_eq!(ts.step_seconds, 5);
     }
 
+    /// PR-C P5.1 (2026-07-02) — the response self-describes how much
+    /// history the store actually retains, so the dashboard can gate
+    /// window chips + captions from truth instead of hardcoded copy
+    /// (the 24h-default-vs-62min-retention flat-chart bug).
+    #[test]
+    fn timeseries_response_reports_retention() {
+        let agg = StatsAggregator::new();
+        let ts = agg.timeseries(60, 5);
+        assert_eq!(ts.retention_seconds, TIMESERIES_RETENTION_SECS as u32);
+        let json = serde_json::to_value(&ts).unwrap();
+        assert_eq!(
+            json["retention_seconds"], TIMESERIES_RETENTION_SECS,
+            "retention must be on the wire for the frontend gate"
+        );
+    }
+
     #[test]
     fn timeseries_points_count_matches_window_div_step() {
         let agg = StatsAggregator::new();
