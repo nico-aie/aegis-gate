@@ -11866,6 +11866,10 @@ function PageInvestigation() {
   // PR-B P0 — this console's node identity (PR-A helper) so drawer node
   // attribution never reads as the ambiguous "local".
   const selfNode = window.useSelfNode ? window.useSelfNode() : null;
+  // PR-B P5 — two-click arm state for the bucket-reset button; disarms
+  // on any pivot change.
+  const [resetArmed, setResetArmed] = useStateP(false);
+  useEffectP(() => { setResetArmed(false); }, [activePivot]);
 
   // Honour deep-links from the Live-Feed RequestDetail drawer:
   // `#/investigation?pivot=<id>&kind=request_id`.
@@ -12070,11 +12074,52 @@ function PageInvestigation() {
           <button className="btn primary" onClick={() => setActivePivot(pivot.trim())}>Pivot</button>
         </div>
         {activePivot && (
-          <div style={{ marginTop: 6, fontSize: 11, color: 'var(--ink-dim)' }}>
-            Pivoting on <code>{activePivot}</code> · type: <strong>{effectiveKind || 'unknown'}</strong>
-            {effectiveKind === 'risk_key' && (
-              <span> · one device/session bucket — scores shown are values at event time, not the live bucket state; early-path blocks and admin events carry no bucket and won't match</span>
-            )}
+          <div style={{ marginTop: 6, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span>
+              Pivoting on <code>{activePivot}</code> · type: <strong>{effectiveKind || 'unknown'}</strong>
+              {effectiveKind === 'risk_key' && (
+                <span> · one device/session bucket — scores shown are values at event time, not the live bucket state; early-path blocks and admin events carry no bucket and won't match</span>
+              )}
+            </span>
+            {/* PR-B P5 — surgical bucket reset. Only offered when the
+                bucket's axes are reconstructable from the audit stamp:
+                the raw session is never audited, so session-carrying
+                buckets can't be reset from here (by design). Two-click
+                arm instead of a native confirm (M007: window.confirm
+                stalls Chrome under some extensions). */}
+            {effectiveKind === 'risk_key' && (() => {
+              const needle = activePivot.toLowerCase();
+              const bucketEntry = summary
+                ? Object.entries(summary.byBucket || {}).find(([h]) => h.toLowerCase() === needle)
+                : null;
+              const bucket = bucketEntry ? bucketEntry[1] : null;
+              if (!bucket || !bucket.ip || bucket.session_present) return null;
+              return (
+                <button
+                  className={`btn btn-sm ${resetArmed ? 'danger' : ''}`}
+                  title={`Wipe this bucket's cumulative risk + strikes on THIS node (enforcement state is node-scoped). Axes: ip=${bucket.ip}${bucket.device_fp ? ` device_fp=${bucket.device_fp}` : ''}`}
+                  onClick={async () => {
+                    if (!resetArmed) { setResetArmed(true); return; }
+                    setResetArmed(false);
+                    const r = await window.riskResetKey({
+                      ip: bucket.ip,
+                      device_fp: bucket.device_fp || undefined,
+                    });
+                    if (r && r.ok) {
+                      window.aegisToast(
+                        `Risk bucket reset (${bucket.ip}${bucket.device_fp ? ' + device_fp' : ''})${r.had_state === false ? ' — bucket had no live state' : ''} — node-local`,
+                        'ok',
+                      );
+                    } else {
+                      const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
+                      window.aegisToast(`Bucket reset failed: ${msg}`, 'err');
+                    }
+                  }}
+                >
+                  {resetArmed ? 'Confirm reset — wipes cumulative risk' : 'Reset this bucket'}
+                </button>
+              );
+            })()}
           </div>
         )}
       </div>
