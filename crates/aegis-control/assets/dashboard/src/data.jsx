@@ -1406,13 +1406,27 @@ function useRuntimeApi()  { return useApi('/api/runtime',         { intervalMs: 
 // nodes still get a fresh number every tick (cheap).
 function useStateApi()    { return useApi('/api/state',           { intervalMs: 5000, fallback: null }); }
 
-// SC-T2 — operator-initiated drain. Flips
-// `readiness.draining` so subsequent /healthz/ready probes
-// return 503; LBs (HAProxy / Nginx / k8s endpoints) stop
-// routing new traffic to this node. Audit-mutated; CSRF-gated.
+// Live readiness/drain state for THIS node, so the Scaling page renders a
+// truthful Serving/Draining toggle (survives reload; reflects a drain from
+// SIGTERM or ops automation). `{ draining, node }`.
+function useNodeDrainApi() { return useApi('/api/node/drain', { intervalMs: 5000, fallback: null }); }
+
+// SC-T2 — operator-initiated drain. Flips `readiness.draining` so
+// subsequent /healthz/ready probes return 503; LBs (HAProxy / Nginx / k8s
+// endpoints) stop routing new traffic to this node. CSRF-gated.
 async function adminDrainPost() {
   const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-  const r = await fetch('/admin/drain', {
+  return fetch('/admin/drain', {
+    method: 'POST',
+    headers: { 'x-csrf-token': csrf },
+    credentials: 'same-origin' });
+}
+
+// Reverse of drain — clears `readiness.draining` so /healthz/ready returns
+// 200 again and the LB routes this node back into rotation.
+async function adminUndrainPost() {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  return fetch('/admin/undrain', {
     method: 'POST',
     headers: { 'x-csrf-token': csrf },
     credentials: 'same-origin' });
@@ -1827,7 +1841,7 @@ Object.assign(window, {
   incidentAck, incidentSnooze, incidentResolve,
   useAlertsApi, useGitopsApi, useUpstreamsApi, useRuntimeApi,
   // SC-T2 — Scaling page hooks + drain mutation
-  useStateApi, adminDrainPost,
+  useStateApi, useNodeDrainApi, adminDrainPost, adminUndrainPost,
   // CC-T1.1 — upstream-pool config view + CC-T1.1.b mutation helpers
   useUpstreamsConfigApi, upstreamsConfigPut, poolUpsert, poolDelete,
   // RT-T6 — route mutations
