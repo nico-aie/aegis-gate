@@ -1,6 +1,23 @@
 # Rules page — simulator custom-rule support, syntax-help completeness, editor parity
 
-**Status:** 🔵 PLANNED (nothing implemented)
+**Status:** 🟢 P1–P5 shipped (TDD, `feat/rules-page-simulator-and-editor-gaps`, 2026-07-02)
+
+Implementation notes vs. plan:
+- P1 plumbing was already half-done: `services.active_ruleset` existed
+  (`accept.rs:975`) — only the simulator-side wiring was missing.
+- Discovered during P1: the v1 forward path enforces `block` ONLY
+  (`data_plane.rs:2036-2042`) — challenge/rate_limit rules fall through.
+  The simulator mirrors this and reports such matches with
+  `enforced: false` rather than claiming a challenge verdict.
+- P4's `/api/rules/validate` did NOT exist (the plan's F5 assumed it did —
+  only the internal `validate_rule_body` fn existed); the endpoint was
+  added as part of P4.
+- P5 bundle check: develop's embedded app.js already contained the AI box
+  (rebuilt 2026-07-01) — visibility was a parity/discoverability issue,
+  not staleness.
+- GeoIP finding: no caller wires `evaluate_with_ctx`, so `country`/`asn`
+  rules match nothing on the live path today — documented honestly in
+  `docs/operator/rules-dsl.md` (follow-up candidate).
 **Date:** 2026-07-02
 **Reported by:** Nico (screenshot: rule `rule-test` using `query_matches` + `body_matches`, detail Dsl view)
 **Predecessor:** `plans/issues/archived/PLAN-rules-screen-ux-and-ai-gen-2026-06-21.md` (P1–P4 shipped)
