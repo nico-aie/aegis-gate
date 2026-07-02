@@ -883,6 +883,54 @@ mod tests {
         assert!(!m.enforced);
     }
 
+    // ---- P2 (2026-07-02) — peer_ip input so ip_in rules are testable ----
+
+    #[test]
+    fn peer_ip_is_respected_by_ip_in_rules() {
+        let rules = rules_from_yaml(
+            "- id: block-bad-ip\n  priority: 100\n  when:\n    ip_in:\n      - \"203.0.113.10\"\n  then:\n    block:\n      status: 403\n",
+        );
+        let req = SimulateRequest {
+            method: Some("GET".into()),
+            path: "/".into(),
+            peer_ip: Some("203.0.113.10".parse().unwrap()),
+            ..Default::default()
+        };
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &rules);
+        assert_eq!(resp.decision_action, "block");
+        assert_eq!(
+            resp.matched_rule.expect("ip rule matched").id,
+            "block-bad-ip"
+        );
+        // Default peer (loopback) must not match the same rule.
+        let default_peer = SimulateRequest {
+            method: Some("GET".into()),
+            path: "/".into(),
+            ..Default::default()
+        };
+        let resp2 =
+            simulate(&default_peer, &default_detectors(), &live_mask(), &live_tiers(), &rules);
+        assert_eq!(resp2.decision_action, "allow");
+        assert!(resp2.matched_rule.is_none());
+    }
+
+    #[test]
+    fn invalid_peer_ip_is_rejected_at_deserialization() {
+        // Typed as IpAddr so the existing 400 invalid-body path in
+        // handle_simulate rejects garbage instead of silently
+        // simulating from loopback (which would mislead an operator
+        // testing an ip_in rule).
+        let r = serde_json::from_str::<SimulateRequest>(
+            r#"{"path":"/","peer_ip":"not-an-ip"}"#,
+        );
+        assert!(r.is_err(), "invalid peer_ip must fail to parse");
+        let ok = serde_json::from_str::<SimulateRequest>(
+            r#"{"path":"/","peer_ip":"198.51.100.7"}"#,
+        )
+        .expect("valid peer_ip parses");
+        assert_eq!(ok.peer_ip, Some("198.51.100.7".parse().unwrap()));
+    }
+
     #[test]
     fn empty_ruleset_keeps_legacy_response_shape() {
         let req = SimulateRequest {
