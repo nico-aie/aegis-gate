@@ -351,6 +351,26 @@ impl AccessListStore {
         s.entries.get(id).cloned()
     }
 
+    /// Cross-list conflict lookup (2026-07-02): the first entry in this
+    /// store matching `(kind, value)`, normalized the same way the
+    /// evaluator treats them (trim both; `country` codes are compared
+    /// case-insensitively since they're canonical-uppercase). Used to
+    /// warn when the same source is added to the opposite list. Only
+    /// EXACT (kind, value) equality — CIDR-contains / ASN-membership /
+    /// country-covers-IP overlap is intentionally NOT analyzed here.
+    pub fn find_by_value(&self, kind: &str, value: &str) -> Option<AccessListEntry> {
+        let want_kind = kind.trim();
+        let want_val = normalize_value(want_kind, value);
+        let s = self.inner.lock().expect("access list poisoned");
+        s.entries
+            .values()
+            .find(|e| {
+                e.kind.trim() == want_kind
+                    && normalize_value(e.kind.trim(), &e.value) == want_val
+            })
+            .cloned()
+    }
+
     /// Apply compliance clamp to `expires_at` then upsert. Returns
     /// `Err` if validation fails.
     pub fn put(&self, mut entry: AccessListEntry) -> Result<AccessListEntry, String> {
@@ -557,6 +577,63 @@ impl AccessListStore {
             outcomes,
         }
     }
+}
+
+/// Normalize an access-list `value` for equality comparison. `country`
+/// codes are canonical-uppercase (matches `validate_entry`), everything
+/// else is byte-exact after trimming.
+fn normalize_value(kind: &str, value: &str) -> String {
+    let v = value.trim();
+    if kind == "country" {
+        v.to_ascii_uppercase()
+    } else {
+        v.to_string()
+    }
+}
+
+/// A same-`(kind, value)`-on-both-lists conflict, surfaced (not blocked)
+/// when an operator adds an entry that already exists on the opposite
+/// list. Serialized into the add response so the dashboard can warn.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AccessListConflict {
+    /// The sibling list that already holds this value
+    /// (`blacklist` | `whitelist`).
+    pub list: String,
+    /// Id of the conflicting entry in that sibling list.
+    pub id: String,
+    /// Precedence-aware plain-language effect. Always names the
+    /// blacklist as the winner (the data plane checks it first —
+    /// `data_plane.rs:458`).
+    pub effect: String,
+    /// Reminds the reader this is exact-value only.
+    pub r#match: String,
+}
+
+/// Build the conflict object for an add of `(added_kind, added_value)` to
+/// the `added_list`, checking the `sibling` store. `None` when the value
+/// isn't on the sibling list. The winner is ALWAYS the blacklist (deny
+/// beats allow, enforced by evaluation order), so the effect names
+/// whichever entry — the newly-added one or the sibling — has no effect.
+pub fn conflict_for_add(
+    added_list: &str,
+    added_kind: &str,
+    added_value: &str,
+    sibling: &AccessListStore,
+) -> Option<AccessListConflict> {
+    let hit = sibling.find_by_value(added_kind, added_value)?;
+    // Which list is the sibling? The opposite of the one added to.
+    let sibling_list = if added_list == "blacklist" { "whitelist" } else { "blacklist" };
+    // The no-op entry is whichever is NOT the blacklist.
+    let noop_list = if added_list == "whitelist" { added_list } else { sibling_list };
+    let effect = format!(
+        "blacklist wins at request time — the {noop_list} entry has no effect until the blacklist entry is removed",
+    );
+    Some(AccessListConflict {
+        list: sibling_list.to_string(),
+        id: hit.id,
+        effect,
+        r#match: "exact value; CIDR / ASN / country overlap is not analyzed".to_string(),
+    })
 }
 
 fn validate_entry(e: &AccessListEntry) -> Result<(), String> {

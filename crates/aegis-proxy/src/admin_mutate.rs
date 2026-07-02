@@ -4423,14 +4423,32 @@ pub(crate) async fn handle_access_list_post(
             if let Some(rt) = services.interop.as_ref() {
                 rt.control.publish_access_list_upsert(label, &o.value).await;
             }
-            json_response(
-                201,
-                &serde_json::json!({
-                    "ok": true,
-                    "entry": o.value,
-                    "request_id": pre.request_id,
-                }),
-            )
+            // 2026-07-02 — non-blocking cross-list conflict warning. If the
+            // same (kind, value) is already on the OPPOSITE list the config
+            // is contradictory; the data plane resolves it deterministically
+            // (blacklist wins — checked first), but the operator wasn't told.
+            // Surface it so a whitelisted-but-still-blocked source is
+            // explainable. Never rejects the add.
+            let sibling = if label == "blacklist" {
+                &services.whitelist
+            } else {
+                &services.blacklist
+            };
+            let conflict = aegis_control::api::blacklist::conflict_for_add(
+                label,
+                &o.value.kind,
+                &o.value.value,
+                sibling,
+            );
+            let mut body = serde_json::json!({
+                "ok": true,
+                "entry": o.value,
+                "request_id": pre.request_id,
+            });
+            if let Some(c) = conflict {
+                body["conflict"] = serde_json::to_value(c).unwrap_or(serde_json::Value::Null);
+            }
+            json_response(201, &body)
         }
         Err(e) => mutation_error_response(e),
     }
