@@ -1089,6 +1089,10 @@ function PageLiveFeed() {
     ? window.useFleetNodesApi()
     : { data: { nodes: [] } };
   const fleetNodes = Array.isArray(fleetNodesApi.data?.nodes) ? fleetNodesApi.data.nodes : [];
+  // PR-A (2026-07-02) — resolve unstamped rows to this console's real
+  // node id instead of the ambiguous word "local" (which reads as a
+  // mystery under a "NODE: WAF-2" scope pill — the waf-2 confusion).
+  const selfNode = window.useSelfNode ? window.useSelfNode() : null;
   // Show node attribution when there's a fleet to attribute to (or the
   // operator scoped explicitly / rows carry a stamp).
   const showNodeCol = fleetNodes.length > 1
@@ -1298,7 +1302,7 @@ function PageLiveFeed() {
               <tr>
                 <th style={{ width: 80 }}>Time</th>
                 {showNodeCol && (
-                  <th style={{ width: 90 }} title="Originating cluster node — rows without a stamp are this node's own traffic">Node</th>
+                  <th style={{ width: 110 }} title="Originating cluster node — rows without a fleet stamp were processed by this console's own data plane">Node</th>
                 )}
                 <th style={{ width: 130 }}>IP</th>
                 <th style={{ width: 70 }}>Method</th>
@@ -1331,7 +1335,16 @@ function PageLiveFeed() {
                       {e.node ? (
                         <span className="mono" style={{ fontSize: 10, color: 'var(--accent)' }} title={`event originated on ${e.node}`}>{e.node}</span>
                       ) : (
-                        <span className="dim mono" style={{ fontSize: 10 }} title="this node's own traffic (no fleet origin stamp)">local</span>
+                        // PR-A — unstamped = processed by THIS node's data
+                        // plane; show its real id (fall back to "local"
+                        // only while /api/cluster hasn't answered).
+                        <span
+                          className="dim mono"
+                          style={{ fontSize: 10 }}
+                          title={`this node's own traffic (no fleet origin stamp)${selfNode ? ` — processed by ${selfNode}` : ''}`}
+                        >
+                          {selfNode ? `${selfNode} · this` : 'local'}
+                        </span>
                       )}
                     </td>
                   )}
