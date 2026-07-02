@@ -2969,6 +2969,10 @@ function PageRuleManager() {
   const [search, setSearch] = useStateP('');
   const [editing, setEditing] = useStateP(false);
   const [editBody, setEditBody] = useStateP('');
+  // P4 (2026-07-02) — inline pre-save validation errors for the
+  // detail-pane editor (same /api/rules/validate flow the New-rule
+  // modal uses). Cleared on edit/cancel.
+  const [editValErrors, setEditValErrors] = useStateP(null);
   const [busy, setBusy] = useStateP(false);
   const [showNew, setShowNew] = useStateP(false);
   const [newId, setNewId] = useStateP('');
@@ -3048,14 +3052,23 @@ function PageRuleManager() {
   function startEdit() {
     if (!selected) return;
     setEditBody(selected.body || ruleRowToBody(selected));
+    setEditValErrors(null);
     setEditing(true);
     setTab('dsl');
   }
-  function cancelEdit() { setEditing(false); setEditBody(''); }
+  function cancelEdit() { setEditing(false); setEditBody(''); setEditValErrors(null); }
 
   async function saveEdit() {
     if (!selected) return;
     const id = selected.id;
+    // P4 — validate BEFORE leaving edit mode so an invalid body stays
+    // in the editor with inline errors instead of a failed-save toast.
+    const v = await window.rulesValidate({ id, body: editBody });
+    if (v && v.ok === false) {
+      setEditValErrors(v.errors || []);
+      return;
+    }
+    setEditValErrors(null);
     const value = { body: editBody, enabled: selected.enabled };
     setEditing(false);
     await runMutation(`Rule ${id} updated`,
@@ -3099,7 +3112,11 @@ function PageRuleManager() {
     // Optimistic create: the row appears instantly (appended by the
     // overlay) and is reconciled away once the server load includes it —
     // no waitForRuleVisible poll-loop needed.
-    await runMutation(`Rule ${id} created`,
+    // P4 — a draft save says so, and says where to enable it.
+    const createdLabel = newEnabled
+      ? `Rule ${id} created`
+      : `Rule ${id} created (disabled — enable it from the list when ready)`;
+    await runMutation(createdLabel,
       () => window.rulesPost({ id, body, enabled: newEnabled }),
       { key: id, stage: () => ruleOverlay.stageUpsert(id, value), rollback: () => ruleOverlay.forget(id) });
     setSelectedId(id);
@@ -3303,12 +3320,24 @@ function PageRuleManager() {
                       </span>
                     </div>
                     {editing ? (
-                      <textarea
-                        className="input"
-                        style={{ width: '100%', minHeight: 240, fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.5, padding: 12 }}
-                        value={editBody}
-                        onChange={e => setEditBody(e.target.value)}
-                      />
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        {/* P4 — editor parity: the Edit flow gets the same
+                            AI-generate + syntax-help affordances the
+                            New-rule modal has (shared components). */}
+                        <RuleAiGenerate
+                          ruleId={selected.id}
+                          onDraft={body => { setEditBody(body); setEditValErrors(null); }}
+                          disabled={busy}
+                        />
+                        <RuleSyntaxHelp />
+                        <textarea
+                          className="input"
+                          style={{ width: '100%', minHeight: 240, fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.5, padding: 12 }}
+                          value={editBody}
+                          onChange={e => { setEditBody(e.target.value); setEditValErrors(null); }}
+                        />
+                        <RuleValidationErrors errors={editValErrors} />
+                      </div>
                     ) : (
                       <pre style={{ background: 'var(--canvas)', border: '1px solid var(--hairline)', borderRadius: 6, padding: 14, fontSize: 12, fontFamily: 'var(--font-mono)', margin: 0, overflow: 'auto', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
                         {selected.body || ruleRowToBody(selected)}
@@ -3385,33 +3414,49 @@ function DeleteRuleModal({ ruleId, busy, onCancel, onConfirm }) {
   );
 }
 
-function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNewEnabled, onCancel, onSave, busy }) {
-  // F-02 (2026-05-11) — track whether the operator has attempted
-  // to submit so we can show inline validation errors on empty
-  // required fields instead of silently no-op'ing. Pre-fix the
-  // Save button was just `disabled` when Rule ID was empty,
-  // giving operators no signal that anything was wrong.
-  const [attempted, setAttempted] = useStateP(false);
-  // 2026-05-17 — collapsible DSL cheatsheet right inside the modal so
-  // first-time operators don't have to leave the page to find
-  // syntax. Defaults to collapsed; the textarea is the primary
-  // affordance for users who already know the format.
-  const [showHelp, setShowHelp] = useStateP(false);
-  const idRef = useRefP(null);
-  const idEmpty = !newId.trim();
-  // 2026-05-17 — apply a quick-template: prefill the body AND, if
-  // the operator hasn't typed an ID yet, seed it with the template's
-  // sample id. Avoid clobbering anything the operator has already
-  // typed — both fields are still editable after the prefill.
-  const applyTemplate = (tpl) => {
-    // P1 — keep the body id in lock-step with the form id (or the sample id
-    // when the field is still empty) so create can't trip the id-match check.
-    const targetId = idEmpty ? tpl.sampleId : newId.trim();
-    setNewBody(syncRuleBodyId(tpl.body, targetId));
-    if (idEmpty) setNewId(tpl.sampleId);
-  };
-  // P4 — AI rule generation. Drafts a body from a natural-language intent via
-  // the Copilot; advisory (prefills the editor, never auto-applies).
+// P4 (2026-07-02) — shared "Syntax help" disclosure. Used by BOTH the
+// New-rule modal and the detail-pane editor so editing an existing rule
+// gets the same reference the create flow has. Collapsed by default.
+function RuleSyntaxHelp() {
+  const [show, setShow] = useStateP(false);
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setShow(s => !s)}
+        style={{
+          background: 'none', border: 'none', padding: 0,
+          color: 'var(--accent)', cursor: 'pointer', fontSize: 11,
+        }}
+      >
+        {show ? 'Hide syntax help' : 'Syntax help'}
+      </button>
+      {show && (
+        <pre style={{
+          background: 'var(--canvas)', border: '1px solid var(--hairline)',
+          borderRadius: 6, padding: 10, fontSize: 11, lineHeight: 1.5,
+          fontFamily: 'var(--font-mono)', color: 'var(--ink-dim)', margin: '6px 0 0',
+          // Keep the aligned columns but scroll inside the container instead
+          // of bleeding the long `then:`/`when:` lines past its edge.
+          whiteSpace: 'pre', overflowX: 'auto', maxWidth: '100%',
+        }}>
+          {RULE_DSL_CHEATSHEET.join('\n')}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+// P4 (2026-07-02) — shared AI rule generation box (extracted from
+// NewRuleModal so the detail-pane editor gets it too). Advisory: drafts
+// a body from a natural-language intent via the Copilot and hands it to
+// `onDraft`; nothing is applied automatically.
+//   ruleId    — id to lock the draft's body `id:` to (may be '')
+//   onDraft   — (body) => void, receives the id-synced draft
+//   onAdoptId — optional (id) => void, called when the operator hasn't
+//               typed an id yet and the draft carries one (create flow)
+//   disabled  — parent busy state
+function RuleAiGenerate({ ruleId, onDraft, onAdoptId, disabled }) {
   const [aiIntent, setAiIntent] = useStateP('');
   const [aiBusy, setAiBusy] = useStateP(false);
   // Inline result of the last generation so the operator is told to review —
@@ -3423,15 +3468,18 @@ function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNew
     setAiBusy(true);
     setAiNote(null);
     try {
-      const r = await window.rulesGenerate({ intent, id: newId.trim() });
+      const r = await window.rulesGenerate({ intent, id: (ruleId || '').trim() });
       if (r && r.ok && r.body) {
         // Adopt the generated id when the operator hasn't typed one.
-        let id = newId.trim();
+        let id = (ruleId || '').trim();
         if (!id) {
           const m = r.body.match(/^\s*-?\s*id:\s*(.+)$/m);
-          if (m) { id = m[1].trim(); setNewId(id); }
+          if (m) {
+            id = m[1].trim();
+            if (onAdoptId) onAdoptId(id);
+          }
         }
-        setNewBody(syncRuleBodyId(r.body, id) || r.body);
+        onDraft(syncRuleBodyId(r.body, id) || r.body);
         const v = r.validation;
         if (v && v.ok === false) {
           const first = (v.errors && v.errors[0] && v.errors[0].message) || 'invalid syntax';
@@ -3453,13 +3501,118 @@ function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNew
       setAiBusy(false);
     }
   };
-  const handleSave = () => {
+  return (
+    <div style={{ padding: '10px 12px', borderRadius: 6, background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+      <div className="field-label" style={{ marginBottom: 6 }}>✨ Generate with AI</div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <input
+          className="input"
+          value={aiIntent}
+          onChange={e => setAiIntent(e.target.value)}
+          placeholder="Describe it, e.g. block /admin from outside 10.0.0.0/8"
+          style={{ flex: 1 }}
+          disabled={aiBusy || disabled}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); generateWithAi(); } }}
+        />
+        <button
+          type="button"
+          className="btn primary"
+          onClick={generateWithAi}
+          disabled={aiBusy || disabled}
+          style={{ whiteSpace: 'nowrap' }}
+        >
+          {aiBusy ? 'Generating…' : 'Generate'}
+        </button>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginTop: 6 }}>
+        ⚠️ AI drafts are a <strong>starting point, not a finished rule</strong> — they can be
+        syntactically invalid or block/allow the wrong thing. Nothing is applied automatically:
+        read every line and confirm the behavior before saving. Requires AI Copilot enabled.
+      </div>
+      {aiNote && (
+        <div
+          style={{
+            marginTop: 8, padding: '8px 10px', borderRadius: 4, fontSize: 11, lineHeight: 1.5,
+            border: '1px solid',
+            borderColor: aiNote.tone === 'err' ? 'var(--down)' : aiNote.tone === 'warn' ? 'var(--warn)' : 'var(--up)',
+            color: aiNote.tone === 'err' ? 'var(--down)' : aiNote.tone === 'warn' ? 'var(--warn)' : 'var(--up)',
+            background: 'var(--surface)',
+          }}
+        >
+          {aiNote.msg}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// P4 (2026-07-02) — inline validation-error panel rendered next to the
+// body textarea (create + edit flows). `errors` is the
+// /api/rules/validate `errors` array: [{line, message}].
+function RuleValidationErrors({ errors }) {
+  if (!errors || errors.length === 0) return null;
+  return (
+    <div style={{
+      padding: '8px 10px', borderRadius: 4, fontSize: 11, lineHeight: 1.6,
+      border: '1px solid var(--down)', color: 'var(--down)', background: 'var(--surface)',
+    }}>
+      <strong>Validation failed — fix before saving:</strong>
+      {errors.map((e, i) => (
+        <div key={i} className="mono">
+          {e.line ? `line ${e.line}: ` : ''}{e.message}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNewEnabled, onCancel, onSave, busy }) {
+  // F-02 (2026-05-11) — track whether the operator has attempted
+  // to submit so we can show inline validation errors on empty
+  // required fields instead of silently no-op'ing. Pre-fix the
+  // Save button was just `disabled` when Rule ID was empty,
+  // giving operators no signal that anything was wrong.
+  const [attempted, setAttempted] = useStateP(false);
+  // P4 (2026-07-02) — pre-save validation via POST /api/rules/validate.
+  // Errors render inline and the modal stays open, so an invalid body
+  // no longer vanishes into a failed-save toast after the draft is gone.
+  const [valErrors, setValErrors] = useStateP(null);
+  const [validating, setValidating] = useStateP(false);
+  const idRef = useRefP(null);
+  const idEmpty = !newId.trim();
+  // 2026-05-17 — apply a quick-template: prefill the body AND, if
+  // the operator hasn't typed an ID yet, seed it with the template's
+  // sample id. Avoid clobbering anything the operator has already
+  // typed — both fields are still editable after the prefill.
+  const applyTemplate = (tpl) => {
+    // P1 — keep the body id in lock-step with the form id (or the sample id
+    // when the field is still empty) so create can't trip the id-match check.
+    const targetId = idEmpty ? tpl.sampleId : newId.trim();
+    setNewBody(syncRuleBodyId(tpl.body, targetId));
+    if (idEmpty) setNewId(tpl.sampleId);
+    setValErrors(null);
+  };
+  const handleSave = async () => {
     if (idEmpty) {
       setAttempted(true);
       if (idRef.current) idRef.current.focus();
       return;
     }
-    onSave();
+    if (validating) return;
+    setValidating(true);
+    try {
+      const v = await window.rulesValidate({ id: newId.trim(), body: newBody });
+      if (v && v.ok === false) {
+        setValErrors(v.errors || []);
+        return; // stay open — the draft is still in the editor
+      }
+      // Endpoint unreachable (old binary) → fall through; the save
+      // path re-runs the same checks server-side.
+      setValErrors(null);
+      onSave();
+    } finally {
+      setValidating(false);
+    }
   };
   return (
     <div style={{
@@ -3516,94 +3669,42 @@ function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNew
               Click a template to prefill the body — then edit values like paths, IPs, or status codes.
             </div>
           </div>
-          {/* P4 — AI rule generation (advisory; prefills the editor). */}
-          <div style={{ padding: '10px 12px', borderRadius: 6, background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
-            <div className="field-label" style={{ marginBottom: 6 }}>✨ Generate with AI</div>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <input
-                className="input"
-                value={aiIntent}
-                onChange={e => setAiIntent(e.target.value)}
-                placeholder="Describe it, e.g. block /admin from outside 10.0.0.0/8"
-                style={{ flex: 1 }}
-                disabled={aiBusy || busy}
-                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); generateWithAi(); } }}
-              />
-              <button
-                type="button"
-                className="btn primary"
-                onClick={generateWithAi}
-                disabled={aiBusy || busy}
-                style={{ whiteSpace: 'nowrap' }}
-              >
-                {aiBusy ? 'Generating…' : 'Generate'}
-              </button>
-            </div>
-            <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginTop: 6 }}>
-              ⚠️ AI drafts are a <strong>starting point, not a finished rule</strong> — they can be
-              syntactically invalid or block/allow the wrong thing. Nothing is applied automatically:
-              read every line and confirm the behavior before saving. Requires AI Copilot enabled.
-            </div>
-            {aiNote && (
-              <div
-                style={{
-                  marginTop: 8, padding: '8px 10px', borderRadius: 4, fontSize: 11, lineHeight: 1.5,
-                  border: '1px solid',
-                  borderColor: aiNote.tone === 'err' ? 'var(--down)' : aiNote.tone === 'warn' ? 'var(--warn)' : 'var(--up)',
-                  color: aiNote.tone === 'err' ? 'var(--down)' : aiNote.tone === 'warn' ? 'var(--warn)' : 'var(--up)',
-                  background: 'var(--surface)',
-                }}
-              >
-                {aiNote.msg}
-              </div>
-            )}
-          </div>
+          {/* P4 — AI rule generation (shared component; advisory). */}
+          <RuleAiGenerate
+            ruleId={newId}
+            onAdoptId={setNewId}
+            onDraft={body => { setNewBody(body); setValErrors(null); }}
+            disabled={busy}
+          />
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-              <span className="field-label">Rule body (YAML)</span>
-              <button
-                type="button"
-                onClick={() => setShowHelp(s => !s)}
-                style={{
-                  background: 'none', border: 'none', padding: 0,
-                  color: 'var(--accent)', cursor: 'pointer', fontSize: 11,
-                }}
-              >
-                {showHelp ? 'Hide syntax help' : 'Syntax help'}
-              </button>
-            </div>
-            {showHelp && (
-              <pre style={{
-                background: 'var(--canvas)', border: '1px solid var(--hairline)',
-                borderRadius: 6, padding: 10, fontSize: 11, lineHeight: 1.5,
-                fontFamily: 'var(--font-mono)', color: 'var(--ink-dim)', margin: 0,
-                // Keep the aligned columns but scroll inside the modal instead
-                // of bleeding the long `then:`/`when:` lines past its edge.
-                whiteSpace: 'pre', overflowX: 'auto', maxWidth: '100%',
-              }}>
-                {RULE_DSL_CHEATSHEET.join('\n')}
-              </pre>
-            )}
+            <span className="field-label">Rule body (YAML)</span>
+            <RuleSyntaxHelp />
             <textarea
               className="input"
               style={{ minHeight: 220, fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.5, padding: 12 }}
               value={newBody}
-              onChange={e => setNewBody(e.target.value)}
+              onChange={e => { setNewBody(e.target.value); setValErrors(null); }}
               spellCheck={false}
             />
           </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-            <input type="checkbox" checked={newEnabled} onChange={e => setNewEnabled(e.target.checked)} />
-            <span>Enabled on save</span>
-          </label>
+          <RuleValidationErrors errors={valErrors} />
         </div>
-        <div style={{ padding: 12, borderTop: '1px solid var(--hairline)', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <div style={{ padding: 12, borderTop: '1px solid var(--hairline)', display: 'flex', gap: 8, alignItems: 'center' }}>
+          {/* P4 — save-as-draft made explicit: the toggle sits next to the
+              button whose label reflects it, instead of a small checkbox
+              lost below the fold of a tall modal. */}
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, marginRight: 'auto' }} title="Unchecked saves the rule disabled — a draft you can enable later from the list.">
+            <input type="checkbox" checked={newEnabled} onChange={e => setNewEnabled(e.target.checked)} />
+            <span>Enable immediately</span>
+          </label>
           <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
           {/* F-02 — Save is no longer disabled when the field is
               empty; clicking with an empty value surfaces the
               inline error + focuses the field, so operators see
               what they missed instead of an inert button. */}
-          <button className="btn primary" onClick={handleSave} disabled={busy}>Save</button>
+          <button className="btn primary" onClick={handleSave} disabled={busy || validating}>
+            {validating ? 'Validating…' : newEnabled ? 'Save & enable' : 'Save as draft'}
+          </button>
         </div>
       </div>
     </div>
