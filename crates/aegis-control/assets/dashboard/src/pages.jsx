@@ -3462,6 +3462,20 @@ function RuleAiGenerate({ ruleId, onDraft, onAdoptId, disabled }) {
   // Inline result of the last generation so the operator is told to review —
   // AI output is a DRAFT and may be invalid or semantically wrong.
   const [aiNote, setAiNote] = useStateP(null); // { tone: 'ok'|'warn'|'err', msg }
+  // P5 (2026-07-02) — probe copilot enablement on mount (the component
+  // only mounts when an editor opens). Same free probe the floating
+  // launcher uses: GET /api/copilot/ask with no `q` → 503 disabled /
+  // 400 enabled, no token spend. Renders an honest disabled state up
+  // front instead of a live-looking Generate button that 503s on click.
+  const [copilotEnabled, setCopilotEnabled] = useStateP(null); // null = probing
+  useEffectP(() => {
+    let cancelled = false;
+    fetch('/api/copilot/ask', { credentials: 'same-origin' })
+      .then(r => { if (!cancelled) setCopilotEnabled(r.status !== 503); })
+      .catch(() => { if (!cancelled) setCopilotEnabled(false); });
+    return () => { cancelled = true; };
+  }, []);
+  const copilotOff = copilotEnabled === false;
   const generateWithAi = async () => {
     const intent = aiIntent.trim();
     if (!intent) { window.aegisToast('Describe the rule you want first', 'err'); return; }
@@ -3502,8 +3516,13 @@ function RuleAiGenerate({ ruleId, onDraft, onAdoptId, disabled }) {
     }
   };
   return (
-    <div style={{ padding: '10px 12px', borderRadius: 6, background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
-      <div className="field-label" style={{ marginBottom: 6 }}>✨ Generate with AI</div>
+    <div style={{ padding: '10px 12px', borderRadius: 6, background: 'var(--surface-2)', border: '1px solid var(--border)', opacity: copilotOff ? 0.75 : 1 }}>
+      <div className="field-label" style={{ marginBottom: 6 }}>
+        ✨ Generate with AI
+        {copilotOff && (
+          <span className="pill warn" style={{ marginLeft: 8, fontSize: 10 }}>copilot disabled</span>
+        )}
+      </div>
       <div style={{ display: 'flex', gap: 6 }}>
         <input
           className="input"
@@ -3511,24 +3530,33 @@ function RuleAiGenerate({ ruleId, onDraft, onAdoptId, disabled }) {
           onChange={e => setAiIntent(e.target.value)}
           placeholder="Describe it, e.g. block /admin from outside 10.0.0.0/8"
           style={{ flex: 1 }}
-          disabled={aiBusy || disabled}
+          disabled={aiBusy || disabled || copilotOff}
           onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); generateWithAi(); } }}
         />
         <button
           type="button"
           className="btn primary"
           onClick={generateWithAi}
-          disabled={aiBusy || disabled}
+          disabled={aiBusy || disabled || copilotOff}
           style={{ whiteSpace: 'nowrap' }}
+          title={copilotOff ? 'AI Copilot is disabled on this node' : undefined}
         >
           {aiBusy ? 'Generating…' : 'Generate'}
         </button>
       </div>
-      <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginTop: 6 }}>
-        ⚠️ AI drafts are a <strong>starting point, not a finished rule</strong> — they can be
-        syntactically invalid or block/allow the wrong thing. Nothing is applied automatically:
-        read every line and confirm the behavior before saving. Requires AI Copilot enabled.
-      </div>
+      {copilotOff ? (
+        <div style={{ fontSize: 11, color: 'var(--warn)', marginTop: 6 }}>
+          Copilot is disabled — AI drafting unavailable. Enable with <code>LLM_ENABLED=true</code> +
+          {' '}<code>LLM_BASE_URL</code>/<code>LLM_API_KEY</code>/<code>LLM_MODEL</code> and a binary built
+          with <code>--features llm</code>. Quick templates + syntax help still work.
+        </div>
+      ) : (
+        <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginTop: 6 }}>
+          ⚠️ AI drafts are a <strong>starting point, not a finished rule</strong> — they can be
+          syntactically invalid or block/allow the wrong thing. Nothing is applied automatically:
+          read every line and confirm the behavior before saving.
+        </div>
+      )}
       {aiNote && (
         <div
           style={{
