@@ -906,4 +906,89 @@ mod tests {
         assert_eq!(r.failed, 0);
         assert_eq!(s.list().len(), 3);
     }
+
+    // ---- cross-list conflict detection (2026-07-02) --------------------
+    //
+    // Same (kind, value) on both the blacklist and whitelist is a
+    // contradictory config. The data plane resolves it deterministically
+    // (blacklist wins — checked first), but nothing warned the operator.
+    // `find_by_value` powers a non-blocking warning on add.
+
+    #[test]
+    fn find_by_value_returns_matching_entry() {
+        let s = AccessListStore::new();
+        s.put(entry("a", "ip", "203.0.113.7")).unwrap();
+        let hit = s.find_by_value("ip", "203.0.113.7");
+        assert_eq!(hit.map(|e| e.id), Some("a".to_string()));
+    }
+
+    #[test]
+    fn find_by_value_requires_kind_match() {
+        // Same textual value under a different kind is NOT a conflict —
+        // an `ip` "10" and an `asn` "10" are different things.
+        let s = AccessListStore::new();
+        s.put(entry("a", "asn", "AS10")).unwrap();
+        assert!(s.find_by_value("ip", "AS10").is_none());
+        assert!(s.find_by_value("asn", "AS10").is_some());
+    }
+
+    #[test]
+    fn find_by_value_trims_and_matches_country_case_insensitively() {
+        let s = AccessListStore::new();
+        s.put(entry("cn", "country", "CN")).unwrap();
+        // Trimmed input matches; country codes are canonical-uppercase.
+        assert!(s.find_by_value("country", " CN ").is_some());
+        assert!(s.find_by_value("country", "cn").is_some());
+        // A different country doesn't.
+        assert!(s.find_by_value("country", "RU").is_none());
+    }
+
+    #[test]
+    fn find_by_value_absent_returns_none() {
+        let s = AccessListStore::new();
+        s.put(entry("a", "ip", "1.1.1.1")).unwrap();
+        assert!(s.find_by_value("ip", "2.2.2.2").is_none());
+    }
+
+    // The conflict builder names the SIBLING entry and always reports the
+    // blacklist as the winner (fail-closed precedence), regardless of
+    // which list the operator just added to.
+
+    #[test]
+    fn conflict_for_add_reports_blacklist_wins_when_adding_to_whitelist() {
+        let blacklist = AccessListStore::new();
+        blacklist.put(entry("bad-7", "ip", "203.0.113.7")).unwrap();
+        // Operator just added 203.0.113.7 to the WHITELIST; the sibling
+        // (blacklist) already has it.
+        let c = conflict_for_add("whitelist", "ip", "203.0.113.7", &blacklist)
+            .expect("conflict detected");
+        assert_eq!(c.list, "blacklist");
+        assert_eq!(c.id, "bad-7");
+        assert!(
+            c.effect.contains("blacklist wins"),
+            "effect must name blacklist as the winner: {}",
+            c.effect,
+        );
+    }
+
+    #[test]
+    fn conflict_for_add_reports_blacklist_wins_when_adding_to_blacklist() {
+        let whitelist = AccessListStore::new();
+        whitelist.put(entry("trust-7", "ip", "203.0.113.7")).unwrap();
+        // Operator just added 203.0.113.7 to the BLACKLIST; sibling
+        // (whitelist) has it. Winner is STILL the blacklist (the one just
+        // added), so the effect names the whitelist entry as the no-op.
+        let c = conflict_for_add("blacklist", "ip", "203.0.113.7", &whitelist)
+            .expect("conflict detected");
+        assert_eq!(c.list, "whitelist");
+        assert_eq!(c.id, "trust-7");
+        assert!(c.effect.contains("blacklist wins"), "effect: {}", c.effect);
+    }
+
+    #[test]
+    fn conflict_for_add_none_without_sibling_match() {
+        let sibling = AccessListStore::new();
+        sibling.put(entry("other", "ip", "9.9.9.9")).unwrap();
+        assert!(conflict_for_add("whitelist", "ip", "203.0.113.7", &sibling).is_none());
+    }
 }
