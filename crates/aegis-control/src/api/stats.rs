@@ -132,6 +132,13 @@ pub struct TimeseriesPoint {
 pub struct TimeseriesResponse {
     pub window_seconds: u32,
     pub step_seconds: u32,
+    /// PR-C P5.1 (2026-07-02) — how much history this series can
+    /// actually contain. Buckets older than this are structurally
+    /// empty (not "no traffic"); the dashboard gates its window chips
+    /// + captions on this instead of hardcoded copy. Node-local reads
+    /// report the seconds-store retention; fleet-merged reads report
+    /// the (smaller) fleet snapshot window.
+    pub retention_seconds: u32,
     pub points: Vec<TimeseriesPoint>,
 }
 
@@ -374,6 +381,7 @@ impl StatsAggregator {
         TimeseriesResponse {
             window_seconds: window,
             step_seconds: step,
+            retention_seconds: TIMESERIES_RETENTION_SECS as u32,
             points,
         }
     }
@@ -681,6 +689,10 @@ fn bucketize_seconds(
     TimeseriesResponse {
         window_seconds: window,
         step_seconds: step,
+        // Fleet-merged series only ever contain the bounded snapshot
+        // window — report THAT as the retention so the dashboard's
+        // truth-gate reflects the fleet path's tighter bound.
+        retention_seconds: crate::metrics::fleet_snapshot::FLEET_TIMESERIES_MAX_WINDOW_SECS,
         points,
     }
 }
@@ -985,6 +997,22 @@ mod tests {
         let ts = agg.timeseries(60, 5);
         assert_eq!(ts.window_seconds, 60);
         assert_eq!(ts.step_seconds, 5);
+    }
+
+    /// PR-C P5.1 (2026-07-02) — the response self-describes how much
+    /// history the store actually retains, so the dashboard can gate
+    /// window chips + captions from truth instead of hardcoded copy
+    /// (the 24h-default-vs-62min-retention flat-chart bug).
+    #[test]
+    fn timeseries_response_reports_retention() {
+        let agg = StatsAggregator::new();
+        let ts = agg.timeseries(60, 5);
+        assert_eq!(ts.retention_seconds, TIMESERIES_RETENTION_SECS as u32);
+        let json = serde_json::to_value(&ts).unwrap();
+        assert_eq!(
+            json["retention_seconds"], TIMESERIES_RETENTION_SECS,
+            "retention must be on the wire for the frontend gate"
+        );
     }
 
     #[test]

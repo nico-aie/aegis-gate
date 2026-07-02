@@ -1760,51 +1760,97 @@ function PageAttackEvents() {
 // Latency-percentile + error-rate-by-route widgets render an
 // honest empty state; their data sources land in a follow-up
 // (Prometheus histogram + per-route audit aggregator).
+// PR-C P1 (2026-07-02) — 7d/30d dropped: the per-second store retains
+// ~62 min (TIMESERIES_RETENTION_SECS=3700), so those windows were ≥99%
+// structurally-empty buckets rendering as flat lines. 6h/24h stay
+// listed but are gated at render time on the retention the API now
+// reports (P5.1) — they light up if/when the minute-tier (PR D) ships.
 const ANALYTICS_WINDOWS = {
-  '1h':  { window: 3600,    step: 60   },
-  '6h':  { window: 21600,   step: 300  },
-  '24h': { window: 86400,   step: 1200 },
-  '7d':  { window: 604800,  step: 3600 * 4 },
-  '30d': { window: 2592000, step: 3600 * 24 },
+  '1h':  { window: 3600,  step: 60   },
+  '6h':  { window: 21600, step: 300  },
+  '24h': { window: 86400, step: 1200 },
 };
 
+// Read `?range=` from the hash route (URL-as-state: refresh/share keeps
+// the view). Falls back to the retention-honest 1h default.
+function analyticsInitialRange() {
+  try {
+    const m = location.hash.match(/\?(.+)$/);
+    const r = m ? new URLSearchParams(m[1]).get('range') : null;
+    return r && ANALYTICS_WINDOWS[r] ? r : '1h';
+  } catch (_) {
+    return '1h';
+  }
+}
+
+// Minimum requests in a bucket for its block-ratio to count toward the
+// peak stat — a 1-request/1-block bucket is not a 95% attack wave.
+const RATIO_MIN_SAMPLE = 5;
+
 function PageAnalytics() {
-  const [range, setRange] = useStateP('24h');
-  const cfg = ANALYTICS_WINDOWS[range] ?? ANALYTICS_WINDOWS['24h'];
+  const [range, setRangeState] = useStateP(analyticsInitialRange());
+  const setRange = (r) => {
+    setRangeState(r);
+    // Persist to the URL without re-triggering the router (same page).
+    try {
+      const base = (location.hash.split('?')[0]) || '#/performance';
+      history.replaceState(null, '', `${base}?range=${encodeURIComponent(r)}`);
+    } catch (_) { /* history API unavailable — state alone is fine */ }
+  };
+  const cfg = ANALYTICS_WINDOWS[range] ?? ANALYTICS_WINDOWS['1h'];
   const ts = window.useTimeseriesApi(cfg.window, cfg.step);
   const latency = window.useLatencyApi ? window.useLatencyApi() : { data: null };
   const routeLatency = window.useRouteLatencyApi ? window.useRouteLatencyApi() : { data: null };
   const detectorLatency = window.useDetectorLatencyApi ? window.useDetectorLatencyApi() : { data: null };
   const routes = window.useAnalyticsRoutesApi ? window.useAnalyticsRoutesApi() : { data: null };
+  // PR-C P4 — mixed scopes on this page (timeseries is fleet-capable,
+  // latency histograms + route table are node-local): badge every card.
+  const scopeBadge = window.useScopeBadge ? window.useScopeBadge() : () => null;
   // 2026-05-10 — SLO + Cert summaries removed from Performance.
   // The canonical home is the Health & SLOs page (root-cause hint
   // when below target + full cert table). Performance focuses on
   // throughput / latency / route-level metrics instead.
 
   const points = ts.data?.points ?? [];
-  const reqOverTime = points.map(p => p.total);
-  const blockRatioPct = points.map(p => p.total > 0 ? (p.blocked * 100) / p.total : 0);
+  // PR-C P5.1 — retention the backend actually serves; null on old
+  // binaries (fall back to permissive rendering, no gate).
+  const retentionSecs = Number.isFinite(Number(ts.data?.retention_seconds))
+    ? Number(ts.data.retention_seconds)
+    : null;
+  const windowExceedsRetention = retentionSecs != null && cfg.window > retentionSecs;
 
   const totalReq = points.reduce((s, p) => s + p.total, 0);
   const totalBlocked = points.reduce((s, p) => s + p.blocked, 0);
-  const stepsPerSecond = cfg.step > 0 ? cfg.step : 1;
-  const avgReqPerSecond = points.length > 0
-    ? Math.round(totalReq / (points.length * stepsPerSecond))
-    : 0;
+  // PR-C P1.3 (F2 fix) — average over the span that actually has data,
+  // not the whole window: with a 24h window and 62min retention, ≥23h
+  // of forced zeros rounded every realistic rate down to "0 req/s".
+  const firstDataIdx = points.findIndex(p => p.total > 0);
+  const avgReqPerSecond = (() => {
+    if (totalReq === 0 || firstDataIdx < 0) return null; // no traffic
+    const liveSpanSecs = (points.length - firstDataIdx) * (cfg.step > 0 ? cfg.step : 1);
+    const v = totalReq / Math.max(liveSpanSecs, 1);
+    return v >= 10 ? Math.round(v) : Number(v.toFixed(1));
+  })();
   const avgBlockPct = totalReq > 0 ? (totalBlocked * 100) / totalReq : 0;
-  const peakBlockPct = blockRatioPct.length > 0
-    ? Math.max(...blockRatioPct)
-    : 0;
-  const peakIdx = blockRatioPct.indexOf(peakBlockPct);
+  // PR-C P3 — volume-aware peak: ignore buckets under RATIO_MIN_SAMPLE
+  // requests and show `n=` so the number is auditable.
+  const peak = points.reduce((best, p) => {
+    if (p.total < RATIO_MIN_SAMPLE) return best;
+    const pct = (p.blocked * 100) / p.total;
+    return !best || pct > best.pct ? { pct, ts: p.ts, n: p.total } : best;
+  }, null);
   // LOW-OBS-05 (2026-05-12) — pin to 24h HH:MM so the Block
   // ratio peak-time reads coherently with the rest of the
   // dashboard.  Forcing `hour12: false` avoids the en-US 12h/AM-PM
   // rendering that the QA pass flagged as visually mixed.
-  const peakTs = peakIdx >= 0 && points[peakIdx]
-    ? new Date(points[peakIdx].ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+  const peakTs = peak
+    ? new Date(peak.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
     : '—';
 
   const hasSeries = points.length > 0;
+  const retentionCaption = windowExceedsRetention
+    ? `series retains ~${Math.round(retentionSecs / 60)} min of history — buckets older than that are structurally empty, not "no traffic"`
+    : null;
 
   return (
     <>
@@ -1818,14 +1864,30 @@ function PageAnalytics() {
             />
           </h1>
           <p className="page-subtitle">
-            Historical trends · {range} window
+            {/* PR-C P4 — the window chips control the two traffic charts;
+                the other cards state their own time scope. */}
+            Traffic charts · {range} window — latency + route cards carry their own scope
           </p>
         </div>
         <div className="page-actions">
           <div style={{ display: 'flex', gap: 4 }}>
-            {Object.keys(ANALYTICS_WINDOWS).map(r => (
-              <button key={r} className={`chip ${range === r ? 'active' : ''}`} onClick={() => setRange(r)}>{r}</button>
-            ))}
+            {Object.keys(ANALYTICS_WINDOWS).map(r => {
+              // PR-C P1 — chips wider than the backend's retention are
+              // disabled from truth (P5.1), not offered as a broken promise.
+              const gated = retentionSecs != null && ANALYTICS_WINDOWS[r].window > retentionSecs;
+              return (
+                <button
+                  key={r}
+                  className={`chip ${range === r ? 'active' : ''}`}
+                  onClick={() => !gated && setRange(r)}
+                  disabled={gated}
+                  style={gated ? { opacity: 0.4, cursor: 'not-allowed' } : undefined}
+                  title={gated ? `series retains ~${Math.round(retentionSecs / 60)} min — this window would be mostly empty buckets` : undefined}
+                >
+                  {r}
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -1834,10 +1896,20 @@ function PageAnalytics() {
         <div className="col-6 card">
           <window.SectionHeader
             title="Requests over time"
-            sub={hasSeries ? `avg ${avgReqPerSecond.toLocaleString()} req/s` : 'no data yet'}
+            sub={hasSeries
+              ? (avgReqPerSecond != null
+                ? `avg ${avgReqPerSecond.toLocaleString()} req/s over the traffic span · total ${totalReq.toLocaleString()}`
+                : 'no traffic in window')
+              : 'no data yet'}
+            actions={scopeBadge(true)}
           />
           {hasSeries ? (
-            <window.Sparkline data={reqOverTime} w={460} h={120} color="#3B82F6" fill strokeWidth={1.5} />
+            <>
+              <window.TimeseriesChart points={points} mode="area" h={180} />
+              {retentionCaption && (
+                <div style={{ fontSize: 11, color: 'var(--ink-dim)', padding: '6px 2px 0' }}>{retentionCaption}</div>
+              )}
+            </>
           ) : (
             <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
               No traffic recorded in the last {range}.
@@ -1849,10 +1921,14 @@ function PageAnalytics() {
             title="Latency p50/p95/p99"
             sub={(() => {
               const total = latency.data?.stages?.total;
+              // PR-C P4 — honest scope: cumulative histograms since
+              // process boot (a single cold-start outlier pins p99 until
+              // restart); the window chips do NOT apply here.
               return total
-                ? `WAF-internal · ${total.samples.toLocaleString()} samples`
+                ? `WAF-internal · ${total.samples.toLocaleString()} samples · since boot, resets on restart`
                 : 'no samples yet — drive traffic with `make mock-load`';
             })()}
+            actions={scopeBadge(false)}
           />
           {(() => {
             const stages = latency.data?.stages || {};
@@ -1886,10 +1962,18 @@ function PageAnalytics() {
         <div className="col-6 card">
           <window.SectionHeader
             title="Block ratio"
-            sub={hasSeries ? `avg ${avgBlockPct.toFixed(1)}% · peak ${peakBlockPct.toFixed(1)}% at ${peakTs}` : 'no data yet'}
+            sub={hasSeries
+              ? (peak
+                ? `avg ${avgBlockPct.toFixed(1)}% · peak ${peak.pct.toFixed(1)}% at ${peakTs} (n=${peak.n})`
+                : `avg ${avgBlockPct.toFixed(1)}% · no bucket with ≥${RATIO_MIN_SAMPLE} requests yet`)
+              : 'no data yet'}
+            actions={scopeBadge(true)}
           />
           {hasSeries ? (
-            <window.Sparkline data={blockRatioPct} w={460} h={120} color="#F6465D" fill />
+            // PR-C P2/P3 — per-bucket ratio as BARS (a bucket ratio is a
+            // discrete quantity); no-traffic buckets render as gaps, and
+            // low-sample buckets are dimmed. Hover shows blocked/total.
+            <window.TimeseriesChart points={points} mode="bars" h={180} minSample={RATIO_MIN_SAMPLE} />
           ) : (
             <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
               No block decisions in the last {range}.
@@ -1902,40 +1986,58 @@ function PageAnalytics() {
             return (
               <>
                 <window.SectionHeader
-                  title="Error rate by route"
+                  title="Blocked & errors by route"
                   sub={rows.length > 0
-                    ? `${rows.length} route${rows.length === 1 ? '' : 's'} · audit-ring window`
+                    ? `${rows.length} route${rows.length === 1 ? '' : 's'} · recent requests window`
                     : 'no traffic in window'}
+                  actions={scopeBadge(false)}
                 />
                 {rows.length === 0 ? (
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center', minHeight: 120, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     Drive traffic with <code>make mock-load</code> to populate.
                   </div>
                 ) : (
-                  <table className="tbl tbl-compact" style={{ marginTop: 4 }}>
-                    <thead><tr>
-                      <th>Route</th>
-                      <th style={{ textAlign: 'right' }}>Total</th>
-                      <th style={{ textAlign: 'right' }}>Blocked</th>
-                      <th style={{ textAlign: 'right' }}>5xx</th>
-                      <th style={{ textAlign: 'right' }}>Error %</th>
-                    </tr></thead>
-                    <tbody>
-                      {rows.slice(0, 10).map(r => (
-                        <tr key={r.route}>
-                          <td><code style={{ fontSize: 11 }}>{r.route}</code></td>
-                          <td className="num" style={{ textAlign: 'right' }}>{r.total}</td>
-                          <td className="num" style={{ textAlign: 'right' }}>{r.blocked}</td>
-                          <td className="num" style={{ textAlign: 'right' }}>{r.errors_5xx}</td>
-                          <td className="num" style={{ textAlign: 'right' }}>
-                            <span className={`pill ${r.error_rate_pct > 50 ? 'down' : r.error_rate_pct > 10 ? 'warn' : 'up'}`}>
-                              {r.error_rate_pct.toFixed(1)}%
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <>
+                    <table className="tbl tbl-compact" style={{ marginTop: 4 }}>
+                      <thead><tr>
+                        <th>Route</th>
+                        <th style={{ textAlign: 'right' }}>Total</th>
+                        {/* PR-C P4 — blocked (WAF working as intended,
+                            neutral) split from 5xx (origin failing, red);
+                            the old combined "Error %" made a healthy WAF
+                            read as a broken origin. */}
+                        <th style={{ textAlign: 'right' }} title="WAF verdicts — the WAF doing its job, not an origin failure">Blocked %</th>
+                        <th style={{ textAlign: 'right' }} title="Origin 5xx responses — actual upstream failures">5xx %</th>
+                      </tr></thead>
+                      <tbody>
+                        {rows.slice(0, 10).map(r => {
+                          const blockedPct = r.total > 0 ? (r.blocked * 100) / r.total : 0;
+                          const errPct = r.total > 0 ? (r.errors_5xx * 100) / r.total : 0;
+                          return (
+                            <tr key={r.route}>
+                              <td><code style={{ fontSize: 11 }}>{r.route}</code></td>
+                              <td className="num" style={{ textAlign: 'right' }}>{r.total}</td>
+                              <td className="num" style={{ textAlign: 'right' }}>
+                                <span className="pill neutral" title={`${r.blocked} blocked`}>
+                                  {blockedPct.toFixed(1)}%
+                                </span>
+                              </td>
+                              <td className="num" style={{ textAlign: 'right' }}>
+                                <span className={`pill ${errPct > 10 ? 'down' : errPct > 1 ? 'warn' : 'up'}`} title={`${r.errors_5xx} × 5xx`}>
+                                  {errPct.toFixed(1)}%
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    {rows.length > 10 && (
+                      <div style={{ padding: '6px 12px', fontSize: 11, color: 'var(--ink-dim)' }}>
+                        showing 10 of {rows.length} — sorted by total
+                      </div>
+                    )}
+                  </>
                 )}
               </>
             );
@@ -1952,8 +2054,9 @@ function PageAnalytics() {
                 <window.SectionHeader
                   title="Latency p50/p95/p99 by route"
                   sub={rows.length > 0
-                    ? `${rows.length} active route${rows.length === 1 ? '' : 's'} · live histogram`
-                    : 'no resolved-route samples in window'}
+                    ? `${rows.length} active route${rows.length === 1 ? '' : 's'} · cumulative histogram · since boot, resets on restart`
+                    : 'no resolved-route samples yet'}
+                  actions={scopeBadge(false)}
                 />
                 {rows.length === 0 ? (
                   // LOW-OBS-01 (2026-05-12) — the previous copy
@@ -1968,39 +2071,46 @@ function PageAnalytics() {
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center', minHeight: 80, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     Per-route latency populates as resolved requests
                     arrive. Blocked traffic doesn't reach a route
-                    resolver, so it lands in <em>Error rate by route</em>{' '}
+                    resolver, so it lands in <em>Blocked &amp; errors by route</em>{' '}
                     (above) instead of here. Try{' '}
                     <code>make mock-load</code> to drive allow-class
                     requests.
                   </div>
                 ) : (
-                  <table className="tbl tbl-compact" style={{ marginTop: 4 }}>
-                    <thead><tr>
-                      <th>Route</th>
-                      <th style={{ textAlign: 'right' }}>Samples</th>
-                      <th style={{ textAlign: 'right' }}>p50 (ms)</th>
-                      <th style={{ textAlign: 'right' }}>p95 (ms)</th>
-                      <th style={{ textAlign: 'right' }}>p99 (ms)</th>
-                    </tr></thead>
-                    <tbody>
-                      {rows.slice(0, 15).map(r => {
-                        const fmt = v => v >= 1 ? v.toFixed(2) : v.toFixed(3);
-                        return (
-                          <tr key={r.route}>
-                            <td><code style={{ fontSize: 11 }}>{r.route}</code></td>
-                            <td className="num" style={{ textAlign: 'right' }}>{r.samples.toLocaleString()}</td>
-                            <td className="num" style={{ textAlign: 'right' }}>{fmt(r.p50_ms)}</td>
-                            <td className="num" style={{ textAlign: 'right' }}>{fmt(r.p95_ms)}</td>
-                            <td className="num" style={{ textAlign: 'right' }}>
-                              <span className={`pill ${r.p99_ms > 100 ? 'down' : r.p99_ms > 10 ? 'warn' : 'up'}`}>
-                                {fmt(r.p99_ms)}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                  <>
+                    <table className="tbl tbl-compact" style={{ marginTop: 4 }}>
+                      <thead><tr>
+                        <th>Route</th>
+                        <th style={{ textAlign: 'right' }}>Samples</th>
+                        <th style={{ textAlign: 'right' }}>p50 (ms)</th>
+                        <th style={{ textAlign: 'right' }}>p95 (ms)</th>
+                        <th style={{ textAlign: 'right' }}>p99 (ms)</th>
+                      </tr></thead>
+                      <tbody>
+                        {rows.slice(0, 15).map(r => {
+                          const fmt = v => v >= 1 ? v.toFixed(2) : v.toFixed(3);
+                          return (
+                            <tr key={r.route}>
+                              <td><code style={{ fontSize: 11 }}>{r.route}</code></td>
+                              <td className="num" style={{ textAlign: 'right' }}>{r.samples.toLocaleString()}</td>
+                              <td className="num" style={{ textAlign: 'right' }}>{fmt(r.p50_ms)}</td>
+                              <td className="num" style={{ textAlign: 'right' }}>{fmt(r.p95_ms)}</td>
+                              <td className="num" style={{ textAlign: 'right' }}>
+                                <span className={`pill ${r.p99_ms > 100 ? 'down' : r.p99_ms > 10 ? 'warn' : 'up'}`}>
+                                  {fmt(r.p99_ms)}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    {rows.length > 15 && (
+                      <div style={{ padding: '6px 12px', fontSize: 11, color: 'var(--ink-dim)' }}>
+                        showing 15 of {rows.length}
+                      </div>
+                    )}
+                  </>
                 )}
               </>
             );
@@ -2017,8 +2127,9 @@ function PageAnalytics() {
                 <window.SectionHeader
                   title="Latency p50/p95/p99 by detector"
                   sub={rows.length > 0
-                    ? `${rows.length} active class${rows.length === 1 ? '' : 'es'} · per-detector inspect cost`
+                    ? `${rows.length} active class${rows.length === 1 ? '' : 'es'} · per-detector inspect cost · since boot, resets on restart`
                     : 'no detector samples yet — drive traffic with `make mock-load`'}
+                  actions={scopeBadge(false)}
                 />
                 {rows.length === 0 ? (
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center', minHeight: 80, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
