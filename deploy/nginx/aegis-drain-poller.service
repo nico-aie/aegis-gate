@@ -1,0 +1,24 @@
+# systemd --user unit for the drain-aware LB health poller (see drain-poller.sh).
+# Bridges the WAF's /healthz/ready (drain → 503) to the open-source nginx STREAM
+# upstream, which has no active HTTP health check. Pair with aegis-nginx-lb.service.
+#
+# INSTALL (no sudo):
+#   cp deploy/nginx/aegis-drain-poller.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now aegis-drain-poller
+#
+# Manual control without systemd: deploy/nginx/drain-poller.sh (loop) / --once.
+
+[Unit]
+Description=Aegis-Gate LB drain-aware health poller (nginx stream)
+After=aegis-nginx-lb.service network-online.target
+Wants=aegis-nginx-lb.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env bash %h/aegis-gate/deploy/nginx/drain-poller.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
