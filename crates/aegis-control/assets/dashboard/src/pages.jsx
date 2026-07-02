@@ -749,7 +749,11 @@ function PageOverview() {
 // `/api/audit/since` lookup; when the chain entry is found we
 // surface request_id + chain_hash + prev. Otherwise the Audit
 // section just shows the request_id (if any).
-function RequestDetail({ data }) {
+// PR-B (2026-07-02) — `onPivotRiskKey(hash)` makes the risk_key bucket id
+// clickable: Investigation passes a callback (in-page pivot, since the page
+// only reads deep-link params on mount); other hosts (Live Feed) omit it and
+// get a deep-link anchor to #/investigation instead.
+function RequestDetail({ data, onPivotRiskKey }) {
   const ip = data?.ip || '—';
   const action = data?.action || null;
   const tier = data?.tier || null;
@@ -861,11 +865,44 @@ function RequestDetail({ data }) {
           {riskKey && (
             <div title="The cumulative-risk bucket this request keyed into (IP + device_fp + session). Requests sharing key_hash accumulate risk together. Shown on allow/challenge/block.">
               <span className="dim">risk_key</span>{' '}
-              <code style={{ fontSize: 10 }}>{riskKey.key_hash || '—'}</code>
+              {/* PR-B — the bucket id pivots the Investigation page. */}
+              {riskKey.key_hash ? (
+                onPivotRiskKey ? (
+                  <a
+                    href="#"
+                    onClick={e => { e.preventDefault(); onPivotRiskKey(riskKey.key_hash); }}
+                    title="Pivot Investigation on this risk-key bucket"
+                    style={{ color: 'var(--accent)' }}
+                  >
+                    <code style={{ fontSize: 10, color: 'inherit' }}>{riskKey.key_hash}</code>
+                  </a>
+                ) : (
+                  <a
+                    href={`#/investigation?pivot=${encodeURIComponent(riskKey.key_hash)}&kind=risk_key`}
+                    title="Open Investigation pivoted on this risk-key bucket"
+                    style={{ color: 'var(--accent)' }}
+                  >
+                    <code style={{ fontSize: 10, color: 'inherit' }}>{riskKey.key_hash}</code>
+                  </a>
+                )
+              ) : (
+                <code style={{ fontSize: 10 }}>—</code>
+              )}
               <span className="dim">{' · device_fp '}</span>
               {riskKey.device_fp ? <code style={{ fontSize: 10 }}>{riskKey.device_fp}</code> : <span className="dim">none</span>}
               <span className="dim">{' · session '}</span>
               <span>{riskKey.session_present ? 'present' : 'none'}</span>
+            </div>
+          )}
+          {/* PR-B P0 — node attribution via the PR-A self-node helper:
+              stamped rows show their origin; unstamped rows resolve to
+              the console's real id, never the ambiguous "local". */}
+          {data?.node !== undefined && (
+            <div>
+              <span className="dim">node</span>{' '}
+              {data.node
+                ? <code style={{ fontSize: 10 }}>{data.node}</code>
+                : <span title="no fleet origin stamp — processed by this console's own data plane"><code style={{ fontSize: 10 }}>{data.selfNode ? `${data.selfNode} · this` : 'this node'}</code></span>}
             </div>
           )}
           {geo && (geo.cc || geo.city || geo.lat) && (
@@ -1078,6 +1115,116 @@ function suggestedAction(ev) {
   return null;
 }
 
+// PR-B P3 (2026-07-02) — drawer actions shared by the Live Feed and
+// Investigation drawers (previously locals of PageLiveFeed). Block IP /
+// Whitelist write through the audit-mutated POST endpoints shipped in
+// CQF-T2; Copy as cURL builds a minimally-reproducible curl command
+// (method + path + data-plane host). Hook-free by design (module scope).
+async function drawerAccessListAdd(kind, ip, note, onDone) {
+  if (!ip) return;
+  const id = `ui-${ip.replace(/[^A-Za-z0-9]+/g, '-')}-${Date.now().toString(36)}`;
+  try {
+    const r = await window.accessListAdd(kind, {
+      id,
+      kind: ip.includes('/') ? 'cidr' : 'ip',
+      value: ip,
+      note,
+      bypass: kind === 'whitelist' ? ['all'] : [],
+      created_at: new Date().toISOString(),
+    });
+    if (r.ok) {
+      window.aegisToast(`${kind === 'blacklist' ? 'Blocked' : 'Whitelisted'} ${ip}`, 'ok');
+      if (onDone) onDone();
+    } else {
+      const msg = (r && (r.message || r.error || r.reason)) || `status ${r.status}`;
+      window.aegisToast(`${kind} failed: ${msg}`, 'err');
+    }
+  } catch (e) {
+    window.aegisToast(`${kind} error: ${e.message || e}`, 'err');
+  }
+}
+async function drawerCopyAsCurl(ev) {
+  if (!ev) return;
+  // Best-effort host: data plane is on the same origin's port 8080
+  // for dev; for non-localhost installs the operator can edit.
+  const host = (location.hostname || '127.0.0.1') + ':8080';
+  const proto = location.protocol === 'https:' ? 'https' : 'http';
+  const method = (ev.method || 'GET').toUpperCase();
+  const path = ev.path || '/';
+  const lines = [
+    `curl -i \\`,
+    `  -X ${method} \\`,
+    `  -H 'X-Forwarded-For: ${ev.ip || '127.0.0.1'}' \\`,
+    `  '${proto}://${host}${path}'`,
+  ];
+  const cmd = lines.join('\n');
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(cmd);
+      window.aegisToast('Copied curl to clipboard', 'ok');
+    } else {
+      // Fallback: select-and-prompt so operators on browsers
+      // without async clipboard can still grab the command.
+      window.prompt('Copy this curl command:', cmd);
+    }
+  } catch (e) {
+    window.aegisToast(`Clipboard error: ${e.message || e}`, 'err');
+  }
+}
+
+// PR-B P4 (2026-07-02) — "Replay in Simulator": stash a prefill for the
+// Rules page Simulator tab and navigate. sessionStorage survives the
+// hash-route remount; RuleSimulator consumes + clears it on mount, and
+// PageRuleManager opens on the Simulator tab when a prefill is waiting.
+// Answers "would this request still be blocked after my rule change?".
+// `ev` is the normalized drawer shape: { ip, method, path, fields }.
+const SIM_PREFILL_KEY = 'aegis:simulator-prefill';
+function replayInSimulator(ev) {
+  if (!ev) return;
+  const f = (ev.fields && typeof ev.fields === 'object') ? ev.fields : {};
+  // Redacted header values ([redacted]) would change detector outcomes —
+  // omit those headers entirely and say so in the toast.
+  const rawHeaders = f.request_headers && typeof f.request_headers === 'object' ? f.request_headers : {};
+  const headers = {};
+  let redactedDropped = 0;
+  for (const [k, v] of Object.entries(rawHeaders)) {
+    if (typeof v !== 'string') continue;
+    if (v === '[redacted]') { redactedDropped += 1; continue; }
+    headers[k] = v;
+  }
+  const prefill = {
+    method: (ev.method || f.method || 'GET').toUpperCase(),
+    path: ev.path || f.path || '/',
+    body: typeof f.request_body_preview === 'string' ? f.request_body_preview : '',
+    host: typeof headers.host === 'string' ? headers.host : '',
+    headers,
+    peer_ip: ev.ip || '',
+  };
+  try { sessionStorage.setItem(SIM_PREFILL_KEY, JSON.stringify(prefill)); } catch (_) { /* storage off — non-fatal */ }
+  location.hash = '#/rules';
+  if (window.aegisToast) {
+    window.aegisToast(
+      redactedDropped > 0
+        ? `Simulator prefilled (${redactedDropped} sensitive header${redactedDropped > 1 ? 's' : ''} omitted) — review, then Simulate`
+        : 'Simulator prefilled from this request — review inputs, then Simulate',
+      'ok',
+    );
+  }
+}
+function takeSimulatorPrefill() {
+  try {
+    const raw = sessionStorage.getItem(SIM_PREFILL_KEY);
+    if (!raw) return null;
+    sessionStorage.removeItem(SIM_PREFILL_KEY);
+    return JSON.parse(raw);
+  } catch (_) {
+    return null;
+  }
+}
+function hasSimulatorPrefill() {
+  try { return sessionStorage.getItem(SIM_PREFILL_KEY) != null; } catch (_) { return false; }
+}
+
 function PageLiveFeed() {
   const [paused, setPaused] = useStateP(false);
   const { events, connected } = window.useRealLiveFeed(80, paused);
@@ -1106,62 +1253,12 @@ function PageLiveFeed() {
   const [cursorIdx, setCursorIdx] = useStateP(-1);
   const searchInputRef = useRefP(null);
 
-  // CQF-T4 — drawer footer actions. Block IP / Whitelist write
-  // through the audit-mutated POST endpoints shipped in CQF-T2.
-  // Copy as cURL builds a minimally-reproducible curl command
-  // from the selected event (method + path + WAF data plane
-  // host). No API call; clipboard only.
-  async function quickAccessListAdd(kind, ip, note) {
-    if (!ip) return;
-    const id = `ui-${ip.replace(/[^A-Za-z0-9]+/g, '-')}-${Date.now().toString(36)}`;
-    try {
-      const r = await window.accessListAdd(kind, {
-        id,
-        kind: ip.includes('/') ? 'cidr' : 'ip',
-        value: ip,
-        note,
-        bypass: kind === 'whitelist' ? ['all'] : [],
-        created_at: new Date().toISOString(),
-      });
-      if (r.ok) {
-        window.aegisToast(`${kind === 'blacklist' ? 'Blocked' : 'Whitelisted'} ${ip}`, 'ok');
-        setSelected(null);
-      } else {
-        const msg = (r && (r.message || r.error || r.reason)) || `status ${r.status}`;
-        window.aegisToast(`${kind} failed: ${msg}`, 'err');
-      }
-    } catch (e) {
-      window.aegisToast(`${kind} error: ${e.message || e}`, 'err');
-    }
-  }
-  async function copyAsCurl(ev) {
-    if (!ev) return;
-    // Best-effort host: data plane is on the same origin's port 8080
-    // for dev; for non-localhost installs the operator can edit.
-    const host = (location.hostname || '127.0.0.1') + ':8080';
-    const proto = location.protocol === 'https:' ? 'https' : 'http';
-    const method = (ev.method || 'GET').toUpperCase();
-    const path = ev.path || '/';
-    const lines = [
-      `curl -i \\`,
-      `  -X ${method} \\`,
-      `  -H 'X-Forwarded-For: ${ev.ip || '127.0.0.1'}' \\`,
-      `  '${proto}://${host}${path}'`,
-    ];
-    const cmd = lines.join('\n');
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(cmd);
-        window.aegisToast('Copied curl to clipboard', 'ok');
-      } else {
-        // Fallback: select-and-prompt so operators on browsers
-        // without async clipboard can still grab the command.
-        window.prompt('Copy this curl command:', cmd);
-      }
-    } catch (e) {
-      window.aegisToast(`Clipboard error: ${e.message || e}`, 'err');
-    }
-  }
+  // CQF-T4 — drawer footer actions, now shared with the Investigation
+  // drawer (PR-B P3): the module-scope helpers below carry the logic;
+  // these thin wrappers just close the drawer on success.
+  const quickAccessListAdd = (kind, ip, note) =>
+    drawerAccessListAdd(kind, ip, note, () => setSelected(null));
+  const copyAsCurl = (ev) => drawerCopyAsCurl(ev);
 
   const filtered = events.filter(e => {
     if (filterAction !== 'all' && e.action !== filterAction) return false;
@@ -1415,6 +1512,14 @@ function PageLiveFeed() {
       <window.Drawer open={!!selected} onClose={() => setSelected(null)} title={selected?.path}
         footer={<>
           <button className="btn" onClick={() => copyAsCurl(selected)}>Copy as cURL</button>
+          {/* PR-B P4 — prefill the Rules→Simulator with this request. */}
+          <button
+            className="btn"
+            title="Prefill the Rules Simulator with this request's method, path, body, headers and peer IP"
+            onClick={() => selected && replayInSimulator(selected)}
+          >
+            Replay in Simulator
+          </button>
           <button className="btn danger" onClick={() => selected && quickAccessListAdd('blacklist', selected.ip, `blocked from Live Feed · ${selected.path}`)}>Block IP</button>
           <button className="btn primary" onClick={() => selected && quickAccessListAdd('whitelist', selected.ip, `whitelisted from Live Feed · ${selected.path}`)}>Whitelist</button>
         </>}>
@@ -1428,6 +1533,9 @@ function PageLiveFeed() {
           reason: selected.reason, class: selected.class,
           fields: selected.fields,
           ts: selected.ts, request_id: selected.request_id || selected.id,
+          // PR-B P0 — node attribution (PR-A helper resolves unstamped
+          // rows to this console's real id).
+          node: selected.node || null, selfNode,
         }} />}
       </window.Drawer>
     </>
@@ -2785,6 +2893,26 @@ function RuleSimulator() {
   const [result, setResult] = useStateP(null);
   const [busy, setBusy] = useStateP(false);
 
+  // PR-B P4 (2026-07-02) — consume a "Replay in Simulator" prefill
+  // stashed by the Live Feed / Investigation drawers (one-shot: taken +
+  // cleared on mount). The operator still clicks Simulate — no auto-run.
+  useEffectP(() => {
+    const p = takeSimulatorPrefill();
+    if (!p) return;
+    if (p.method) setMethod(String(p.method).toUpperCase());
+    if (p.path) setPath(p.path);
+    setBody(typeof p.body === 'string' ? p.body : '');
+    setHost(typeof p.host === 'string' ? p.host : '');
+    setPeerIp(typeof p.peer_ip === 'string' ? p.peer_ip : '');
+    const headers = p.headers && typeof p.headers === 'object' ? p.headers : {};
+    const lines = Object.entries(headers)
+      // Host rides its own input; keep it out of the free-form lines.
+      .filter(([k]) => k.toLowerCase() !== 'host')
+      .map(([k, v]) => `${k}: ${v}`);
+    setHeadersText(lines.join('\n'));
+    setResult(null);
+  }, []);
+
   const onSimulate = async () => {
     if (busy) return;
     setBusy(true);
@@ -3182,7 +3310,10 @@ function PageRuleManager() {
   // workflows get their own focused view. Default tab is Rules
   // so existing muscle memory + deep-links land where operators
   // expect.
-  const [activeTab, setActiveTab] = useStateP('rules');
+  // PR-B P4 — land on the Simulator tab when a drawer "Replay in
+  // Simulator" prefill is waiting (peeked here, consumed by
+  // RuleSimulator's mount effect).
+  const [activeTab, setActiveTab] = useStateP(hasSimulatorPrefill() ? 'simulator' : 'rules');
 
   return (
     <>
@@ -11725,13 +11856,20 @@ function PageInvestigation() {
   // of pivot state.
   const [pivot, setPivot] = useStateP('');
   const [activePivot, setActivePivot] = useStateP('');
-  const [pivotKind, setPivotKind] = useStateP('auto'); // auto | ip | request_id | rule_id
+  const [pivotKind, setPivotKind] = useStateP('auto'); // auto | ip | request_id | rule_id | risk_key
   const [actionFilter, setActionFilter] = useStateP('all'); // all | block | allow | challenge
   // SCOPE-P1a — detector breakdown, bot mix, the audit table (scope=fleet)
   // and the derived pivot panels are all fleet-merged when fleet view is
   // active; badge the section headers Fleet.
   const scopeBadge = window.useScopeBadge ? window.useScopeBadge() : () => null;
   const [selected, setSelected] = useStateP(null);
+  // PR-B P0 — this console's node identity (PR-A helper) so drawer node
+  // attribution never reads as the ambiguous "local".
+  const selfNode = window.useSelfNode ? window.useSelfNode() : null;
+  // PR-B P5 — two-click arm state for the bucket-reset button; disarms
+  // on any pivot change.
+  const [resetArmed, setResetArmed] = useStateP(false);
+  useEffectP(() => { setResetArmed(false); }, [activePivot]);
 
   // Honour deep-links from the Live-Feed RequestDetail drawer:
   // `#/investigation?pivot=<id>&kind=request_id`.
@@ -11745,7 +11883,7 @@ function PageInvestigation() {
     if (p) {
       setPivot(p);
       setActivePivot(p);
-      if (k && ['ip', 'request_id', 'rule_id'].includes(k)) {
+      if (k && ['ip', 'request_id', 'rule_id', 'risk_key'].includes(k)) {
         setPivotKind(k);
       }
     }
@@ -11755,6 +11893,10 @@ function PageInvestigation() {
   const detectKind = (s) => {
     if (!s) return null;
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) return 'request_id';
+    // PR-B P2 — the composite risk-bucket id is EXACTLY 16 hex chars
+    // (blake3 truncated, data_plane.rs risk_key_audit_value); checked
+    // BEFORE the 32+-hex request-id rule so the two can't collide.
+    if (/^[0-9a-f]{16}$/i.test(s)) return 'risk_key';
     if (/^[0-9a-f]{32,}$/i.test(s)) return 'request_id'; // blake3/sha hash
     if (/^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(s)) return 'ip';
     if (/^[a-f0-9:]+:[a-f0-9:]+$/i.test(s)) return 'ip'; // ipv6
@@ -11765,11 +11907,12 @@ function PageInvestigation() {
 
   // Hit the audit endpoint with the right filter for this pivot kind.
   const auditQ = (() => {
-    if (!activePivot) return { ip: undefined, ruleId: undefined, requestId: undefined };
-    if (effectiveKind === 'ip')         return { ip: activePivot, ruleId: undefined, requestId: undefined };
-    if (effectiveKind === 'rule_id')    return { ip: undefined, ruleId: activePivot, requestId: undefined };
-    if (effectiveKind === 'request_id') return { ip: undefined, ruleId: undefined, requestId: activePivot };
-    return { ip: undefined, ruleId: undefined, requestId: undefined };
+    if (!activePivot) return {};
+    if (effectiveKind === 'ip')         return { ip: activePivot };
+    if (effectiveKind === 'rule_id')    return { ruleId: activePivot };
+    if (effectiveKind === 'request_id') return { requestId: activePivot };
+    if (effectiveKind === 'risk_key')   return { riskKey: activePivot };
+    return {};
   })();
   const audit = window.useAuditLogApi
     ? window.useAuditLogApi({ ...auditQ, limit: 200 })
@@ -11799,6 +11942,13 @@ function PageInvestigation() {
         const f = (e.fields && typeof e.fields === 'object') ? e.fields : {};
         const detectors = Array.isArray(f.detectors) ? f.detectors : [];
         return detectors.some(d => String(d).toLowerCase() === needle);
+      }
+      if (effectiveKind === 'risk_key') {
+        // PR-B P2 — bucket pivot: match fields.risk_key.key_hash
+        // (defence-in-depth for binaries without the server filter).
+        const f = (e.fields && typeof e.fields === 'object') ? e.fields : {};
+        const kh = f.risk_key && typeof f.risk_key === 'object' ? f.risk_key.key_hash : null;
+        return typeof kh === 'string' && kh.toLowerCase() === needle;
       }
       return true;
     });
@@ -11836,6 +11986,10 @@ function PageInvestigation() {
     const byDetector = {};
     const byPath = {};
     const ips = new Set();
+    // PR-B P2 — distinct composite risk-key buckets across the pivot
+    // window. `1 IP / 4 buckets` = multiple devices/sessions behind one
+    // NAT — the composite key's whole point.
+    const byBucket = {}; // key_hash → { count, device_fp, session_present, ip }
     let earliest = Infinity, latest = -Infinity;
     for (const row of events) {
       const e = row.event || row;
@@ -11855,6 +12009,17 @@ function PageInvestigation() {
       byPath[p] = (byPath[p] || 0) + 1;
       const eip = eventIp(e);
       if (eip) ips.add(eip);
+      const rk = f.risk_key && typeof f.risk_key === 'object' ? f.risk_key : null;
+      if (rk && typeof rk.key_hash === 'string' && rk.key_hash) {
+        const b = byBucket[rk.key_hash] || {
+          count: 0,
+          device_fp: rk.device_fp || null,
+          session_present: rk.session_present === true,
+          ip: rk.ip || eip || null,
+        };
+        b.count += 1;
+        byBucket[rk.key_hash] = b;
+      }
       const ts = eventTimestampMs(e);
       if (Number.isFinite(ts)) {
         earliest = Math.min(earliest, ts);
@@ -11867,6 +12032,8 @@ function PageInvestigation() {
       byDetector,
       byPath,
       uniqueIps: ips.size,
+      byBucket,
+      uniqueRiskKeys: Object.keys(byBucket).length,
       windowStart: Number.isFinite(earliest) ? new Date(earliest) : null,
       windowEnd: Number.isFinite(latest) ? new Date(latest) : null,
     };
@@ -11887,7 +12054,7 @@ function PageInvestigation() {
           <window.I.Search />
           <input
             type="text"
-            placeholder="Paste an IP (1.2.3.4 or 10.0.0.0/8), request_id (UUID), or rule_id (owasp.sqli.union)…"
+            placeholder="Paste an IP (1.2.3.4), request_id (UUID), rule_id (owasp.sqli.union), or risk_key (16-hex bucket id)…"
             value={pivot}
             onChange={e => setPivot(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') setActivePivot(pivot.trim()); }}
@@ -11902,12 +12069,57 @@ function PageInvestigation() {
             <option value="ip">IP / CIDR</option>
             <option value="request_id">request_id</option>
             <option value="rule_id">rule_id</option>
+            <option value="risk_key">risk_key</option>
           </select>
           <button className="btn primary" onClick={() => setActivePivot(pivot.trim())}>Pivot</button>
         </div>
         {activePivot && (
-          <div style={{ marginTop: 6, fontSize: 11, color: 'var(--ink-dim)' }}>
-            Pivoting on <code>{activePivot}</code> · type: <strong>{effectiveKind || 'unknown'}</strong>
+          <div style={{ marginTop: 6, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span>
+              Pivoting on <code>{activePivot}</code> · type: <strong>{effectiveKind || 'unknown'}</strong>
+              {effectiveKind === 'risk_key' && (
+                <span> · one device/session bucket — scores shown are values at event time, not the live bucket state; early-path blocks and admin events carry no bucket and won't match</span>
+              )}
+            </span>
+            {/* PR-B P5 — surgical bucket reset. Only offered when the
+                bucket's axes are reconstructable from the audit stamp:
+                the raw session is never audited, so session-carrying
+                buckets can't be reset from here (by design). Two-click
+                arm instead of a native confirm (M007: window.confirm
+                stalls Chrome under some extensions). */}
+            {effectiveKind === 'risk_key' && (() => {
+              const needle = activePivot.toLowerCase();
+              const bucketEntry = summary
+                ? Object.entries(summary.byBucket || {}).find(([h]) => h.toLowerCase() === needle)
+                : null;
+              const bucket = bucketEntry ? bucketEntry[1] : null;
+              if (!bucket || !bucket.ip || bucket.session_present) return null;
+              return (
+                <button
+                  className={`btn btn-sm ${resetArmed ? 'danger' : ''}`}
+                  title={`Wipe this bucket's cumulative risk + strikes on THIS node (enforcement state is node-scoped). Axes: ip=${bucket.ip}${bucket.device_fp ? ` device_fp=${bucket.device_fp}` : ''}`}
+                  onClick={async () => {
+                    if (!resetArmed) { setResetArmed(true); return; }
+                    setResetArmed(false);
+                    const r = await window.riskResetKey({
+                      ip: bucket.ip,
+                      device_fp: bucket.device_fp || undefined,
+                    });
+                    if (r && r.ok) {
+                      window.aegisToast(
+                        `Risk bucket reset (${bucket.ip}${bucket.device_fp ? ' + device_fp' : ''})${r.had_state === false ? ' — bucket had no live state' : ''} — node-local`,
+                        'ok',
+                      );
+                    } else {
+                      const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
+                      window.aegisToast(`Bucket reset failed: ${msg}`, 'err');
+                    }
+                  }}
+                >
+                  {resetArmed ? 'Confirm reset — wipes cumulative risk' : 'Reset this bucket'}
+                </button>
+              );
+            })()}
           </div>
         )}
       </div>
@@ -12156,6 +12368,30 @@ function PageInvestigation() {
               title={(selected && (selected.fields?.path || selected.path)) || 'Request detail'}
               footer={selected && eventIp(selected) ? (
                 <>
+                  {/* PR-B P3/P4 — action parity with the Live Feed drawer:
+                      investigations end in an action, not a dead end. */}
+                  <button
+                    className="btn"
+                    onClick={() => drawerCopyAsCurl({
+                      ip: eventIp(selected),
+                      method: selected.fields?.method || selected.method,
+                      path: selected.fields?.path || selected.path,
+                    })}
+                  >
+                    Copy as cURL
+                  </button>
+                  <button
+                    className="btn"
+                    title="Prefill the Rules Simulator with this request's method, path, body, headers and peer IP"
+                    onClick={() => replayInSimulator({
+                      ip: eventIp(selected),
+                      method: selected.fields?.method || selected.method,
+                      path: selected.fields?.path || selected.path,
+                      fields: selected.fields,
+                    })}
+                  >
+                    Replay in Simulator
+                  </button>
                   <button
                     className="btn"
                     onClick={() => {
@@ -12168,26 +12404,61 @@ function PageInvestigation() {
                   >
                     Pivot on this IP
                   </button>
+                  <button
+                    className="btn danger"
+                    onClick={() => drawerAccessListAdd(
+                      'blacklist',
+                      eventIp(selected),
+                      `blocked from Investigation · ${selected.fields?.path || selected.path || ''}`,
+                      () => setSelected(null),
+                    )}
+                  >
+                    Block IP
+                  </button>
+                  <button
+                    className="btn primary"
+                    onClick={() => drawerAccessListAdd(
+                      'whitelist',
+                      eventIp(selected),
+                      `whitelisted from Investigation · ${selected.fields?.path || selected.path || ''}`,
+                      () => setSelected(null),
+                    )}
+                  >
+                    Whitelist
+                  </button>
                 </>
               ) : null}
             >
-              {selected && <RequestDetail data={{
-                ip: eventIp(selected),
-                action: selected.action,
-                tier: selected.tier,
-                risk: selected.risk_score,
-                rules: selected.rule_id ? [selected.rule_id] : [],
-                method: selected.fields?.method || selected.method,
-                path: selected.fields?.path || selected.path,
-                status: selected.fields?.status || selected.status,
-                latency: selected.fields?.latency_ms || selected.latency_ms,
-                reason: selected.reason,
-                class: selected.class,
-                route_id: selected.route_id,
-                fields: selected.fields,
-                ts: selected.ts,
-                request_id: selected.request_id,
-              }} />}
+              {selected && <RequestDetail
+                data={{
+                  ip: eventIp(selected),
+                  action: selected.action,
+                  tier: selected.tier,
+                  risk: selected.risk_score,
+                  rules: selected.rule_id ? [selected.rule_id] : [],
+                  method: selected.fields?.method || selected.method,
+                  path: selected.fields?.path || selected.path,
+                  status: selected.fields?.status || selected.status,
+                  latency: selected.fields?.latency_ms || selected.latency_ms,
+                  reason: selected.reason,
+                  class: selected.class,
+                  route_id: selected.route_id,
+                  fields: selected.fields,
+                  ts: selected.ts,
+                  request_id: selected.request_id,
+                  // PR-B P0 — node attribution via the PR-A helper.
+                  node: selected.fields?.origin_node || selected.fields?.node_id || null,
+                  selfNode,
+                }}
+                onPivotRiskKey={hash => {
+                  // PR-B P2 — in-page bucket pivot (the deep-link path only
+                  // fires on mount; inside the page we set state directly).
+                  setPivot(hash);
+                  setActivePivot(hash);
+                  setPivotKind('risk_key');
+                  setSelected(null);
+                }}
+              />}
             </window.Drawer>
           </>
         );
@@ -12202,9 +12473,17 @@ function PageInvestigation() {
               <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>matching this pivot</div>
             </div>
             <div className="col-3 card" style={{ padding: 12 }}>
-              <div className="card-title">Unique IPs</div>
-              <div className="num" style={{ fontSize: 24 }}>{summary.uniqueIps}</div>
-              <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>seen across these events</div>
+              <div className="card-title" title="Distinct client IPs vs distinct composite risk-key buckets ({ip, device_fp, session}). More buckets than IPs = multiple devices/sessions behind shared IPs.">Unique sources</div>
+              <div className="num" style={{ fontSize: 24 }}>
+                {summary.uniqueIps}
+                <span style={{ fontSize: 12, color: 'var(--ink-dim)', fontWeight: 400 }}> IPs</span>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+                {/* PR-B P2 — bucket count beside the IP count. */}
+                {summary.uniqueRiskKeys > 0
+                  ? <><span className="num" style={{ color: 'var(--ink)' }}>{summary.uniqueRiskKeys}</span> risk-key bucket{summary.uniqueRiskKeys > 1 ? 's' : ''}{summary.uniqueRiskKeys > summary.uniqueIps ? ' — multiple devices/sessions per IP' : ''}</>
+                  : 'no risk-key stamps in these events'}
+              </div>
             </div>
             <div className="col-3 card" style={{ padding: 12 }}>
               <div className="card-title">Window</div>
@@ -12244,6 +12523,45 @@ function PageInvestigation() {
                   <div><strong>Categories</strong>: {Array.isArray(attackerRow.categories) ? attackerRow.categories.join(', ') : attackerRow.categories}</div>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* PR-B P2 — per-bucket breakdown on an IP pivot: shows the
+              distinct {device_fp, session} buckets behind this IP; a
+              bucket row pivots the page onto that risk key. */}
+          {effectiveKind === 'ip' && summary.uniqueRiskKeys > 1 && (
+            <div className="card" style={{ marginBottom: 12 }}>
+              <window.SectionHeader
+                title={`Risk-key buckets behind ${activePivot}`}
+                sub={`${summary.uniqueRiskKeys} distinct {ip, device_fp, session} buckets · click to pivot · cumulative risk accrues per bucket, not per IP`}
+                actions={scopeBadge(true)}
+              />
+              <table className="tbl tbl-compact">
+                <thead><tr><th>key_hash</th><th>device_fp</th><th>session</th><th style={{ textAlign: 'right' }}>events</th></tr></thead>
+                <tbody>
+                  {Object.entries(summary.byBucket)
+                    .sort((a, b) => b[1].count - a[1].count)
+                    .slice(0, 10)
+                    .map(([hash, b]) => (
+                      <tr
+                        key={hash}
+                        onClick={() => { setPivot(hash); setActivePivot(hash); setPivotKind('risk_key'); }}
+                        style={{ cursor: 'pointer' }}
+                        title="Pivot on this bucket"
+                      >
+                        <td><code style={{ fontSize: 10, color: 'var(--accent)' }}>{hash}</code></td>
+                        <td>{b.device_fp ? <code style={{ fontSize: 10 }}>{b.device_fp}</code> : <span className="dim">none</span>}</td>
+                        <td>{b.session_present ? 'present' : <span className="dim">none</span>}</td>
+                        <td className="num" style={{ textAlign: 'right' }}>{b.count}</td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+              {summary.uniqueRiskKeys > 10 && (
+                <div style={{ padding: '6px 12px', fontSize: 11, color: 'var(--ink-dim)' }}>
+                  showing 10 of {summary.uniqueRiskKeys} — sorted by event count
+                </div>
+              )}
             </div>
           )}
 

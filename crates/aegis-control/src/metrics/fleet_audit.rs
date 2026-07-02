@@ -242,6 +242,28 @@ mod tests {
         assert_eq!(v["gap"], false);
     }
 
+    /// PR-B P1 (2026-07-02) — the risk_key bucket filter applies to the
+    /// fleet-merged tail exactly like the local ring path (both delegate
+    /// to `AuditFilter::matches`).
+    #[test]
+    fn render_applies_risk_key_filter_post_merge() {
+        let mut keep = ev("waf-1", "keep", 300);
+        keep.fields = serde_json::json!({ "risk_key": { "key_hash": "a1b2c3d4e5f60718" } });
+        let mut drop = ev("waf-2", "drop", 200);
+        drop.fields = serde_json::json!({ "risk_key": { "key_hash": "ffffffffffffffff" } });
+        let unstamped = ev("waf-3", "nokey", 100);
+
+        let filter = AuditFilter {
+            risk_key: Some("a1b2c3d4e5f60718".into()),
+            ..Default::default()
+        };
+        let json = render_fleet_since(&[keep, drop, unstamped], 50, &filter);
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let rows = v["events"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "only the matching bucket survives");
+        assert_eq!(rows[0]["request_id"], "keep");
+    }
+
     #[test]
     fn cache_round_trips() {
         let cache = FleetAuditCache::new();
