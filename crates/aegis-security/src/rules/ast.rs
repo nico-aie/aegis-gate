@@ -302,4 +302,57 @@ mod tests {
         let _contains = MatchOp::Contains("admin".into());
         let _regex = MatchOp::Regex(r"\d+".into());
     }
+
+    /// P3 (2026-07-02) — structural guard: every DSL keyword the parser
+    /// accepts must be documented in BOTH the operator reference
+    /// (`docs/operator/rules-dsl.md`) and the dashboard's "Syntax help"
+    /// cheatsheet (`RULE_DSL_CHEATSHEET` in `pages.jsx`). This is how the
+    /// original gap happened — `query_matches` & co. shipped in the AST
+    /// while the cheatsheet still listed the 2026-05 vocabulary. Adding a
+    /// new `Condition`/`RuleAction`/`MatchOp` variant now fails this test
+    /// until both surfaces are updated.
+    #[test]
+    fn dsl_docs_and_dashboard_cheatsheet_cover_every_variant() {
+        const CONDITIONS: &[&str] = &[
+            "all", "any", "not", "ip_in", "path_matches", "host_matches",
+            "method", "header_matches", "query_matches", "body_matches",
+            "cookie_matches", "jwt_claim", "bot_class", "threat_feed",
+            "schema_violation", "country", "asn", "true",
+        ];
+        const ACTIONS: &[&str] = &[
+            "allow", "log_only", "block", "challenge", "rate_limit", "raise_risk",
+        ];
+        const MATCH_OPS: &[&str] = &["exact", "prefix", "suffix", "contains", "regex"];
+
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+
+        let doc = std::fs::read_to_string(format!("{root}/docs/operator/rules-dsl.md"))
+            .expect("docs/operator/rules-dsl.md must exist — it is the rule-DSL reference the dashboard links to");
+        let pages = std::fs::read_to_string(format!(
+            "{root}/crates/aegis-control/assets/dashboard/src/pages.jsx"
+        ))
+        .expect("dashboard pages.jsx readable");
+        // Scope the cheatsheet check to the RULE_DSL_CHEATSHEET const so a
+        // keyword appearing elsewhere in pages.jsx (templates, comments)
+        // can't satisfy the guard.
+        let start = pages
+            .find("const RULE_DSL_CHEATSHEET")
+            .expect("RULE_DSL_CHEATSHEET const present in pages.jsx");
+        let end = pages[start..]
+            .find("];")
+            .map(|i| start + i)
+            .expect("RULE_DSL_CHEATSHEET closes with ];");
+        let cheatsheet = &pages[start..end];
+
+        for kw in CONDITIONS.iter().chain(ACTIONS).chain(MATCH_OPS) {
+            assert!(
+                doc.contains(kw),
+                "docs/operator/rules-dsl.md is missing DSL keyword `{kw}`"
+            );
+            assert!(
+                cheatsheet.contains(kw),
+                "dashboard RULE_DSL_CHEATSHEET is missing DSL keyword `{kw}`"
+            );
+        }
+    }
 }
