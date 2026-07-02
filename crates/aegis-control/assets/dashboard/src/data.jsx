@@ -1095,7 +1095,7 @@ function useThreatIntelApi(window = 3600, limit = 20) {
 }
 
 // Hook: audit log with filters
-function useAuditLogApi({ ip, ruleId, requestId, from, to, limit = 200 } = {}) {
+function useAuditLogApi({ ip, ruleId, requestId, riskKey, from, to, limit = 200 } = {}) {
   const params = new URLSearchParams();
   // 2026-05-23 — tail=1 returns the NEWEST `limit` events (back of the
   // ring). Without it, cursor=0 returns the OLDEST retained events, so
@@ -1111,6 +1111,9 @@ function useAuditLogApi({ ip, ruleId, requestId, from, to, limit = 200 } = {}) {
   if (ip) params.set('ip', ip);
   if (ruleId) params.set('rule_id', ruleId);
   if (requestId) params.set('request_id', requestId);
+  // PR-B P1 (2026-07-02) — composite risk-bucket pivot (matches
+  // fields.risk_key.key_hash server-side, local + fleet paths).
+  if (riskKey) params.set('risk_key', riskKey);
   if (from) params.set('from', String(from));
   if (to) params.set('to', String(to));
   return useApi(`/api/audit/since?${params.toString()}`, { intervalMs: 3000, fallback: null });
