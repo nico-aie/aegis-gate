@@ -38,6 +38,7 @@ use crate::admin_get::admin_router;
 use crate::admin_login::{handle_admin_login, handle_admin_logout};
 use crate::admin_mutate::{
     handle_access_list_delete, handle_access_list_post, handle_admin_drain,
+    handle_admin_undrain, handle_node_drain_get,
     handle_alert_ack, handle_alert_receiver_delete, handle_alert_receiver_test,
     handle_alert_receivers_put, handle_config_put, handle_config_rollback,
     handle_detectors_put, handle_loadmode_put,
@@ -92,6 +93,20 @@ pub(crate) async fn handle_admin_request(
     // check interval. In-flight requests continue.
     if method == hyper::Method::POST && path == "/admin/drain" {
         return handle_admin_drain(req, readiness, services).await;
+    }
+
+    // Reverse of drain — clear `readiness.draining` so `/healthz/ready`
+    // returns 200 again and the LB routes this node back in. Lets an
+    // operator undo a drain from the console without a restart.
+    if method == hyper::Method::POST && path == "/admin/undrain" {
+        return handle_admin_undrain(req, readiness, services).await;
+    }
+
+    // Live drain state for this node, so the dashboard renders a truthful
+    // Serving/Draining toggle (survives reload; reflects SIGTERM/automation
+    // drains).
+    if method == hyper::Method::GET && path == "/api/node/drain" {
+        return handle_node_drain_get(readiness, services);
     }
 
     // external interop contract control plane .
