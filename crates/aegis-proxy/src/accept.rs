@@ -1489,10 +1489,19 @@ pub(crate) async fn admin_accept_loop(
                         && req.uri().path() == "/dashboard/sse"
                     {
                         let query = req.uri().query().unwrap_or("").to_string();
+                        // P1 (2026-07-02) — this node's roster identity
+                        // lets a `?node=` scope match local events
+                        // (which carry no origin_node stamp). None on
+                        // single-node deployments.
+                        let self_node = services
+                            .roster_view
+                            .as_ref()
+                            .map(|r| r.our_node.clone());
                         return Ok::<_, Infallible>(admin_sse::sse_response(
                             &services.bus,
                             services.fleet_event_bus.as_ref(),
                             &query,
+                            self_node,
                         ));
                     }
                     // F-CRITICAL-002 / 004 / 005 (2026-05-17 Phase 3

@@ -36,11 +36,14 @@ use aegis_core::audit::{AuditBus, AuditEvent};
 use aegis_core::fleet::FleetBus;
 
 /// `fields` key under which the publisher stamps the originating node
-/// id. Lets the subscriber drop Redis's echo of our own events and the
-/// dashboard label which node a row came from. Lives in the event's
-/// free-form `fields: serde_json::Value` so no `AuditEvent` field is
-/// added.
-const ORIGIN_NODE_KEY: &str = "origin_node";
+/// id. Lets the subscriber drop Redis's echo of our own events, the
+/// SSE `?node=` filter scope the feed, and the dashboard label which
+/// node a row came from. Lives in the event's free-form
+/// `fields: serde_json::Value` so no `AuditEvent` field is added.
+/// P1 (2026-07-02): the canonical key + read accessor moved to
+/// `aegis_core::audit` (`ORIGIN_NODE_FIELD` / `origin_node()`) so the
+/// stamp and its readers can't drift; this module keeps the write side.
+const ORIGIN_NODE_KEY: &str = aegis_core::audit::ORIGIN_NODE_FIELD;
 
 /// Bound on the subscriber's in-flight buffer. Overflow drops the
 /// oldest (monitor feed is lossy).
@@ -136,12 +139,10 @@ fn stamp_origin(ev: &mut AuditEvent, node: &str) {
     }
 }
 
-/// Read `ev.fields["origin_node"]` if present.
+/// Read `ev.fields["origin_node"]` if present. Thin owned wrapper over
+/// the canonical `AuditEvent::origin_node()` accessor.
 fn origin_of(ev: &AuditEvent) -> Option<String> {
-    ev.fields
-        .get(ORIGIN_NODE_KEY)
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+    ev.origin_node().map(|s| s.to_string())
 }
 
 /// Simple per-second token cap. Not exact (resets on a 1 s wall-clock

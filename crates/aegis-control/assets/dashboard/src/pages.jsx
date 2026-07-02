@@ -1081,6 +1081,19 @@ function suggestedAction(ev) {
 function PageLiveFeed() {
   const [paused, setPaused] = useStateP(false);
   const { events, connected } = window.useRealLiveFeed(80, paused);
+  // P2 (2026-07-02) — the feed honors the Cluster-nodes scope selector
+  // (useRealLiveFeed re-opens the SSE with ?node=). Read the scope +
+  // fleet roster here for the header label + per-row node badge.
+  const [scopeNode] = window.useFleetNodeScope();
+  const fleetNodesApi = window.useFleetNodesApi
+    ? window.useFleetNodesApi()
+    : { data: { nodes: [] } };
+  const fleetNodes = Array.isArray(fleetNodesApi.data?.nodes) ? fleetNodesApi.data.nodes : [];
+  // Show node attribution when there's a fleet to attribute to (or the
+  // operator scoped explicitly / rows carry a stamp).
+  const showNodeCol = fleetNodes.length > 1
+    || scopeNode !== 'all'
+    || events.some(e => e.node);
   const [filterAction, setFilterAction] = useStateP('all');
   const [filterTier, setFilterTier] = useStateP('all');
   const [search, setSearch] = useStateP('');
@@ -1255,8 +1268,22 @@ function PageLiveFeed() {
               onChange={e => setSearch(e.target.value)}
             />
           </div>
-          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--ink-dim)' }}>
-            <span className={`pill ${connected ? 'ok' : 'warn'}`} style={{ marginRight: 6 }}>
+          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 6 }}>
+            {/* P2 — make the feed's scope explicit: fleet-wide (merged)
+                vs one node (server-filtered SSE). */}
+            {scopeNode !== 'all' ? (
+              <span
+                className="pill warn"
+                title="Feed is scoped to this node by the Cluster-nodes selector. If it isn't the node you're logged into, its events arrive as rate-capped samples over the fleet bus — open that node's own console for its complete feed."
+              >
+                node: {scopeNode}
+              </span>
+            ) : fleetNodes.length > 1 && (
+              <span className="pill neutral" title="Merged stream: this node's events plus every live peer's (via the fleet event bus).">
+                fleet-wide · {fleetNodes.length} nodes
+              </span>
+            )}
+            <span className={`pill ${connected ? 'ok' : 'warn'}`}>
               {connected ? '● live' : '○ idle'}
             </span>
             buffer {events.length}/80
@@ -1270,6 +1297,9 @@ function PageLiveFeed() {
             <thead>
               <tr>
                 <th style={{ width: 80 }}>Time</th>
+                {showNodeCol && (
+                  <th style={{ width: 90 }} title="Originating cluster node — rows without a stamp are this node's own traffic">Node</th>
+                )}
                 <th style={{ width: 130 }}>IP</th>
                 <th style={{ width: 70 }}>Method</th>
                 <th style={{ width: 70 }}>Proto</th>
@@ -1296,6 +1326,15 @@ function PageLiveFeed() {
                   onClick={() => { setCursorIdx(idx); setSelected(e); }}
                 >
                   <td className="num dim">{e.ts}</td>
+                  {showNodeCol && (
+                    <td>
+                      {e.node ? (
+                        <span className="mono" style={{ fontSize: 10, color: 'var(--accent)' }} title={`event originated on ${e.node}`}>{e.node}</span>
+                      ) : (
+                        <span className="dim mono" style={{ fontSize: 10 }} title="this node's own traffic (no fleet origin stamp)">local</span>
+                      )}
+                    </td>
+                  )}
                   <td className="mono">{e.ip}</td>
                   <td><span className="mono" style={{ color: e.method === 'POST' ? 'var(--info)' : e.method === 'DELETE' ? 'var(--down)' : 'var(--ink-mute)' }}>{e.method}</span></td>
                   <td>

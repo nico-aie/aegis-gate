@@ -1,6 +1,17 @@
 # Live feed ignores the Cluster-nodes scope selector — no node filter or badge on fleet-merged SSE
 
-**Status:** 🔵 PLANNED (verified, nothing implemented)
+**Status:** 🟢 P1–P3 shipped (TDD, `fix/live-feed-node-scope`, 2026-07-02)
+
+Implementation notes vs. plan:
+- Canonical origin accessor landed in `aegis-core::audit`
+  (`ORIGIN_NODE_FIELD` + `AuditEvent::origin_node()`); `fleet_events`
+  refactored onto it (write side stays there).
+- Backfill discovery: `/api/audit/since` has no node param, but fleet-merge
+  rows carry a SECOND stamp — `fields.node_id` (ring-ingest, F10) — so the
+  backfill is filtered client-side on that; SSE is filtered server-side.
+  Row attribution reads `origin_node || node_id`.
+- Single-node (no roster): a `node=` scope matches only stamped events —
+  excluded, not guessed (test-pinned).
 **Date:** 2026-07-02
 **Severity:** Low–Medium (agreed with report — UX/scope-clarity only; no data-integrity issue. The feed is *more* inclusive than selected, never less.)
 **Reported repro:** cluster mode → dashboard → pick one node in the Cluster-nodes selector → Live feed still streams all nodes' requests. ✅ plausible from code.
