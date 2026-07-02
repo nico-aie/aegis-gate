@@ -441,6 +441,17 @@ pub(crate) async fn handle_admin_request(
         return handle_simulate(req, services).await;
     }
 
+    // P4 (2026-07-02) — pre-save rule validation. Same checks the
+    // POST/PUT save path enforces (DSL parse + lint + id shape +
+    // form-id/body-id match), exposed read-only so the editor can
+    // surface errors inline BEFORE the modal closes instead of a
+    // failed-save toast after the draft is gone. Always 200 with
+    // `{ok, errors[], warnings[]}` — an invalid rule is a successful
+    // validation, not an HTTP error.
+    if method == hyper::Method::POST && path == "/api/rules/validate" {
+        return handle_rules_validate(req).await;
+    }
+
     // HACK-T4 rollback (deferred follow-up): re-applies the
     // captured `before` state of an audit-mutated change.
     // POST /api/config/versions/{seq}/rollback. v1 supports
@@ -950,13 +961,85 @@ async fn handle_simulate(
             }
         };
 
+    // P1 (2026-07-02) — evaluate the operator ruleset too. Same
+    // live handle the data plane reads (`accept.rs` wires it), so
+    // the simulator verdict reflects rule CRUD immediately. `None`
+    // (test bundles) degrades to detectors-only, matching a
+    // no-rules deployment.
+    let rules_snapshot = services.active_ruleset.as_ref().map(|rs| rs.snapshot());
+    let rules: &[aegis_security::rules::ast::Rule] = rules_snapshot
+        .as_deref()
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+
     let resp = aegis_control::api::simulator::simulate(
         &parsed,
         detectors.as_ref(),
         &services.detector_mask,
         &services.tiers,
+        rules,
     );
     let body = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".into());
+    json_body_response(200, body, "private, no-store")
+}
+
+/// P4 (2026-07-02) — `POST /api/rules/validate {id?, body}`.
+/// Read-only pre-save validation running the exact checks the
+/// save path (`handle_rules_post` / `handle_rules_put`) enforces,
+/// so "validate ok → save rejected" can't happen. The id checks
+/// only run when an `id` is supplied — the editor may validate a
+/// body before the operator has picked an id.
+async fn handle_rules_validate(
+    req: hyper::Request<hyper::body::Incoming>,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    #[derive(serde::Deserialize)]
+    struct ValidateBody {
+        #[serde(default)]
+        id: Option<String>,
+        body: String,
+    }
+
+    let body_bytes = match req.into_body().collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(e) => {
+            return json_response(
+                400,
+                &serde_json::json!({ "error": format!("body read failed: {e}") }),
+            );
+        }
+    };
+    if body_bytes.len() > 64 * 1024 {
+        return json_response(
+            413,
+            &serde_json::json!({ "error": "request body too large (max 64 KiB)" }),
+        );
+    }
+    let parsed: ValidateBody = match serde_json::from_slice(&body_bytes) {
+        Ok(p) => p,
+        Err(e) => {
+            return json_response(
+                400,
+                &serde_json::json!({ "error": format!("invalid validate body: {e}") }),
+            );
+        }
+    };
+
+    let mut v = aegis_control::api::rules::validate_rule_body(&parsed.body);
+    if let Some(id) = parsed.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(id_err) = aegis_control::api::rules::validate_rule_id(id) {
+            v.errors.push(id_err);
+            v.ok = false;
+        }
+        if let Some(mismatch) =
+            aegis_control::api::rules::validate_rule_id_matches_body(id, &parsed.body)
+        {
+            v.errors.push(mismatch);
+            v.ok = false;
+        }
+    }
+    let body = serde_json::to_string(&v).unwrap_or_else(|_| "{}".into());
     json_body_response(200, body, "private, no-store")
 }
 

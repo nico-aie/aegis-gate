@@ -1456,6 +1456,21 @@ async function rulesGenerate({ intent, id }) {
   });
   return r.json().catch(() => ({ error: `HTTP ${r.status}` }));
 }
+// P4 (2026-07-02) — pre-save validation. POST {id?, body} to
+// /api/rules/validate; returns {ok, errors:[{line,message}], warnings:[…]}
+// (200 even when ok:false — invalid DSL is a successful validation).
+// Runs the exact checks the save path enforces, so validate-ok →
+// save-rejected can't happen (409 rule_exists aside).
+async function rulesValidate({ id, body }) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch('/api/rules/validate', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+    body: JSON.stringify({ id, body }),
+  });
+  return r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+}
 async function rulesPut(id, body) {
   const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
   const r = await fetch(`/api/rules/${encodeURIComponent(id)}`, {
@@ -1857,7 +1872,7 @@ Object.assign(window, {
   // TI-T — audit-mutated tier edits
   tierPut,
   useRoutesApi, useTiersApi,
-  rulesPost, rulesPut, rulesDelete, rulesToggle, rulesGenerate, waitForVersion, waitForApplied, currentConfigVersion,
+  rulesPost, rulesPut, rulesDelete, rulesToggle, rulesGenerate, rulesValidate, waitForVersion, waitForApplied, currentConfigVersion,
   fetchConfigState, notifyConfigConvergence,
   // Optimistic overlay (instant UI + reconcile) for rules/pools/routes
   useOptimisticOverlay, applyOverlayList, applyOverlayMap, overlayMatches,
