@@ -352,6 +352,35 @@ function useFleetNodesApi() {
   return useApi('/api/fleet/nodes', { intervalMs: 5000, fallback: { nodes: [] } });
 }
 
+// PR-A (2026-07-02) — this console's own node identity, from
+// GET /api/cluster `our_node`. Static per process, so fetch ONCE and
+// cache module-wide (no poll). Resolves the "local" badge ambiguity:
+// unstamped feed rows can be labeled with the real node id instead of
+// the word "local" (waf-2 confusion, 2026-07-02).
+// Returns: null = still resolving · '' = unknown (single-node
+// placeholder / fetch failed) · '<id>' = the node id.
+let _selfNodeCache = null;
+function useSelfNode() {
+  const [node, setNode] = useState(_selfNodeCache);
+  useEffect(() => {
+    if (_selfNodeCache !== null) { setNode(_selfNodeCache); return; }
+    let cancelled = false;
+    fetch('/api/cluster', { credentials: 'same-origin' })
+      .then(r => (r.ok ? r.json() : null))
+      .then(j => {
+        const id = (j && typeof j.our_node === 'string') ? j.our_node : '';
+        _selfNodeCache = id;
+        if (!cancelled) setNode(id);
+      })
+      .catch(() => {
+        _selfNodeCache = '';
+        if (!cancelled) setNode('');
+      });
+    return () => { cancelled = true; };
+  }, []);
+  return node;
+}
+
 // Live request stream from /dashboard/sse. Drop-in replacement for
 // useLiveFeed — produces the same row shape (id, ts, ip, method,
 // path, region, tier, risk, action, rules, cat, geo) so the Live
@@ -1066,7 +1095,7 @@ function useThreatIntelApi(window = 3600, limit = 20) {
 }
 
 // Hook: audit log with filters
-function useAuditLogApi({ ip, ruleId, requestId, from, to, limit = 200 } = {}) {
+function useAuditLogApi({ ip, ruleId, requestId, riskKey, from, to, limit = 200 } = {}) {
   const params = new URLSearchParams();
   // 2026-05-23 — tail=1 returns the NEWEST `limit` events (back of the
   // ring). Without it, cursor=0 returns the OLDEST retained events, so
@@ -1082,6 +1111,9 @@ function useAuditLogApi({ ip, ruleId, requestId, from, to, limit = 200 } = {}) {
   if (ip) params.set('ip', ip);
   if (ruleId) params.set('rule_id', ruleId);
   if (requestId) params.set('request_id', requestId);
+  // PR-B P1 (2026-07-02) — composite risk-bucket pivot (matches
+  // fields.risk_key.key_hash server-side, local + fleet paths).
+  if (riskKey) params.set('risk_key', riskKey);
   if (from) params.set('from', String(from));
   if (to) params.set('to', String(to));
   return useApi(`/api/audit/since?${params.toString()}`, { intervalMs: 3000, fallback: null });
@@ -1547,6 +1579,24 @@ async function settingsRiskThresholdsPut(body) {
   return r.json().catch(() => ({ error: `HTTP ${r.status}` }));
 }
 
+// PR-B P5 (2026-07-02) — surgical single-bucket risk reset (2026-05-19
+// endpoint, previously CLI/curl-only). Takes the RAW bucket axes
+// ({ip, device_fp?, session?}) — the key_hash alone can't be reversed,
+// so callers reconstruct from the audit event's risk_key fields. The
+// raw session is never audited (session_present only), so
+// session-carrying buckets can't be reset from the UI by design.
+// Node-scoped: enforcement state is not cluster-authoritative.
+async function riskResetKey({ ip, device_fp, session }) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch('/api/risk/reset_key', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+    body: JSON.stringify({ ip, device_fp, session }),
+  });
+  return r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+}
+
 // 2026-05-20 — canary honeypot paths (read + audit-mutated PUT).
 // GET returns `{ paths, count, enabled }`; PUT replaces the whole
 // set and hot-applies it via the shared CanaryPaths handle. Same
@@ -1880,7 +1930,7 @@ Object.assign(window, {
   // HACK-T4 — Tier-B config-change timeline + rollback
   useConfigVersionsApi, configRollback, ROLLBACKABLE_ACTIONS,
   useAuditLogApi,
-  useClusterApi, useFleetScopeApi, useFleetNodesApi, useFleetNodeScope, useApiScoped, useConfigApi, useSloApi, useCertsApi, useLatencyApi, useRouteLatencyApi, useDetectorLatencyApi, useAnalyticsRoutesApi,
+  useClusterApi, useFleetScopeApi, useFleetNodesApi, useFleetNodeScope, useSelfNode, useApiScoped, useConfigApi, useSloApi, useCertsApi, useLatencyApi, useRouteLatencyApi, useDetectorLatencyApi, useAnalyticsRoutesApi,
   useIncidentsApi, useThreatIntelFeedsApi, useGeoipStatusApi,
   incidentAck, incidentSnooze, incidentResolve,
   useAlertsApi, useGitopsApi, useUpstreamsApi, useRuntimeApi,
@@ -1908,7 +1958,7 @@ Object.assign(window, {
   // CI-T6 — settings mutations
   useModeApi, settingsModePut,
   // CI-T12 — risk thresholds (read + audit-mutated PUT)
-  useRiskThresholdsApi, settingsRiskThresholdsPut,
+  useRiskThresholdsApi, settingsRiskThresholdsPut, riskResetKey,
   // 2026-05-20 — canary honeypot paths (read + audit-mutated PUT)
   useCanaryPathsApi, canaryPathsPut,
   // CC-T2.* — alert-receivers (read + audit-mutated PUT/DELETE/POST-test)

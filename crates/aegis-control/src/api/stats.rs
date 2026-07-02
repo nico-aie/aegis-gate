@@ -46,9 +46,17 @@ const DEFAULT_RISK_THRESHOLD: u32 = 70;
 const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(1);
 
 /// Retention for per-second timeseries buckets (D-M2-T2.2). Sized
-/// to cover the largest documented window (1h) plus a small margin
-/// so a query at the boundary doesn't lose points.
+/// to cover a 1h fine-grained window plus a small margin so a query
+/// at the boundary doesn't lose points.
 const TIMESERIES_RETENTION_SECS: i64 = 3700;
+
+/// PR-D (2026-07-02) — retention for the per-MINUTE downsampled tier:
+/// 24 h plus a 2-minute boundary margin. Every request lands in both
+/// stores at record time (~1440 extra `SecondBucket`s — trivial memory);
+/// minute-aligned queries (step >= 60 and % 60 == 0 — every dashboard
+/// window chip) read this tier, so 6h/24h charts are honestly served.
+/// Still in-memory: durable, restart-surviving history stays a non-goal.
+const TIMESERIES_MINUTE_RETENTION_SECS: i64 = 86_520;
 
 /// Whether an audit `action` represents a terminal request decision that
 /// should count toward request volume (Requests/s + the per-second chart).
@@ -132,6 +140,13 @@ pub struct TimeseriesPoint {
 pub struct TimeseriesResponse {
     pub window_seconds: u32,
     pub step_seconds: u32,
+    /// PR-C P5.1 (2026-07-02) — how much history this series can
+    /// actually contain. Buckets older than this are structurally
+    /// empty (not "no traffic"); the dashboard gates its window chips
+    /// + captions on this instead of hardcoded copy. Node-local reads
+    /// report the seconds-store retention; fleet-merged reads report
+    /// the (smaller) fleet snapshot window.
+    pub retention_seconds: u32,
     pub points: Vec<TimeseriesPoint>,
 }
 
@@ -154,6 +169,10 @@ struct AggregatorState {
     /// Per-second bucket totals for the timeseries endpoint.
     /// Key = unix epoch seconds. Sorted by key for cheap front-prune.
     seconds: BTreeMap<i64, SecondBucket>,
+    /// PR-D — per-minute downsampled tier (key = minute-start epoch
+    /// seconds), retained ~24 h. Written alongside `seconds` on every
+    /// request; serves minute-aligned (coarse) queries.
+    minutes: BTreeMap<i64, SecondBucket>,
 }
 
 /// Rolling aggregator over [`AuditEvent`] stream. Cheap to share
@@ -252,11 +271,28 @@ impl StatsAggregator {
             if was_block {
                 bucket.blocked = bucket.blocked.saturating_add(1);
             }
+            // PR-D — fold into the minute tier at record time (no
+            // background compaction pass needed; both stores are
+            // authoritative for their own granularity).
+            let minute_start = (event_sec.div_euclid(60)) * 60;
+            let mbucket = state.minutes.entry(minute_start).or_default();
+            mbucket.total = mbucket.total.saturating_add(1);
+            if was_block {
+                mbucket.blocked = mbucket.blocked.saturating_add(1);
+            }
         }
         let cutoff = event_sec - TIMESERIES_RETENTION_SECS;
         while let Some((&k, _)) = state.seconds.iter().next() {
             if k < cutoff {
                 state.seconds.pop_first();
+            } else {
+                break;
+            }
+        }
+        let minute_cutoff = event_sec - TIMESERIES_MINUTE_RETENTION_SECS;
+        while let Some((&k, _)) = state.minutes.iter().next() {
+            if k < minute_cutoff {
+                state.minutes.pop_first();
             } else {
                 break;
             }
@@ -343,6 +379,15 @@ impl StatsAggregator {
         let step_i64 = i64::from(step);
         let bucket_count = (window / step) as usize;
 
+        // PR-D — store selection. Minute-aligned coarse steps (every
+        // dashboard window chip: 60/300/1200) read the ~24h minute
+        // tier; fine or unaligned steps keep the ~62min seconds store
+        // (a minute bucket would straddle two unaligned step buckets).
+        // Step-aligned bucket starts are multiples of `step`, which is
+        // a multiple of 60 on the minute path — so every minute key in
+        // [start, end) belongs to exactly one bucket.
+        let use_minutes = step >= 60 && step % 60 == 0;
+
         // Step-aligned bucket boundaries on the wall clock so polls
         // overlap and the chart scrolls smoothly across refreshes.
         // The last bucket is the one *containing* `now`, so its end
@@ -353,13 +398,14 @@ impl StatsAggregator {
         let first_start = last_end - step_i64 * bucket_count as i64;
 
         let state = self.inner.lock().expect("stats mutex poisoned");
+        let store = if use_minutes { &state.minutes } else { &state.seconds };
         let mut points = Vec::with_capacity(bucket_count);
         for i in 0..bucket_count {
             let bucket_start = first_start + step_i64 * i as i64;
             let bucket_end = bucket_start + step_i64;
             let mut total = 0u32;
             let mut blocked = 0u32;
-            for (_, b) in state.seconds.range(bucket_start..bucket_end) {
+            for (_, b) in store.range(bucket_start..bucket_end) {
                 total = total.saturating_add(b.total);
                 blocked = blocked.saturating_add(b.blocked);
             }
@@ -374,6 +420,11 @@ impl StatsAggregator {
         TimeseriesResponse {
             window_seconds: window,
             step_seconds: step,
+            retention_seconds: if use_minutes {
+                TIMESERIES_MINUTE_RETENTION_SECS as u32
+            } else {
+                TIMESERIES_RETENTION_SECS as u32
+            },
             points,
         }
     }
@@ -681,6 +732,10 @@ fn bucketize_seconds(
     TimeseriesResponse {
         window_seconds: window,
         step_seconds: step,
+        // Fleet-merged series only ever contain the bounded snapshot
+        // window — report THAT as the retention so the dashboard's
+        // truth-gate reflects the fleet path's tighter bound.
+        retention_seconds: crate::metrics::fleet_snapshot::FLEET_TIMESERIES_MAX_WINDOW_SECS,
         points,
     }
 }
@@ -985,6 +1040,98 @@ mod tests {
         let ts = agg.timeseries(60, 5);
         assert_eq!(ts.window_seconds, 60);
         assert_eq!(ts.step_seconds, 5);
+    }
+
+    /// PR-C P5.1 (2026-07-02) — the response self-describes how much
+    /// history the store actually retains, so the dashboard can gate
+    /// window chips + captions from truth instead of hardcoded copy
+    /// (the 24h-default-vs-62min-retention flat-chart bug).
+    #[test]
+    fn timeseries_response_reports_retention() {
+        let agg = StatsAggregator::new();
+        let ts = agg.timeseries(60, 5);
+        assert_eq!(ts.retention_seconds, TIMESERIES_RETENTION_SECS as u32);
+        let json = serde_json::to_value(&ts).unwrap();
+        assert_eq!(
+            json["retention_seconds"], TIMESERIES_RETENTION_SECS,
+            "retention must be on the wire for the frontend gate"
+        );
+    }
+
+    // ---- PR-D (2026-07-02) — per-minute downsampled tier ---------------
+    //
+    // Seconds stay at ~62 min (unchanged); every request ALSO lands in a
+    // per-minute bucket retained ~24 h. Queries with a minute-aligned
+    // step (>= 60, % 60 == 0 — every dashboard chip) read the minute
+    // tier and report its retention, so the 6h/24h chips un-gate;
+    // fine-grained steps (Overview's 900/5) keep seconds semantics.
+
+    fn allow_at(ip: &str, ts: chrono::DateTime<chrono::Utc>) -> AuditEvent {
+        let mut e = allow(ip);
+        e.ts = ts;
+        e
+    }
+
+    #[test]
+    fn minute_tier_serves_a_24h_window() {
+        let agg = StatsAggregator::new();
+        let now = chrono::Utc::now();
+        // Two hours old — far beyond the 3700 s seconds store.
+        agg.record(&allow_at("1.1.1.1", now - chrono::Duration::hours(2)));
+        agg.record(&block("2.2.2.2")); // now — its cutoff prunes the old SECOND
+        let ts = agg.timeseries(86_400, 1200);
+        let total: u32 = ts.points.iter().map(|p| p.total).sum();
+        let blocked: u32 = ts.points.iter().map(|p| p.blocked).sum();
+        assert_eq!(total, 2, "the 2h-old event must survive in the minute tier");
+        assert_eq!(blocked, 1);
+        assert_eq!(ts.retention_seconds, TIMESERIES_MINUTE_RETENTION_SECS as u32);
+    }
+
+    #[test]
+    fn minute_and_second_paths_agree_on_recent_traffic() {
+        // Cross-tier stitch: the same recent traffic must sum identically
+        // whether served from seconds (fine step) or minutes (coarse step).
+        let agg = StatsAggregator::new();
+        for _ in 0..5 {
+            agg.record(&allow("1.1.1.1"));
+        }
+        agg.record(&block("2.2.2.2"));
+        let fine = agg.timeseries(900, 5); // seconds store
+        let coarse = agg.timeseries(900, 60); // minute store
+        assert_eq!(fine.points.iter().map(|p| p.total).sum::<u32>(), 6);
+        assert_eq!(coarse.points.iter().map(|p| p.total).sum::<u32>(), 6);
+        assert_eq!(coarse.points.iter().map(|p| p.blocked).sum::<u32>(), 1);
+        assert_eq!(coarse.retention_seconds, TIMESERIES_MINUTE_RETENTION_SECS as u32);
+    }
+
+    #[test]
+    fn sub_minute_and_unaligned_steps_keep_seconds_semantics() {
+        let agg = StatsAggregator::new();
+        // Fine step — seconds store, seconds retention.
+        assert_eq!(
+            agg.timeseries(900, 5).retention_seconds,
+            TIMESERIES_RETENTION_SECS as u32,
+        );
+        // Coarse but NOT minute-aligned (90 s) — a minute bucket would
+        // straddle two step buckets, so stay on seconds.
+        assert_eq!(
+            agg.timeseries(3600, 90).retention_seconds,
+            TIMESERIES_RETENTION_SECS as u32,
+        );
+    }
+
+    #[test]
+    fn minute_tier_prunes_beyond_its_retention() {
+        let agg = StatsAggregator::new();
+        let now = chrono::Utc::now();
+        agg.record(&allow_at("1.1.1.1", now - chrono::Duration::hours(30)));
+        agg.record(&allow("2.2.2.2"));
+        let ts = agg.timeseries(86_400, 1200);
+        assert_eq!(
+            ts.points.iter().map(|p| p.total).sum::<u32>(),
+            1,
+            "a 30h-old event is outside the minute tier's 24h retention"
+        );
     }
 
     #[test]

@@ -749,7 +749,11 @@ function PageOverview() {
 // `/api/audit/since` lookup; when the chain entry is found we
 // surface request_id + chain_hash + prev. Otherwise the Audit
 // section just shows the request_id (if any).
-function RequestDetail({ data }) {
+// PR-B (2026-07-02) — `onPivotRiskKey(hash)` makes the risk_key bucket id
+// clickable: Investigation passes a callback (in-page pivot, since the page
+// only reads deep-link params on mount); other hosts (Live Feed) omit it and
+// get a deep-link anchor to #/investigation instead.
+function RequestDetail({ data, onPivotRiskKey }) {
   const ip = data?.ip || '—';
   const action = data?.action || null;
   const tier = data?.tier || null;
@@ -861,11 +865,44 @@ function RequestDetail({ data }) {
           {riskKey && (
             <div title="The cumulative-risk bucket this request keyed into (IP + device_fp + session). Requests sharing key_hash accumulate risk together. Shown on allow/challenge/block.">
               <span className="dim">risk_key</span>{' '}
-              <code style={{ fontSize: 10 }}>{riskKey.key_hash || '—'}</code>
+              {/* PR-B — the bucket id pivots the Investigation page. */}
+              {riskKey.key_hash ? (
+                onPivotRiskKey ? (
+                  <a
+                    href="#"
+                    onClick={e => { e.preventDefault(); onPivotRiskKey(riskKey.key_hash); }}
+                    title="Pivot Investigation on this risk-key bucket"
+                    style={{ color: 'var(--accent)' }}
+                  >
+                    <code style={{ fontSize: 10, color: 'inherit' }}>{riskKey.key_hash}</code>
+                  </a>
+                ) : (
+                  <a
+                    href={`#/investigation?pivot=${encodeURIComponent(riskKey.key_hash)}&kind=risk_key`}
+                    title="Open Investigation pivoted on this risk-key bucket"
+                    style={{ color: 'var(--accent)' }}
+                  >
+                    <code style={{ fontSize: 10, color: 'inherit' }}>{riskKey.key_hash}</code>
+                  </a>
+                )
+              ) : (
+                <code style={{ fontSize: 10 }}>—</code>
+              )}
               <span className="dim">{' · device_fp '}</span>
               {riskKey.device_fp ? <code style={{ fontSize: 10 }}>{riskKey.device_fp}</code> : <span className="dim">none</span>}
               <span className="dim">{' · session '}</span>
               <span>{riskKey.session_present ? 'present' : 'none'}</span>
+            </div>
+          )}
+          {/* PR-B P0 — node attribution via the PR-A self-node helper:
+              stamped rows show their origin; unstamped rows resolve to
+              the console's real id, never the ambiguous "local". */}
+          {data?.node !== undefined && (
+            <div>
+              <span className="dim">node</span>{' '}
+              {data.node
+                ? <code style={{ fontSize: 10 }}>{data.node}</code>
+                : <span title="no fleet origin stamp — processed by this console's own data plane"><code style={{ fontSize: 10 }}>{data.selfNode ? `${data.selfNode} · this` : 'this node'}</code></span>}
             </div>
           )}
           {geo && (geo.cc || geo.city || geo.lat) && (
@@ -1078,6 +1115,116 @@ function suggestedAction(ev) {
   return null;
 }
 
+// PR-B P3 (2026-07-02) — drawer actions shared by the Live Feed and
+// Investigation drawers (previously locals of PageLiveFeed). Block IP /
+// Whitelist write through the audit-mutated POST endpoints shipped in
+// CQF-T2; Copy as cURL builds a minimally-reproducible curl command
+// (method + path + data-plane host). Hook-free by design (module scope).
+async function drawerAccessListAdd(kind, ip, note, onDone) {
+  if (!ip) return;
+  const id = `ui-${ip.replace(/[^A-Za-z0-9]+/g, '-')}-${Date.now().toString(36)}`;
+  try {
+    const r = await window.accessListAdd(kind, {
+      id,
+      kind: ip.includes('/') ? 'cidr' : 'ip',
+      value: ip,
+      note,
+      bypass: kind === 'whitelist' ? ['all'] : [],
+      created_at: new Date().toISOString(),
+    });
+    if (r.ok) {
+      window.aegisToast(`${kind === 'blacklist' ? 'Blocked' : 'Whitelisted'} ${ip}`, 'ok');
+      if (onDone) onDone();
+    } else {
+      const msg = (r && (r.message || r.error || r.reason)) || `status ${r.status}`;
+      window.aegisToast(`${kind} failed: ${msg}`, 'err');
+    }
+  } catch (e) {
+    window.aegisToast(`${kind} error: ${e.message || e}`, 'err');
+  }
+}
+async function drawerCopyAsCurl(ev) {
+  if (!ev) return;
+  // Best-effort host: data plane is on the same origin's port 8080
+  // for dev; for non-localhost installs the operator can edit.
+  const host = (location.hostname || '127.0.0.1') + ':8080';
+  const proto = location.protocol === 'https:' ? 'https' : 'http';
+  const method = (ev.method || 'GET').toUpperCase();
+  const path = ev.path || '/';
+  const lines = [
+    `curl -i \\`,
+    `  -X ${method} \\`,
+    `  -H 'X-Forwarded-For: ${ev.ip || '127.0.0.1'}' \\`,
+    `  '${proto}://${host}${path}'`,
+  ];
+  const cmd = lines.join('\n');
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(cmd);
+      window.aegisToast('Copied curl to clipboard', 'ok');
+    } else {
+      // Fallback: select-and-prompt so operators on browsers
+      // without async clipboard can still grab the command.
+      window.prompt('Copy this curl command:', cmd);
+    }
+  } catch (e) {
+    window.aegisToast(`Clipboard error: ${e.message || e}`, 'err');
+  }
+}
+
+// PR-B P4 (2026-07-02) — "Replay in Simulator": stash a prefill for the
+// Rules page Simulator tab and navigate. sessionStorage survives the
+// hash-route remount; RuleSimulator consumes + clears it on mount, and
+// PageRuleManager opens on the Simulator tab when a prefill is waiting.
+// Answers "would this request still be blocked after my rule change?".
+// `ev` is the normalized drawer shape: { ip, method, path, fields }.
+const SIM_PREFILL_KEY = 'aegis:simulator-prefill';
+function replayInSimulator(ev) {
+  if (!ev) return;
+  const f = (ev.fields && typeof ev.fields === 'object') ? ev.fields : {};
+  // Redacted header values ([redacted]) would change detector outcomes —
+  // omit those headers entirely and say so in the toast.
+  const rawHeaders = f.request_headers && typeof f.request_headers === 'object' ? f.request_headers : {};
+  const headers = {};
+  let redactedDropped = 0;
+  for (const [k, v] of Object.entries(rawHeaders)) {
+    if (typeof v !== 'string') continue;
+    if (v === '[redacted]') { redactedDropped += 1; continue; }
+    headers[k] = v;
+  }
+  const prefill = {
+    method: (ev.method || f.method || 'GET').toUpperCase(),
+    path: ev.path || f.path || '/',
+    body: typeof f.request_body_preview === 'string' ? f.request_body_preview : '',
+    host: typeof headers.host === 'string' ? headers.host : '',
+    headers,
+    peer_ip: ev.ip || '',
+  };
+  try { sessionStorage.setItem(SIM_PREFILL_KEY, JSON.stringify(prefill)); } catch (_) { /* storage off — non-fatal */ }
+  location.hash = '#/rules';
+  if (window.aegisToast) {
+    window.aegisToast(
+      redactedDropped > 0
+        ? `Simulator prefilled (${redactedDropped} sensitive header${redactedDropped > 1 ? 's' : ''} omitted) — review, then Simulate`
+        : 'Simulator prefilled from this request — review inputs, then Simulate',
+      'ok',
+    );
+  }
+}
+function takeSimulatorPrefill() {
+  try {
+    const raw = sessionStorage.getItem(SIM_PREFILL_KEY);
+    if (!raw) return null;
+    sessionStorage.removeItem(SIM_PREFILL_KEY);
+    return JSON.parse(raw);
+  } catch (_) {
+    return null;
+  }
+}
+function hasSimulatorPrefill() {
+  try { return sessionStorage.getItem(SIM_PREFILL_KEY) != null; } catch (_) { return false; }
+}
+
 function PageLiveFeed() {
   const [paused, setPaused] = useStateP(false);
   const { events, connected } = window.useRealLiveFeed(80, paused);
@@ -1089,6 +1236,10 @@ function PageLiveFeed() {
     ? window.useFleetNodesApi()
     : { data: { nodes: [] } };
   const fleetNodes = Array.isArray(fleetNodesApi.data?.nodes) ? fleetNodesApi.data.nodes : [];
+  // PR-A (2026-07-02) — resolve unstamped rows to this console's real
+  // node id instead of the ambiguous word "local" (which reads as a
+  // mystery under a "NODE: WAF-2" scope pill — the waf-2 confusion).
+  const selfNode = window.useSelfNode ? window.useSelfNode() : null;
   // Show node attribution when there's a fleet to attribute to (or the
   // operator scoped explicitly / rows carry a stamp).
   const showNodeCol = fleetNodes.length > 1
@@ -1102,62 +1253,12 @@ function PageLiveFeed() {
   const [cursorIdx, setCursorIdx] = useStateP(-1);
   const searchInputRef = useRefP(null);
 
-  // CQF-T4 — drawer footer actions. Block IP / Whitelist write
-  // through the audit-mutated POST endpoints shipped in CQF-T2.
-  // Copy as cURL builds a minimally-reproducible curl command
-  // from the selected event (method + path + WAF data plane
-  // host). No API call; clipboard only.
-  async function quickAccessListAdd(kind, ip, note) {
-    if (!ip) return;
-    const id = `ui-${ip.replace(/[^A-Za-z0-9]+/g, '-')}-${Date.now().toString(36)}`;
-    try {
-      const r = await window.accessListAdd(kind, {
-        id,
-        kind: ip.includes('/') ? 'cidr' : 'ip',
-        value: ip,
-        note,
-        bypass: kind === 'whitelist' ? ['all'] : [],
-        created_at: new Date().toISOString(),
-      });
-      if (r.ok) {
-        window.aegisToast(`${kind === 'blacklist' ? 'Blocked' : 'Whitelisted'} ${ip}`, 'ok');
-        setSelected(null);
-      } else {
-        const msg = (r && (r.message || r.error || r.reason)) || `status ${r.status}`;
-        window.aegisToast(`${kind} failed: ${msg}`, 'err');
-      }
-    } catch (e) {
-      window.aegisToast(`${kind} error: ${e.message || e}`, 'err');
-    }
-  }
-  async function copyAsCurl(ev) {
-    if (!ev) return;
-    // Best-effort host: data plane is on the same origin's port 8080
-    // for dev; for non-localhost installs the operator can edit.
-    const host = (location.hostname || '127.0.0.1') + ':8080';
-    const proto = location.protocol === 'https:' ? 'https' : 'http';
-    const method = (ev.method || 'GET').toUpperCase();
-    const path = ev.path || '/';
-    const lines = [
-      `curl -i \\`,
-      `  -X ${method} \\`,
-      `  -H 'X-Forwarded-For: ${ev.ip || '127.0.0.1'}' \\`,
-      `  '${proto}://${host}${path}'`,
-    ];
-    const cmd = lines.join('\n');
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(cmd);
-        window.aegisToast('Copied curl to clipboard', 'ok');
-      } else {
-        // Fallback: select-and-prompt so operators on browsers
-        // without async clipboard can still grab the command.
-        window.prompt('Copy this curl command:', cmd);
-      }
-    } catch (e) {
-      window.aegisToast(`Clipboard error: ${e.message || e}`, 'err');
-    }
-  }
+  // CQF-T4 — drawer footer actions, now shared with the Investigation
+  // drawer (PR-B P3): the module-scope helpers below carry the logic;
+  // these thin wrappers just close the drawer on success.
+  const quickAccessListAdd = (kind, ip, note) =>
+    drawerAccessListAdd(kind, ip, note, () => setSelected(null));
+  const copyAsCurl = (ev) => drawerCopyAsCurl(ev);
 
   const filtered = events.filter(e => {
     if (filterAction !== 'all' && e.action !== filterAction) return false;
@@ -1298,7 +1399,7 @@ function PageLiveFeed() {
               <tr>
                 <th style={{ width: 80 }}>Time</th>
                 {showNodeCol && (
-                  <th style={{ width: 90 }} title="Originating cluster node — rows without a stamp are this node's own traffic">Node</th>
+                  <th style={{ width: 110 }} title="Originating cluster node — rows without a fleet stamp were processed by this console's own data plane">Node</th>
                 )}
                 <th style={{ width: 130 }}>IP</th>
                 <th style={{ width: 70 }}>Method</th>
@@ -1331,7 +1432,16 @@ function PageLiveFeed() {
                       {e.node ? (
                         <span className="mono" style={{ fontSize: 10, color: 'var(--accent)' }} title={`event originated on ${e.node}`}>{e.node}</span>
                       ) : (
-                        <span className="dim mono" style={{ fontSize: 10 }} title="this node's own traffic (no fleet origin stamp)">local</span>
+                        // PR-A — unstamped = processed by THIS node's data
+                        // plane; show its real id (fall back to "local"
+                        // only while /api/cluster hasn't answered).
+                        <span
+                          className="dim mono"
+                          style={{ fontSize: 10 }}
+                          title={`this node's own traffic (no fleet origin stamp)${selfNode ? ` — processed by ${selfNode}` : ''}`}
+                        >
+                          {selfNode ? `${selfNode} · this` : 'local'}
+                        </span>
                       )}
                     </td>
                   )}
@@ -1402,6 +1512,14 @@ function PageLiveFeed() {
       <window.Drawer open={!!selected} onClose={() => setSelected(null)} title={selected?.path}
         footer={<>
           <button className="btn" onClick={() => copyAsCurl(selected)}>Copy as cURL</button>
+          {/* PR-B P4 — prefill the Rules→Simulator with this request. */}
+          <button
+            className="btn"
+            title="Prefill the Rules Simulator with this request's method, path, body, headers and peer IP"
+            onClick={() => selected && replayInSimulator(selected)}
+          >
+            Replay in Simulator
+          </button>
           <button className="btn danger" onClick={() => selected && quickAccessListAdd('blacklist', selected.ip, `blocked from Live Feed · ${selected.path}`)}>Block IP</button>
           <button className="btn primary" onClick={() => selected && quickAccessListAdd('whitelist', selected.ip, `whitelisted from Live Feed · ${selected.path}`)}>Whitelist</button>
         </>}>
@@ -1415,6 +1533,9 @@ function PageLiveFeed() {
           reason: selected.reason, class: selected.class,
           fields: selected.fields,
           ts: selected.ts, request_id: selected.request_id || selected.id,
+          // PR-B P0 — node attribution (PR-A helper resolves unstamped
+          // rows to this console's real id).
+          node: selected.node || null, selfNode,
         }} />}
       </window.Drawer>
     </>
@@ -1639,51 +1760,97 @@ function PageAttackEvents() {
 // Latency-percentile + error-rate-by-route widgets render an
 // honest empty state; their data sources land in a follow-up
 // (Prometheus histogram + per-route audit aggregator).
+// PR-C P1 (2026-07-02) — 7d/30d dropped: the per-second store retains
+// ~62 min (TIMESERIES_RETENTION_SECS=3700), so those windows were ≥99%
+// structurally-empty buckets rendering as flat lines. 6h/24h stay
+// listed but are gated at render time on the retention the API now
+// reports (P5.1) — they light up if/when the minute-tier (PR D) ships.
 const ANALYTICS_WINDOWS = {
-  '1h':  { window: 3600,    step: 60   },
-  '6h':  { window: 21600,   step: 300  },
-  '24h': { window: 86400,   step: 1200 },
-  '7d':  { window: 604800,  step: 3600 * 4 },
-  '30d': { window: 2592000, step: 3600 * 24 },
+  '1h':  { window: 3600,  step: 60   },
+  '6h':  { window: 21600, step: 300  },
+  '24h': { window: 86400, step: 1200 },
 };
 
+// Read `?range=` from the hash route (URL-as-state: refresh/share keeps
+// the view). Falls back to the retention-honest 1h default.
+function analyticsInitialRange() {
+  try {
+    const m = location.hash.match(/\?(.+)$/);
+    const r = m ? new URLSearchParams(m[1]).get('range') : null;
+    return r && ANALYTICS_WINDOWS[r] ? r : '1h';
+  } catch (_) {
+    return '1h';
+  }
+}
+
+// Minimum requests in a bucket for its block-ratio to count toward the
+// peak stat — a 1-request/1-block bucket is not a 95% attack wave.
+const RATIO_MIN_SAMPLE = 5;
+
 function PageAnalytics() {
-  const [range, setRange] = useStateP('24h');
-  const cfg = ANALYTICS_WINDOWS[range] ?? ANALYTICS_WINDOWS['24h'];
+  const [range, setRangeState] = useStateP(analyticsInitialRange());
+  const setRange = (r) => {
+    setRangeState(r);
+    // Persist to the URL without re-triggering the router (same page).
+    try {
+      const base = (location.hash.split('?')[0]) || '#/performance';
+      history.replaceState(null, '', `${base}?range=${encodeURIComponent(r)}`);
+    } catch (_) { /* history API unavailable — state alone is fine */ }
+  };
+  const cfg = ANALYTICS_WINDOWS[range] ?? ANALYTICS_WINDOWS['1h'];
   const ts = window.useTimeseriesApi(cfg.window, cfg.step);
   const latency = window.useLatencyApi ? window.useLatencyApi() : { data: null };
   const routeLatency = window.useRouteLatencyApi ? window.useRouteLatencyApi() : { data: null };
   const detectorLatency = window.useDetectorLatencyApi ? window.useDetectorLatencyApi() : { data: null };
   const routes = window.useAnalyticsRoutesApi ? window.useAnalyticsRoutesApi() : { data: null };
+  // PR-C P4 — mixed scopes on this page (timeseries is fleet-capable,
+  // latency histograms + route table are node-local): badge every card.
+  const scopeBadge = window.useScopeBadge ? window.useScopeBadge() : () => null;
   // 2026-05-10 — SLO + Cert summaries removed from Performance.
   // The canonical home is the Health & SLOs page (root-cause hint
   // when below target + full cert table). Performance focuses on
   // throughput / latency / route-level metrics instead.
 
   const points = ts.data?.points ?? [];
-  const reqOverTime = points.map(p => p.total);
-  const blockRatioPct = points.map(p => p.total > 0 ? (p.blocked * 100) / p.total : 0);
+  // PR-C P5.1 — retention the backend actually serves; null on old
+  // binaries (fall back to permissive rendering, no gate).
+  const retentionSecs = Number.isFinite(Number(ts.data?.retention_seconds))
+    ? Number(ts.data.retention_seconds)
+    : null;
+  const windowExceedsRetention = retentionSecs != null && cfg.window > retentionSecs;
 
   const totalReq = points.reduce((s, p) => s + p.total, 0);
   const totalBlocked = points.reduce((s, p) => s + p.blocked, 0);
-  const stepsPerSecond = cfg.step > 0 ? cfg.step : 1;
-  const avgReqPerSecond = points.length > 0
-    ? Math.round(totalReq / (points.length * stepsPerSecond))
-    : 0;
+  // PR-C P1.3 (F2 fix) — average over the span that actually has data,
+  // not the whole window: with a 24h window and 62min retention, ≥23h
+  // of forced zeros rounded every realistic rate down to "0 req/s".
+  const firstDataIdx = points.findIndex(p => p.total > 0);
+  const avgReqPerSecond = (() => {
+    if (totalReq === 0 || firstDataIdx < 0) return null; // no traffic
+    const liveSpanSecs = (points.length - firstDataIdx) * (cfg.step > 0 ? cfg.step : 1);
+    const v = totalReq / Math.max(liveSpanSecs, 1);
+    return v >= 10 ? Math.round(v) : Number(v.toFixed(1));
+  })();
   const avgBlockPct = totalReq > 0 ? (totalBlocked * 100) / totalReq : 0;
-  const peakBlockPct = blockRatioPct.length > 0
-    ? Math.max(...blockRatioPct)
-    : 0;
-  const peakIdx = blockRatioPct.indexOf(peakBlockPct);
+  // PR-C P3 — volume-aware peak: ignore buckets under RATIO_MIN_SAMPLE
+  // requests and show `n=` so the number is auditable.
+  const peak = points.reduce((best, p) => {
+    if (p.total < RATIO_MIN_SAMPLE) return best;
+    const pct = (p.blocked * 100) / p.total;
+    return !best || pct > best.pct ? { pct, ts: p.ts, n: p.total } : best;
+  }, null);
   // LOW-OBS-05 (2026-05-12) — pin to 24h HH:MM so the Block
   // ratio peak-time reads coherently with the rest of the
   // dashboard.  Forcing `hour12: false` avoids the en-US 12h/AM-PM
   // rendering that the QA pass flagged as visually mixed.
-  const peakTs = peakIdx >= 0 && points[peakIdx]
-    ? new Date(points[peakIdx].ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+  const peakTs = peak
+    ? new Date(peak.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
     : '—';
 
   const hasSeries = points.length > 0;
+  const retentionCaption = windowExceedsRetention
+    ? `series retains ~${Math.round(retentionSecs / 60)} min of history — buckets older than that are structurally empty, not "no traffic"`
+    : null;
 
   return (
     <>
@@ -1697,14 +1864,30 @@ function PageAnalytics() {
             />
           </h1>
           <p className="page-subtitle">
-            Historical trends · {range} window
+            {/* PR-C P4 — the window chips control the two traffic charts;
+                the other cards state their own time scope. */}
+            Traffic charts · {range} window — latency + route cards carry their own scope
           </p>
         </div>
         <div className="page-actions">
           <div style={{ display: 'flex', gap: 4 }}>
-            {Object.keys(ANALYTICS_WINDOWS).map(r => (
-              <button key={r} className={`chip ${range === r ? 'active' : ''}`} onClick={() => setRange(r)}>{r}</button>
-            ))}
+            {Object.keys(ANALYTICS_WINDOWS).map(r => {
+              // PR-C P1 — chips wider than the backend's retention are
+              // disabled from truth (P5.1), not offered as a broken promise.
+              const gated = retentionSecs != null && ANALYTICS_WINDOWS[r].window > retentionSecs;
+              return (
+                <button
+                  key={r}
+                  className={`chip ${range === r ? 'active' : ''}`}
+                  onClick={() => !gated && setRange(r)}
+                  disabled={gated}
+                  style={gated ? { opacity: 0.4, cursor: 'not-allowed' } : undefined}
+                  title={gated ? `series retains ~${Math.round(retentionSecs / 60)} min — this window would be mostly empty buckets` : undefined}
+                >
+                  {r}
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -1713,10 +1896,20 @@ function PageAnalytics() {
         <div className="col-6 card">
           <window.SectionHeader
             title="Requests over time"
-            sub={hasSeries ? `avg ${avgReqPerSecond.toLocaleString()} req/s` : 'no data yet'}
+            sub={hasSeries
+              ? (avgReqPerSecond != null
+                ? `avg ${avgReqPerSecond.toLocaleString()} req/s over the traffic span · total ${totalReq.toLocaleString()}`
+                : 'no traffic in window')
+              : 'no data yet'}
+            actions={scopeBadge(true)}
           />
           {hasSeries ? (
-            <window.Sparkline data={reqOverTime} w={460} h={120} color="#3B82F6" fill strokeWidth={1.5} />
+            <>
+              <window.TimeseriesChart points={points} mode="area" h={180} />
+              {retentionCaption && (
+                <div style={{ fontSize: 11, color: 'var(--ink-dim)', padding: '6px 2px 0' }}>{retentionCaption}</div>
+              )}
+            </>
           ) : (
             <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
               No traffic recorded in the last {range}.
@@ -1728,10 +1921,14 @@ function PageAnalytics() {
             title="Latency p50/p95/p99"
             sub={(() => {
               const total = latency.data?.stages?.total;
+              // PR-C P4 — honest scope: cumulative histograms since
+              // process boot (a single cold-start outlier pins p99 until
+              // restart); the window chips do NOT apply here.
               return total
-                ? `WAF-internal · ${total.samples.toLocaleString()} samples`
+                ? `WAF-internal · ${total.samples.toLocaleString()} samples · since boot, resets on restart`
                 : 'no samples yet — drive traffic with `make mock-load`';
             })()}
+            actions={scopeBadge(false)}
           />
           {(() => {
             const stages = latency.data?.stages || {};
@@ -1765,10 +1962,18 @@ function PageAnalytics() {
         <div className="col-6 card">
           <window.SectionHeader
             title="Block ratio"
-            sub={hasSeries ? `avg ${avgBlockPct.toFixed(1)}% · peak ${peakBlockPct.toFixed(1)}% at ${peakTs}` : 'no data yet'}
+            sub={hasSeries
+              ? (peak
+                ? `avg ${avgBlockPct.toFixed(1)}% · peak ${peak.pct.toFixed(1)}% at ${peakTs} (n=${peak.n})`
+                : `avg ${avgBlockPct.toFixed(1)}% · no bucket with ≥${RATIO_MIN_SAMPLE} requests yet`)
+              : 'no data yet'}
+            actions={scopeBadge(true)}
           />
           {hasSeries ? (
-            <window.Sparkline data={blockRatioPct} w={460} h={120} color="#F6465D" fill />
+            // PR-C P2/P3 — per-bucket ratio as BARS (a bucket ratio is a
+            // discrete quantity); no-traffic buckets render as gaps, and
+            // low-sample buckets are dimmed. Hover shows blocked/total.
+            <window.TimeseriesChart points={points} mode="bars" h={180} minSample={RATIO_MIN_SAMPLE} />
           ) : (
             <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
               No block decisions in the last {range}.
@@ -1781,40 +1986,58 @@ function PageAnalytics() {
             return (
               <>
                 <window.SectionHeader
-                  title="Error rate by route"
+                  title="Blocked & errors by route"
                   sub={rows.length > 0
-                    ? `${rows.length} route${rows.length === 1 ? '' : 's'} · audit-ring window`
+                    ? `${rows.length} route${rows.length === 1 ? '' : 's'} · recent requests window`
                     : 'no traffic in window'}
+                  actions={scopeBadge(false)}
                 />
                 {rows.length === 0 ? (
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center', minHeight: 120, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     Drive traffic with <code>make mock-load</code> to populate.
                   </div>
                 ) : (
-                  <table className="tbl tbl-compact" style={{ marginTop: 4 }}>
-                    <thead><tr>
-                      <th>Route</th>
-                      <th style={{ textAlign: 'right' }}>Total</th>
-                      <th style={{ textAlign: 'right' }}>Blocked</th>
-                      <th style={{ textAlign: 'right' }}>5xx</th>
-                      <th style={{ textAlign: 'right' }}>Error %</th>
-                    </tr></thead>
-                    <tbody>
-                      {rows.slice(0, 10).map(r => (
-                        <tr key={r.route}>
-                          <td><code style={{ fontSize: 11 }}>{r.route}</code></td>
-                          <td className="num" style={{ textAlign: 'right' }}>{r.total}</td>
-                          <td className="num" style={{ textAlign: 'right' }}>{r.blocked}</td>
-                          <td className="num" style={{ textAlign: 'right' }}>{r.errors_5xx}</td>
-                          <td className="num" style={{ textAlign: 'right' }}>
-                            <span className={`pill ${r.error_rate_pct > 50 ? 'down' : r.error_rate_pct > 10 ? 'warn' : 'up'}`}>
-                              {r.error_rate_pct.toFixed(1)}%
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <>
+                    <table className="tbl tbl-compact" style={{ marginTop: 4 }}>
+                      <thead><tr>
+                        <th>Route</th>
+                        <th style={{ textAlign: 'right' }}>Total</th>
+                        {/* PR-C P4 — blocked (WAF working as intended,
+                            neutral) split from 5xx (origin failing, red);
+                            the old combined "Error %" made a healthy WAF
+                            read as a broken origin. */}
+                        <th style={{ textAlign: 'right' }} title="WAF verdicts — the WAF doing its job, not an origin failure">Blocked %</th>
+                        <th style={{ textAlign: 'right' }} title="Origin 5xx responses — actual upstream failures">5xx %</th>
+                      </tr></thead>
+                      <tbody>
+                        {rows.slice(0, 10).map(r => {
+                          const blockedPct = r.total > 0 ? (r.blocked * 100) / r.total : 0;
+                          const errPct = r.total > 0 ? (r.errors_5xx * 100) / r.total : 0;
+                          return (
+                            <tr key={r.route}>
+                              <td><code style={{ fontSize: 11 }}>{r.route}</code></td>
+                              <td className="num" style={{ textAlign: 'right' }}>{r.total}</td>
+                              <td className="num" style={{ textAlign: 'right' }}>
+                                <span className="pill neutral" title={`${r.blocked} blocked`}>
+                                  {blockedPct.toFixed(1)}%
+                                </span>
+                              </td>
+                              <td className="num" style={{ textAlign: 'right' }}>
+                                <span className={`pill ${errPct > 10 ? 'down' : errPct > 1 ? 'warn' : 'up'}`} title={`${r.errors_5xx} × 5xx`}>
+                                  {errPct.toFixed(1)}%
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    {rows.length > 10 && (
+                      <div style={{ padding: '6px 12px', fontSize: 11, color: 'var(--ink-dim)' }}>
+                        showing 10 of {rows.length} — sorted by total
+                      </div>
+                    )}
+                  </>
                 )}
               </>
             );
@@ -1831,8 +2054,9 @@ function PageAnalytics() {
                 <window.SectionHeader
                   title="Latency p50/p95/p99 by route"
                   sub={rows.length > 0
-                    ? `${rows.length} active route${rows.length === 1 ? '' : 's'} · live histogram`
-                    : 'no resolved-route samples in window'}
+                    ? `${rows.length} active route${rows.length === 1 ? '' : 's'} · cumulative histogram · since boot, resets on restart`
+                    : 'no resolved-route samples yet'}
+                  actions={scopeBadge(false)}
                 />
                 {rows.length === 0 ? (
                   // LOW-OBS-01 (2026-05-12) — the previous copy
@@ -1847,39 +2071,46 @@ function PageAnalytics() {
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center', minHeight: 80, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     Per-route latency populates as resolved requests
                     arrive. Blocked traffic doesn't reach a route
-                    resolver, so it lands in <em>Error rate by route</em>{' '}
+                    resolver, so it lands in <em>Blocked &amp; errors by route</em>{' '}
                     (above) instead of here. Try{' '}
                     <code>make mock-load</code> to drive allow-class
                     requests.
                   </div>
                 ) : (
-                  <table className="tbl tbl-compact" style={{ marginTop: 4 }}>
-                    <thead><tr>
-                      <th>Route</th>
-                      <th style={{ textAlign: 'right' }}>Samples</th>
-                      <th style={{ textAlign: 'right' }}>p50 (ms)</th>
-                      <th style={{ textAlign: 'right' }}>p95 (ms)</th>
-                      <th style={{ textAlign: 'right' }}>p99 (ms)</th>
-                    </tr></thead>
-                    <tbody>
-                      {rows.slice(0, 15).map(r => {
-                        const fmt = v => v >= 1 ? v.toFixed(2) : v.toFixed(3);
-                        return (
-                          <tr key={r.route}>
-                            <td><code style={{ fontSize: 11 }}>{r.route}</code></td>
-                            <td className="num" style={{ textAlign: 'right' }}>{r.samples.toLocaleString()}</td>
-                            <td className="num" style={{ textAlign: 'right' }}>{fmt(r.p50_ms)}</td>
-                            <td className="num" style={{ textAlign: 'right' }}>{fmt(r.p95_ms)}</td>
-                            <td className="num" style={{ textAlign: 'right' }}>
-                              <span className={`pill ${r.p99_ms > 100 ? 'down' : r.p99_ms > 10 ? 'warn' : 'up'}`}>
-                                {fmt(r.p99_ms)}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                  <>
+                    <table className="tbl tbl-compact" style={{ marginTop: 4 }}>
+                      <thead><tr>
+                        <th>Route</th>
+                        <th style={{ textAlign: 'right' }}>Samples</th>
+                        <th style={{ textAlign: 'right' }}>p50 (ms)</th>
+                        <th style={{ textAlign: 'right' }}>p95 (ms)</th>
+                        <th style={{ textAlign: 'right' }}>p99 (ms)</th>
+                      </tr></thead>
+                      <tbody>
+                        {rows.slice(0, 15).map(r => {
+                          const fmt = v => v >= 1 ? v.toFixed(2) : v.toFixed(3);
+                          return (
+                            <tr key={r.route}>
+                              <td><code style={{ fontSize: 11 }}>{r.route}</code></td>
+                              <td className="num" style={{ textAlign: 'right' }}>{r.samples.toLocaleString()}</td>
+                              <td className="num" style={{ textAlign: 'right' }}>{fmt(r.p50_ms)}</td>
+                              <td className="num" style={{ textAlign: 'right' }}>{fmt(r.p95_ms)}</td>
+                              <td className="num" style={{ textAlign: 'right' }}>
+                                <span className={`pill ${r.p99_ms > 100 ? 'down' : r.p99_ms > 10 ? 'warn' : 'up'}`}>
+                                  {fmt(r.p99_ms)}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    {rows.length > 15 && (
+                      <div style={{ padding: '6px 12px', fontSize: 11, color: 'var(--ink-dim)' }}>
+                        showing 15 of {rows.length}
+                      </div>
+                    )}
+                  </>
                 )}
               </>
             );
@@ -1896,8 +2127,9 @@ function PageAnalytics() {
                 <window.SectionHeader
                   title="Latency p50/p95/p99 by detector"
                   sub={rows.length > 0
-                    ? `${rows.length} active class${rows.length === 1 ? '' : 'es'} · per-detector inspect cost`
+                    ? `${rows.length} active class${rows.length === 1 ? '' : 'es'} · per-detector inspect cost · since boot, resets on restart`
                     : 'no detector samples yet — drive traffic with `make mock-load`'}
+                  actions={scopeBadge(false)}
                 />
                 {rows.length === 0 ? (
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center', minHeight: 80, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -2772,6 +3004,26 @@ function RuleSimulator() {
   const [result, setResult] = useStateP(null);
   const [busy, setBusy] = useStateP(false);
 
+  // PR-B P4 (2026-07-02) — consume a "Replay in Simulator" prefill
+  // stashed by the Live Feed / Investigation drawers (one-shot: taken +
+  // cleared on mount). The operator still clicks Simulate — no auto-run.
+  useEffectP(() => {
+    const p = takeSimulatorPrefill();
+    if (!p) return;
+    if (p.method) setMethod(String(p.method).toUpperCase());
+    if (p.path) setPath(p.path);
+    setBody(typeof p.body === 'string' ? p.body : '');
+    setHost(typeof p.host === 'string' ? p.host : '');
+    setPeerIp(typeof p.peer_ip === 'string' ? p.peer_ip : '');
+    const headers = p.headers && typeof p.headers === 'object' ? p.headers : {};
+    const lines = Object.entries(headers)
+      // Host rides its own input; keep it out of the free-form lines.
+      .filter(([k]) => k.toLowerCase() !== 'host')
+      .map(([k, v]) => `${k}: ${v}`);
+    setHeadersText(lines.join('\n'));
+    setResult(null);
+  }, []);
+
   const onSimulate = async () => {
     if (busy) return;
     setBusy(true);
@@ -3169,7 +3421,10 @@ function PageRuleManager() {
   // workflows get their own focused view. Default tab is Rules
   // so existing muscle memory + deep-links land where operators
   // expect.
-  const [activeTab, setActiveTab] = useStateP('rules');
+  // PR-B P4 — land on the Simulator tab when a drawer "Replay in
+  // Simulator" prefill is waiting (peeked here, consumed by
+  // RuleSimulator's mount effect).
+  const [activeTab, setActiveTab] = useStateP(hasSimulatorPrefill() ? 'simulator' : 'rules');
 
   return (
     <>
@@ -11712,13 +11967,20 @@ function PageInvestigation() {
   // of pivot state.
   const [pivot, setPivot] = useStateP('');
   const [activePivot, setActivePivot] = useStateP('');
-  const [pivotKind, setPivotKind] = useStateP('auto'); // auto | ip | request_id | rule_id
+  const [pivotKind, setPivotKind] = useStateP('auto'); // auto | ip | request_id | rule_id | risk_key
   const [actionFilter, setActionFilter] = useStateP('all'); // all | block | allow | challenge
   // SCOPE-P1a — detector breakdown, bot mix, the audit table (scope=fleet)
   // and the derived pivot panels are all fleet-merged when fleet view is
   // active; badge the section headers Fleet.
   const scopeBadge = window.useScopeBadge ? window.useScopeBadge() : () => null;
   const [selected, setSelected] = useStateP(null);
+  // PR-B P0 — this console's node identity (PR-A helper) so drawer node
+  // attribution never reads as the ambiguous "local".
+  const selfNode = window.useSelfNode ? window.useSelfNode() : null;
+  // PR-B P5 — two-click arm state for the bucket-reset button; disarms
+  // on any pivot change.
+  const [resetArmed, setResetArmed] = useStateP(false);
+  useEffectP(() => { setResetArmed(false); }, [activePivot]);
 
   // Honour deep-links from the Live-Feed RequestDetail drawer:
   // `#/investigation?pivot=<id>&kind=request_id`.
@@ -11732,7 +11994,7 @@ function PageInvestigation() {
     if (p) {
       setPivot(p);
       setActivePivot(p);
-      if (k && ['ip', 'request_id', 'rule_id'].includes(k)) {
+      if (k && ['ip', 'request_id', 'rule_id', 'risk_key'].includes(k)) {
         setPivotKind(k);
       }
     }
@@ -11742,6 +12004,10 @@ function PageInvestigation() {
   const detectKind = (s) => {
     if (!s) return null;
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) return 'request_id';
+    // PR-B P2 — the composite risk-bucket id is EXACTLY 16 hex chars
+    // (blake3 truncated, data_plane.rs risk_key_audit_value); checked
+    // BEFORE the 32+-hex request-id rule so the two can't collide.
+    if (/^[0-9a-f]{16}$/i.test(s)) return 'risk_key';
     if (/^[0-9a-f]{32,}$/i.test(s)) return 'request_id'; // blake3/sha hash
     if (/^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(s)) return 'ip';
     if (/^[a-f0-9:]+:[a-f0-9:]+$/i.test(s)) return 'ip'; // ipv6
@@ -11752,11 +12018,12 @@ function PageInvestigation() {
 
   // Hit the audit endpoint with the right filter for this pivot kind.
   const auditQ = (() => {
-    if (!activePivot) return { ip: undefined, ruleId: undefined, requestId: undefined };
-    if (effectiveKind === 'ip')         return { ip: activePivot, ruleId: undefined, requestId: undefined };
-    if (effectiveKind === 'rule_id')    return { ip: undefined, ruleId: activePivot, requestId: undefined };
-    if (effectiveKind === 'request_id') return { ip: undefined, ruleId: undefined, requestId: activePivot };
-    return { ip: undefined, ruleId: undefined, requestId: undefined };
+    if (!activePivot) return {};
+    if (effectiveKind === 'ip')         return { ip: activePivot };
+    if (effectiveKind === 'rule_id')    return { ruleId: activePivot };
+    if (effectiveKind === 'request_id') return { requestId: activePivot };
+    if (effectiveKind === 'risk_key')   return { riskKey: activePivot };
+    return {};
   })();
   const audit = window.useAuditLogApi
     ? window.useAuditLogApi({ ...auditQ, limit: 200 })
@@ -11786,6 +12053,13 @@ function PageInvestigation() {
         const f = (e.fields && typeof e.fields === 'object') ? e.fields : {};
         const detectors = Array.isArray(f.detectors) ? f.detectors : [];
         return detectors.some(d => String(d).toLowerCase() === needle);
+      }
+      if (effectiveKind === 'risk_key') {
+        // PR-B P2 — bucket pivot: match fields.risk_key.key_hash
+        // (defence-in-depth for binaries without the server filter).
+        const f = (e.fields && typeof e.fields === 'object') ? e.fields : {};
+        const kh = f.risk_key && typeof f.risk_key === 'object' ? f.risk_key.key_hash : null;
+        return typeof kh === 'string' && kh.toLowerCase() === needle;
       }
       return true;
     });
@@ -11823,6 +12097,10 @@ function PageInvestigation() {
     const byDetector = {};
     const byPath = {};
     const ips = new Set();
+    // PR-B P2 — distinct composite risk-key buckets across the pivot
+    // window. `1 IP / 4 buckets` = multiple devices/sessions behind one
+    // NAT — the composite key's whole point.
+    const byBucket = {}; // key_hash → { count, device_fp, session_present, ip }
     let earliest = Infinity, latest = -Infinity;
     for (const row of events) {
       const e = row.event || row;
@@ -11842,6 +12120,17 @@ function PageInvestigation() {
       byPath[p] = (byPath[p] || 0) + 1;
       const eip = eventIp(e);
       if (eip) ips.add(eip);
+      const rk = f.risk_key && typeof f.risk_key === 'object' ? f.risk_key : null;
+      if (rk && typeof rk.key_hash === 'string' && rk.key_hash) {
+        const b = byBucket[rk.key_hash] || {
+          count: 0,
+          device_fp: rk.device_fp || null,
+          session_present: rk.session_present === true,
+          ip: rk.ip || eip || null,
+        };
+        b.count += 1;
+        byBucket[rk.key_hash] = b;
+      }
       const ts = eventTimestampMs(e);
       if (Number.isFinite(ts)) {
         earliest = Math.min(earliest, ts);
@@ -11854,6 +12143,8 @@ function PageInvestigation() {
       byDetector,
       byPath,
       uniqueIps: ips.size,
+      byBucket,
+      uniqueRiskKeys: Object.keys(byBucket).length,
       windowStart: Number.isFinite(earliest) ? new Date(earliest) : null,
       windowEnd: Number.isFinite(latest) ? new Date(latest) : null,
     };
@@ -11874,7 +12165,7 @@ function PageInvestigation() {
           <window.I.Search />
           <input
             type="text"
-            placeholder="Paste an IP (1.2.3.4 or 10.0.0.0/8), request_id (UUID), or rule_id (owasp.sqli.union)…"
+            placeholder="Paste an IP (1.2.3.4), request_id (UUID), rule_id (owasp.sqli.union), or risk_key (16-hex bucket id)…"
             value={pivot}
             onChange={e => setPivot(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') setActivePivot(pivot.trim()); }}
@@ -11889,12 +12180,57 @@ function PageInvestigation() {
             <option value="ip">IP / CIDR</option>
             <option value="request_id">request_id</option>
             <option value="rule_id">rule_id</option>
+            <option value="risk_key">risk_key</option>
           </select>
           <button className="btn primary" onClick={() => setActivePivot(pivot.trim())}>Pivot</button>
         </div>
         {activePivot && (
-          <div style={{ marginTop: 6, fontSize: 11, color: 'var(--ink-dim)' }}>
-            Pivoting on <code>{activePivot}</code> · type: <strong>{effectiveKind || 'unknown'}</strong>
+          <div style={{ marginTop: 6, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span>
+              Pivoting on <code>{activePivot}</code> · type: <strong>{effectiveKind || 'unknown'}</strong>
+              {effectiveKind === 'risk_key' && (
+                <span> · one device/session bucket — scores shown are values at event time, not the live bucket state; early-path blocks and admin events carry no bucket and won't match</span>
+              )}
+            </span>
+            {/* PR-B P5 — surgical bucket reset. Only offered when the
+                bucket's axes are reconstructable from the audit stamp:
+                the raw session is never audited, so session-carrying
+                buckets can't be reset from here (by design). Two-click
+                arm instead of a native confirm (M007: window.confirm
+                stalls Chrome under some extensions). */}
+            {effectiveKind === 'risk_key' && (() => {
+              const needle = activePivot.toLowerCase();
+              const bucketEntry = summary
+                ? Object.entries(summary.byBucket || {}).find(([h]) => h.toLowerCase() === needle)
+                : null;
+              const bucket = bucketEntry ? bucketEntry[1] : null;
+              if (!bucket || !bucket.ip || bucket.session_present) return null;
+              return (
+                <button
+                  className={`btn btn-sm ${resetArmed ? 'danger' : ''}`}
+                  title={`Wipe this bucket's cumulative risk + strikes on THIS node (enforcement state is node-scoped). Axes: ip=${bucket.ip}${bucket.device_fp ? ` device_fp=${bucket.device_fp}` : ''}`}
+                  onClick={async () => {
+                    if (!resetArmed) { setResetArmed(true); return; }
+                    setResetArmed(false);
+                    const r = await window.riskResetKey({
+                      ip: bucket.ip,
+                      device_fp: bucket.device_fp || undefined,
+                    });
+                    if (r && r.ok) {
+                      window.aegisToast(
+                        `Risk bucket reset (${bucket.ip}${bucket.device_fp ? ' + device_fp' : ''})${r.had_state === false ? ' — bucket had no live state' : ''} — node-local`,
+                        'ok',
+                      );
+                    } else {
+                      const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
+                      window.aegisToast(`Bucket reset failed: ${msg}`, 'err');
+                    }
+                  }}
+                >
+                  {resetArmed ? 'Confirm reset — wipes cumulative risk' : 'Reset this bucket'}
+                </button>
+              );
+            })()}
           </div>
         )}
       </div>
@@ -12143,6 +12479,30 @@ function PageInvestigation() {
               title={(selected && (selected.fields?.path || selected.path)) || 'Request detail'}
               footer={selected && eventIp(selected) ? (
                 <>
+                  {/* PR-B P3/P4 — action parity with the Live Feed drawer:
+                      investigations end in an action, not a dead end. */}
+                  <button
+                    className="btn"
+                    onClick={() => drawerCopyAsCurl({
+                      ip: eventIp(selected),
+                      method: selected.fields?.method || selected.method,
+                      path: selected.fields?.path || selected.path,
+                    })}
+                  >
+                    Copy as cURL
+                  </button>
+                  <button
+                    className="btn"
+                    title="Prefill the Rules Simulator with this request's method, path, body, headers and peer IP"
+                    onClick={() => replayInSimulator({
+                      ip: eventIp(selected),
+                      method: selected.fields?.method || selected.method,
+                      path: selected.fields?.path || selected.path,
+                      fields: selected.fields,
+                    })}
+                  >
+                    Replay in Simulator
+                  </button>
                   <button
                     className="btn"
                     onClick={() => {
@@ -12155,26 +12515,61 @@ function PageInvestigation() {
                   >
                     Pivot on this IP
                   </button>
+                  <button
+                    className="btn danger"
+                    onClick={() => drawerAccessListAdd(
+                      'blacklist',
+                      eventIp(selected),
+                      `blocked from Investigation · ${selected.fields?.path || selected.path || ''}`,
+                      () => setSelected(null),
+                    )}
+                  >
+                    Block IP
+                  </button>
+                  <button
+                    className="btn primary"
+                    onClick={() => drawerAccessListAdd(
+                      'whitelist',
+                      eventIp(selected),
+                      `whitelisted from Investigation · ${selected.fields?.path || selected.path || ''}`,
+                      () => setSelected(null),
+                    )}
+                  >
+                    Whitelist
+                  </button>
                 </>
               ) : null}
             >
-              {selected && <RequestDetail data={{
-                ip: eventIp(selected),
-                action: selected.action,
-                tier: selected.tier,
-                risk: selected.risk_score,
-                rules: selected.rule_id ? [selected.rule_id] : [],
-                method: selected.fields?.method || selected.method,
-                path: selected.fields?.path || selected.path,
-                status: selected.fields?.status || selected.status,
-                latency: selected.fields?.latency_ms || selected.latency_ms,
-                reason: selected.reason,
-                class: selected.class,
-                route_id: selected.route_id,
-                fields: selected.fields,
-                ts: selected.ts,
-                request_id: selected.request_id,
-              }} />}
+              {selected && <RequestDetail
+                data={{
+                  ip: eventIp(selected),
+                  action: selected.action,
+                  tier: selected.tier,
+                  risk: selected.risk_score,
+                  rules: selected.rule_id ? [selected.rule_id] : [],
+                  method: selected.fields?.method || selected.method,
+                  path: selected.fields?.path || selected.path,
+                  status: selected.fields?.status || selected.status,
+                  latency: selected.fields?.latency_ms || selected.latency_ms,
+                  reason: selected.reason,
+                  class: selected.class,
+                  route_id: selected.route_id,
+                  fields: selected.fields,
+                  ts: selected.ts,
+                  request_id: selected.request_id,
+                  // PR-B P0 — node attribution via the PR-A helper.
+                  node: selected.fields?.origin_node || selected.fields?.node_id || null,
+                  selfNode,
+                }}
+                onPivotRiskKey={hash => {
+                  // PR-B P2 — in-page bucket pivot (the deep-link path only
+                  // fires on mount; inside the page we set state directly).
+                  setPivot(hash);
+                  setActivePivot(hash);
+                  setPivotKind('risk_key');
+                  setSelected(null);
+                }}
+              />}
             </window.Drawer>
           </>
         );
@@ -12189,9 +12584,17 @@ function PageInvestigation() {
               <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>matching this pivot</div>
             </div>
             <div className="col-3 card" style={{ padding: 12 }}>
-              <div className="card-title">Unique IPs</div>
-              <div className="num" style={{ fontSize: 24 }}>{summary.uniqueIps}</div>
-              <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>seen across these events</div>
+              <div className="card-title" title="Distinct client IPs vs distinct composite risk-key buckets ({ip, device_fp, session}). More buckets than IPs = multiple devices/sessions behind shared IPs.">Unique sources</div>
+              <div className="num" style={{ fontSize: 24 }}>
+                {summary.uniqueIps}
+                <span style={{ fontSize: 12, color: 'var(--ink-dim)', fontWeight: 400 }}> IPs</span>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+                {/* PR-B P2 — bucket count beside the IP count. */}
+                {summary.uniqueRiskKeys > 0
+                  ? <><span className="num" style={{ color: 'var(--ink)' }}>{summary.uniqueRiskKeys}</span> risk-key bucket{summary.uniqueRiskKeys > 1 ? 's' : ''}{summary.uniqueRiskKeys > summary.uniqueIps ? ' — multiple devices/sessions per IP' : ''}</>
+                  : 'no risk-key stamps in these events'}
+              </div>
             </div>
             <div className="col-3 card" style={{ padding: 12 }}>
               <div className="card-title">Window</div>
@@ -12231,6 +12634,45 @@ function PageInvestigation() {
                   <div><strong>Categories</strong>: {Array.isArray(attackerRow.categories) ? attackerRow.categories.join(', ') : attackerRow.categories}</div>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* PR-B P2 — per-bucket breakdown on an IP pivot: shows the
+              distinct {device_fp, session} buckets behind this IP; a
+              bucket row pivots the page onto that risk key. */}
+          {effectiveKind === 'ip' && summary.uniqueRiskKeys > 1 && (
+            <div className="card" style={{ marginBottom: 12 }}>
+              <window.SectionHeader
+                title={`Risk-key buckets behind ${activePivot}`}
+                sub={`${summary.uniqueRiskKeys} distinct {ip, device_fp, session} buckets · click to pivot · cumulative risk accrues per bucket, not per IP`}
+                actions={scopeBadge(true)}
+              />
+              <table className="tbl tbl-compact">
+                <thead><tr><th>key_hash</th><th>device_fp</th><th>session</th><th style={{ textAlign: 'right' }}>events</th></tr></thead>
+                <tbody>
+                  {Object.entries(summary.byBucket)
+                    .sort((a, b) => b[1].count - a[1].count)
+                    .slice(0, 10)
+                    .map(([hash, b]) => (
+                      <tr
+                        key={hash}
+                        onClick={() => { setPivot(hash); setActivePivot(hash); setPivotKind('risk_key'); }}
+                        style={{ cursor: 'pointer' }}
+                        title="Pivot on this bucket"
+                      >
+                        <td><code style={{ fontSize: 10, color: 'var(--accent)' }}>{hash}</code></td>
+                        <td>{b.device_fp ? <code style={{ fontSize: 10 }}>{b.device_fp}</code> : <span className="dim">none</span>}</td>
+                        <td>{b.session_present ? 'present' : <span className="dim">none</span>}</td>
+                        <td className="num" style={{ textAlign: 'right' }}>{b.count}</td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+              {summary.uniqueRiskKeys > 10 && (
+                <div style={{ padding: '6px 12px', fontSize: 11, color: 'var(--ink-dim)' }}>
+                  showing 10 of {summary.uniqueRiskKeys} — sorted by event count
+                </div>
+              )}
             </div>
           )}
 
