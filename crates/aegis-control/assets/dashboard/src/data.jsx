@@ -1579,6 +1579,14 @@ async function settingsRiskThresholdsPut(body) {
   return r.json().catch(() => ({ error: `HTTP ${r.status}` }));
 }
 
+// 2026-07-02 — flip the DDoS gate's interop mode (enforce/log_only)
+// from the UI, so a set_profile log_only can be re-enforced without the
+// loopback control API. Audit-mutated + CSRF-gated. Returns the parsed
+// body per the csrfMutate contract ({ status, ok, mode, effective_mode }).
+async function ddosModePut(mode) {
+  return csrfMutate('/api/gates/ddos/mode', { method: 'PUT', body: JSON.stringify({ mode }) });
+}
+
 // PR-B P5 (2026-07-02) — surgical single-bucket risk reset (2026-05-19
 // endpoint, previously CLI/curl-only). Takes the RAW bucket axes
 // ({ip, device_fp?, session?}) — the key_hash alone can't be reversed,
@@ -1958,7 +1966,7 @@ Object.assign(window, {
   // CI-T6 — settings mutations
   useModeApi, settingsModePut,
   // CI-T12 — risk thresholds (read + audit-mutated PUT)
-  useRiskThresholdsApi, settingsRiskThresholdsPut, riskResetKey,
+  useRiskThresholdsApi, settingsRiskThresholdsPut, riskResetKey, ddosModePut,
   // 2026-05-20 — canary honeypot paths (read + audit-mutated PUT)
   useCanaryPathsApi, canaryPathsPut,
   // CC-T2.* — alert-receivers (read + audit-mutated PUT/DELETE/POST-test)
