@@ -282,6 +282,11 @@ pub(crate) async fn handle_admin_request(
     if method == hyper::Method::PUT && path == "/api/gates/ddos" {
         return crate::admin_mutate::handle_ddos_put(req, services).await;
     }
+    // 2026-07-02 — flip the DDoS gate's interop mode (enforce/log_only)
+    // from the dashboard so a set_profile log_only is reversible in the UI.
+    if method == hyper::Method::PUT && path == "/api/gates/ddos/mode" {
+        return crate::admin_mutate::handle_ddos_mode_put(req, services).await;
+    }
     if method == hyper::Method::PUT && path == "/api/rate-limit" {
         return crate::admin_mutate::handle_rate_limit_put(req, services).await;
     }

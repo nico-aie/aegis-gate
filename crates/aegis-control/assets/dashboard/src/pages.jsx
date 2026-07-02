@@ -13631,6 +13631,10 @@ function RateLimitEditModal({ current, onClose, onSaved }) {
 // gate which returns 429). Hot-reloadable via PUT /api/gates/ddos
 // — per-IP StateBackend window state preserved across edits.
 function DdosGateCard() {
+  // 2026-07-02 — two-click arm for the enforce→log-only direction (it
+  // REDUCES protection); enforce is restorative → single click.
+  const [modeArm, setModeArm] = useStateP(false);
+  const [modeBusy, setModeBusy] = useStateP(false);
   const ddos = window.useApi ? window.useApi('/api/gates/ddos', { intervalMs: 5000, fallback: null }) : { data: null };
   const [editing, setEditing] = useStateP(false);
   const data = ddos.data;
@@ -13713,6 +13717,63 @@ function DdosGateCard() {
             Spike mode: {spikeStyle.label}
           </span>
           <div style={{ flex: 1 }} />
+          {/* 2026-07-02 — enforce/log-only toggle for the interop mode
+              (the set_profile override), so a LOG-ONLY (set_profile) gate
+              is reversible here instead of via the loopback control API.
+              Only shown when interop is wired (effective_mode present)
+              and the config observe_only flag isn't the active dry-run
+              source (that's toggled in the thresholds form). */}
+          {!hotDisabled && data.effective_mode && !cfg.observe_only && (
+            ddosLogOnly ? (
+              <button
+                className="btn"
+                style={{ fontSize: 11, padding: '4px 12px', color: 'var(--up)' }}
+                disabled={modeBusy}
+                title="Re-enforce the DDoS gate — trips will 503 again (reverses the set_profile log-only)"
+                onClick={async () => {
+                  setModeBusy(true);
+                  try {
+                    const r = await window.ddosModePut('enforce');
+                    if (r && r.ok) {
+                      window.aegisToast('DDoS gate re-enforced — trips now block', 'ok');
+                      ddos.reload && ddos.reload();
+                    } else {
+                      window.aegisToast(`Enforce failed: ${(r && (r.error || r.message)) || `status ${r && r.status}`}`, 'err');
+                    }
+                  } catch (e) {
+                    window.aegisToast(`Enforce error: ${e.message || e}`, 'err');
+                  } finally { setModeBusy(false); }
+                }}
+              >
+                Enforce now
+              </button>
+            ) : (
+              <button
+                className={`btn ${modeArm ? 'danger' : ''}`}
+                style={{ fontSize: 11, padding: '4px 12px' }}
+                disabled={modeBusy}
+                title="Switch the DDoS gate to log-only — trips are detected + audited but NOT blocked. Reduces protection; click twice to confirm."
+                onClick={async () => {
+                  if (!modeArm) { setModeArm(true); setTimeout(() => setModeArm(false), 5000); return; }
+                  setModeArm(false);
+                  setModeBusy(true);
+                  try {
+                    const r = await window.ddosModePut('log_only');
+                    if (r && r.ok) {
+                      window.aegisToast('DDoS gate set to log-only — trips are audited, not blocked', 'warn');
+                      ddos.reload && ddos.reload();
+                    } else {
+                      window.aegisToast(`Log-only failed: ${(r && (r.error || r.message)) || `status ${r && r.status}`}`, 'err');
+                    }
+                  } catch (e) {
+                    window.aegisToast(`Log-only error: ${e.message || e}`, 'err');
+                  } finally { setModeBusy(false); }
+                }}
+              >
+                {modeArm ? 'Confirm log-only' : 'Switch to log-only'}
+              </button>
+            )
+          )}
           <button className="btn primary" onClick={() => setEditing(true)} style={{ fontSize: 11, padding: '4px 12px' }}>
             Edit thresholds
           </button>
@@ -16283,29 +16344,43 @@ function CopilotPosture({ minutes }) {
     ? incidents.data.incidents.filter(i => i.status === 'firing').length
     : (incidents.data?.raw_alerts?.firing?.length || 0);
 
-  const Stat = ({ label, value, tone }) => (
-    <div style={{ flex: 1, minWidth: 0 }}>
+  // PR (2026-07-02) — each tile states its REAL window: the rate tiles are
+  // instantaneous (last ~10s), Blocked is a lifetime counter, and only the
+  // attack lists follow the Window selector. Previously all four sat under
+  // one "Live posture · 60 min" frame, so an idle-now WAF read as "no data"
+  // while the 60-min brief was full.
+  const Stat = ({ label, value, tone, scope, hint }) => (
+    <div style={{ flex: 1, minWidth: 0 }} title={hint || undefined}>
       <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--ink-dim)' }}>{label}</div>
       <div className="num" style={{ fontSize: 18, color: tone || 'var(--ink)' }}>{value}</div>
+      {scope && <div style={{ fontSize: 8, color: 'var(--ink-faint)', marginTop: 1 }}>{scope}</div>}
     </div>
   );
+  const winLabel = minutes >= 60 ? `${Math.round(minutes / 60)}h` : `${minutes}m`;
 
   return (
     <div className="copilot-posture">
-      <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--ink-dim)', marginBottom: 10 }}>
+      <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--ink-dim)', marginBottom: 4 }}>
         Live posture
       </div>
-
-      <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
-        <Stat label="Req rate" value={s.request_rate != null ? `${s.request_rate}/s` : '—'} />
-        <Stat label="Block rate" value={s.block_rate_pct != null ? `${s.block_rate_pct}%` : '—'} tone={Number(s.block_rate_pct) > 20 ? 'var(--down)' : undefined} />
-      </div>
-      <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
-        <Stat label="Blocked" value={(s.blocks_total ?? 0).toLocaleString()} />
-        <Stat label="Active alerts" value={firing} tone={firing > 0 ? 'var(--down)' : undefined} />
+      <div style={{ fontSize: 9, color: 'var(--ink-faint)', marginBottom: 10, lineHeight: 1.4 }}>
+        Rates are live; the attack lists follow the {winLabel} window. The brief covers the full window.
       </div>
 
-      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--ink-dim)', margin: '4px 0 6px' }}>Top attack types</div>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
+        <Stat label="Req rate" value={s.request_rate != null ? `${s.request_rate}/s` : '—'}
+          scope="now" hint="Instantaneous — requests over the last ~10 seconds. 0/s means nothing is hitting the WAF right now, even if there was traffic earlier in the window." />
+        <Stat label="Block rate" value={s.block_rate_pct != null ? `${s.block_rate_pct}%` : '—'} tone={Number(s.block_rate_pct) > 20 ? 'var(--down)' : undefined}
+          scope="now" hint="Blocks ÷ requests over the same ~10-second live window." />
+      </div>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
+        <Stat label="Blocked" value={(s.blocks_total ?? 0).toLocaleString()}
+          scope="since boot" hint="Lifetime terminal-block counter (since process start; cleared by a state reset). Not windowed — and log-only 'would-be' blocks don't count here." />
+        <Stat label="Active alerts" value={firing} tone={firing > 0 ? 'var(--down)' : undefined}
+          scope="firing now" hint="SLO incidents currently firing." />
+      </div>
+
+      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--ink-dim)', margin: '4px 0 6px' }}>Top attack types <span style={{ color: 'var(--ink-faint)', textTransform: 'none', letterSpacing: 0 }}>· last {winLabel}</span></div>
       {detectors.length ? detectors.map(d => (
         <div key={d.name} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}>
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</span>
@@ -16313,7 +16388,7 @@ function CopilotPosture({ minutes }) {
         </div>
       )) : <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>none in window</div>}
 
-      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--ink-dim)', margin: '14px 0 6px' }}>Top attackers</div>
+      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--ink-dim)', margin: '14px 0 6px' }}>Top attackers <span style={{ color: 'var(--ink-faint)', textTransform: 'none', letterSpacing: 0 }}>· last {winLabel}</span></div>
       {attackers.length ? attackers.map(a => (
         <div key={a.identifier} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, padding: '3px 0' }}>
           <span className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

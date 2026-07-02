@@ -243,6 +243,29 @@ pub fn render_get(runtime: Option<&Arc<DdosRuntime>>, effective_mode: &str) -> S
     serde_json::to_string(&view).unwrap_or_else(|_| String::from("{}"))
 }
 
+/// PR (2026-07-02) — set one feature's interop mode override from the
+/// admin surface, so a `set_profile log_only` on a gate (e.g. `ddos`)
+/// can be re-enforced from the dashboard instead of the loopback
+/// `/__waf_control/set_profile`. Parses `enforce` / `log_only` (rejects
+/// anything else without touching the store) and installs an EXPLICIT
+/// per-feature override — so the feature enforces even when the global
+/// default is log_only. The caller then `publish_modes()` to converge
+/// the fleet. Returns the applied `Mode`.
+pub fn set_feature_mode(
+    modes: &crate::interop::mode::ModeStore,
+    feature: &str,
+    mode_str: &str,
+) -> Result<crate::interop::headers::Mode, String> {
+    use crate::interop::headers::Mode;
+    let mode = match mode_str {
+        "enforce" => Mode::Enforce,
+        "log_only" => Mode::LogOnly,
+        other => return Err(format!("mode must be 'enforce' or 'log_only', got '{other}'")),
+    };
+    modes.set_feature(feature.to_string(), mode);
+    Ok(mode)
+}
+
 // =====================================================================
 // Rate-limit gate read + write surface
 // =====================================================================
@@ -402,6 +425,51 @@ pub fn render_get_strikes(risk: &RiskTracker) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::interop::headers::Mode;
+    use crate::interop::mode::ModeStore;
+    use crate::interop::rule_map::mode_for_rule;
+
+    // ---- PR (2026-07-02) — per-feature gate mode toggle from the UI -----
+    //
+    // `set_feature_mode` lets the admin surface (PUT /api/gates/ddos/mode)
+    // flip a feature's interop mode override, so a `set_profile log_only`
+    // on the DDoS gate can be re-enforced without the loopback control API.
+
+    #[test]
+    fn set_feature_mode_enforce_makes_the_feature_enforce() {
+        // Start with the whole store in log_only (a global dry-run).
+        let modes = ModeStore::new(Mode::LogOnly);
+        assert_eq!(mode_for_rule(&modes, Some("ddos")), Mode::LogOnly);
+        let applied = set_feature_mode(&modes, "ddos", "enforce").unwrap();
+        assert_eq!(applied, Mode::Enforce);
+        // Explicit override wins over the global default.
+        assert_eq!(mode_for_rule(&modes, Some("ddos")), Mode::Enforce);
+    }
+
+    #[test]
+    fn set_feature_mode_log_only_makes_the_feature_log_only() {
+        let modes = ModeStore::new(Mode::Enforce);
+        let applied = set_feature_mode(&modes, "ddos", "log_only").unwrap();
+        assert_eq!(applied, Mode::LogOnly);
+        assert_eq!(mode_for_rule(&modes, Some("ddos")), Mode::LogOnly);
+    }
+
+    #[test]
+    fn set_feature_mode_rejects_unknown_mode_and_leaves_store_unchanged() {
+        let modes = ModeStore::new(Mode::Enforce);
+        let r = set_feature_mode(&modes, "ddos", "shadow_banana");
+        assert!(r.is_err());
+        // The store must not have been mutated by the rejected call.
+        assert_eq!(mode_for_rule(&modes, Some("ddos")), Mode::Enforce);
+    }
+
+    #[test]
+    fn set_feature_mode_only_affects_the_named_feature() {
+        let modes = ModeStore::new(Mode::Enforce);
+        set_feature_mode(&modes, "ddos", "log_only").unwrap();
+        // A different feature still follows the (enforce) default.
+        assert_eq!(mode_for_rule(&modes, Some("sqli")), Mode::Enforce);
+    }
 
     #[test]
     fn rate_limit_put_body_defaults_enabled_true_when_omitted() {
