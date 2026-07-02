@@ -2644,18 +2644,47 @@ const RULE_TEMPLATES = [
   then: log_only
 `,
   },
+  {
+    label: 'Block query param value',
+    description: 'Blocks when a named query parameter matches exactly — shows the nested op: form that query/header/cookie matchers use.',
+    sampleId: 'block-query-param',
+    body:
+`- id: block-query-param
+  priority: 100
+  when:
+    query_matches:
+      name: "debug"
+      op:
+        exact: "true"
+  then:
+    block:
+      status: 403
+`,
+  },
 ];
 
-// Short 6-line DSL cheatsheet shown in the "Syntax help" disclosure.
-// Kept terse — full reference lives in
-// docs/operator/rules-dsl.md (to be added in the rule-cookbook PR).
+// DSL cheatsheet shown in the "Syntax help" disclosure. Kept terse —
+// the full reference is docs/operator/rules-dsl.md. P3 (2026-07-02):
+// covers the COMPLETE parser vocabulary; a structural guard test
+// (aegis-security rules::ast::dsl_docs_and_dashboard_cheatsheet_cover_
+// every_variant) fails the build when a new AST variant is missing here.
 const RULE_DSL_CHEATSHEET = [
-  'Each rule is a YAML list item.',
-  '  id: <string>         · unique identifier (1-64 alphanumerics + hyphens/underscores)',
-  '  priority: <int>      · higher wins; default 0',
-  '  when: <condition>    · path_matches | ip_in | header_matches | method | host_matches | body_matches | all/any/not | true',
-  '  then: <action>       · allow | log_only | block: { status: 403 } | challenge: { level: js } | rate_limit: { key, limit, window_s }',
-  '  scope: global        · or { route: "<route-id>" } to scope to one route',
+  'Each rule is a YAML list item. Full reference: docs/operator/rules-dsl.md',
+  '  id: <string>          · unique identifier (1-64 alphanumerics + hyphens/underscores)',
+  '  priority: <int>       · higher wins; default 0',
+  '  scope: global         · or { route: "<route-id>" } to scope to one route',
+  '  when: <condition>     · one of:',
+  '    request     → method: [POST, …] | path_matches: <op> | host_matches: <op> | body_matches: <op>',
+  '                  query_matches: { name, op: <op> } | header_matches: { name, op: <op> } | cookie_matches: { name, op: <op> }',
+  '    identity    → ip_in: ["203.0.113.10", …] | country: ["CN", …] | asn: [64496, …]   (country/asn need GeoIP wiring)',
+  '    advanced    → jwt_claim: { path, op: <op> } | bot_class: [scanner, …] | threat_feed: { id, min_confidence } | schema_violation | true',
+  '    combinators → all: [<condition>, …] | any: [<condition>, …] | not: <condition>',
+  '  <op> forms            · exact: "v" | prefix: "v" | suffix: "v" | contains: "v" | regex: "v"',
+  '                          (query/header/cookie/jwt matchers nest it under op:, e.g. query_matches: { name: "test", op: { exact: "zxc" } })',
+  '  then: <action>        · allow | log_only | block: { status: 403 } | challenge: { level: js }',
+  '                          rate_limit: { key, limit, window_s } | raise_risk: <n>  (non-terminal)',
+  '  enforcement           · the live engine enforces allow (detector bypass) + block today;',
+  '                          challenge / rate_limit / log_only / raise_risk matches are audit-visible only',
 ];
 
 // Read the current /api/config/version. Returns the numeric version
