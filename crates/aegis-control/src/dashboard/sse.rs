@@ -338,6 +338,85 @@ mod tests {
         assert_eq!(matched, 200);
     }
 
+    // ---------- P1 (2026-07-02) — node scope filter -------------------
+    //
+    // Fleet-published events carry `fields.origin_node` (stamped by
+    // `fleet_events::stamp_origin`); LOCAL events carry no origin — that
+    // absence means "this node". A `?node=<id>` filter must therefore
+    // match remote events by their stamp and local events by the
+    // server-side self node id (never from the query string).
+
+    fn ev_with_origin(origin: Option<&str>) -> AuditEvent {
+        let mut ev = ev_full(AuditClass::Detection, "block", None);
+        if let Some(o) = origin {
+            ev.fields = serde_json::json!({ "origin_node": o });
+        }
+        ev
+    }
+
+    #[test]
+    fn parse_query_recognises_node_key() {
+        let f = EventFilter::parse_query("node=node-b");
+        assert_eq!(f.node.as_deref(), Some("node-b"));
+        assert!(!f.is_empty(), "a node filter is not an empty filter");
+        // Absent → None (today's unscoped behavior).
+        assert!(EventFilter::parse_query("class=detection").node.is_none());
+    }
+
+    #[test]
+    fn parse_query_never_populates_self_node() {
+        // self_node is server-supplied identity, not operator input — a
+        // crafted query must not be able to set it.
+        let f = EventFilter::parse_query("node=node-b&self_node=node-b");
+        assert!(f.self_node.is_none());
+    }
+
+    #[test]
+    fn node_filter_matches_remote_events_by_origin_stamp() {
+        let f = EventFilter::parse_query("node=node-b").with_self_node(Some("node-a".into()));
+        assert!(event_matches(&f, &ev_with_origin(Some("node-b"))));
+        assert!(!event_matches(&f, &ev_with_origin(Some("node-c"))));
+    }
+
+    #[test]
+    fn node_filter_matches_local_events_via_self_node() {
+        // Local events have NO origin stamp — they belong to the self node.
+        let scoped_to_self =
+            EventFilter::parse_query("node=node-a").with_self_node(Some("node-a".into()));
+        assert!(event_matches(&scoped_to_self, &ev_with_origin(None)));
+
+        // Scoped to a peer → local (unstamped) events are filtered out.
+        let scoped_to_peer =
+            EventFilter::parse_query("node=node-b").with_self_node(Some("node-a".into()));
+        assert!(!event_matches(&scoped_to_peer, &ev_with_origin(None)));
+
+        // No self identity (single-node, roster off): a node filter can
+        // only match stamped events — unstamped ones are excluded rather
+        // than guessed.
+        let no_identity = EventFilter::parse_query("node=node-a").with_self_node(None);
+        assert!(!event_matches(&no_identity, &ev_with_origin(None)));
+    }
+
+    #[test]
+    fn node_filter_and_combines_with_other_keys() {
+        let f = EventFilter::parse_query("node=node-b&action=block")
+            .with_self_node(Some("node-a".into()));
+        // Right node + right action.
+        assert!(event_matches(&f, &ev_with_origin(Some("node-b"))));
+        // Right node, wrong action.
+        let mut allow = ev_with_origin(Some("node-b"));
+        allow.action = "allow".into();
+        assert!(!event_matches(&f, &allow));
+    }
+
+    #[test]
+    fn no_node_filter_keeps_merged_behavior() {
+        // Unscoped ('all'): local + every peer's events pass, unchanged.
+        let f = EventFilter::default().with_self_node(Some("node-a".into()));
+        assert!(event_matches(&f, &ev_with_origin(None)));
+        assert!(event_matches(&f, &ev_with_origin(Some("node-b"))));
+    }
+
     #[tokio::test]
     async fn stream_stops_on_disconnect() {
         let bus = AuditBus::new(4);

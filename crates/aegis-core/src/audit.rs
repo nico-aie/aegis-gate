@@ -356,6 +356,39 @@ mod tests {
         assert!(json.contains("\"class\":\"detection\""));
     }
 
+    /// P1 (2026-07-02) — shared accessor for the fleet origin stamp.
+    /// The fleet publisher writes `fields.origin_node` on cross-node
+    /// events (see `aegis-proxy::fleet_events::stamp_origin`); the SSE
+    /// node filter and the echo-drop guard both read it through this
+    /// one accessor so the key can't drift between readers.
+    #[test]
+    fn origin_node_reads_the_fleet_stamp() {
+        let mut ev = AuditEvent {
+            schema_version: 1,
+            ts: chrono::Utc::now(),
+            request_id: "req-origin".into(),
+            class: AuditClass::Detection,
+            tenant_id: None,
+            tier: None,
+            action: "block".into(),
+            reason: "test".into(),
+            client_ip: "1.2.3.4".into(),
+            route_id: None,
+            rule_id: None,
+            risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
+            fields: serde_json::json!({ ORIGIN_NODE_FIELD: "node-A", "other": 1 }),
+        };
+        assert_eq!(ev.origin_node(), Some("node-A"));
+        // Local events (no stamp / null fields) have no origin.
+        ev.fields = serde_json::Value::Null;
+        assert_eq!(ev.origin_node(), None);
+        ev.fields = serde_json::json!({ "other": 1 });
+        assert_eq!(ev.origin_node(), None);
+    }
+
     /// 2026-05-18 F-CRITICAL-003 (Phase C.2): the three new §6
     /// fields (method, path, mode) skip-serialise when `None` so
     /// admin / system events keep their wire shape unchanged, but
