@@ -46,9 +46,17 @@ const DEFAULT_RISK_THRESHOLD: u32 = 70;
 const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(1);
 
 /// Retention for per-second timeseries buckets (D-M2-T2.2). Sized
-/// to cover the largest documented window (1h) plus a small margin
-/// so a query at the boundary doesn't lose points.
+/// to cover a 1h fine-grained window plus a small margin so a query
+/// at the boundary doesn't lose points.
 const TIMESERIES_RETENTION_SECS: i64 = 3700;
+
+/// PR-D (2026-07-02) — retention for the per-MINUTE downsampled tier:
+/// 24 h plus a 2-minute boundary margin. Every request lands in both
+/// stores at record time (~1440 extra `SecondBucket`s — trivial memory);
+/// minute-aligned queries (step >= 60 and % 60 == 0 — every dashboard
+/// window chip) read this tier, so 6h/24h charts are honestly served.
+/// Still in-memory: durable, restart-surviving history stays a non-goal.
+const TIMESERIES_MINUTE_RETENTION_SECS: i64 = 86_520;
 
 /// Whether an audit `action` represents a terminal request decision that
 /// should count toward request volume (Requests/s + the per-second chart).
@@ -161,6 +169,10 @@ struct AggregatorState {
     /// Per-second bucket totals for the timeseries endpoint.
     /// Key = unix epoch seconds. Sorted by key for cheap front-prune.
     seconds: BTreeMap<i64, SecondBucket>,
+    /// PR-D — per-minute downsampled tier (key = minute-start epoch
+    /// seconds), retained ~24 h. Written alongside `seconds` on every
+    /// request; serves minute-aligned (coarse) queries.
+    minutes: BTreeMap<i64, SecondBucket>,
 }
 
 /// Rolling aggregator over [`AuditEvent`] stream. Cheap to share
@@ -259,11 +271,28 @@ impl StatsAggregator {
             if was_block {
                 bucket.blocked = bucket.blocked.saturating_add(1);
             }
+            // PR-D — fold into the minute tier at record time (no
+            // background compaction pass needed; both stores are
+            // authoritative for their own granularity).
+            let minute_start = (event_sec.div_euclid(60)) * 60;
+            let mbucket = state.minutes.entry(minute_start).or_default();
+            mbucket.total = mbucket.total.saturating_add(1);
+            if was_block {
+                mbucket.blocked = mbucket.blocked.saturating_add(1);
+            }
         }
         let cutoff = event_sec - TIMESERIES_RETENTION_SECS;
         while let Some((&k, _)) = state.seconds.iter().next() {
             if k < cutoff {
                 state.seconds.pop_first();
+            } else {
+                break;
+            }
+        }
+        let minute_cutoff = event_sec - TIMESERIES_MINUTE_RETENTION_SECS;
+        while let Some((&k, _)) = state.minutes.iter().next() {
+            if k < minute_cutoff {
+                state.minutes.pop_first();
             } else {
                 break;
             }
@@ -350,6 +379,15 @@ impl StatsAggregator {
         let step_i64 = i64::from(step);
         let bucket_count = (window / step) as usize;
 
+        // PR-D — store selection. Minute-aligned coarse steps (every
+        // dashboard window chip: 60/300/1200) read the ~24h minute
+        // tier; fine or unaligned steps keep the ~62min seconds store
+        // (a minute bucket would straddle two unaligned step buckets).
+        // Step-aligned bucket starts are multiples of `step`, which is
+        // a multiple of 60 on the minute path — so every minute key in
+        // [start, end) belongs to exactly one bucket.
+        let use_minutes = step >= 60 && step % 60 == 0;
+
         // Step-aligned bucket boundaries on the wall clock so polls
         // overlap and the chart scrolls smoothly across refreshes.
         // The last bucket is the one *containing* `now`, so its end
@@ -360,13 +398,14 @@ impl StatsAggregator {
         let first_start = last_end - step_i64 * bucket_count as i64;
 
         let state = self.inner.lock().expect("stats mutex poisoned");
+        let store = if use_minutes { &state.minutes } else { &state.seconds };
         let mut points = Vec::with_capacity(bucket_count);
         for i in 0..bucket_count {
             let bucket_start = first_start + step_i64 * i as i64;
             let bucket_end = bucket_start + step_i64;
             let mut total = 0u32;
             let mut blocked = 0u32;
-            for (_, b) in state.seconds.range(bucket_start..bucket_end) {
+            for (_, b) in store.range(bucket_start..bucket_end) {
                 total = total.saturating_add(b.total);
                 blocked = blocked.saturating_add(b.blocked);
             }
@@ -381,7 +420,11 @@ impl StatsAggregator {
         TimeseriesResponse {
             window_seconds: window,
             step_seconds: step,
-            retention_seconds: TIMESERIES_RETENTION_SECS as u32,
+            retention_seconds: if use_minutes {
+                TIMESERIES_MINUTE_RETENTION_SECS as u32
+            } else {
+                TIMESERIES_RETENTION_SECS as u32
+            },
             points,
         }
     }
