@@ -41,6 +41,20 @@
 
 ## Phases
 
+> **Execution note (2026-07-02):** implemented as PR B of the 3-track batch
+> (A: live-feed self-node badge fix · B: this plan · C/D: performance page).
+> PR A ships a shared self-node resolution helper
+> (`useClusterApi().our_node` → "<id> · this node" badges) that P0/P2 here
+> reuse. P5 lands as the LAST commit so review can drop it to keep the PR
+> read-only.
+
+### P0 — consume the self-node badge helper (from PR A)
+
+Node attribution shown on Investigation surfaces (drawer, future node
+badges) resolves unstamped rows to the console's real node id via the
+shared helper — never the ambiguous "local" (the waf-2 confusion,
+2026-07-02).
+
 ### P1 — `risk_key` server-side audit filter (backend, TDD)
 
 1. `AuditFilter` (`aegis-control/src/api/audit.rs`): add
