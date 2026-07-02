@@ -1,6 +1,15 @@
 # Investigation page — end in actions, not dead ends: Simulator replay, drawer parity, risk-key counts + pivot
 
-**Status:** 🔵 PLANNED (nothing implemented)
+**Status:** 🟢 P0–P5 shipped (TDD, `feat/investigation-actions-riskkey`, 2026-07-02)
+
+Implementation notes vs. plan:
+- P5 discovery: `reset_key` takes RAW bucket axes and the raw session is
+  never audited — only session-less buckets (ip + device_fp) are
+  resettable from the UI; session-carrying buckets hide the button.
+  Two-click arm instead of a confirm modal (M007 precedent).
+- "Unique risk keys" landed as a dual-stat "Unique sources" card
+  (IPs + buckets) rather than a fifth card; top-buckets table renders
+  on IP pivots with >1 bucket.
 **Date:** 2026-07-02
 **Scope agreed with Nico:** Simulator replay + Copy-as-cURL/Block/Whitelist drawer parity + risk-key unique counts + risk-key pivot. Everything else from the research (time-range chips, live risk card, node badges, CSV export) is out of scope here — see "Noticed, deferred".
 

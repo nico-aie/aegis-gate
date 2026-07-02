@@ -1,6 +1,17 @@
 # Performance page — chart quality, window honesty, card-scope clarity
 
-**Status:** 🔴 Planned — not implemented
+**Status:** 🟢 P1–P5 ALL shipped (TDD, PRs C `feat/performance-page-ux` + D `feat/stats-minute-tier`, 2026-07-02)
+
+Implementation notes vs. plan:
+- P5.1 (retention_seconds) shipped in PR C so chip gating was
+  truth-driven from day one; fleet path reports the tighter
+  FLEET_TIMESERIES_MAX_WINDOW_SECS bound.
+- PR D minute tier: record-time fold (both stores written per event;
+  no background compaction); store selection by step (>= 60 and
+  % 60 == 0 → minute tier), so the 6h/24h chips un-gated with zero
+  frontend changes. 7d/30d stay dropped as planned.
+- P2 layout decision: kept two cards — requests = total area + blocked
+  overlay in ONE chart, block ratio = bars card.
 **Date:** 2026-07-02
 **Reported by:** Nico (screenshot: Performance page, 1h window; "Requests over time
 and Block ratio cards look not good UX, 24h default window too large; check the
