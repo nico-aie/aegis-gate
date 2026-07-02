@@ -1134,6 +1134,8 @@ async function drawerAccessListAdd(kind, ip, note, onDone) {
     });
     if (r.ok) {
       window.aegisToast(`${kind === 'blacklist' ? 'Blocked' : 'Whitelisted'} ${ip}`, 'ok');
+      // 2026-07-02 — non-blocking cross-list conflict warning.
+      if (r.conflict) window.aegisToast(accessListConflictMsg(r.conflict), 'warn');
       if (onDone) onDone();
     } else {
       const msg = (r && (r.message || r.error || r.reason)) || `status ${r.status}`;
@@ -1143,6 +1145,14 @@ async function drawerAccessListAdd(kind, ip, note, onDone) {
     window.aegisToast(`${kind} error: ${e.message || e}`, 'err');
   }
 }
+
+// 2026-07-02 — plain-language warning for a same-(kind,value)-on-both-lists
+// conflict returned by the add endpoint. The backend already computed the
+// precedence-aware `effect` (blacklist always wins); we just prefix it.
+function accessListConflictMsg(c) {
+  return `Also on the ${c.list} list (${c.id}) — ${c.effect}`;
+}
+
 async function drawerCopyAsCurl(ev) {
   if (!ev) return;
   // Best-effort host: data plane is on the same origin's port 8080
@@ -5878,6 +5888,21 @@ function ListPage({ kind }) {
   const raw = api.data?.entries ?? api.data ?? [];
   const data = Array.isArray(raw) ? raw : [];
 
+  // 2026-07-02 — cross-list conflict badges. Load the SIBLING list and
+  // build a set of `(kind|value)` keys it holds, so a row that also
+  // appears on the other list is flagged (blacklist wins at request
+  // time). Frontend-only derivation; exact (kind, value) match, same as
+  // the backend add-warning (no CIDR/country overlap analysis).
+  const siblingApi = isBL ? window.useWhitelistApi() : window.useBlacklistApi();
+  const siblingRaw = siblingApi.data?.entries ?? siblingApi.data ?? [];
+  const siblingList = Array.isArray(siblingRaw) ? siblingRaw : [];
+  const conflictKey = (k, v) => `${(k || '').trim()}|${(k || '').trim() === 'country' ? (v || '').trim().toUpperCase() : (v || '').trim()}`;
+  const siblingKeys = useMemoP(
+    () => new Set(siblingList.map(e => conflictKey(e.kind || e.type, e.value))),
+    [siblingList],
+  );
+  const siblingLabel = isBL ? 'whitelist' : 'blacklist';
+
   // P4 (2026-05-11) — per-entry hit counts in the last 1h / 24h.
   // Polled every 15s; the data plane increments the counter
   // inside `AccessListStore::matches()` on each access-list
@@ -5964,6 +5989,8 @@ function ListPage({ kind }) {
       const r = await window.accessListAdd(kind, entry);
       if (r.ok) {
         window.aegisToast(`Added ${kind} entry ${draftKind}:${value}`, 'ok');
+        // 2026-07-02 — warn when the same value is on the opposite list.
+        if (r.conflict) window.aegisToast(accessListConflictMsg(r.conflict), 'warn');
         setDraftValue(''); setDraftNote(''); setDraftBypass(''); setDraftExpiry('');
         setShowForm(false);
         api.reload && api.reload();
@@ -6259,7 +6286,20 @@ function ListPage({ kind }) {
             {filtered.map(e => (
               <tr key={e.id}>
                 <td><span className="pill neutral">{e.kind || e.type}</span></td>
-                <td className="mono" style={{ color: 'var(--ink-strong)' }}>{e.value}</td>
+                <td className="mono" style={{ color: 'var(--ink-strong)' }}>
+                  {e.value}
+                  {/* 2026-07-02 — same value on the opposite list =
+                      contradictory config; blacklist wins at request time. */}
+                  {siblingKeys.has(conflictKey(e.kind || e.type, e.value)) && (
+                    <span
+                      className="pill warn"
+                      style={{ marginLeft: 6, fontSize: 9 }}
+                      title={`Also on the ${siblingLabel} list — blacklist wins at request time, so ${isBL ? 'the whitelist entry has no effect' : 'this whitelist entry has no effect'} while the blacklist entry exists.`}
+                    >
+                      ⚠ also {siblingLabel}ed
+                    </span>
+                  )}
+                </td>
                 <td className="dim" style={{ maxWidth: 280, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {e.note || e.reason || ''}
                 </td>
