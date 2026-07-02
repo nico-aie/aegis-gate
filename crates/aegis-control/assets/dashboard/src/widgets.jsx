@@ -181,6 +181,158 @@ function TrafficChart({ series, w = 800, h = 220 }) {
   );
 }
 
+// ============= TimeseriesChart (PR-C P2, 2026-07-02) =============
+// The Performance page's replacement for the fixed-460px Sparkline:
+// responsive viewBox, ZERO y-baseline (min-max normalisation amplified
+// noise and made windows incomparable), y-gridlines, x time labels, and
+// a hover crosshair + tooltip. Two modes:
+//   'area' — total request area + blocked overlay line (per bucket)
+//   'bars' — per-bucket block ratio %; buckets with NO traffic render
+//            as gaps (not 0%), and buckets below `minSample` requests
+//            are dimmed (a 1/1 bucket is not a 100% attack wave).
+// Sparkline itself is untouched — stat tiles still use it.
+function TimeseriesChart({ points, mode = 'area', h = 200, minSample = 5 }) {
+  const [hover, setHover] = useStateW(null); // hovered bucket index | null
+  const svgRef = useRefW(null);
+  if (!points || points.length < 2) return null;
+
+  const w = 800;
+  const padL = 40, padR = 12, padT = 16, padB = 24;
+  const innerW = w - padL - padR;
+  const innerH = h - padT - padB;
+  const n = points.length;
+  const isBars = mode === 'bars';
+
+  // Bars: per-bucket ratio, null = no traffic (gap). Area: totals.
+  const values = isBars
+    ? points.map(p => (p.total > 0 ? (p.blocked * 100) / p.total : null))
+    : points.map(p => p.total);
+  const max = isBars ? 100 : Math.max(...values.map(v => v ?? 0), 10);
+  const xs = i => padL + (n > 1 ? (i / (n - 1)) * innerW : 0);
+  const ys = v => padT + innerH - (v / max) * innerH;
+
+  const fmtTime = (ts) => {
+    const d = new Date(ts);
+    return Number.isFinite(d.getTime())
+      ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+      : '';
+  };
+
+  const onMove = (e) => {
+    const el = svgRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    // Fraction across the PLOT area (viewBox scales with CSS width).
+    const plotLeft = (padL / w) * rect.width;
+    const plotWidth = (innerW / w) * rect.width;
+    const frac = (e.clientX - rect.left - plotLeft) / plotWidth;
+    const idx = Math.round(frac * (n - 1));
+    setHover(idx >= 0 && idx < n ? idx : null);
+  };
+
+  const yTicks = isBars ? [0, 50, 100] : [0, Math.round(max * 0.5), Math.round(max)];
+  const xLabelIdx = [0, Math.floor((n - 1) / 2), n - 1];
+
+  // Tooltip content for the hovered bucket.
+  const hoverBox = (() => {
+    if (hover == null || !points[hover]) return null;
+    const p = points[hover];
+    const v = values[hover];
+    const label = isBars
+      ? (v == null ? `${fmtTime(p.ts)} · no traffic` : `${fmtTime(p.ts)} · ${v.toFixed(1)}% (${p.blocked}/${p.total})`)
+      : `${fmtTime(p.ts)} · ${p.total.toLocaleString()} req · ${p.blocked.toLocaleString()} blocked`;
+    const boxW = Math.max(120, label.length * 6.2);
+    // Clamp so the box stays inside the plot.
+    const bx = Math.min(Math.max(xs(hover) - boxW / 2, padL), w - padR - boxW);
+    return { label, bx, x: xs(hover) };
+  })();
+
+  return (
+    <svg
+      ref={svgRef}
+      viewBox={`0 0 ${w} ${h}`}
+      width="100%"
+      height={h}
+      preserveAspectRatio="none"
+      onMouseMove={onMove}
+      onMouseLeave={() => setHover(null)}
+      style={{ display: 'block' }}
+    >
+      {yTicks.map((t, i) => (
+        <g key={i}>
+          <line x1={padL} x2={w - padR} y1={ys(t)} y2={ys(t)} className="gridline" strokeDasharray="2 4" />
+          <text x={padL - 6} y={ys(t) + 3} textAnchor="end" className="axis-label">{isBars ? `${t}%` : t.toLocaleString()}</text>
+        </g>
+      ))}
+      {xLabelIdx.map((i, k) => (
+        <text
+          key={`x${k}`}
+          x={xs(i)}
+          y={h - 8}
+          textAnchor={k === 0 ? 'start' : k === xLabelIdx.length - 1 ? 'end' : 'middle'}
+          className="axis-label"
+        >
+          {fmtTime(points[i]?.ts)}
+        </text>
+      ))}
+      {isBars ? (
+        // Ratio bars — a bucket ratio is a discrete quantity; bars don't
+        // imply continuity between unrelated buckets the way a line does.
+        points.map((p, i) => {
+          const v = values[i];
+          if (v == null) return null; // no traffic = gap, not 0%
+          const bw = Math.max(innerW / n - 1, 1);
+          const bx = padL + (i / n) * innerW;
+          const by = ys(v);
+          const lowSample = p.total < minSample;
+          return (
+            <rect
+              key={i}
+              x={bx}
+              y={by}
+              width={bw}
+              height={Math.max(padT + innerH - by, 1)}
+              fill="#F6465D"
+              opacity={lowSample ? 0.3 : 0.85}
+            >
+              {lowSample && <title>{`low sample (n=${p.total}) — ratio unreliable`}</title>}
+            </rect>
+          );
+        })
+      ) : (
+        <>
+          <path
+            d={`${points.map((p, i) => `${i === 0 ? 'M' : 'L'}${xs(i)},${ys(p.total)}`).join(' ')} L${xs(n - 1)},${ys(0)} L${xs(0)},${ys(0)} Z`}
+            fill="#3B82F6"
+            opacity="0.12"
+          />
+          <path
+            d={points.map((p, i) => `${i === 0 ? 'M' : 'L'}${xs(i)},${ys(p.total)}`).join(' ')}
+            fill="none" stroke="#3B82F6" strokeWidth="1.6"
+          />
+          <path
+            d={points.map((p, i) => `${i === 0 ? 'M' : 'L'}${xs(i)},${ys(p.blocked)}`).join(' ')}
+            fill="none" stroke="#F6465D" strokeWidth="1.6"
+          />
+          <g transform={`translate(${padL},${padT - 4})`}>
+            <circle cx="4" cy="0" r="3" fill="#3B82F6" />
+            <text x="12" y="3" className="axis-label" fill="#B7BDC6">Total</text>
+            <circle cx="56" cy="0" r="3" fill="#F6465D" />
+            <text x="64" y="3" className="axis-label" fill="#B7BDC6">Blocked</text>
+          </g>
+        </>
+      )}
+      {hoverBox && (
+        <g pointerEvents="none">
+          <line x1={hoverBox.x} x2={hoverBox.x} y1={padT} y2={padT + innerH} stroke="var(--ink-faint, #5E6673)" strokeWidth="1" strokeDasharray="3 3" />
+          <rect x={hoverBox.bx} y={padT} width={Math.max(120, hoverBox.label.length * 6.2)} height={16} rx="3" fill="#0B0E11" opacity="0.92" stroke="#2B3139" />
+          <text x={hoverBox.bx + 6} y={padT + 11.5} className="axis-label" fill="#EAECEF">{hoverBox.label}</text>
+        </g>
+      )}
+    </svg>
+  );
+}
+
 // ============= Donut =============
 function Donut({ slices, size = 180 }) {
   const total = slices.reduce((s, x) => s + x.value, 0) || 1;
@@ -619,7 +771,7 @@ function PageTitleRefresh({ onClick, label }) {
 }
 
 Object.assign(window, {
-  I, Sparkline, StatTile, ScopeBadge, useScopeBadge, FleetNodeSelector, TrafficChart, Donut, WorldMap, RiskHeatmap,
+  I, Sparkline, StatTile, ScopeBadge, useScopeBadge, FleetNodeSelector, TrafficChart, TimeseriesChart, Donut, WorldMap, RiskHeatmap,
   RiskMeter, ActionPill, TierPill, Drawer, StackedBar, BarList, SectionHeader,
   ToastContainer, aegisToast, PageTitleRefresh,
   // FIX 2026-05-04 — exposed so PageOverview can resolve country
