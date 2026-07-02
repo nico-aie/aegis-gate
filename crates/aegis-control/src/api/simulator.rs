@@ -87,6 +87,13 @@ pub struct SimulateRequest {
     /// path.
     #[serde(default)]
     pub body: Option<String>,
+    /// P2 (2026-07-02) — optional simulated peer IP so `ip_in` /
+    /// `country` / `asn` rules are testable. Defaults to loopback.
+    /// Typed `IpAddr` so garbage fails at deserialization (the
+    /// handler's 400 invalid-body path) instead of silently
+    /// simulating from 127.0.0.1.
+    #[serde(default)]
+    pub peer_ip: Option<std::net::IpAddr>,
 }
 
 /// JSON shape returned by `/api/rules/simulate`.
@@ -277,12 +284,15 @@ pub fn simulate(
     let body_len = body_bytes.len() as u64;
     let body_peek = BodyPeek::new(body_bytes, Some(body_len), false);
 
+    let peer_ip = req
+        .peer_ip
+        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
     let view = RequestView {
         method: &method_parsed,
         uri: &uri,
         version: http::Version::HTTP_11,
         headers: &headers,
-        peer: "127.0.0.1:0".parse().expect("loopback parse"),
+        peer: std::net::SocketAddr::new(peer_ip, 0),
         tls: None,
         body: &body_peek,
     };
@@ -452,6 +462,7 @@ mod tests {
             host: Some("api.example.com".into()),
             headers: Default::default(),
             body: None,
+            peer_ip: None,
         };
         let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[]);
         assert_eq!(resp.decision_action, "allow");
@@ -472,6 +483,7 @@ mod tests {
             host: Some("api.example.com".into()),
             headers: Default::default(),
             body: None,
+            peer_ip: None,
         };
         let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[]);
         assert_eq!(resp.decision_action, "allow", "70 < low threshold 80");
@@ -495,6 +507,7 @@ mod tests {
             host: Some("api.example.com".into()),
             headers: Default::default(),
             body: None,
+            peer_ip: None,
         };
         let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[]);
         assert_eq!(resp.decision_action, "block", "combined score ≥ 80");
@@ -516,6 +529,7 @@ mod tests {
             host: Some("api.example.com".into()),
             headers: Default::default(),
             body: None,
+            peer_ip: None,
         };
         let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[]);
         assert!(
@@ -541,6 +555,7 @@ mod tests {
             host: Some("api.example.com".into()),
             headers: Default::default(),
             body: None,
+            peer_ip: None,
         };
         let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[]);
         assert_eq!(resp.decision_action, "allow");
@@ -561,6 +576,7 @@ mod tests {
             host: None,
             headers: Default::default(),
             body: None,
+            peer_ip: None,
         };
         let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[]);
         assert_eq!(resp.decision_action, "allow");
@@ -574,6 +590,7 @@ mod tests {
             host: None,
             headers: Default::default(),
             body: None,
+            peer_ip: None,
         };
         // Should not panic; the simulator falls back to GET.
         let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[]);
@@ -590,6 +607,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             body: Some("<script>alert(1)</script>".into()),
+            peer_ip: None,
         };
         let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[]);
         // Body-side detection — the XSS (or body-abuse) detector fires. A single
@@ -614,6 +632,7 @@ mod tests {
             host: Some("api.example.com".into()),
             headers: Default::default(),
             body: None,
+            peer_ip: None,
         };
         let resp = simulate(&req, &default_detectors(), &mask, &live_tiers(), &[]);
         assert!(
@@ -631,6 +650,7 @@ mod tests {
             host: Some("api.example.com".into()),
             headers: Default::default(),
             body: None,
+            peer_ip: None,
         };
         let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[]);
         assert!(!resp.signals.is_empty());
@@ -648,6 +668,7 @@ mod tests {
             host: None,
             headers: Default::default(),
             body: None,
+            peer_ip: None,
         };
         let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[]);
         let json = serde_json::to_value(&resp).unwrap();
