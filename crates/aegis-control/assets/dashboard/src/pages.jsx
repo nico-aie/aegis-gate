@@ -2676,10 +2676,31 @@ async function fetchCurrentVersion() {
 // Manager page. Operators type a method + path + body and click
 // Simulate to preview the decision against the **live**
 // detector chain — no real traffic, no audit emit.
+// P2 (2026-07-02) — parse a `Name: value` lines textarea into a headers
+// map. Blank lines + lines without a colon are skipped (forgiving, the
+// simulator is a scratchpad, not a validator).
+function parseHeaderLines(text) {
+  const out = {};
+  for (const line of (text || '').split('\n')) {
+    const idx = line.indexOf(':');
+    if (idx <= 0) continue;
+    const name = line.slice(0, idx).trim();
+    const value = line.slice(idx + 1).trim();
+    if (name) out[name] = value;
+  }
+  return out;
+}
+
 function RuleSimulator() {
   const [method, setMethod] = useStateP('GET');
   const [path, setPath] = useStateP("/api/users?id=1' OR '1'='1");
   const [body, setBody] = useStateP('');
+  // P2 — host / peer IP / headers inputs so host_matches, ip_in and
+  // header/cookie/jwt rules are exercisable from the UI. The backend
+  // already accepted host+headers; peer_ip is new.
+  const [host, setHost] = useStateP('');
+  const [peerIp, setPeerIp] = useStateP('');
+  const [headersText, setHeadersText] = useStateP('');
   const [result, setResult] = useStateP(null);
   const [busy, setBusy] = useStateP(false);
 
@@ -2690,6 +2711,10 @@ function RuleSimulator() {
     try {
       const payload = { method, path };
       if (body && body.length > 0) payload.body = body;
+      if (host.trim()) payload.host = host.trim();
+      if (peerIp.trim()) payload.peer_ip = peerIp.trim();
+      const headers = parseHeaderLines(headersText);
+      if (Object.keys(headers).length > 0) payload.headers = headers;
       const r = await window.rulesSimulate(payload);
       setResult(r);
     } catch (err) {
@@ -2705,6 +2730,13 @@ function RuleSimulator() {
   const fired = (ok && Array.isArray(result.detectors_fired)) ? result.detectors_fired : [];
   const muted = (ok && Array.isArray(result.muted_detectors)) ? result.muted_detectors : [];
   const signals = (ok && Array.isArray(result.signals)) ? result.signals : [];
+  // P1/P2 — rule-engine outcome fields (older binaries won't send them).
+  const matchedRule = ok ? (result.matched_rule || null) : null;
+  const scopedSkipped = (ok && Array.isArray(result.route_scoped_rules_skipped))
+    ? result.route_scoped_rules_skipped : [];
+  const ruleTone = matchedRule
+    ? (matchedRule.action === 'block' ? 'down' : matchedRule.action === 'allow' ? 'up' : 'warn')
+    : 'neutral';
 
   return (
     <div className="card" style={{ marginBottom: 12, padding: 0 }}>
@@ -2712,7 +2744,7 @@ function RuleSimulator() {
         <div>
           <div className="card-title">Rule simulator</div>
           <div className="card-sub">
-            Replay a hypothetical request against the live detector chain — no traffic, no audit emit.
+            Replay a hypothetical request against the live custom rules + detector chain — no traffic, no audit emit.
           </div>
         </div>
         {/* 2026-06-21 — dropped the "Tier A" badge: it was internal
@@ -2736,6 +2768,33 @@ function RuleSimulator() {
           placeholder="optional request body (e.g. <script>alert(1)</script>)"
         />
       </div>
+      {/* P2 — host / peer IP / headers so host_matches, ip_in and
+          header/cookie/jwt-based rules are testable without curl. */}
+      <div style={{ padding: '0 14px 8px', display: 'grid', gridTemplateColumns: '110px 1fr 1fr', gap: 8, alignItems: 'start' }}>
+        <input
+          className="input mono"
+          value={peerIp}
+          onChange={e => setPeerIp(e.target.value)}
+          placeholder="peer IP"
+          title="Simulated client IP — exercises ip_in / country / asn rules. Defaults to 127.0.0.1."
+        />
+        <input
+          className="input mono"
+          value={host}
+          onChange={e => setHost(e.target.value)}
+          placeholder="Host header (optional, e.g. api.example.com)"
+          title="Exercises host_matches rules. Defaults to localhost."
+        />
+        <textarea
+          className="input mono"
+          value={headersText}
+          onChange={e => setHeadersText(e.target.value)}
+          placeholder={'optional headers, one per line:\nUser-Agent: sqlmap/1.7\nCookie: sid=abc123'}
+          title="Exercises header_matches / cookie_matches / jwt_claim rules."
+          rows={2}
+          style={{ resize: 'vertical', minHeight: 34, fontSize: 12, lineHeight: 1.4 }}
+        />
+      </div>
       <div style={{ padding: '0 14px 14px', display: 'flex', gap: 10, alignItems: 'center' }}>
         <button className="btn primary" onClick={onSimulate} disabled={busy || !path}>
           {busy ? 'Simulating…' : 'Simulate'}
@@ -2749,9 +2808,16 @@ function RuleSimulator() {
           <>
             <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>verdict:</span>
             <span className={`pill ${tone}`}>{decision}</span>
-            {result.rule_id && (
+            {/* P1 — rule-engine attribution. matched_rule is authoritative;
+                fall back to the legacy rule_id (detector id) for old binaries. */}
+            {matchedRule ? (
               <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>
-                rule: <code>{result.rule_id}</code>
+                rule: <span className={`pill ${ruleTone}`} style={{ fontSize: 10 }}>{matchedRule.action}{matchedRule.status ? ` ${matchedRule.status}` : ''}</span>{' '}
+                <code>{matchedRule.id}</code>
+              </span>
+            ) : result.rule_id && (
+              <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>
+                detector: <code>{result.rule_id}</code>
               </span>
             )}
             <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>
@@ -2768,6 +2834,27 @@ function RuleSimulator() {
           </>
         )}
       </div>
+      {/* P1 — rule-engine context lines: allow-bypass, unenforced matches,
+          route-scoped skips. Only rendered when there's something to say. */}
+      {ok && (result.detectors_bypassed || (matchedRule && !matchedRule.enforced) || scopedSkipped.length > 0) && (
+        <div style={{ padding: '0 14px 12px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {result.detectors_bypassed && (
+            <span style={{ fontSize: 11, color: 'var(--up)' }}>
+              ✓ detector chain skipped — <code>{matchedRule ? matchedRule.id : 'allow rule'}</code> short-circuits to allow (same trust contract as the whitelist)
+            </span>
+          )}
+          {matchedRule && !matchedRule.enforced && (
+            <span style={{ fontSize: 11, color: 'var(--warn)' }}>
+              ⚠ rule <code>{matchedRule.id}</code> matched but <strong>{matchedRule.action}</strong> is not enforced by the live engine — v1 enforces <code>allow</code> and <code>block</code> only; the match is audit-visible.
+            </span>
+          )}
+          {scopedSkipped.length > 0 && (
+            <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+              {scopedSkipped.length} route-scoped rule{scopedSkipped.length > 1 ? 's' : ''} not evaluated (the simulator runs global scope): {scopedSkipped.map((id, i) => <code key={id}>{i > 0 ? ', ' : ''}{id}</code>)}
+            </span>
+          )}
+        </div>
+      )}
       {ok && (fired.length > 0 || muted.length > 0 || signals.length > 0) && (
         <div style={{ padding: '10px 14px 14px', borderTop: '1px solid var(--hairline)', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
           <div>
