@@ -450,6 +450,9 @@ pub(crate) fn admin_router(
                 ip: parse_query_str(query, "ip").map(percent_decode),
                 request_id: parse_query_str(query, "request_id").map(percent_decode),
                 rule_id: parse_query_str(query, "rule_id").map(percent_decode),
+                // PR-B P1 (2026-07-02) — composite risk-bucket pivot
+                // (Investigation page): matches fields.risk_key.key_hash.
+                risk_key: parse_query_str(query, "risk_key").map(percent_decode),
                 ts_from: parse_ts(query, "ts_from"),
                 ts_to: parse_ts(query, "ts_to"),
             };

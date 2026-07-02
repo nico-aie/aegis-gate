@@ -103,6 +103,12 @@ pub struct AuditFilter {
     pub ip: Option<String>,
     pub request_id: Option<String>,
     pub rule_id: Option<String>,
+    /// PR-B P1 (2026-07-02) — composite risk-bucket pivot. Matches
+    /// `fields.risk_key.key_hash` (the stable 16-hex
+    /// `blake3(ip|device_fp|session)` bucket id the data plane stamps
+    /// on every allow/block/challenge row). Rows without the field —
+    /// early-path blocks, admin/system events — never match.
+    pub risk_key: Option<String>,
     pub ts_from: Option<chrono::DateTime<chrono::Utc>>,
     pub ts_to: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -112,6 +118,7 @@ impl AuditFilter {
         self.ip.is_none()
             && self.request_id.is_none()
             && self.rule_id.is_none()
+            && self.risk_key.is_none()
             && self.ts_from.is_none()
             && self.ts_to.is_none()
     }
@@ -135,6 +142,18 @@ impl AuditFilter {
         }
         if let Some(ts_to) = &self.ts_to {
             if ev.ts > *ts_to {
+                return false;
+            }
+        }
+        if let Some(want_key) = &self.risk_key {
+            let hit = ev
+                .fields
+                .get("risk_key")
+                .and_then(|rk| rk.get("key_hash"))
+                .and_then(|v| v.as_str())
+                .map(|kh| kh.eq_ignore_ascii_case(want_key))
+                .unwrap_or(false);
+            if !hit {
                 return false;
             }
         }
