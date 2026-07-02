@@ -10558,10 +10558,10 @@ function ScalingL1Card({ runtime }) {
   );
 }
 
-function ScalingL2Card({ cluster, onDrain, draining }) {
+function ScalingL2Card({ cluster, onDrain, onUndrain, isDraining, busy }) {
   const peers = cluster?.data?.peers || [];
   const ourNode = cluster?.data?.our_node;
-  const [confirmStep, setConfirmStep] = useStateP(0); // 0 idle, 1 first, 2 final
+  const [confirmStep, setConfirmStep] = useStateP(0); // 0 idle, 1 confirm
   const [drainResult, setDrainResult] = useStateP(null);
 
   const onConfirmFirst = () => setConfirmStep(1);
@@ -10570,7 +10570,14 @@ function ScalingL2Card({ cluster, onDrain, draining }) {
     setConfirmStep(0);
     setDrainResult({ pending: true });
     const res = await onDrain();
-    setDrainResult(res);
+    setDrainResult(res && res.status < 300 ? null : res); // clear on success (state pill takes over)
+  };
+  // Resume is the safe, restorative action — single click, no double-confirm.
+  const onResume = async () => {
+    setConfirmStep(0);
+    setDrainResult({ pending: true });
+    const res = await onUndrain();
+    setDrainResult(res && res.status < 300 ? null : res);
   };
 
   // 2026-05-08 NEW-3 — derive freshness signals from the raw
@@ -10644,46 +10651,71 @@ function ScalingL2Card({ cluster, onDrain, draining }) {
                 <td style={{ textAlign: 'right' }} className="num">
                   {p.ageSec != null ? `${p.ageSec}s ago` : '—'}
                 </td>
-                <td>{p.isMe ? <span className="pill info">this node</span> : <span className="dim">peer</span>}</td>
+                <td>
+                  {p.isMe ? <span className="pill info">this node</span> : <span className="dim">peer</span>}
+                  {p.isMe && isDraining && (
+                    <span className="pill warn" style={{ marginLeft: 6 }} title="Readiness is 503 — the load balancer is not sending new traffic here.">draining</span>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--hairline)' }}>
-        {confirmStep === 0 && (
-          <>
-            <button
-              className="btn"
-              disabled={draining}
-              onClick={onConfirmFirst}
-            >
+      {/* Drain / Resume toggle for this node's LB readiness. */}
+      <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--hairline)' }}>
+        {/* Status line — the live source of truth. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>Readiness</span>
+          {isDraining ? (
+            <span className="pill warn">Draining · /healthz/ready → 503</span>
+          ) : (
+            <span className="pill up">Serving · in LB rotation</span>
+          )}
+        </div>
+
+        {isDraining ? (
+          /* Draining → offer Resume (restorative, single-click). */
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn solid-yellow" disabled={busy} onClick={onResume}>
+              Resume serving
+            </button>
+            <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+              {ourNode || 'This node'} is out of the LB pool (in-flight requests still complete).
+              Resume clears readiness so the LB routes traffic back within one health-check interval.
+            </span>
+          </div>
+        ) : confirmStep === 0 ? (
+          /* Serving → offer Drain (two-step confirm; it removes the node from the pool). */
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn" disabled={busy} onClick={onConfirmFirst}>
               Drain this node
             </button>
             <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
-              Flips readiness to 503 — the load balancer pulls this node within one health-check interval.
+              Flips readiness to 503 — the LB pulls this node within one health-check interval.
+              In-flight requests finish; reversible from here (no restart needed).
             </span>
-          </>
-        )}
-        {confirmStep === 1 && (
-          <>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 12, color: 'var(--warn)' }}>
-              Confirm — drain {ourNode || 'this node'}?
+              Drain {ourNode || 'this node'}? The LB will stop sending it new traffic.
             </span>
             <button className="btn" onClick={onCancel}>Cancel</button>
-            <button className="btn solid-yellow" onClick={onConfirmFinal}>
+            <button className="btn solid-yellow" disabled={busy} onClick={onConfirmFinal}>
               Yes, drain
             </button>
-          </>
+          </div>
         )}
+
+        {/* Transient feedback (success is reflected by the status pill above; this row only lingers on error/pending). */}
         {drainResult?.pending && (
-          <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>Draining…</span>
+          <div style={{ marginTop: 6, fontSize: 11, color: 'var(--ink-dim)' }}>Applying…</div>
         )}
-        {drainResult && !drainResult.pending && drainResult.status >= 200 && drainResult.status < 300 && (
-          <span className="pill up">Drained — readiness now 503</span>
-        )}
-        {drainResult && !drainResult.pending && (drainResult.status < 200 || drainResult.status >= 300) && (
-          <span className="pill down">Drain failed (HTTP {drainResult.status || '—'})</span>
+        {drainResult && !drainResult.pending && (
+          <div style={{ marginTop: 6 }}>
+            <span className="pill down">Action failed (HTTP {drainResult.status || '—'})</span>
+          </div>
         )}
       </div>
     </div>
@@ -10857,18 +10889,27 @@ function PageScaling() {
   const cluster = window.useClusterApi();
   const config = window.useConfigApi();
   const state = window.useStateApi();
+  const drainState = window.useNodeDrainApi ? window.useNodeDrainApi() : { data: null, reload: null };
   const loadmode = window.useLoadModeApi ? window.useLoadModeApi() : { data: null };
-  const [draining, setDraining] = useStateP(false);
+  const [busy, setBusy] = useStateP(false);
 
-  const onDrain = async () => {
-    setDraining(true);
+  // Live drain state is the source of truth (survives reload; reflects a
+  // SIGTERM / automation drain). The POST just flips it, then we refetch.
+  const isDraining = !!drainState.data?.draining;
+
+  const runDrainAction = async (post) => {
+    setBusy(true);
     try {
-      const r = await window.adminDrainPost();
+      const r = await post();
       return r;
     } finally {
-      setDraining(false);
+      setBusy(false);
+      // Refetch the authoritative state after the flip.
+      if (drainState.reload) drainState.reload();
     }
   };
+  const onDrain = () => runDrainAction(window.adminDrainPost);
+  const onUndrain = () => runDrainAction(window.adminUndrainPost);
 
   return (
     <>
@@ -10884,6 +10925,7 @@ function PageScaling() {
             runtime.reload && runtime.reload();
             cluster.reload && cluster.reload();
             state.reload && state.reload();
+            drainState.reload && drainState.reload();
             loadmode.reload && loadmode.reload();
           }}>
             <window.I.Refresh /> Refresh
@@ -10893,7 +10935,13 @@ function PageScaling() {
 
       <LoadModeCard loadmode={loadmode} />
       <ScalingL1Card runtime={runtime} />
-      <ScalingL2Card cluster={cluster} onDrain={onDrain} draining={draining} />
+      <ScalingL2Card
+        cluster={cluster}
+        onDrain={onDrain}
+        onUndrain={onUndrain}
+        isDraining={isDraining}
+        busy={busy}
+      />
       <ConfigVersionCard config={config} />
       <ScalingL3Card state={state} />
     </>

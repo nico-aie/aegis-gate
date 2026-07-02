@@ -112,6 +112,26 @@ mod tests {
     }
 
     #[test]
+    fn undrain_restores_readiness() {
+        // Drain flips readiness off; undrain (clearing the flag) restores it
+        // without touching the other gates — the basis of the console's
+        // reversible Drain/Resume toggle.
+        let r = ReadinessSignal::default();
+        r.config_loaded.store(true, Ordering::Relaxed);
+        r.state_warmup_done.store(true, Ordering::Relaxed);
+        r.certs_loaded.store(true, Ordering::Relaxed);
+        r.pool_has_healthy.store(true, Ordering::Relaxed);
+
+        r.draining.store(true, Ordering::Relaxed);
+        assert!(!r.is_ready(), "draining → not ready");
+        assert!(!r.is_live(), "draining → not live");
+
+        r.draining.store(false, Ordering::Relaxed);
+        assert!(r.is_ready(), "undrain → ready again");
+        assert!(r.is_live(), "undrain → live again");
+    }
+
+    #[test]
     fn not_ready_when_missing_pool() {
         let r = ReadinessSignal::default();
         r.config_loaded.store(true, Ordering::Relaxed);

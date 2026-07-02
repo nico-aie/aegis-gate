@@ -4213,21 +4213,18 @@ pub(crate) async fn handle_detectors_put(
     }
 }
 
-/// HA-T5 — operator drain handler. Authenticated POST endpoint
-/// that flips `readiness.draining` to true. Subsequent
-/// `/healthz/ready` probes return 503 so external load
-/// balancers stop routing new traffic. In-flight requests
-/// continue. Idempotent — calling twice is a no-op.
-pub(crate) async fn handle_admin_drain(
-    req: hyper::Request<hyper::body::Incoming>,
-    readiness: &ReadinessSignal,
+/// Shared auth for the drain/undrain endpoints. Require a valid admin
+/// session cookie; we don't gate on CSRF the way mutating dashboard
+/// endpoints do — drain is a server-local op that doesn't touch persisted
+/// config. Also allow unauthenticated calls when the admin password hash
+/// is the empty default (test/dev builds with no real admin) OR when the
+/// operator set `AEGIS_DRAIN_TOKEN` and the request carries a matching
+/// `X-Aegis-Drain-Token` header (ops automation — k8s preStop hooks,
+/// systemd ExecStop scripts — that can't manage a session cookie).
+async fn drain_auth_ok(
+    req: &hyper::Request<hyper::body::Incoming>,
     services: &aegis_control::dashboard_services::DashboardServices,
-) -> Response<Full<Bytes>> {
-    use std::sync::atomic::Ordering;
-
-    // Auth: require a valid admin session cookie. We don't gate
-    // on CSRF the way mutating dashboard endpoints do — drain is
-    // a server-local op that doesn't touch persisted config.
+) -> bool {
     let session_cookie = req
         .headers()
         .get_all(hyper::header::COOKIE)
@@ -4239,14 +4236,6 @@ pub(crate) async fn handle_admin_drain(
         Some(sid) => services.auth_sessions.validate(sid).await.is_some(),
         None => false,
     };
-    // Allow unauthenticated drain when the admin password
-    // hash is the empty default (test/dev builds with no real
-    // admin configured) OR when the operator has set
-    // `AEGIS_DRAIN_TOKEN` and the request carries it as a
-    // matching `X-Aegis-Drain-Token` header. The token path
-    // exists so that ops automation (k8s preStop hooks,
-    // systemd ExecStop scripts, etc.) can call `/admin/drain`
-    // without managing a session cookie.
     let no_admin_configured = services.admin_identity.password_hash.is_empty();
     let token_ok = match std::env::var("AEGIS_DRAIN_TOKEN").ok() {
         Some(expected) if !expected.is_empty() => req
@@ -4257,21 +4246,79 @@ pub(crate) async fn handle_admin_drain(
             .unwrap_or(false),
         _ => false,
     };
-    if !session_ok && !no_admin_configured && !token_ok {
+    session_ok || no_admin_configured || token_ok
+}
+
+fn our_node(services: &aegis_control::dashboard_services::DashboardServices) -> String {
+    services
+        .roster_view
+        .as_ref()
+        .map(|lv| lv.our_node.clone())
+        .unwrap_or_default()
+}
+
+/// HA-T5 — operator drain handler. Authenticated POST endpoint that flips
+/// `readiness.draining` to true. Subsequent `/healthz/ready` probes return
+/// 503 so external load balancers stop routing new traffic. In-flight
+/// requests continue. Idempotent — calling twice is a no-op.
+pub(crate) async fn handle_admin_drain(
+    req: hyper::Request<hyper::body::Incoming>,
+    readiness: &ReadinessSignal,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use std::sync::atomic::Ordering;
+    if !drain_auth_ok(&req, services).await {
         return json_response(401, &serde_json::json!({"error": "auth_required"}));
     }
-
     let already = readiness.draining.swap(true, Ordering::Release);
     json_response(
         202,
         &serde_json::json!({
             "status": "draining",
             "already": already,
-            "node": services
-                .roster_view
-                .as_ref()
-                .map(|lv| lv.our_node.clone())
-                .unwrap_or_default(),
+            "node": our_node(services),
+        }),
+    )
+}
+
+/// Reverse of [`handle_admin_drain`] — clear `readiness.draining` so
+/// `/healthz/ready` returns 200 again and the load balancer routes this
+/// node back into rotation within one health-check interval. Idempotent —
+/// undraining an already-serving node returns `already=false`. Same auth as
+/// drain. Lets an operator undo a drain from the console without a restart.
+pub(crate) async fn handle_admin_undrain(
+    req: hyper::Request<hyper::body::Incoming>,
+    readiness: &ReadinessSignal,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use std::sync::atomic::Ordering;
+    if !drain_auth_ok(&req, services).await {
+        return json_response(401, &serde_json::json!({"error": "auth_required"}));
+    }
+    let was_draining = readiness.draining.swap(false, Ordering::Release);
+    json_response(
+        200,
+        &serde_json::json!({
+            "status": "serving",
+            "already": !was_draining, // already serving iff it wasn't draining
+            "node": our_node(services),
+        }),
+    )
+}
+
+/// `GET /api/node/drain` — live readiness/drain state for this node, so the
+/// dashboard can render a truthful Serving/Draining toggle (survives page
+/// reload and reflects a drain triggered by SIGTERM or ops automation).
+pub(crate) fn handle_node_drain_get(
+    readiness: &ReadinessSignal,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use std::sync::atomic::Ordering;
+    json_response(
+        200,
+        &serde_json::json!({
+            "draining": readiness.draining.load(Ordering::Relaxed),
+            "node": our_node(services),
         }),
     )
 }
