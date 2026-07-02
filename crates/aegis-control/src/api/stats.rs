@@ -132,6 +132,13 @@ pub struct TimeseriesPoint {
 pub struct TimeseriesResponse {
     pub window_seconds: u32,
     pub step_seconds: u32,
+    /// PR-C P5.1 (2026-07-02) — how much history this series can
+    /// actually contain. Buckets older than this are structurally
+    /// empty (not "no traffic"); the dashboard gates its window chips
+    /// + captions on this instead of hardcoded copy. Node-local reads
+    /// report the seconds-store retention; fleet-merged reads report
+    /// the (smaller) fleet snapshot window.
+    pub retention_seconds: u32,
     pub points: Vec<TimeseriesPoint>,
 }
 
@@ -374,6 +381,7 @@ impl StatsAggregator {
         TimeseriesResponse {
             window_seconds: window,
             step_seconds: step,
+            retention_seconds: TIMESERIES_RETENTION_SECS as u32,
             points,
         }
     }
@@ -681,6 +689,10 @@ fn bucketize_seconds(
     TimeseriesResponse {
         window_seconds: window,
         step_seconds: step,
+        // Fleet-merged series only ever contain the bounded snapshot
+        // window — report THAT as the retention so the dashboard's
+        // truth-gate reflects the fleet path's tighter bound.
+        retention_seconds: crate::metrics::fleet_snapshot::FLEET_TIMESERIES_MAX_WINDOW_SECS,
         points,
     }
 }
