@@ -352,6 +352,35 @@ function useFleetNodesApi() {
   return useApi('/api/fleet/nodes', { intervalMs: 5000, fallback: { nodes: [] } });
 }
 
+// PR-A (2026-07-02) — this console's own node identity, from
+// GET /api/cluster `our_node`. Static per process, so fetch ONCE and
+// cache module-wide (no poll). Resolves the "local" badge ambiguity:
+// unstamped feed rows can be labeled with the real node id instead of
+// the word "local" (waf-2 confusion, 2026-07-02).
+// Returns: null = still resolving · '' = unknown (single-node
+// placeholder / fetch failed) · '<id>' = the node id.
+let _selfNodeCache = null;
+function useSelfNode() {
+  const [node, setNode] = useState(_selfNodeCache);
+  useEffect(() => {
+    if (_selfNodeCache !== null) { setNode(_selfNodeCache); return; }
+    let cancelled = false;
+    fetch('/api/cluster', { credentials: 'same-origin' })
+      .then(r => (r.ok ? r.json() : null))
+      .then(j => {
+        const id = (j && typeof j.our_node === 'string') ? j.our_node : '';
+        _selfNodeCache = id;
+        if (!cancelled) setNode(id);
+      })
+      .catch(() => {
+        _selfNodeCache = '';
+        if (!cancelled) setNode('');
+      });
+    return () => { cancelled = true; };
+  }, []);
+  return node;
+}
+
 // Live request stream from /dashboard/sse. Drop-in replacement for
 // useLiveFeed — produces the same row shape (id, ts, ip, method,
 // path, region, tier, risk, action, rules, cat, geo) so the Live
@@ -1880,7 +1909,7 @@ Object.assign(window, {
   // HACK-T4 — Tier-B config-change timeline + rollback
   useConfigVersionsApi, configRollback, ROLLBACKABLE_ACTIONS,
   useAuditLogApi,
-  useClusterApi, useFleetScopeApi, useFleetNodesApi, useFleetNodeScope, useApiScoped, useConfigApi, useSloApi, useCertsApi, useLatencyApi, useRouteLatencyApi, useDetectorLatencyApi, useAnalyticsRoutesApi,
+  useClusterApi, useFleetScopeApi, useFleetNodesApi, useFleetNodeScope, useSelfNode, useApiScoped, useConfigApi, useSloApi, useCertsApi, useLatencyApi, useRouteLatencyApi, useDetectorLatencyApi, useAnalyticsRoutesApi,
   useIncidentsApi, useThreatIntelFeedsApi, useGeoipStatusApi,
   incidentAck, incidentSnooze, incidentResolve,
   useAlertsApi, useGitopsApi, useUpstreamsApi, useRuntimeApi,
