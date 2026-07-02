@@ -61,6 +61,26 @@ costs the least CPU.
 > which is why operators tune it on the same page as the four
 > per-flow gates.
 
+### Blacklist vs whitelist precedence
+
+The **blacklist is evaluated before the whitelist** (gate #1 above runs
+first, and a blacklist match returns the 403 before the whitelist is
+consulted). So a source that appears on **both** lists is **blocked** —
+deny beats allow, by design. If you whitelist an IP and it's still
+getting 403'd, check whether it (or a CIDR/country covering it) is also
+on the blacklist.
+
+To make contradictory config visible, the Access Lists page and the
+add endpoint surface a **non-blocking warning** when the same
+`(kind, value)` is added to the opposite list: the add still succeeds,
+but the response carries a `conflict` object and the row is badged
+(`⚠ also whitelisted` / `⚠ also blacklisted`). The check is **exact
+(kind, value) match only** — it does NOT analyze CIDR-contains,
+ASN-membership, or country-covers-IP overlaps, so a blacklisted
+`10.0.0.0/8` plus a whitelisted `10.1.2.3` is a real conflict at
+runtime that the warning won't flag. When in doubt, the precedence
+above is the rule: blacklist wins.
+
 ### Strike-Block default + contract notes
 
 Strike-Block is **opt-in (disabled by default)** as of 2026-05-10.

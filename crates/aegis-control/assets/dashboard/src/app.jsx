@@ -117,6 +117,22 @@ const splitHashRoute = (raw) => {
 function TopBar() {
   const status = window.useStatusApi();
   const cluster = window.useClusterApi();
+  // FIX-topbar-drain (2026-07-02) — live drain state so the button is a
+  // truthful toggle (Pause=drain / Play=resume), matching the Scaling
+  // page's reversible-drain UX (PR #113). Survives reloads + reflects
+  // drains triggered by SIGTERM/automation.
+  const drainState = window.useNodeDrainApi ? window.useNodeDrainApi() : { data: null, reload: null };
+  const isDraining = drainState.data?.draining === true;
+  // Two-click arm replaces the native confirm() — window.confirm stalls
+  // Chrome's message pump under some extensions (M007 precedent) and is
+  // inconsistent with the rest of the console. Auto-disarms after 5 s.
+  const [drainArmed, setDrainArmed] = useState(false);
+  const [drainBusy, setDrainBusy] = useState(false);
+  useEffect(() => {
+    if (!drainArmed) return;
+    const t = setTimeout(() => setDrainArmed(false), 5000);
+    return () => clearTimeout(t);
+  }, [drainArmed]);
   const version = status.data?.version || '—';
   const env = (status.data?.environment || 'unknown').toLowerCase();
   const peers = cluster.data?.peers || [];
@@ -228,31 +244,73 @@ function TopBar() {
             <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>SUPER · TOTP</span>
           </div>
         </div>
-        {/* CQF-T14 — TopBar drain button. Two-step confirm; calls
-            /admin/drain (audit-mutated; flips readiness so external
-            LBs stop routing new traffic). The Scaling page also
-            exposes the same action; this button mirrors it for
-            quick access during incident response. */}
+        {/* CQF-T14 → FIX-topbar-drain (2026-07-02) — TopBar drain toggle.
+            The old button had two defects: (1) it treated the raw fetch
+            Response as parsed JSON (`r.status === 'draining'` compared the
+            HTTP code 200 to a string), so the drain SUCCEEDED server-side
+            while the toast always said "Drain failed: unknown response";
+            (2) it used the native confirm() the console dropped in M007.
+            Now: state-aware (Pause=drain when serving, Play=resume when
+            draining), two-click arm with 5 s auto-disarm, and proper
+            Response handling. Mirrors the Scaling page's reversible drain
+            (PR #113) for quick incident response from any page. */}
+        {isDraining && (
+          <span
+            className="pill warn"
+            title="This node's /healthz/ready returns 503 — the LB is not routing new traffic here. Click ▶ to resume."
+            style={{ fontSize: 10 }}
+          >
+            draining
+          </span>
+        )}
         <button
           className="icon-btn"
-          title="Drain this node (readiness → false)"
-          style={{ color: 'var(--warn)' }}
+          disabled={drainBusy}
+          title={isDraining
+            ? 'Resume serving — clears the drain so the LB routes traffic back'
+            : drainArmed
+              ? 'Click again to CONFIRM drain — /healthz/ready flips to 503 and the LB stops sending new traffic (in-flight requests finish; reversible)'
+              : 'Drain this node (readiness → 503; click twice to confirm)'}
+          style={{ color: isDraining ? 'var(--up)' : drainArmed ? 'var(--down)' : 'var(--warn)' }}
           onClick={async () => {
-            if (!confirm('Drain this node? /healthz/ready will return 503 and external LBs will stop routing new traffic. In-flight requests continue.')) return;
+            if (drainBusy) return;
+            if (!isDraining && !drainArmed) {
+              setDrainArmed(true);
+              window.aegisToast && window.aegisToast('Click the drain button again to confirm — this pulls the node from the LB pool', 'warn');
+              return;
+            }
+            setDrainArmed(false);
+            setDrainBusy(true);
             try {
-              const r = await window.adminDrainPost();
-              if (r && r.status === 'draining') {
-                window.aegisToast(`Drain initiated · node ${r.node || 'unknown'} · already=${r.already ?? false}`, 'ok');
+              const resp = isDraining
+                ? await window.adminUndrainPost()
+                : await window.adminDrainPost();
+              if (resp && resp.status < 300) {
+                // Wrappers return the raw Response — parse the JSON body.
+                const j = await resp.json().catch(() => ({}));
+                window.aegisToast(
+                  isDraining
+                    ? `Resumed serving · node ${j.node || 'unknown'} back in LB rotation`
+                    : `Drain initiated · node ${j.node || 'unknown'}${j.already ? ' (was already draining)' : ''} — /healthz/ready now 503`,
+                  'ok',
+                );
               } else {
-                const msg = (r && (r.error || r.message)) || 'unknown response';
-                window.aegisToast(`Drain failed: ${msg}`, 'err');
+                let msg = `HTTP ${resp ? resp.status : '—'}`;
+                try {
+                  const j = await resp.json();
+                  msg = j.error || j.message || msg;
+                } catch (_) { /* non-JSON error body */ }
+                window.aegisToast(`${isDraining ? 'Resume' : 'Drain'} failed: ${msg}`, 'err');
               }
             } catch (e) {
-              window.aegisToast(`Drain error: ${e.message || e}`, 'err');
+              window.aegisToast(`${isDraining ? 'Resume' : 'Drain'} error: ${e.message || e}`, 'err');
+            } finally {
+              setDrainBusy(false);
+              if (drainState.reload) drainState.reload();
             }
           }}
         >
-          <window.I.Pause />
+          {isDraining ? <window.I.Play /> : <window.I.Pause />}
         </button>
         {/* CQF-T1 — operator logout. POSTs /admin/logout with CSRF; handler returns
             204 + Set-Cookie clearing both aegis_session and aegis_csrf. We
