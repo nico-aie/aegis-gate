@@ -22,21 +22,36 @@ pub struct EventFilter {
     pub classes: Vec<AuditClass>,
     pub actions: Vec<String>,
     pub routes: Vec<String>,
+    /// P1 (2026-07-02) — node scope from `?node=<id>`. Matches remote
+    /// events by their `fields.origin_node` stamp and local
+    /// (unstamped) events by [`Self::self_node`]. Single-valued: the
+    /// dashboard selector scopes to one node or 'all' (no param).
+    pub node: Option<String>,
+    /// This server's node identity, supplied by the handler via
+    /// [`Self::with_self_node`] — NEVER parsed from the query (a
+    /// crafted URL must not be able to claim local events belong to a
+    /// different node). `None` on single-node deployments (roster
+    /// off): a node filter then only matches stamped events.
+    pub self_node: Option<String>,
 }
 
 impl EventFilter {
     pub fn is_empty(&self) -> bool {
-        self.classes.is_empty() && self.actions.is_empty() && self.routes.is_empty()
+        self.classes.is_empty()
+            && self.actions.is_empty()
+            && self.routes.is_empty()
+            && self.node.is_none()
     }
 
     /// Parse filter from a raw query string. Recognises repeated
-    /// `class=`, `action=`, `route=` parameters. Unknown classes are
-    /// silently skipped (the URL is operator-supplied; we'd rather
-    /// match nothing than 500).
+    /// `class=`, `action=`, `route=` parameters and a single-valued
+    /// `node=`. Unknown classes are silently skipped (the URL is
+    /// operator-supplied; we'd rather match nothing than 500).
     pub fn parse_query(query: &str) -> Self {
         let mut classes = Vec::new();
         let mut actions = Vec::new();
         let mut routes = Vec::new();
+        let mut node = None;
         for pair in query.split('&') {
             let Some((key, value)) = pair.split_once('=') else { continue };
             if value.is_empty() {
@@ -50,6 +65,13 @@ impl EventFilter {
                 }
                 "action" => actions.push(value.to_string()),
                 "route" => routes.push(value.to_string()),
+                // First occurrence wins; `self_node` is deliberately
+                // NOT recognised here — see the field doc.
+                "node" => {
+                    if node.is_none() {
+                        node = Some(value.to_string());
+                    }
+                }
                 _ => {}
             }
         }
@@ -57,7 +79,17 @@ impl EventFilter {
             classes,
             actions,
             routes,
+            node,
+            self_node: None,
         }
+    }
+
+    /// Attach this server's node identity (used to match local,
+    /// unstamped events against a `node=` scope). Chained by the SSE
+    /// handler after [`Self::parse_query`].
+    pub fn with_self_node(mut self, self_node: Option<String>) -> Self {
+        self.self_node = self_node;
+        self
     }
 }
 
@@ -86,6 +118,18 @@ pub fn event_matches(filter: &EventFilter, ev: &AuditEvent) -> bool {
     if !filter.routes.is_empty() {
         let route = ev.route_id.as_deref().unwrap_or("");
         if !filter.routes.iter().any(|r| r == route) {
+            return false;
+        }
+    }
+    // P1 — node scope: remote events match by their origin stamp;
+    // local (unstamped) events belong to the self node. No identity
+    // (single-node) → unstamped events are excluded, not guessed.
+    if let Some(want) = &filter.node {
+        let matches = match ev.origin_node() {
+            Some(origin) => origin == want,
+            None => filter.self_node.as_deref() == Some(want.as_str()),
+        };
+        if !matches {
             return false;
         }
     }
