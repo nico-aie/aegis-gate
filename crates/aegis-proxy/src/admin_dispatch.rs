@@ -950,11 +950,23 @@ async fn handle_simulate(
             }
         };
 
+    // P1 (2026-07-02) — evaluate the operator ruleset too. Same
+    // live handle the data plane reads (`accept.rs` wires it), so
+    // the simulator verdict reflects rule CRUD immediately. `None`
+    // (test bundles) degrades to detectors-only, matching a
+    // no-rules deployment.
+    let rules_snapshot = services.active_ruleset.as_ref().map(|rs| rs.snapshot());
+    let rules: &[aegis_security::rules::ast::Rule] = rules_snapshot
+        .as_deref()
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+
     let resp = aegis_control::api::simulator::simulate(
         &parsed,
         detectors.as_ref(),
         &services.detector_mask,
         &services.tiers,
+        rules,
     );
     let body = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".into());
     json_body_response(200, body, "private, no-store")

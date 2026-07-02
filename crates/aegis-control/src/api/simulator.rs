@@ -26,10 +26,34 @@
 //! has a deterministic preview. Both code paths share
 //! `aegis-security::detectors::run_all_filtered_observed` and
 //! `aegis-security::rules::evaluate`, so behaviour can't drift.
+//!
+//! ## Rule semantics (P1, 2026-07-02)
+//!
+//! Operator rules are evaluated with the same precedence the
+//! data plane applies:
+//!
+//! 1. an explicit terminal `then: allow` rule match bypasses the
+//!    detector chain (the `data_plane.rs` allow-precheck — only a
+//!    matched rule whose AST action is `Allow` counts; the
+//!    engine's default pass-through `Allow` does NOT),
+//! 2. the per-request detector threshold gate blocks next,
+//! 3. a matching `block { status }` rule enforces on the forward
+//!    path,
+//! 4. `challenge` / `rate_limit` / `log_only` / `raise_risk`
+//!    matches are reported with `enforced: false` — the v1
+//!    forward path honors only `Block` terminally, and the
+//!    simulator must not claim a verdict the data plane would
+//!    never serve.
+//!
+//! The simulator evaluates against a synthetic **global** route,
+//! so route-scoped rules never fire; their ids are returned in
+//! `route_scoped_rules_skipped` instead of being silently
+//! ignored.
 
 use serde::{Deserialize, Serialize};
 
-use aegis_core::context::{RequestCtx, RouteCtx};
+use aegis_core::context::RouteCtx;
+use aegis_security::rules::ast::{Rule, RuleAction};
 use aegis_core::pipeline::{BodyPeek, RequestView};
 use aegis_core::tier::Tier;
 use aegis_security::detectors::{
@@ -75,9 +99,11 @@ pub struct SimulateRequest {
 pub struct SimulateResponse {
     /// Final decision after running detectors → rules.
     pub decision_action: String,
-    /// `rule_id` that drove the decision (matches a detector
-    /// id like `sqli` / `xss` or a user-rule id). `null` when
-    /// the request was admitted without any detector match.
+    /// Id that drove (or would drive) the decision — a detector
+    /// id like `sqli` / `xss` when the detector gate decided, or
+    /// the user-rule id when an operator rule did. `null` when
+    /// the request was admitted without any match. Kept for
+    /// back-compat; prefer `matched_rule` / `first_detector`.
     pub rule_id: Option<String>,
     /// Aggregate risk score across all firing detectors,
     /// capped at 100. Mirrors the data-plane `risk_score`.
@@ -97,12 +123,69 @@ pub struct SimulateResponse {
     /// see this so a "false negative" verdict doesn't
     /// surprise them when a class is intentionally disabled.
     pub muted_detectors: Vec<String>,
+    /// P1 — the operator rule the engine matched (terminal or
+    /// non-terminal), or `null` when no rule matched. The
+    /// engine's default pass-through is NOT a match.
+    pub matched_rule: Option<MatchedRuleView>,
+    /// P1 — first detector that fired, always detector-attributed
+    /// (unlike the legacy `rule_id`, which now carries the rule id
+    /// when a rule drove the decision).
+    pub first_detector: Option<String>,
+    /// P1 — `true` when an explicit `then: allow` rule match
+    /// skipped the detector chain (mirrors the data plane's
+    /// allow-precheck / whitelist contract).
+    pub detectors_bypassed: bool,
+    /// P1 — ids of route-scoped rules that were NOT evaluated
+    /// because the simulator runs against a synthetic global
+    /// route. Surfaced so operators aren't misled by a rule that
+    /// "doesn't fire" here but would on its real route.
+    pub route_scoped_rules_skipped: Vec<String>,
+}
+
+/// P1 — dashboard view of the rule match the engine reported.
+#[derive(Clone, Debug, Serialize)]
+pub struct MatchedRuleView {
+    pub id: String,
+    /// AST action name: `allow | block | challenge | rate_limit |
+    /// log_only | raise_risk`.
+    pub action: String,
+    /// `block.status` when the action is `block`.
+    pub status: Option<u16>,
+    /// Whether the action terminates rule evaluation.
+    pub terminal: bool,
+    /// Whether the live data plane enforces this action. v1
+    /// honors `allow` (detector bypass) and `block` only;
+    /// challenge / rate_limit / log_only / raise_risk matches are
+    /// observable but change nothing on the wire.
+    pub enforced: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct SimulatedSignal {
     pub class: String,
     pub detail: String,
+}
+
+/// Build the dashboard view for the rule the engine matched.
+/// Returns `None` when the decision's `rule_id` does not
+/// correspond to a known rule (defensive — should not happen).
+fn matched_rule_view(rules: &[Rule], rule_id: &str) -> Option<MatchedRuleView> {
+    let rule = rules.iter().find(|r| r.id == rule_id)?;
+    let (action, status, enforced) = match &rule.action {
+        RuleAction::Allow => ("allow", None, true),
+        RuleAction::Block { status } => ("block", Some(*status), true),
+        RuleAction::Challenge { .. } => ("challenge", None, false),
+        RuleAction::RateLimit { .. } => ("rate_limit", None, false),
+        RuleAction::LogOnly => ("log_only", None, false),
+        RuleAction::RaiseRisk(_) => ("raise_risk", None, false),
+    };
+    Some(MatchedRuleView {
+        id: rule.id.clone(),
+        action: action.to_string(),
+        status,
+        terminal: rule.action.is_terminal(),
+        enforced,
+    })
 }
 
 /// Percent-encode bytes that `http::Uri::parse` rejects. Only
@@ -139,15 +222,17 @@ fn percent_encode_path(path: &str) -> String {
     out
 }
 
-/// Run the simulator against the supplied detector set. Pure —
-/// no side effects on the live mask, risk tracker, or rate
-/// limiter. The caller passes the **same** detector list +
-/// mask the data plane uses so the verdict doesn't drift.
+/// Run the simulator against the supplied detector set + rule
+/// snapshot. Pure — no side effects on the live mask, risk
+/// tracker, or rate limiter. The caller passes the **same**
+/// detector list + mask + ruleset snapshot the data plane uses
+/// so the verdict doesn't drift.
 pub fn simulate(
     req: &SimulateRequest,
     detectors: &[Box<dyn Detector>],
     mask: &SharedDetectorMask,
     tiers: &crate::api::tiers::TierStore,
+    rules: &[Rule],
 ) -> SimulateResponse {
     let method = req
         .method
@@ -228,6 +313,53 @@ pub fn simulate(
         .map(|id| id.to_string())
         .collect();
 
+    // P1 — the simulator's synthetic route is global, so route-scoped
+    // rules are skipped by the engine's scope check. Report them so a
+    // "rule didn't fire" verdict isn't mistaken for a broken rule.
+    let route_scoped_rules_skipped: Vec<String> = rules
+        .iter()
+        .filter(|r| !matches!(r.scope, aegis_security::rules::ast::Scope::Global))
+        .map(|r| r.id.clone())
+        .collect();
+
+    // P1 — evaluate operator rules with the exact function + empty
+    // EvalContext both data-plane call sites use (`data_plane.rs`
+    // allow-precheck and forward-path enforcement), so simulator
+    // and live verdicts can't drift.
+    let rule_decision = aegis_security::rules::evaluate(rules, &view, &route_ctx);
+    let matched_rule = rule_decision
+        .rule_id
+        .as_deref()
+        .and_then(|id| matched_rule_view(rules, id));
+
+    // Allow-precheck footgun guard (mirrors `data_plane.rs:1087`):
+    // `evaluate` returns `Action::Allow` as its DEFAULT when no rule
+    // matches, so the action alone must never bypass detectors — only
+    // an explicit match on a rule whose AST action is `Allow` counts.
+    let rule_allow = matches!(rule_decision.action, aegis_core::decision::Action::Allow)
+        && matched_rule
+            .as_ref()
+            .is_some_and(|m| m.action == "allow");
+
+    if rule_allow {
+        // Explicit allow rule → the data plane skips the detector chain
+        // entirely (same trust contract as the static whitelist).
+        let rule_id = matched_rule.as_ref().map(|m| m.id.clone());
+        return SimulateResponse {
+            decision_action: "allow".to_string(),
+            rule_id,
+            risk_score: 0,
+            detectors_fired: Vec::new(),
+            signals: Vec::new(),
+            tier: format!("{:?}", tier).to_lowercase(),
+            muted_detectors: muted,
+            matched_rule,
+            first_detector: None,
+            detectors_bypassed: true,
+            route_scoped_rules_skipped,
+        };
+    }
+
     let (signals, fired) = run_all_filtered_observed(detectors, effective, &view);
 
     // Sum risk across signals, cap at 100.
@@ -249,13 +381,30 @@ pub fn simulate(
         .get(tier.as_str())
         .map(|t| t.risk_threshold)
         .unwrap_or(50);
-    let decision_action = if risk_score >= per_request_block_at {
-        "block".to_string()
-    } else {
-        "allow".to_string()
-    };
+    let detector_block = risk_score >= per_request_block_at;
 
-    let rule_id = fired.first().map(|id| (*id).to_string());
+    // P1 — rule `block` enforces on the forward path, i.e. AFTER the
+    // detector gate (a detector block returns first on the live path,
+    // so it keeps the attribution here too). Only `Block` is honored
+    // terminally by the v1 forward path — challenge / rate_limit
+    // matches surface via `matched_rule.enforced == false` instead of
+    // claiming a verdict the data plane would never serve.
+    let rule_block = matches!(
+        rule_decision.action,
+        aegis_core::decision::Action::Block { .. }
+    );
+
+    let first_detector = fired.first().map(|id| (*id).to_string());
+    let (decision_action, rule_id) = if detector_block {
+        ("block".to_string(), first_detector.clone())
+    } else if rule_block {
+        (
+            "block".to_string(),
+            matched_rule.as_ref().map(|m| m.id.clone()),
+        )
+    } else {
+        ("allow".to_string(), first_detector.clone())
+    };
 
     let signal_views: Vec<SimulatedSignal> = signals
         .iter()
@@ -265,10 +414,6 @@ pub fn simulate(
         })
         .collect();
 
-    // Suppress warning — RequestCtx not used today but reserved
-    // for the rules-engine integration in a follow-up.
-    let _ = std::marker::PhantomData::<RequestCtx>;
-
     SimulateResponse {
         decision_action,
         rule_id,
@@ -277,6 +422,10 @@ pub fn simulate(
         signals: signal_views,
         tier: format!("{:?}", tier).to_lowercase(),
         muted_detectors: muted,
+        matched_rule,
+        first_detector,
+        detectors_bypassed: false,
+        route_scoped_rules_skipped,
     }
 }
 
