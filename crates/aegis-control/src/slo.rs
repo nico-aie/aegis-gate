@@ -81,6 +81,11 @@ pub fn default_min_events() -> u64 {
     60
 }
 
+/// SLO-P4 — default seconds of post-traffic silence before the
+/// telemetry-absent watchdog fires. Overridable via the `slo:`
+/// config section (`telemetry_absent_after_secs`; 0 disables).
+pub const DEFAULT_TELEMETRY_ABSENT_AFTER_SECS: u64 = 600;
+
 /// A burn-rate alerting window (SLO-P3: a multi-window pair per
 /// Google SRE Workbook ch.5 — fire only when BOTH the long and
 /// the short window burn above `burn_threshold`; the short
