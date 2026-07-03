@@ -524,6 +524,105 @@ mod tests {
             .collect()
     }
 
+    // ===== AC-P1-d (2026-07-03) — decode parity with sqli =====
+    //
+    // The XSS pipeline decoded url(single-pass)+entity only, so two
+    // evasion classes slipped (red-team vector 07): unicode-escaped
+    // JSON payloads (`<script>` — frameworks decode these
+    // transparently before rendering) and double-URL-encoded forms
+    // (`%253Cscript`). Structured-text bodies and the URI now run the
+    // central `normalize_for_detection` pipeline (same as sqli).
+    // S6 stays honored: these decode-then-match tests are the inverse
+    // of the removed `\u00XX` literal PATTERN — a bare escape still
+    // never fires (see the accented-name negatives below).
+
+    // Payloads below deliberately use `<iframe>` (no bare `alert(` /
+    // `document.` substring) so they can ONLY fire after the decode
+    // pass — isolating the new capability from the raw-pattern set.
+    // A JSON serializer emits `<` as the 6-byte escape backslash-u-003c.
+    // Build it from a backslash char so the source carries no literal
+    // escape sequence a tool might normalize away.
+    fn uesc(cp: &str) -> String {
+        let bs = '\\';
+        format!("{bs}u{cp}")
+    }
+
+    #[test]
+    fn json_body_unicode_escaped_iframe_fires() {
+        // `<iframe src=x>` — the JS/JSON source form a
+        // framework decodes before rendering. Raw it matches nothing
+        // (no literal `<`); the unicode-decode pass reveals it.
+        let body = format!(
+            "{{\"x\":\"{}iframe src=x{}\"}}",
+            uesc("003c"),
+            uesc("003e"),
+        );
+        assert!(
+            !body_with_ct("application/json", &body).is_empty(),
+            "unicode-escaped <iframe> in JSON body must fire",
+        );
+    }
+
+    #[test]
+    fn form_body_double_url_encoded_iframe_fires() {
+        // %253C → %3C → <  (two decode passes needed)
+        let body = "q=%253Ciframe%2520src%253Dx%253E";
+        assert!(
+            !body_with_ct("application/x-www-form-urlencoded", body).is_empty(),
+            "double-URL-encoded <iframe> in form body must fire",
+        );
+    }
+
+    // Double-URL-encoded payload in the QUERY — the data-plane hands
+    // the detector the raw wire form, so the surplus encode layer is
+    // still present and only the repeated-decode pass unwraps it.
+    positive!(xss_double_url_encoded_uri,
+        "/?q=%253Ciframe%2520src%253Dx%253E");
+
+    // S6 regression guards on the NEW pipeline: accented JSON content
+    // decodes to plain text and must stay clean under a scannable
+    // content-type (the original S6 corpus posts carried none).
+    #[test]
+    fn json_accented_name_with_ct_still_clean() {
+        let body = r#"{"email":"a@b.co","display_name":"María José"}"#;
+        assert!(
+            body_with_ct("application/json", body).is_empty(),
+            "accented display-name must stay clean after unicode decode",
+        );
+    }
+
+    #[test]
+    fn json_escaped_benign_richtext_still_clean() {
+        // Serializer-escaped harmless markup (`<b>bold</b>`) — no
+        // sink tag / handler / JS shape after decoding.
+        let body = r#"{"html":"<b>bold</b>"}"#;
+        assert!(
+            body_with_ct("application/json", body).is_empty(),
+            "escaped benign markup must stay clean",
+        );
+    }
+
+    // Untyped bodies keep the legacy narrow pipeline: the heavier
+    // multi-variant decode is gated on `body_is_scannable` (structured
+    // text the origin will parse), mirroring the sqli posture. A
+    // content-type-less body with a unicode-escaped payload therefore
+    // stays un-decoded — injection there is an app-layer concern.
+    #[test]
+    fn untyped_body_unicode_escape_not_decoded() {
+        // Same escaped payload as the JSON test, but `css_body` sends
+        // NO content-type → not `body_is_scannable` → the heavy decode
+        // pipeline is skipped, so the escaped form stays inert.
+        let body = format!(
+            "{{\"x\":\"{}iframe src=x{}\"}}",
+            uesc("003c"),
+            uesc("003e"),
+        );
+        assert!(
+            css_body(&body).is_empty(),
+            "untyped body must not get the heavy decode pipeline",
+        );
+    }
+
     #[test]
     fn text_plain_sensor_beacon_with_coincidental_xss_is_skipped() {
         // 2026-06-18 r2: a text/plain sensor beacon whose high-entropy blob
