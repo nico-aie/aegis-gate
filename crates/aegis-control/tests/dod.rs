@@ -308,7 +308,6 @@ mod slo_alert_lifecycle {
             window_days: 30,
             burn_rates: vec![BurnRateWindow {
                 window_hours: 1,
-                budget_pct: 2.0,
                 short_window_minutes: 5,
                 burn_threshold: 14.4,
                 severity: AlertSeverity::Page,

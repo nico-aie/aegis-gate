@@ -83,11 +83,6 @@ pub fn default_min_events() -> u64 {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BurnRateWindow {
     pub window_hours: u64,
-    /// Legacy pre-P3 threshold (was compared against
-    /// `error_rate/budget × 100` with no time factor — a burn
-    /// rate mislabeled as "% budget"). Dead once P3 lands;
-    /// removed with it.
-    pub budget_pct: f64,
     /// Short confirmation window of the pair.
     #[serde(default = "default_short_window_minutes")]
     pub short_window_minutes: u64,
@@ -138,21 +133,18 @@ pub fn default_objectives() -> Vec<SloObjective> {
             burn_rates: vec![
                 BurnRateWindow {
                     window_hours: 1,
-                    budget_pct: 2.0,
                     short_window_minutes: 5,
                     burn_threshold: 14.4,
                     severity: AlertSeverity::Page,
                 },
                 BurnRateWindow {
                     window_hours: 6,
-                    budget_pct: 5.0,
                     short_window_minutes: 30,
                     burn_threshold: 6.0,
                     severity: AlertSeverity::Page,
                 },
                 BurnRateWindow {
                     window_hours: 72,
-                    budget_pct: 10.0,
                     short_window_minutes: 360,
                     burn_threshold: 1.0,
                     severity: AlertSeverity::Ticket,
@@ -286,6 +278,17 @@ pub enum AlertEvent {
         fired_at: DateTime<Utc>,
         body: String,
     },
+    /// SLO-P3 — an SLI that had been producing samples went
+    /// silent for `silent_seconds`: a wedged data plane, not an
+    /// idle one. Closes the blackout hole where zero traffic
+    /// meant zero samples meant no alert (wired by the SLO
+    /// evaluation loop via
+    /// [`crate::slo::SloEngine::telemetry_absent`]).
+    TelemetryAbsent {
+        fired_at: DateTime<Utc>,
+        sli: String,
+        silent_seconds: u64,
+    },
 }
 
 impl AlertEvent {
@@ -312,6 +315,7 @@ impl AlertEvent {
             AlertEvent::GitOpsDrift { .. } => AlertSeverity::Ticket,
             AlertEvent::AuditChainBreak { .. } => AlertSeverity::Page,
             AlertEvent::OperatorBriefing { .. } => AlertSeverity::Info,
+            AlertEvent::TelemetryAbsent { .. } => AlertSeverity::Ticket,
         }
     }
 
@@ -329,6 +333,7 @@ impl AlertEvent {
             AlertEvent::GitOpsDrift { fired_at, .. } => *fired_at,
             AlertEvent::AuditChainBreak { fired_at, .. } => *fired_at,
             AlertEvent::OperatorBriefing { fired_at, .. } => *fired_at,
+            AlertEvent::TelemetryAbsent { fired_at, .. } => *fired_at,
         }
     }
 
@@ -397,6 +402,12 @@ impl AlertEvent {
             AlertEvent::OperatorBriefing { fired_at, .. } => {
                 "operator_briefing".hash(&mut h);
                 fired_at.timestamp().hash(&mut h);
+            }
+            // Keyed on the SLI so a continuing blackout dedups
+            // (the loop also fires only on the transition).
+            AlertEvent::TelemetryAbsent { sli, .. } => {
+                "telemetry_absent".hash(&mut h);
+                sli.hash(&mut h);
             }
         }
         h.finish()
@@ -867,8 +878,13 @@ impl SloEngine {
         absent_after: Duration,
         now: DateTime<Utc>,
     ) -> bool {
-        let _ = (kind, absent_after, now);
-        todo!("SLO-P3: implement after RED is validated")
+        let buffers = self.buffers.lock().unwrap();
+        match buffers.get(kind) {
+            // Never served since boot — an idle node, not a
+            // blackout.
+            None => false,
+            Some(buf) => buf.window_totals(now, absent_after).1 == 0,
+        }
     }
 
     /// Current enforcement counter snapshot for `/api/slo`.
@@ -944,23 +960,41 @@ impl SloEngine {
                 Some(b) => b,
                 None => continue,
             };
+            let budget = 1.0 - obj.target;
 
             for burn in &obj.burn_rates {
-                let window = Duration::hours(burn.window_hours as i64);
-                let avg = match buf.average_in_window(now, window) {
-                    Some(v) => v,
-                    None => continue,
+                // SLO-P3 — multi-window pair: fire only when BOTH
+                // the long window and its short confirmation
+                // window burn above the threshold, and the long
+                // window has enough traffic to mean anything.
+                // burn rate = error_rate / budget: multiples of
+                // the break-even pace that spends exactly the
+                // whole budget over the SLO window.
+                let long = Duration::hours(burn.window_hours as i64);
+                let short = Duration::minutes(burn.short_window_minutes as i64);
+                let (long_good, long_count) = buf.window_totals(now, long);
+                let long_avg = if long_count > 0 {
+                    long_good / long_count as f64
+                } else {
+                    1.0
                 };
-
-                let error_rate = 1.0 - avg;
-                let budget = 1.0 - obj.target;
-                let budget_consumed = if budget > 0.0 {
-                    (error_rate / budget) * 100.0
+                let long_burn = if budget > 0.0 {
+                    (1.0 - long_avg) / budget
                 } else {
                     0.0
                 };
-
-                let is_burning = budget_consumed >= burn.budget_pct;
+                // Short window with no data cannot confirm — a
+                // stale burst must not (re-)fire off the long
+                // window alone.
+                let short_confirms = match buf.average_in_window(now, short) {
+                    Some(avg) if budget > 0.0 => {
+                        (1.0 - avg) / budget >= burn.burn_threshold
+                    }
+                    _ => false,
+                };
+                let is_burning = long_count >= obj.min_events
+                    && long_burn >= burn.burn_threshold
+                    && short_confirms;
 
                 // Check if already active for this SLI + window.
                 let already_active = active.iter().any(|a| {
@@ -970,23 +1004,29 @@ impl SloEngine {
                 });
 
                 if is_burning && !already_active {
+                    // Fraction of the SLO budget actually spent
+                    // by one long window at this pace — the
+                    // pre-P3 code reported burn×100 here, with
+                    // no time factor.
+                    let window_fraction = burn.window_hours as f64
+                        / (obj.window_days.max(1) as f64 * 24.0);
                     let alert = SloAlert {
                         sli: obj.sli.clone(),
                         severity: burn.severity,
                         fired_at: now,
                         resolved_at: None,
-                        burn_rate: error_rate / budget,
-                        budget_consumed_pct: budget_consumed,
+                        burn_rate: long_burn,
+                        budget_consumed_pct: long_burn * window_fraction * 100.0,
                         window_hours: burn.window_hours,
                         runbook_url: format!(
                             "https://runbooks.aegis.local/slo/{:?}/{}h",
                             obj.sli, burn.window_hours
                         ),
-                        // `avg` is the measured SLI value over the
-                        // window; `obj.target` is the objective. Both
-                        // carried so the message renders measured-vs-
-                        // target (alert P1).
-                        measured: avg,
+                        // `long_avg` is the measured SLI value over
+                        // the window; `obj.target` is the objective.
+                        // Both carried so the message renders
+                        // measured-vs-target (alert P1).
+                        measured: long_avg,
                         target: obj.target,
                     };
                     active.push(alert.clone());
@@ -1119,7 +1159,8 @@ impl SloEngine {
 /// `error_rate / error_budget` measured over `window_hours`. A
 /// value of `1.0` means the SLO is being burned at exactly the
 /// long-run break-even pace; values above the burn-window's
-/// configured `budget_pct` trip the alert.
+/// configured `burn_threshold` (with short-window confirmation —
+/// SLO-P3) trip the alert.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BurnRate {
     pub window_hours: u64,
@@ -1171,7 +1212,6 @@ mod tests {
             window_days: 30,
             burn_rates: vec![BurnRateWindow {
                 window_hours: 1,
-                budget_pct: 2.0,
                 short_window_minutes: 5,
                 burn_threshold: 14.4,
                 severity: AlertSeverity::Page,
@@ -1436,6 +1476,23 @@ mod tests {
         assert!(engine.telemetry_absent(&kind, absent_after, now + Duration::minutes(15)));
     }
 
+    #[test]
+    fn telemetry_absent_event_routes_as_ticket_and_dedups_per_sli() {
+        let ev = |ts: DateTime<Utc>| AlertEvent::TelemetryAbsent {
+            fired_at: ts,
+            sli: "DataPlaneAvailability".into(),
+            silent_seconds: 600,
+        };
+        let now = Utc::now();
+        assert_eq!(ev(now).severity(), AlertSeverity::Ticket);
+        // Same SLI, different fire time → same fingerprint (a
+        // continuing blackout dedups instead of re-paging).
+        assert_eq!(
+            ev(now).fingerprint(),
+            ev(now + Duration::minutes(30)).fingerprint(),
+        );
+    }
+
     // Pin of the P1 contract at the evaluation layer: a 90%-
     // blocked attack wave is enforcement, not unavailability.
     #[test]
@@ -1465,18 +1522,17 @@ mod tests {
     // The 10k sample ring silently evicted an error burst once
     // enough healthy traffic followed — the burst "self-resolved"
     // by volume, not by time. Bucketed counters must keep it
-    // inside the window.
+    // inside the window. (SLO-P3: 300 bad of 10,300 ≈ burn 29 —
+    // above the 14.4 page threshold.)
     #[test]
     fn error_burst_is_not_flushed_by_later_volume() {
         let engine = SloEngine::new(fast_burn_objective());
-        for _ in 0..100 {
+        for _ in 0..300 {
             engine.record(availability_sample(0.0));
         }
         for _ in 0..10_000 {
             engine.record(availability_sample(1.0));
         }
-        // 100 bad of 10,100 in the last hour ≈ 0.99% error rate —
-        // far over the 0.1% budget; must still be firing.
         let alerts = engine.evaluate();
         assert!(
             !alerts.is_empty(),
@@ -1616,8 +1672,15 @@ mod tests {
         let objs = default_objectives();
         let avail = &objs[0];
         assert_eq!(avail.burn_rates.len(), 3);
+        // SLO-P3 — standard pairs: fast + medium burn page, slow
+        // burn tickets. (Pre-P3 the 6h window was a Ticket.)
         assert_eq!(avail.burn_rates[0].severity, AlertSeverity::Page);
-        assert_eq!(avail.burn_rates[1].severity, AlertSeverity::Ticket);
+        assert!((avail.burn_rates[0].burn_threshold - 14.4).abs() < 1e-9);
+        assert_eq!(avail.burn_rates[1].severity, AlertSeverity::Page);
+        assert!((avail.burn_rates[1].burn_threshold - 6.0).abs() < 1e-9);
+        assert_eq!(avail.burn_rates[2].severity, AlertSeverity::Ticket);
+        assert!((avail.burn_rates[2].burn_threshold - 1.0).abs() < 1e-9);
+        assert_eq!(avail.min_events, 60);
     }
 
     // SLO-P1 — samples for an SLI with no configured objective

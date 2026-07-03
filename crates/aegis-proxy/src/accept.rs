@@ -1332,16 +1332,73 @@ pub(crate) async fn admin_accept_loop(
             // window fires VipTalk once (with a `(+N suppressed)`
             // note on the next emission) instead of every 30 s.
             let dedup = aegis_control::slo::AlertDedupCache::default_window();
+            // SLO-P3 — how long the availability SLI may go
+            // silent (after having served) before the watchdog
+            // declares a blackout. Configurable in SLO-P4.
+            const TELEMETRY_ABSENT_AFTER_SECS: i64 = 600;
+            let mut telemetry_was_absent = false;
             let mut tick =
                 tokio::time::interval(std::time::Duration::from_secs(30));
             tick.tick().await; // skip the immediate first tick
             loop {
                 tick.tick().await;
                 let new_alerts = engine.evaluate();
-                if new_alerts.is_empty() {
+
+                // SLO-P3 — telemetry-absent watchdog. Burn-rate
+                // alerts cannot see a total blackout (no samples
+                // → no evaluation), so a node that served traffic
+                // and then went silent raises its own Ticket.
+                // Fires once per transition; recovery is logged.
+                let now_utc = chrono::Utc::now();
+                let absent = engine.telemetry_absent(
+                    &aegis_control::slo::SliKind::DataPlaneAvailability,
+                    chrono::Duration::seconds(TELEMETRY_ABSENT_AFTER_SECS),
+                    now_utc,
+                );
+                let watchdog_event = if absent && !telemetry_was_absent {
+                    Some(aegis_control::slo::AlertEvent::TelemetryAbsent {
+                        fired_at: now_utc,
+                        sli: "DataPlaneAvailability".to_string(),
+                        silent_seconds: TELEMETRY_ABSENT_AFTER_SECS as u64,
+                    })
+                } else {
+                    if telemetry_was_absent && !absent {
+                        tracing::info!(
+                            "telemetry-absent watchdog: availability samples resumed",
+                        );
+                    }
+                    None
+                };
+                telemetry_was_absent = absent;
+
+                if new_alerts.is_empty() && watchdog_event.is_none() {
                     continue;
                 }
                 let receivers = (**shared.load()).clone();
+                if let Some(event) = watchdog_event {
+                    let summary = aegis_control::slo::dispatch::dispatch_event(
+                        &event,
+                        &receivers,
+                        Some(&dedup),
+                    )
+                    .await;
+                    let now = chrono::Utc::now().timestamp();
+                    for name in &summary.delivered {
+                        ring.record_delivered(name, now);
+                    }
+                    for name in &summary.external {
+                        ring.record_external(name, now);
+                    }
+                    for (name, reason) in &summary.failed {
+                        ring.record_failed(name, now, reason);
+                    }
+                    tracing::warn!(
+                        silent_for_secs = TELEMETRY_ABSENT_AFTER_SECS,
+                        "telemetry-absent watchdog fired: data plane \
+                         served traffic this boot but produced no \
+                         availability samples",
+                    );
+                }
                 for alert in &new_alerts {
                     let event =
                         aegis_control::slo::AlertEvent::Slo(alert.clone());
