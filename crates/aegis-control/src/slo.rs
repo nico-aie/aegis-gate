@@ -633,7 +633,7 @@ const MAX_ENFORCEMENT_EVENTS: usize = 10_000;
 /// rate-limits are the WAF *working* — excluded from the
 /// availability SLI and surfaced as this info series instead
 /// (`/api/slo`), never as an objective.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnforcementStats {
     /// Enforcement events since boot.
     pub total: u64,
@@ -643,10 +643,23 @@ pub struct EnforcementStats {
 }
 
 /// Retention ring behind [`SloEngine::record_enforcement`].
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct EnforcementRing {
     recent: std::collections::VecDeque<DateTime<Utc>>,
     total: u64,
+}
+
+impl Default for EnforcementRing {
+    fn default() -> Self {
+        Self {
+            // Pre-allocate to the cap for the same reason as
+            // `SliRingBuffer::new` above (F-CRITICAL-016): this is
+            // fed from the audit-bus hot path, and growth
+            // reallocations under the mutex are avoidable stalls.
+            recent: std::collections::VecDeque::with_capacity(MAX_ENFORCEMENT_EVENTS),
+            total: 0,
+        }
+    }
 }
 
 /// The SLO engine: tracks SLIs and fires alerts.
