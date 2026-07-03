@@ -1302,6 +1302,34 @@ mod trusted_proxy_guard_tests {
             );
         }
     }
+
+    // LT-P7 (2026-07-03) — a soft ADVISORY (boot warn, not reject) for
+    // trusting a BROAD private/loopback RANGE for X-Forwarded-For. These
+    // stay accepted (the single-host sidecar pattern is legit and common),
+    // but trusting the whole `10.0.0.0/8` / `127.0.0.0/8` lets any host in
+    // that range spoof the client IP — worth surfacing at boot. A single
+    // host route (`/32`, `/128`) is the legit sidecar and stays silent.
+    #[test]
+    fn advises_on_broad_private_or_loopback_ranges() {
+        for c in ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"] {
+            assert!(
+                super::trusted_proxy_advisory(&c.parse().unwrap()).is_some(),
+                "{c} (broad private/loopback range) must produce an advisory",
+            );
+        }
+    }
+
+    #[test]
+    fn no_advisory_for_host_routes_or_public_cidrs() {
+        // Single-host private/loopback (the sidecar) + narrow/public LB CIDRs
+        // are silent — no noise on legitimate configs.
+        for c in ["127.0.0.1/32", "::1/128", "192.168.1.5/32", "203.0.113.7/32", "198.51.100.0/24"] {
+            assert!(
+                super::trusted_proxy_advisory(&c.parse().unwrap()).is_none(),
+                "{c} must NOT produce an advisory",
+            );
+        }
+    }
 }
 
 /// Adaptive load-shedder knobs. See
