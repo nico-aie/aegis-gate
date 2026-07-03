@@ -713,6 +713,29 @@ impl SloEngine {
         buf.push(sample);
     }
 
+    /// Evaluate all objectives as of `now` and return newly
+    /// fired/resolved alerts. SLO-P2 — the injectable clock is
+    /// the deterministic seam for tests and the (P6) alert
+    /// simulator; production callers use [`Self::evaluate`].
+    pub fn evaluate_at(&self, now: DateTime<Utc>) -> Vec<SloAlert> {
+        let _ = now;
+        todo!("SLO-P2: implement after RED is validated")
+    }
+
+    /// Number of SLI observations recorded for `kind` inside the
+    /// trailing `window` as of `now`. Distinguishes "no data"
+    /// (0) from "healthy" — the seam the (P3) telemetry-absent
+    /// watchdog reads.
+    pub fn sample_count_in_window(
+        &self,
+        kind: &SliKind,
+        window: Duration,
+        now: DateTime<Utc>,
+    ) -> u64 {
+        let _ = (kind, window, now);
+        todo!("SLO-P2: implement after RED is validated")
+    }
+
     /// Evaluate all objectives and return newly fired/resolved alerts.
     pub fn evaluate(&self) -> Vec<SloAlert> {
         let buffers = self.buffers.lock().unwrap();
@@ -1090,6 +1113,122 @@ mod tests {
         }
         let alerts = engine.evaluate();
         assert!(alerts[0].runbook_url.contains("runbooks.aegis.local"));
+    }
+
+    // -- SLO-P2: bucketed store — honest windows ------------------------------
+
+    fn availability_sample_at(value: f64, ts: DateTime<Utc>) -> SliSample {
+        SliSample {
+            kind: SliKind::DataPlaneAvailability,
+            value,
+            ts,
+        }
+    }
+
+    // The 10k sample ring silently evicted an error burst once
+    // enough healthy traffic followed — the burst "self-resolved"
+    // by volume, not by time. Bucketed counters must keep it
+    // inside the window.
+    #[test]
+    fn error_burst_is_not_flushed_by_later_volume() {
+        let engine = SloEngine::new(fast_burn_objective());
+        for _ in 0..100 {
+            engine.record(availability_sample(0.0));
+        }
+        for _ in 0..10_000 {
+            engine.record(availability_sample(1.0));
+        }
+        // 100 bad of 10,100 in the last hour ≈ 0.99% error rate —
+        // far over the 0.1% budget; must still be firing.
+        let alerts = engine.evaluate();
+        assert!(
+            !alerts.is_empty(),
+            "an error burst must not be evicted by later healthy volume",
+        );
+    }
+
+    #[test]
+    fn long_window_counts_beyond_10k_samples() {
+        let engine = SloEngine::new(fast_burn_objective());
+        let now = Utc::now();
+        let earlier = now - Duration::hours(5);
+        for _ in 0..20_000 {
+            engine.record(availability_sample_at(1.0, earlier));
+        }
+        let count = engine.sample_count_in_window(
+            &SliKind::DataPlaneAvailability,
+            Duration::hours(6),
+            now,
+        );
+        assert_eq!(count, 20_000, "6h window must not truncate at 10k samples");
+        // And those samples are OUTSIDE a 1h window.
+        let count_1h = engine.sample_count_in_window(
+            &SliKind::DataPlaneAvailability,
+            Duration::hours(1),
+            now,
+        );
+        assert_eq!(count_1h, 0);
+    }
+
+    #[test]
+    fn no_data_is_distinguishable_from_healthy() {
+        let engine = SloEngine::new(fast_burn_objective());
+        let now = Utc::now();
+        assert_eq!(
+            engine.sample_count_in_window(
+                &SliKind::DataPlaneAvailability,
+                Duration::hours(1),
+                now,
+            ),
+            0,
+            "empty engine → zero observations, not implicit health",
+        );
+    }
+
+    // Deterministic fire → resolve via the injectable clock: the
+    // alert resolves because the burst LEFT THE WINDOW, not
+    // because later volume evicted it from a ring.
+    #[test]
+    fn alert_fires_then_resolves_when_burst_ages_out() {
+        let engine = SloEngine::new(fast_burn_objective());
+        let t0 = Utc::now();
+        for _ in 0..100 {
+            engine.record(availability_sample_at(0.0, t0));
+        }
+        let fired = engine.evaluate_at(t0 + Duration::minutes(1));
+        assert_eq!(fired.len(), 1, "burst inside 1h window fires");
+        assert!(fired[0].resolved_at.is_none());
+
+        // Two hours later the burst is outside the 1h window;
+        // fresh healthy traffic is all the window sees.
+        let t2 = t0 + Duration::hours(2);
+        for _ in 0..100 {
+            engine.record(availability_sample_at(1.0, t2));
+        }
+        let resolved = engine.evaluate_at(t2);
+        assert_eq!(resolved.len(), 1, "aged-out burst resolves");
+        assert!(resolved[0].resolved_at.is_some());
+        assert!(engine.active_alerts().is_empty());
+    }
+
+    #[test]
+    fn thirty_day_budget_sees_old_errors_beyond_ring_capacity() {
+        let engine = SloEngine::new(fast_burn_objective());
+        let old = Utc::now() - Duration::days(20);
+        for _ in 0..100 {
+            engine.record(availability_sample_at(0.0, old));
+        }
+        // 15k healthy samples afterwards — more than the old
+        // 10k ring could hold.
+        for _ in 0..15_000 {
+            engine.record(availability_sample_at(1.0, old + Duration::minutes(1)));
+        }
+        let status = engine.budget_status();
+        // 100/15100 ≈ 0.66% error rate vs 0.1% budget → exhausted.
+        assert_eq!(
+            status[0].budget_remaining_pct, 0.0,
+            "20-day-old burst must still drain the 30d budget",
+        );
     }
 
     // -- SLO-P1: default objectives + enforcement counter --------------------
