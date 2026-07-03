@@ -1087,7 +1087,8 @@ pub(crate) async fn handle_data_request_inner(
     let rule_allow = match (upstream_ctx.active_ruleset.get(), resolved_route.as_ref()) {
         (Some(rs), Some(rc)) => {
             let snap = rs.snapshot();
-            let decision = aegis_security::rules::evaluate(&snap, &view, rc);
+            let decision =
+                aegis_security::rules::evaluate_with_ctx(&snap, &view, rc, &eval_ctx_for(upstream_ctx));
             matches!(decision.action, aegis_core::decision::Action::Allow)
                 && decision.rule_id.as_deref().is_some_and(|id| {
                     snap.iter().any(|r| {
@@ -2087,8 +2088,12 @@ pub(crate) async fn forward_allow_to_upstream(
                 tls: None,
                 body: &body_peek,
             };
-            let decision =
-                aegis_security::rules::evaluate(&snapshot, &view, &route_ctx);
+            let decision = aegis_security::rules::evaluate_with_ctx(
+                &snapshot,
+                &view,
+                &route_ctx,
+                &eval_ctx_for(ctx),
+            );
             if let aegis_core::decision::Action::Block { status } = decision.action {
                 let rule_id = decision.rule_id.clone().unwrap_or_else(|| "rule".into());
                 tracing::Span::current().record("outcome", "rule_block");
@@ -4436,6 +4441,20 @@ fn emit_challenge_audit(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// AC-P2-c (2026-07-03) — build the rules-engine [`EvalContext`] for a
+/// request, threading the GeoIP reader so `Country`/`Asn` rule
+/// conditions resolve (pre-fix both data-plane `evaluate()` call sites
+/// used the empty-context shim, which always evaluated geo conditions
+/// false). `rate_limit` stays `None` — unchanged from the old empty
+/// context. When no geoip reader is wired (no feature / no MMDB), geo
+/// conditions safely stay false.
+fn eval_ctx_for(ctx: &crate::proxy::ProxyContext) -> aegis_security::rules::EvalContext {
+    match ctx.geoip.get() {
+        Some(g) => aegis_security::rules::EvalContext::empty().with_geoip(g.clone()),
+        None => aegis_security::rules::EvalContext::empty(),
+    }
+}
+
 fn blocked_response(
     peer: std::net::SocketAddr,
     reason: &str,

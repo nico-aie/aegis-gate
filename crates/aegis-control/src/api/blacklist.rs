@@ -195,6 +195,28 @@ pub trait AccessListCountryLookup: Send + Sync {
     /// ISO-3166-1 alpha-2 country code for `peer`, uppercase,
     /// or `None` when MaxMind couldn't resolve.
     fn country_of(&self, peer: std::net::IpAddr) -> Option<String>;
+
+    /// AC-P2-c (2026-07-03) — autonomous-system number for `peer`, or
+    /// `None` when MaxMind couldn't resolve (or the ASN DB isn't
+    /// configured). Drives `kind: asn` access-list matching. Default
+    /// `None` keeps any impl that only knows country compiling and
+    /// silently missing ASN entries (same posture as a missing lookup).
+    fn asn_of(&self, _peer: std::net::IpAddr) -> Option<u32> {
+        None
+    }
+}
+
+/// Parse an access-list `kind: asn` entry value into an ASN number.
+/// Accepts a bare number (`"13335"`) or the `AS`-prefixed form
+/// (`"AS13335"` / `"as13335"`). Returns `None` on garbage.
+fn parse_asn(value: &str) -> Option<u32> {
+    let v = value.trim();
+    let digits = v
+        .strip_prefix("AS")
+        .or_else(|| v.strip_prefix("as"))
+        .or_else(|| v.strip_prefix("As"))
+        .unwrap_or(v);
+    digits.parse::<u32>().ok()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -502,7 +524,17 @@ impl AccessListStore {
                     .ok()
                     .map(|n| n.contains(&peer))
                     .unwrap_or(false),
-                "asn" => false, // ASN matching needs a separate lookup; not wired in v1
+                "asn" => match country_lookup {
+                    // AC-P2-c (2026-07-03) — resolve the peer's ASN via the
+                    // same geo reader the country path uses; compare to the
+                    // entry value (bare number "13335" or "AS13335"). No
+                    // lookup wired → silently miss, like the country path.
+                    Some(l) => match l.asn_of(peer) {
+                        Some(peer_asn) => parse_asn(&entry.value) == Some(peer_asn),
+                        None => false,
+                    },
+                    None => false,
+                },
                 "country" => {
                     let lookup = match country_lookup {
                         Some(l) => l,

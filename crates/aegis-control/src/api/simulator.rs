@@ -240,6 +240,11 @@ pub fn simulate(
     mask: &SharedDetectorMask,
     tiers: &crate::api::tiers::TierStore,
     rules: &[Rule],
+    // AC-P2-c (2026-07-03) — GeoIP reader so `Country`/`Asn` rule
+    // conditions resolve in the preview exactly as the data plane does.
+    // `None` (no feature / no MMDB) → geo conditions stay false, matching
+    // a no-geoip deployment.
+    geoip: Option<std::sync::Arc<dyn aegis_security::geoip::GeoIpLookup>>,
 ) -> SimulateResponse {
     let method = req
         .method
@@ -332,11 +337,17 @@ pub fn simulate(
         .map(|r| r.id.clone())
         .collect();
 
-    // P1 — evaluate operator rules with the exact function + empty
-    // EvalContext both data-plane call sites use (`data_plane.rs`
-    // allow-precheck and forward-path enforcement), so simulator
-    // and live verdicts can't drift.
-    let rule_decision = aegis_security::rules::evaluate(rules, &view, &route_ctx);
+    // P1 — evaluate operator rules with the exact function + EvalContext
+    // the data-plane call sites use (`data_plane.rs` allow-precheck and
+    // forward-path enforcement), so simulator and live verdicts can't
+    // drift. AC-P2-c — thread the same geoip reader so Country/Asn rules
+    // resolve identically (both were empty-context before this).
+    let eval_ctx = match &geoip {
+        Some(g) => aegis_security::rules::EvalContext::empty().with_geoip(g.clone()),
+        None => aegis_security::rules::EvalContext::empty(),
+    };
+    let rule_decision =
+        aegis_security::rules::evaluate_with_ctx(rules, &view, &route_ctx, &eval_ctx);
     let matched_rule = rule_decision
         .rule_id
         .as_deref()
@@ -502,7 +513,7 @@ mod tests {
             body: None,
             peer_ip: None,
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[]);
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[], None);
         assert_eq!(resp.decision_action, "allow");
         assert_eq!(resp.risk_score, 0);
         assert!(resp.detectors_fired.is_empty());
@@ -523,7 +534,7 @@ mod tests {
             body: None,
             peer_ip: None,
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[]);
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[], None);
         assert_eq!(resp.decision_action, "allow", "70 < low threshold 80");
         assert_eq!(resp.tier, "low");
         assert!(
@@ -547,7 +558,7 @@ mod tests {
             body: None,
             peer_ip: None,
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[]);
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[], None);
         assert_eq!(resp.decision_action, "block", "combined score ≥ 80");
         assert!(resp.risk_score >= 80);
         assert!(resp.detectors_fired.len() >= 2, "got {:?}", resp.detectors_fired);
@@ -569,7 +580,7 @@ mod tests {
             body: None,
             peer_ip: None,
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[]);
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[], None);
         assert!(
             resp.detectors_fired.iter().any(|d| d == "xss"),
             "xss must still fire, got {:?}",
@@ -595,7 +606,7 @@ mod tests {
             body: None,
             peer_ip: None,
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[]);
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[], None);
         assert_eq!(resp.decision_action, "allow");
         assert!(
             resp.detectors_fired
@@ -616,7 +627,7 @@ mod tests {
             body: None,
             peer_ip: None,
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[]);
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[], None);
         assert_eq!(resp.decision_action, "allow");
     }
 
@@ -631,7 +642,7 @@ mod tests {
             peer_ip: None,
         };
         // Should not panic; the simulator falls back to GET.
-        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[]);
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[], None);
         assert_eq!(resp.decision_action, "allow");
     }
 
@@ -647,7 +658,7 @@ mod tests {
             body: Some("<script>alert(1)</script>".into()),
             peer_ip: None,
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[]);
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[], None);
         // Body-side detection — the XSS (or body-abuse) detector fires. A single
         // 70 hit on the Low tier is allowed-but-detected (< 80 threshold).
         assert_eq!(resp.decision_action, "allow");
@@ -672,7 +683,7 @@ mod tests {
             body: None,
             peer_ip: None,
         };
-        let resp = simulate(&req, &default_detectors(), &mask, &live_tiers(), &[]);
+        let resp = simulate(&req, &default_detectors(), &mask, &live_tiers(), &[], None);
         assert!(
             resp.muted_detectors.iter().any(|d| d == "sqli"),
             "expected sqli muted, got {:?}",
@@ -690,7 +701,7 @@ mod tests {
             body: None,
             peer_ip: None,
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[]);
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[], None);
         assert!(!resp.signals.is_empty());
         for s in &resp.signals {
             assert!(!s.class.is_empty());
@@ -708,7 +719,7 @@ mod tests {
             body: None,
             peer_ip: None,
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[]);
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[], None);
         let json = serde_json::to_value(&resp).unwrap();
         assert!(json.get("decision_action").is_some());
         assert!(json.get("risk_score").is_some());
@@ -750,7 +761,7 @@ mod tests {
             path: "/admin/panel".into(),
             ..Default::default()
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &rules);
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &rules, None);
         assert_eq!(resp.decision_action, "block");
         assert_eq!(resp.rule_id.as_deref(), Some("block-admin"));
         let m = resp.matched_rule.expect("matched rule reported");
@@ -775,7 +786,7 @@ mod tests {
             body: Some("xxABCxx".into()),
             ..Default::default()
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &rules);
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &rules, None);
         assert_eq!(resp.decision_action, "block");
         let m = resp.matched_rule.expect("matched rule reported");
         assert_eq!(m.id, "rule-test");
@@ -788,7 +799,7 @@ mod tests {
             ..Default::default()
         };
         let resp2 =
-            simulate(&near_miss, &default_detectors(), &live_mask(), &live_tiers(), &rules);
+            simulate(&near_miss, &default_detectors(), &live_mask(), &live_tiers(), &rules, None);
         assert_eq!(resp2.decision_action, "allow");
         assert!(resp2.matched_rule.is_none());
     }
@@ -804,7 +815,7 @@ mod tests {
             path: "/api/users?id=1' OR '1'='1".into(),
             ..Default::default()
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &rules);
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &rules, None);
         assert_eq!(resp.decision_action, "allow");
         assert!(resp.detectors_bypassed, "allow rule must skip the detector chain");
         assert!(resp.detectors_fired.is_empty());
@@ -831,7 +842,7 @@ mod tests {
             path: "/static/../../../etc/passwd?q=<script>alert(1)</script>".into(),
             ..Default::default()
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &rules);
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &rules, None);
         assert_eq!(resp.decision_action, "block", "detectors must still run and block");
         assert!(!resp.detectors_bypassed);
         assert!(resp.matched_rule.is_none(), "default pass-through is not a match");
@@ -850,7 +861,7 @@ mod tests {
             path: "/static/../../../etc/passwd?q=<script>alert(1)</script>".into(),
             ..Default::default()
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &rules);
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &rules, None);
         assert_eq!(resp.decision_action, "block", "detectors decide, not the rl allow");
         assert!(!resp.detectors_bypassed);
         let m = resp.matched_rule.expect("rl match still reported");
@@ -869,7 +880,7 @@ mod tests {
             path: "/blog/post-1".into(),
             ..Default::default()
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &rules);
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &rules, None);
         assert_eq!(resp.decision_action, "allow");
         assert!(!resp.detectors_bypassed);
         let m = resp.matched_rule.expect("log_only match reported");
@@ -893,7 +904,7 @@ mod tests {
             path: "/static/../../../etc/passwd?q=<script>alert(1)</script>".into(),
             ..Default::default()
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &rules);
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &rules, None);
         assert_eq!(resp.decision_action, "block");
         let first = resp.first_detector.clone().expect("first detector set");
         assert_eq!(resp.rule_id.as_deref(), Some(first.as_str()));
@@ -911,7 +922,7 @@ mod tests {
             path: "/admin/panel".into(),
             ..Default::default()
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &rules);
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &rules, None);
         // The simulator evaluates against a synthetic global route, so the
         // route-scoped rule must not fire — and must be reported as skipped
         // rather than silently ignored.
@@ -933,7 +944,7 @@ mod tests {
             path: "/login".into(),
             ..Default::default()
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &rules);
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &rules, None);
         assert_eq!(resp.decision_action, "allow");
         let m = resp.matched_rule.expect("challenge match reported");
         assert_eq!(m.id, "challenge-login");
@@ -955,7 +966,7 @@ mod tests {
             peer_ip: Some("203.0.113.10".parse().unwrap()),
             ..Default::default()
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &rules);
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &rules, None);
         assert_eq!(resp.decision_action, "block");
         assert_eq!(
             resp.matched_rule.expect("ip rule matched").id,
@@ -968,7 +979,7 @@ mod tests {
             ..Default::default()
         };
         let resp2 =
-            simulate(&default_peer, &default_detectors(), &live_mask(), &live_tiers(), &rules);
+            simulate(&default_peer, &default_detectors(), &live_mask(), &live_tiers(), &rules, None);
         assert_eq!(resp2.decision_action, "allow");
         assert!(resp2.matched_rule.is_none());
     }
@@ -997,7 +1008,7 @@ mod tests {
             path: "/api/users".into(),
             ..Default::default()
         };
-        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[]);
+        let resp = simulate(&req, &default_detectors(), &live_mask(), &live_tiers(), &[], None);
         assert_eq!(resp.decision_action, "allow");
         assert!(resp.matched_rule.is_none());
         assert!(resp.first_detector.is_none());
