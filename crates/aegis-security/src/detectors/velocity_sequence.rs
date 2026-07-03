@@ -364,6 +364,87 @@ mod tests {
         assert!(signals.iter().any(|s| s.tag == "velocity_otp_to_deposit"));
     }
 
+    /// AC-P1-b (2026-07-03) — fraud-shape table extension. The
+    /// original table only chained FROM login/otp; `deposit →
+    /// withdrawal` (rapid in-out laundering) and `limit-change →
+    /// withdrawal` (raise the cap, drain the account) are classic
+    /// ATO monetisation shapes with no auth step in the window.
+    #[test]
+    fn classify_tags_limit_change_routes() {
+        assert_eq!(
+            EndpointTag::classify("/api/account/limits"),
+            Some(EndpointTag::LimitChange),
+        );
+        assert_eq!(
+            EndpointTag::classify("/settings/limit"),
+            Some(EndpointTag::LimitChange),
+        );
+        // Order pin: a route containing BOTH "withdraw" and "limit"
+        // stays Withdrawal — the withdraw/cashout family is checked
+        // first and is the higher-signal tag.
+        assert_eq!(
+            EndpointTag::classify("/settings/withdrawal-limit"),
+            Some(EndpointTag::Withdrawal),
+        );
+    }
+
+    #[test]
+    fn deposit_to_withdrawal_within_window_fires() {
+        let d = VelocitySequenceDetector::new();
+        let (m, u, h, b, p) = parts(http::Method::POST, "/api/deposit", "203.0.113.20");
+        let _ = d.inspect(&view(&m, &u, &h, &b, p));
+        let (m, u, h, b, p) = parts(http::Method::POST, "/withdraw", "203.0.113.20");
+        let signals = d.inspect(&view(&m, &u, &h, &b, p));
+        assert!(
+            signals.iter().any(|s| s.tag == "velocity_deposit_to_withdrawal" && s.score == 70),
+            "expected deposit_to_withdrawal signal: {signals:?}",
+        );
+    }
+
+    #[test]
+    fn deposit_to_withdrawal_after_window_does_not_fire() {
+        let d = VelocitySequenceDetector::new();
+        let peer_ip: IpAddr = "203.0.113.21".parse().unwrap();
+        {
+            let mut state = d.state.lock().unwrap();
+            let h = state.entry(peer_ip).or_insert_with(History::new);
+            // Backdate the deposit 6 s ago — outside the 5 s window.
+            h.entries.push((
+                EndpointTag::Deposit,
+                Instant::now() - Duration::from_secs(6),
+            ));
+        }
+        let (m, u, h, b, p) = parts(http::Method::POST, "/withdraw", "203.0.113.21");
+        let signals = d.inspect(&view(&m, &u, &h, &b, p));
+        assert!(signals.is_empty(), "expected no signal beyond window: {signals:?}");
+    }
+
+    #[test]
+    fn limit_change_to_withdrawal_fires() {
+        let d = VelocitySequenceDetector::new();
+        let (m, u, h, b, p) = parts(http::Method::PUT, "/api/account/limits", "203.0.113.22");
+        let _ = d.inspect(&view(&m, &u, &h, &b, p));
+        let (m, u, h, b, p) = parts(http::Method::POST, "/withdraw", "203.0.113.22");
+        let signals = d.inspect(&view(&m, &u, &h, &b, p));
+        assert!(
+            signals.iter().any(|s| s.tag == "velocity_limit_change_to_withdrawal" && s.score == 70),
+            "expected limit_change_to_withdrawal signal: {signals:?}",
+        );
+    }
+
+    /// The reverse order (withdraw first, then a limit change) is a
+    /// benign shape — no rule targets LimitChange as `next`, so the
+    /// only cost of storing it is one ring-buffer slot.
+    #[test]
+    fn withdrawal_then_limit_change_does_not_fire() {
+        let d = VelocitySequenceDetector::new();
+        let (m, u, h, b, p) = parts(http::Method::POST, "/withdraw", "203.0.113.23");
+        let _ = d.inspect(&view(&m, &u, &h, &b, p));
+        let (m, u, h, b, p) = parts(http::Method::PUT, "/api/account/limits", "203.0.113.23");
+        let signals = d.inspect(&view(&m, &u, &h, &b, p));
+        assert!(signals.is_empty(), "reverse order fired: {signals:?}");
+    }
+
     #[test]
     fn deposit_alone_does_not_fire() {
         let d = VelocitySequenceDetector::new();
