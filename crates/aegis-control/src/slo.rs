@@ -63,14 +63,51 @@ pub struct SloObjective {
     pub target: f64,
     pub window_days: u32,
     pub burn_rates: Vec<BurnRateWindow>,
+    /// SLO-P3 — minimum observations in a burn window before it
+    /// may fire. 1 bad request out of 3 at 04:00 is 33% "error
+    /// rate" but not an incident.
+    #[serde(default = "default_min_events")]
+    pub min_events: u64,
 }
 
-/// A burn-rate alerting window.
+/// Default [`SloObjective::min_events`].
+pub fn default_min_events() -> u64 {
+    60
+}
+
+/// A burn-rate alerting window (SLO-P3: a multi-window pair per
+/// Google SRE Workbook ch.5 — fire only when BOTH the long and
+/// the short window burn above `burn_threshold`; the short
+/// window makes alerts stop firing quickly after recovery and
+/// prevents stale re-fires).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BurnRateWindow {
     pub window_hours: u64,
+    /// Legacy pre-P3 threshold (was compared against
+    /// `error_rate/budget × 100` with no time factor — a burn
+    /// rate mislabeled as "% budget"). Dead once P3 lands;
+    /// removed with it.
     pub budget_pct: f64,
+    /// Short confirmation window of the pair.
+    #[serde(default = "default_short_window_minutes")]
+    pub short_window_minutes: u64,
+    /// Burn-rate threshold: multiples of the break-even budget
+    /// burn pace (1.0 = spending exactly the whole budget over
+    /// the SLO window). 14.4 over 1h ⇔ 2% of a 30d budget/hour.
+    #[serde(default = "default_burn_threshold")]
+    pub burn_threshold: f64,
     pub severity: AlertSeverity,
+}
+
+/// Default [`BurnRateWindow::short_window_minutes`].
+pub fn default_short_window_minutes() -> u64 {
+    5
+}
+
+/// Default [`BurnRateWindow::burn_threshold`] — the standard
+/// fast-burn page threshold.
+pub fn default_burn_threshold() -> f64 {
+    14.4
 }
 
 /// Alert severity.
@@ -93,23 +130,35 @@ pub fn default_objectives() -> Vec<SloObjective> {
             sli: SliKind::DataPlaneAvailability,
             target: 0.999,
             window_days: 30,
+            // SLO-P3 — standard multi-window multi-burn pairs:
+            // 14.4× over 1h (2% of the 30d budget) pages, 6× over
+            // 6h (5%) pages, 1× over 3d (10% and on pace to spend
+            // it all) tickets. Each long window is gated by its
+            // short confirmation window.
             burn_rates: vec![
                 BurnRateWindow {
                     window_hours: 1,
                     budget_pct: 2.0,
+                    short_window_minutes: 5,
+                    burn_threshold: 14.4,
                     severity: AlertSeverity::Page,
                 },
                 BurnRateWindow {
                     window_hours: 6,
                     budget_pct: 5.0,
-                    severity: AlertSeverity::Ticket,
+                    short_window_minutes: 30,
+                    burn_threshold: 6.0,
+                    severity: AlertSeverity::Page,
                 },
                 BurnRateWindow {
                     window_hours: 72,
                     budget_pct: 10.0,
+                    short_window_minutes: 360,
+                    burn_threshold: 1.0,
                     severity: AlertSeverity::Ticket,
                 },
             ],
+            min_events: default_min_events(),
         },
         // SLO-P1 (2026-07-03): the AuditDeliveryRate objective was
         // dropped — its producer hardcoded `1.0` per observed
@@ -808,6 +857,20 @@ impl SloEngine {
         ring.recent.push_back(ts);
     }
 
+    /// SLO-P3 telemetry-absent watchdog seam: `true` when `kind`
+    /// has produced at least one sample since boot but none in
+    /// the trailing `absent_after` window — a wedged data plane,
+    /// not an idle one (a never-served kind returns `false`).
+    pub fn telemetry_absent(
+        &self,
+        kind: &SliKind,
+        absent_after: Duration,
+        now: DateTime<Utc>,
+    ) -> bool {
+        let _ = (kind, absent_after, now);
+        todo!("SLO-P3: implement after RED is validated")
+    }
+
     /// Current enforcement counter snapshot for `/api/slo`.
     pub fn enforcement_stats(&self) -> EnforcementStats {
         let ring = self.enforcement.lock().unwrap();
@@ -1109,8 +1172,11 @@ mod tests {
             burn_rates: vec![BurnRateWindow {
                 window_hours: 1,
                 budget_pct: 2.0,
+                short_window_minutes: 5,
+                burn_threshold: 14.4,
                 severity: AlertSeverity::Page,
             }],
+            min_events: 60,
         }]
     }
 
@@ -1241,6 +1307,149 @@ mod tests {
         }
         let alerts = engine.evaluate();
         assert!(alerts[0].runbook_url.contains("runbooks.aegis.local"));
+    }
+
+    // -- SLO-P3: multi-window multi-burn + guards -----------------------------
+    //
+    // Scenario table from the FEAT plan — these encode when the
+    // engine must and must NOT alert under the standard
+    // (Google SRE Workbook ch.5) thresholds.
+
+    // A ~1% error rate is burn ≈ 9.9 for a 99.9% target — real
+    // budget drain, but BELOW the 14.4 fast-burn page threshold.
+    // Pre-P3 this paged at burn 0.02 (720× oversensitive).
+    #[test]
+    fn moderate_burn_below_standard_threshold_does_not_page() {
+        let engine = SloEngine::new(fast_burn_objective());
+        let t0 = Utc::now();
+        for _ in 0..100 {
+            engine.record_at(availability_sample_at(0.0, t0), t0);
+        }
+        for _ in 0..10_000 {
+            engine.record_at(availability_sample_at(1.0, t0), t0);
+        }
+        let alerts = engine.evaluate_at(t0 + Duration::minutes(1));
+        assert!(
+            alerts.is_empty(),
+            "burn 9.9 must not trip the 14.4 page threshold",
+        );
+    }
+
+    // A burst 30 minutes ago keeps the 1h long window burning,
+    // but the short (5m) window has aged past it — the pair must
+    // not fire a stale alert.
+    #[test]
+    fn stale_burst_needs_short_window_confirmation() {
+        let engine = SloEngine::new(fast_burn_objective());
+        let t0 = Utc::now();
+        for _ in 0..100 {
+            engine.record_at(availability_sample_at(0.0, t0), t0);
+        }
+        // 30 min later: nothing in the 5m short window at all.
+        let t1 = t0 + Duration::minutes(30);
+        assert!(
+            engine.evaluate_at(t1).is_empty(),
+            "no short-window data → no confirmation → no fire",
+        );
+        // Fresh healthy traffic in the short window: still no fire.
+        for _ in 0..100 {
+            engine.record_at(availability_sample_at(1.0, t1), t1);
+        }
+        assert!(
+            engine.evaluate_at(t1).is_empty(),
+            "healthy short window must veto the stale long-window burn",
+        );
+    }
+
+    // 1 bad request out of 3 at 04:00 is a 333× burn on paper —
+    // and not an incident.
+    #[test]
+    fn sparse_traffic_below_min_events_never_fires() {
+        let engine = SloEngine::new(fast_burn_objective());
+        let t0 = Utc::now();
+        engine.record_at(availability_sample_at(0.0, t0), t0);
+        engine.record_at(availability_sample_at(1.0, t0), t0);
+        engine.record_at(availability_sample_at(1.0, t0), t0);
+        assert!(
+            engine.evaluate_at(t0 + Duration::minutes(1)).is_empty(),
+            "3 events < min_events(60) must not alert",
+        );
+    }
+
+    // A sustained 0.15% error rate (burn 1.5) must raise exactly
+    // one slow-burn Ticket on the 3d window — no Page.
+    #[test]
+    fn slow_burn_raises_ticket_not_page() {
+        let engine = SloEngine::new(default_objectives());
+        let t0 = Utc::now();
+        // 72h of steady traffic at 99.85% availability.
+        for h in 0..72 {
+            let ts = t0 - Duration::hours(h);
+            for _ in 0..100 {
+                engine.record_at(availability_sample_at(0.9985, ts), ts);
+            }
+        }
+        let alerts = engine.evaluate_at(t0);
+        assert_eq!(
+            alerts.len(),
+            1,
+            "exactly the 3d slow-burn pair fires, got: {alerts:?}",
+        );
+        assert_eq!(alerts[0].severity, AlertSeverity::Ticket);
+        assert_eq!(alerts[0].window_hours, 72);
+    }
+
+    // budget_consumed_pct must be a real % of the 30d budget:
+    // burn 100 sustained for the 1h window = 100/720 of the
+    // budget ≈ 13.9% — not the pre-P3 "burn × 100" = 10,000%.
+    #[test]
+    fn budget_consumed_pct_is_time_scaled() {
+        let engine = SloEngine::new(fast_burn_objective());
+        let t0 = Utc::now();
+        for _ in 0..100 {
+            engine.record_at(availability_sample_at(0.9, t0), t0);
+        }
+        let alerts = engine.evaluate_at(t0 + Duration::minutes(1));
+        assert_eq!(alerts.len(), 1);
+        let consumed = alerts[0].budget_consumed_pct;
+        assert!(
+            (13.0..15.0).contains(&consumed),
+            "1h at burn 100 consumes ~13.9% of a 30d budget, got {consumed}",
+        );
+        assert!((alerts[0].burn_rate - 100.0).abs() < 1.0);
+    }
+
+    // Blackout: traffic was flowing, then nothing — the watchdog
+    // must see it (a never-served kind must NOT trip it).
+    #[test]
+    fn telemetry_absent_watchdog_detects_blackout() {
+        let engine = SloEngine::new(fast_burn_objective());
+        let now = Utc::now();
+        let absent_after = Duration::minutes(10);
+        let kind = SliKind::DataPlaneAvailability;
+        // Never served: idle dev node, not a blackout.
+        assert!(!engine.telemetry_absent(&kind, absent_after, now));
+        engine.record_at(availability_sample_at(1.0, now), now);
+        // Serving normally.
+        assert!(!engine.telemetry_absent(&kind, absent_after, now + Duration::minutes(5)));
+        // 15 minutes of silence after having served: blackout.
+        assert!(engine.telemetry_absent(&kind, absent_after, now + Duration::minutes(15)));
+    }
+
+    // Pin of the P1 contract at the evaluation layer: a 90%-
+    // blocked attack wave is enforcement, not unavailability.
+    #[test]
+    fn blocked_attack_wave_does_not_alert_availability() {
+        let engine = SloEngine::new(fast_burn_objective());
+        let t0 = Utc::now();
+        for _ in 0..900 {
+            engine.record_enforcement(t0);
+        }
+        for _ in 0..100 {
+            engine.record_at(availability_sample_at(1.0, t0), t0);
+        }
+        assert!(engine.evaluate_at(t0 + Duration::minutes(1)).is_empty());
+        assert_eq!(engine.enforcement_stats().total, 900);
     }
 
     // -- SLO-P2: bucketed store — honest windows ------------------------------
