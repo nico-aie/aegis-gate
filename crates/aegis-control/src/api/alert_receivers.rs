@@ -53,6 +53,11 @@ pub struct ReceiverEntry {
     pub name: String,
     pub kind: RedactedKind,
     pub status: ReceiverStatus,
+    /// SLO-P6 — severity routing filter (empty = all severities).
+    /// Not a secret; without it the editor could not show an
+    /// existing filter and a save would silently clear it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub severities: Vec<crate::slo::AlertSeverity>,
 }
 
 /// Mirror of [`ReceiverKind`] with secrets sanitised. Tagged
@@ -559,6 +564,7 @@ impl AlertReceiversHandler {
                 name: r.name.clone(),
                 kind: RedactedKind::from_kind(&r.kind),
                 status: self.ring.status_of(&r.name),
+                severities: r.severities.clone(),
             })
             .collect();
         AlertReceiversView {

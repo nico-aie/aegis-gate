@@ -453,6 +453,31 @@ impl TrackingHandler {
         self.cert_provider.lock().ok()?.clone()
     }
 
+    /// SLO-P6 — live objective snapshot for the config editor
+    /// GET. `None` when no engine is wired.
+    pub fn slo_objectives(&self) -> Option<Vec<crate::slo::SloObjective>> {
+        self.slo().map(|e| e.objectives())
+    }
+
+    /// SLO-P6 — minute-resolution availability series for the
+    /// Health page timeline. Empty `points` when no engine is
+    /// wired (honest empty, same policy as `render_slo`).
+    pub fn render_slo_timeseries(&self, window_secs: i64) -> String {
+        let points = match self.slo() {
+            None => Vec::new(),
+            Some(e) => e.sli_timeseries(
+                &crate::slo::SliKind::DataPlaneAvailability,
+                chrono::Duration::seconds(window_secs),
+                chrono::Utc::now(),
+            ),
+        };
+        serde_json::to_string(&serde_json::json!({
+            "window_seconds": window_secs,
+            "points": points,
+        }))
+        .unwrap_or_else(|_| "{}".into())
+    }
+
     pub fn render_slo(&self) -> String {
         let body = match self.slo() {
             None => SloResponse::placeholder(),

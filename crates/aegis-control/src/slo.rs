@@ -797,6 +797,30 @@ impl BucketStore {
         let (good, count) = self.window_totals(now, window);
         (count > 0).then(|| good / count as f64)
     }
+
+    /// SLO-P6 — per-minute points over the trailing `window`
+    /// from the coarse tier, ascending, empty buckets omitted.
+    fn minute_points(&self, now: DateTime<Utc>, window: Duration) -> Vec<SliPoint> {
+        let ring = &self.coarse;
+        let len = ring.slots.len() as i64;
+        let to_epoch = now.timestamp().div_euclid(ring.width_secs);
+        let first = (now - window)
+            .timestamp()
+            .div_euclid(ring.width_secs)
+            .max(to_epoch - len + 1);
+        let mut out = Vec::new();
+        for epoch in first..=to_epoch {
+            let slot = &ring.slots[epoch.rem_euclid(len) as usize];
+            if slot.epoch == epoch && slot.count > 0 {
+                out.push(SliPoint {
+                    ts: epoch * ring.width_secs,
+                    value: slot.good / slot.count as f64,
+                    count: slot.count,
+                });
+            }
+        }
+        out
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -941,6 +965,31 @@ impl SloEngine {
         Self::validate_objectives(&objectives)?;
         *self.objectives.lock().unwrap() = objectives;
         Ok(())
+    }
+
+    /// SLO-P6 — snapshot of the live objective set (the config
+    /// editor's GET view; effective values, whether compiled
+    /// defaults or config-managed).
+    pub fn objectives(&self) -> Vec<SloObjective> {
+        self.objectives.lock().unwrap().clone()
+    }
+
+    /// SLO-P6 — minute-resolution availability series over the
+    /// trailing `window` as of `now`, from the coarse bucket
+    /// tier. Feeds `/api/slo/timeseries` (the Health page's
+    /// error-budget timeline). Empty buckets are omitted — the
+    /// chart renders gaps as gaps, not as fake 100%.
+    pub fn sli_timeseries(
+        &self,
+        kind: &SliKind,
+        window: Duration,
+        now: DateTime<Utc>,
+    ) -> Vec<SliPoint> {
+        let buffers = self.buffers.lock().unwrap();
+        match buffers.get(kind) {
+            None => Vec::new(),
+            Some(buf) => buf.minute_points(now, window),
+        }
     }
 
     /// SLO-P3 telemetry-absent watchdog seam: `true` when `kind`
@@ -1275,6 +1324,18 @@ impl SloEngine {
     }
 }
 
+/// One timeline point of [`SloEngine::sli_timeseries`] — a
+/// 1-minute bucket's availability ratio (`good / count`).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SliPoint {
+    /// Bucket start, unix seconds.
+    pub ts: i64,
+    /// Mean sample value in the bucket (availability ratio).
+    pub value: f64,
+    /// Observations in the bucket.
+    pub count: u64,
+}
+
 /// One row of [`BudgetStatus::burn_rates`]. `rate` is the ratio
 /// `error_rate / error_budget` measured over `window_hours`. A
 /// value of `1.0` means the SLO is being burned at exactly the
@@ -1467,6 +1528,55 @@ mod tests {
         }
         let alerts = engine.evaluate();
         assert!(alerts[0].runbook_url.contains("runbooks.aegis.local"));
+    }
+
+    // -- SLO-P6: editor + timeline seams ---------------------------------------
+
+    #[test]
+    fn objectives_snapshot_reflects_live_set() {
+        let engine = SloEngine::new(default_objectives());
+        let objs = engine.objectives();
+        assert_eq!(objs.len(), 1);
+        assert!((objs[0].target - 0.999).abs() < 1e-9);
+        // A hot swap is visible in the next snapshot.
+        let mut looser = fast_burn_objective();
+        looser[0].target = 0.99;
+        engine.set_objectives(looser).unwrap();
+        assert!((engine.objectives()[0].target - 0.99).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sli_timeseries_returns_minute_buckets_with_gaps_omitted() {
+        let engine = SloEngine::new(fast_burn_objective());
+        let t0 = Utc::now();
+        // Two busy minutes separated by a silent one.
+        for _ in 0..10 {
+            engine.record_at(availability_sample_at(1.0, t0 - Duration::minutes(5)), t0);
+        }
+        for _ in 0..10 {
+            engine.record_at(availability_sample_at(0.5, t0 - Duration::minutes(3)), t0);
+        }
+        let series = engine.sli_timeseries(
+            &SliKind::DataPlaneAvailability,
+            Duration::minutes(10),
+            t0,
+        );
+        assert_eq!(series.len(), 2, "silent minutes are gaps, not fake 100%");
+        assert!(series[0].ts < series[1].ts, "ascending timestamps");
+        assert!((series[0].value - 1.0).abs() < 1e-9);
+        assert_eq!(series[0].count, 10);
+        assert!((series[1].value - 0.5).abs() < 1e-9);
+        // Outside the window → excluded.
+        let narrow = engine.sli_timeseries(
+            &SliKind::DataPlaneAvailability,
+            Duration::minutes(4),
+            t0,
+        );
+        assert_eq!(narrow.len(), 1);
+        // Unknown kind → empty.
+        assert!(engine
+            .sli_timeseries(&SliKind::AuditDeliveryRate, Duration::minutes(10), t0)
+            .is_empty());
     }
 
     // -- SLO-P4: hot-swappable, validated objectives --------------------------

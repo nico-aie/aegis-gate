@@ -1153,6 +1153,44 @@ pub(crate) fn severity_from_config(
     }
 }
 
+/// Inverse of [`objective_from_config`] (SLO-P6) — renders the
+/// engine's live objectives back into the config shape for the
+/// `GET /api/slo/config` editor view. Returns `None` for SLI
+/// kinds with no config representation (declared-but-unproduced
+/// kinds are not editable).
+pub(crate) fn objective_to_config(
+    o: &aegis_control::slo::SloObjective,
+) -> Option<aegis_core::config::SloObjectiveConfig> {
+    use aegis_control::slo::{AlertSeverity, SliKind};
+    use aegis_core::config::{
+        AlertSeverityConfig as SC, BurnWindowConfig, SliKindConfig as KC, SloObjectiveConfig,
+    };
+    let sli = match o.sli {
+        SliKind::DataPlaneAvailability => KC::DataPlaneAvailability,
+        _ => return None,
+    };
+    Some(SloObjectiveConfig {
+        sli,
+        target: o.target,
+        window_days: o.window_days,
+        min_events: Some(o.min_events),
+        burn_rates: o
+            .burn_rates
+            .iter()
+            .map(|b| BurnWindowConfig {
+                window_hours: b.window_hours,
+                short_window_minutes: b.short_window_minutes,
+                burn_threshold: b.burn_threshold,
+                severity: match b.severity {
+                    AlertSeverity::Page => SC::Page,
+                    AlertSeverity::Ticket => SC::Ticket,
+                    AlertSeverity::Info => SC::Info,
+                },
+            })
+            .collect(),
+    })
+}
+
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {

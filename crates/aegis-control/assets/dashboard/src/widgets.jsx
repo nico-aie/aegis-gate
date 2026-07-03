@@ -190,8 +190,15 @@ function TrafficChart({ series, w = 800, h = 220 }) {
 //   'bars' — per-bucket block ratio %; buckets with NO traffic render
 //            as gaps (not 0%), and buckets below `minSample` requests
 //            are dimmed (a 1/1 bucket is not a 100% attack wave).
+//   'line' — SLO-P6b: caller-supplied `{ts, value, count}` series (the
+//            Health page's availability-% timeline). `yDomain: [min,
+//            max]` clips the y-axis so a 99.9%-vs-100% dip is visible
+//            (a zero baseline renders availability as a flat line);
+//            `gapMs` breaks the stroke across missing buckets — the
+//            backend omits no-traffic minutes, and drawing through the
+//            gap would invent uptime.
 // Sparkline itself is untouched — stat tiles still use it.
-function TimeseriesChart({ points, mode = 'area', h = 200, minSample = 5 }) {
+function TimeseriesChart({ points, mode = 'area', h = 200, minSample = 5, yDomain = null, gapMs = null }) {
   const [hover, setHover] = useStateW(null); // hovered bucket index | null
   const svgRef = useRefW(null);
   if (!points || points.length < 2) return null;
@@ -202,14 +209,27 @@ function TimeseriesChart({ points, mode = 'area', h = 200, minSample = 5 }) {
   const innerH = h - padT - padB;
   const n = points.length;
   const isBars = mode === 'bars';
+  const isLine = mode === 'line';
 
-  // Bars: per-bucket ratio, null = no traffic (gap). Area: totals.
+  // Bars: per-bucket ratio, null = no traffic (gap). Line: the caller's
+  // value series. Area: totals.
   const values = isBars
     ? points.map(p => (p.total > 0 ? (p.blocked * 100) / p.total : null))
-    : points.map(p => p.total);
-  const max = isBars ? 100 : Math.max(...values.map(v => v ?? 0), 10);
+    : isLine
+      ? points.map(p => p.value)
+      : points.map(p => p.total);
+  const yMin = isLine && yDomain ? yDomain[0] : 0;
+  const max = isBars
+    ? 100
+    : isLine && yDomain
+      ? yDomain[1]
+      : Math.max(...values.map(v => v ?? 0), 10);
   const xs = i => padL + (n > 1 ? (i / (n - 1)) * innerW : 0);
-  const ys = v => padT + innerH - (v / max) * innerH;
+  // Clamp into the (possibly clipped) domain so an outlier below the
+  // line-mode floor pins to the plot edge instead of escaping the axes.
+  // No-op for area/bars, whose values are within [0, max] by build.
+  const ys = v => padT + innerH
+    - ((Math.min(Math.max(v, yMin), max) - yMin) / ((max - yMin) || 1)) * innerH;
 
   const fmtTime = (ts) => {
     const d = new Date(ts);
@@ -230,8 +250,21 @@ function TimeseriesChart({ points, mode = 'area', h = 200, minSample = 5 }) {
     setHover(idx >= 0 && idx < n ? idx : null);
   };
 
-  const yTicks = isBars ? [0, 50, 100] : [0, Math.round(max * 0.5), Math.round(max)];
+  const yTicks = isBars
+    ? [0, 50, 100]
+    : isLine
+      ? [yMin, (yMin + max) / 2, max]
+      : [0, Math.round(max * 0.5), Math.round(max)];
   const xLabelIdx = [0, Math.floor((n - 1) / 2), n - 1];
+
+  // Line mode — one path, broken (fresh `M`) wherever two consecutive
+  // buckets are further apart than `gapMs`.
+  const linePath = isLine
+    ? points.map((p, i) => {
+        const brk = i === 0 || (gapMs != null && (p.ts - points[i - 1].ts) > gapMs);
+        return `${brk ? 'M' : 'L'}${xs(i)},${ys(values[i] ?? yMin)}`;
+      }).join(' ')
+    : null;
 
   // Tooltip content for the hovered bucket.
   const hoverBox = (() => {
@@ -240,7 +273,9 @@ function TimeseriesChart({ points, mode = 'area', h = 200, minSample = 5 }) {
     const v = values[hover];
     const label = isBars
       ? (v == null ? `${fmtTime(p.ts)} · no traffic` : `${fmtTime(p.ts)} · ${v.toFixed(1)}% (${p.blocked}/${p.total})`)
-      : `${fmtTime(p.ts)} · ${p.total.toLocaleString()} req · ${p.blocked.toLocaleString()} blocked`;
+      : isLine
+        ? `${fmtTime(p.ts)} · ${v == null ? 'no data' : `${v.toFixed(3)}%`}${p.count != null ? ` (n=${p.count})` : ''}`
+        : `${fmtTime(p.ts)} · ${p.total.toLocaleString()} req · ${p.blocked.toLocaleString()} blocked`;
     const boxW = Math.max(120, label.length * 6.2);
     // Clamp so the box stays inside the plot.
     const bx = Math.min(Math.max(xs(hover) - boxW / 2, padL), w - padR - boxW);
@@ -261,7 +296,7 @@ function TimeseriesChart({ points, mode = 'area', h = 200, minSample = 5 }) {
       {yTicks.map((t, i) => (
         <g key={i}>
           <line x1={padL} x2={w - padR} y1={ys(t)} y2={ys(t)} className="gridline" strokeDasharray="2 4" />
-          <text x={padL - 6} y={ys(t) + 3} textAnchor="end" className="axis-label">{isBars ? `${t}%` : t.toLocaleString()}</text>
+          <text x={padL - 6} y={ys(t) + 3} textAnchor="end" className="axis-label">{isBars ? `${t}%` : isLine ? `${t.toFixed(2)}%` : t.toLocaleString()}</text>
         </g>
       ))}
       {xLabelIdx.map((i, k) => (
@@ -299,6 +334,8 @@ function TimeseriesChart({ points, mode = 'area', h = 200, minSample = 5 }) {
             </rect>
           );
         })
+      ) : isLine ? (
+        <path d={linePath} fill="none" stroke="var(--up)" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" />
       ) : (
         <>
           <path
@@ -595,6 +632,25 @@ function TierPill({ value, inferred }) {
   return <span className={`pill tier-${value}`}>{value}</span>;
 }
 
+// ============= SLO-P6b — unified SLI labels =============
+// The SLI name reaches the UI in two spellings: serde snake_case
+// ("data_plane_availability" — /api/slo rows, /api/slo/config, the
+// incident `sli` field) and the Rust enum's Debug PascalCase
+// ("DataPlaneAvailability" — legacy alert ids parsed as
+// `<sli>-<window>`). Normalise both to one operator-facing label so
+// the SLO card, Active alerts and the Incidents table all read the
+// same. Unknown SLIs pass through verbatim — never hide a new name.
+const SLI_LABELS = {
+  data_plane_availability: 'Availability',
+};
+function sliLabel(name) {
+  if (!name) return '—';
+  const key = String(name)
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase();
+  return SLI_LABELS[key] || String(name);
+}
+
 // ============= Drawer =============
 function Drawer({ open, onClose, title, children, footer }) {
   if (!open) return null;
@@ -772,7 +828,7 @@ function PageTitleRefresh({ onClick, label }) {
 
 Object.assign(window, {
   I, Sparkline, StatTile, ScopeBadge, useScopeBadge, FleetNodeSelector, TrafficChart, TimeseriesChart, Donut, WorldMap, RiskHeatmap,
-  RiskMeter, ActionPill, TierPill, Drawer, StackedBar, BarList, SectionHeader,
+  RiskMeter, ActionPill, TierPill, sliLabel, Drawer, StackedBar, BarList, SectionHeader,
   ToastContainer, aegisToast, PageTitleRefresh,
   // FIX 2026-05-04 — exposed so PageOverview can resolve country
   // codes to centroid coords before passing blips to WorldMap.
