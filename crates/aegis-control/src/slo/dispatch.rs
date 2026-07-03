@@ -518,15 +518,6 @@ pub fn format_event_text(
             "Hot-reload FAILED — last-known-good still live",
             format!("Reason: {reason}\nLKG config version: {last_known_good_version}"),
         ),
-        AlertEvent::GitOpsDrift {
-            repo,
-            expected,
-            observed,
-            ..
-        } => (
-            "GitOps drift detected",
-            format!("Repo: {repo}\nExpected: {expected}\nObserved: {observed}"),
-        ),
         AlertEvent::AuditChainBreak {
             last_good_seq,
             observed_seq,

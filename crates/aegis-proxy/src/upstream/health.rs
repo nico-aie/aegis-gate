@@ -16,8 +16,11 @@ pub fn spawn_health_checker(
     interval: Duration,
     timeout: Duration,
     bus: AuditBus,
+    alert_tx: Option<tokio::sync::mpsc::UnboundedSender<aegis_control::slo::AlertEvent>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        // SLO-P5 — per-pool degrade/recover transition memory.
+        let mut pool_alerts = aegis_control::slo::producers::PoolAlertState::default();
         loop {
             for member in &members {
                 let was_healthy = member.is_healthy();
@@ -64,9 +67,44 @@ pub fn spawn_health_checker(
                     });
                 }
             }
+            // SLO-P5 — pool-level degrade/recover alerts, once per
+            // transition (the per-member audit events above stay).
+            if let Some(tx) = alert_tx.as_ref() {
+                observe_pool_health_for_alerts(&pool_name, &members, &mut pool_alerts, tx);
+            }
             tokio::time::sleep(interval).await;
         }
     })
+}
+
+/// SLO-P5 — fold one sweep's member health into the pool alert
+/// transition state, forwarding any degrade/recover events into
+/// the alert dispatch channel. Shared by the active checker and
+/// the passive monitor.
+fn observe_pool_health_for_alerts(
+    pool_name: &str,
+    members: &[Arc<Member>],
+    state: &mut aegis_control::slo::producers::PoolAlertState,
+    alert_tx: &tokio::sync::mpsc::UnboundedSender<aegis_control::slo::AlertEvent>,
+) {
+    let healthy = members.iter().filter(|m| m.is_healthy()).count() as u32;
+    let first_down = members
+        .iter()
+        .find(|m| !m.is_healthy())
+        .map(|m| m.addr.to_string());
+    let events = state.observe(
+        &[aegis_control::slo::producers::PoolHealthObservation {
+            pool: pool_name.to_string(),
+            healthy,
+            total: members.len() as u32,
+            first_down,
+        }],
+        chrono::Utc::now(),
+    );
+    for event in events {
+        // A closed receiver means shutdown — nothing to do.
+        let _ = alert_tx.send(event);
+    }
 }
 
 /// 2026-06-18 (upstream "up" badge report) — display-only TCP liveness
@@ -130,8 +168,11 @@ pub fn spawn_passive_health_monitor(
     interval: Duration,
     timeout: Duration,
     bus: AuditBus,
+    alert_tx: Option<tokio::sync::mpsc::UnboundedSender<aegis_control::slo::AlertEvent>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        // SLO-P5 — per-pool degrade/recover transition memory.
+        let mut pool_alerts = aegis_control::slo::producers::PoolAlertState::default();
         loop {
             for member in &members {
                 let reachable = tcp_reachable(member.addr, timeout).await;
@@ -186,6 +227,11 @@ pub fn spawn_passive_health_monitor(
                         }),
                     });
                 }
+            }
+            // SLO-P5 — pool-level degrade/recover alerts, once per
+            // transition.
+            if let Some(tx) = alert_tx.as_ref() {
+                observe_pool_health_for_alerts(&pool_name, &members, &mut pool_alerts, tx);
             }
             tokio::time::sleep(interval).await;
         }
@@ -280,6 +326,7 @@ mod tests {
             Duration::from_millis(100),
             Duration::from_secs(1),
             bus,
+        None,
         );
 
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -303,6 +350,7 @@ mod tests {
             Duration::from_millis(100),
             Duration::from_secs(1),
             bus,
+        None,
         );
 
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -363,6 +411,7 @@ mod tests {
             Duration::from_millis(100),
             Duration::from_secs(1),
             bus,
+        None,
         );
 
         // Wait for unhealthy detection.
@@ -395,6 +444,7 @@ mod tests {
             Duration::from_millis(100),
             Duration::from_secs(1),
             bus,
+        None,
         );
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(member.observed_status(), MemberStatus::Up);
@@ -468,6 +518,7 @@ mod tests {
             Duration::from_millis(50),
             Duration::from_millis(200),
             bus,
+            None,
         );
 
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -507,6 +558,7 @@ mod tests {
             Duration::from_millis(50),
             Duration::from_millis(150),
             bus,
+            None,
         );
 
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -550,6 +602,7 @@ mod tests {
             Duration::from_millis(50),
             Duration::from_millis(200),
             bus,
+            None,
         );
 
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -585,6 +638,7 @@ mod tests {
             Duration::from_millis(50),
             Duration::from_millis(150),
             bus,
+            None,
         );
 
         tokio::time::sleep(Duration::from_millis(200)).await;
