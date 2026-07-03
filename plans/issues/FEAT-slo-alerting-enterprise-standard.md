@@ -1,6 +1,6 @@
 # FEAT — SLO & Alerting: enterprise-standard burn-rate alerting + explainable Health page
 
-> **Type:** FEAT (observability track) · **Status:** ◐ In progress — P1+P2+P3 done 2026-07-03 (`feat/slo-enterprise-p1`) · **Branch:** `feat/slo-enterprise-*` (per stage)
+> **Type:** FEAT (observability track) · **Status:** ◐ In progress — P1–P4a merged (#123 + build-fix `f898d2b`), P5 done 2026-07-03 (`feat/slo-enterprise-p5`) · **Remaining:** P4b config API + P6 dashboard · **Branch:** `feat/slo-enterprise-*` (per stage)
 > **Track ID prefix:** `SLO-P1<–6>`
 > **Code anchors:** engine `crates/aegis-control/src/slo.rs` · producers/eval loop `crates/aegis-proxy/src/accept.rs:1284-1379` · dispatch `slo/dispatch.rs` · UI `assets/dashboard/src/pages.jsx` (`PageTracking` :9062, `PageIncidents` :11742)
 > **Honors:** [[project_health_signals_reported_not_gating]] (alerting reports, never fail-closes the data plane), [[project_dashboard_js_hook_safety]] (JSX has no runtime tests — rebuild binary, respect hook aliasing), [[project_docs_overstate_impl]] (several "(wired)" doc comments in `slo.rs` are stale — verified below against code)
@@ -104,7 +104,7 @@ Producers for the classes whose subsystems already exist (each is a few lines at
 - [x] SLO-P2: 72h/30d windows exact at ≥100 rps sustained (no ring truncation); no-data distinguishable. *(2026-07-03, same branch; two-tier 10s/72h + 1m/30d BucketStore, evaluate_at/record_at clock seam, rust-reviewer MEDIUMs addressed)*
 - [x] SLO-P3: scenario table (a)–(f) green; alert text reads measured-vs-target + time-to-exhaustion; blackout alerts. *(2026-07-03, same branch; review hardening: silence never auto-resolves a fired alert — only confirmed recovery; short window volume-gated; fingerprint carries fired/resolved state)*
 - [◐] SLO-P4: **P4a shipped 2026-07-03** — `slo:` YAML section (objectives + `telemetry_absent_after_secs`), boot consumption, fleet propagation via `apply_cfg_change_to_slo` (structural-guard-enforced), invalid sections rejected keeping previous set; defaults = compiled. **P4b remaining:** `GET/PUT /api/slo/config` — deliberately deferred to ride with the P6 editor that consumes it. Classification toggles (`count_upstream_5xx`/`count_enforcement`) deferred to future work (classifier is a pure fn; no operator demand yet).
-- [ ] SLO-P5: pool-degraded, DDoS-mode, cert-expiry, hot-reload-failed alerts fire from real transitions; GitOpsDrift deleted.
+- [x] SLO-P5: pool-degraded, DDoS-mode, cert-expiry, hot-reload-failed alerts fire from real transitions; GitOpsDrift deleted. *(2026-07-03, `feat/slo-enterprise-p5`; alert mpsc channel + single dispatch_and_record path; pool severity dynamic (0 healthy = Page); StrikeBlockSurge/AuditChainBreak stay placeholders needing new detection logic)*
 - [ ] SLO-P6: burn gauges + timeline + unified naming + severity-routing UI + objective editor shipped; hooks guard green.
 - [ ] Data plane never fail-closes on any of this (report-only contract intact).
 
