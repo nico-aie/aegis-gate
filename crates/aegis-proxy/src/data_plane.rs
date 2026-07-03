@@ -675,7 +675,7 @@ pub(crate) async fn handle_data_request_inner(
                         log_only_intent = Some(DecisionTag::block("ddos"));
                         // fall through to detectors + upstream
                     } else {
-                        // Enforce — 503. `blocked_response` emits the single
+                        // Enforce — 403. `blocked_response` emits the single
                         // `block` audit event for this request (the standalone
                         // `ddos_blocked` emit above was suppressed via
                         // `hard_enforce`). Carry the DDoS spike signal into

@@ -78,7 +78,7 @@ Default is safe (empty `trusted_proxies` → TCP peer wins). But if the judged c
 - Replace the 39 module-level `#![allow(dead_code)]` with per-item `#[allow]` or delete genuinely-unused paths (`ip_limiter.rs` IP-only variants superseded by `*_with_key`). Per-file allows mask real dead surface (e.g. the assessment's dead `behavior.rs`/`velocity.rs`).
 - Sweep 41 `TODO/FIXME/XXX/HACK` before the next round; none should hide a broken branch.
 - Add a module doc to `aegis-core/src/risk.rs` (98 LOC thin type module) pointing to where accumulation/decay/thresholds actually live (`state/{in_memory,reconcile}.rs`).
-- **Fold the two doc-hygiene nits from the coverage assessment's *Corrections*:** fix the stale `// Enforce — 503` comment at `data_plane.rs:678` (the block is 403) and the stale `canary.rs:6` "score 90" (emits 100).
+- **Fold the two doc-hygiene nits from the coverage assessment's *Corrections*:** fix the stale `// Enforce — 503` comment at `data_plane.rs:678` (the block is 403) and the stale `canary.rs:6` "score 90" (emits 100). ✅ **DONE 2026-07-03** (LT-P8 doc-nits PR) — both comments corrected; noted back on the ASSESSMENT. The rest of LT-P8 (dead-code allows, TODO sweep, `risk.rs` module doc) remains.
 - **Style caution:** [[project_rustfmt_whole_crate_hazard]] — the repo is not rustfmt-clean; hand-match style, don't `cargo fmt` whole files you didn't author.
 
 ---
