@@ -3,7 +3,7 @@
 //! with honeypot URLs that no legitimate caller should ever hit
 //! (`/wp-admin`, `/.env`, `/phpmyadmin/*`, etc.). Any request whose
 //! path matches one of those entries gets a high-severity signal
-//! (score 90) — single-hit-to-block at the §3 §5 risk thresholds.
+//! (score 100) — single-hit-to-block at the §3 §5 risk thresholds.
 //!
 //! ## Why this lives outside `DetectorClass`
 //!
