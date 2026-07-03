@@ -369,15 +369,11 @@ mod slo_alert_lifecycle {
     fn multi_burn_rate_windows() {
         let engine = SloEngine::new(default_objectives());
 
-        // Record healthy data.
+        // Record healthy data. (SLO-P1: defaults are availability
+        // only — the audit-delivery tautology objective is gone.)
         for _ in 0..100 {
             engine.record(SliSample {
                 kind: SliKind::DataPlaneAvailability,
-                value: 1.0,
-                ts: chrono::Utc::now(),
-            });
-            engine.record(SliSample {
-                kind: SliKind::AuditDeliveryRate,
                 value: 1.0,
                 ts: chrono::Utc::now(),
             });
@@ -387,7 +383,7 @@ mod slo_alert_lifecycle {
         assert!(alerts.is_empty(), "no alerts when healthy");
 
         let status = engine.budget_status();
-        assert_eq!(status.len(), 2);
+        assert_eq!(status.len(), 1);
         for bs in &status {
             assert!(bs.budget_remaining_pct > 99.0);
         }

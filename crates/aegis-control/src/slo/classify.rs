@@ -17,7 +17,7 @@
 //!   `AuditAction::Other` events). Pre-P1 the drain recorded
 //!   these as 0.0 availability samples.
 
-use aegis_core::audit::AuditEvent;
+use aegis_core::audit::{AuditAction, AuditEvent};
 
 /// Lowest `fields.status` treated as an availability failure on
 /// the `allow` path. A forwarded origin 5xx is a failure the
@@ -41,8 +41,25 @@ pub enum SliClass {
 /// Returns `None` when the event is not a request verdict and
 /// must not touch the SLI at all.
 pub fn classify_event(ev: &AuditEvent) -> Option<SliClass> {
-    let _ = ev;
-    todo!("SLO-P1: implement after RED is validated")
+    match ev.action {
+        AuditAction::Allow => {
+            let origin_5xx = ev
+                .fields
+                .get("status")
+                .and_then(|v| v.as_u64())
+                .is_some_and(|s| s >= BAD_STATUS_FLOOR);
+            Some(if origin_5xx {
+                SliClass::Bad
+            } else {
+                SliClass::Good
+            })
+        }
+        AuditAction::Timeout | AuditAction::CircuitBreaker => Some(SliClass::Bad),
+        AuditAction::Block | AuditAction::Challenge | AuditAction::RateLimit => {
+            Some(SliClass::Enforcement)
+        }
+        AuditAction::Other(_) => None,
+    }
 }
 
 #[cfg(test)]

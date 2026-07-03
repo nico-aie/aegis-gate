@@ -33,6 +33,13 @@ pub struct SliRow {
 #[derive(Clone, Debug, Serialize)]
 pub struct SloResponse {
     pub slis: Vec<SliRow>,
+    /// SLO-P1 — node-local security-enforcement counter
+    /// (blocks / challenges / rate-limits). An info series, NOT
+    /// an objective: enforcement is the WAF working, so it is
+    /// excluded from the availability SLI. `None` when no engine
+    /// is wired (key omitted — placeholder shape unchanged).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enforcement: Option<crate::slo::EnforcementStats>,
 }
 
 impl SloResponse {
@@ -45,7 +52,10 @@ impl SloResponse {
     /// empty `slis` list (honest empty); the dashboard renders
     /// "no data yet" rather than fake 99.99% availability.
     pub fn placeholder() -> Self {
-        Self { slis: Vec::new() }
+        Self {
+            slis: Vec::new(),
+            enforcement: None,
+        }
     }
 
     /// CI-T4/T7 — build the response from the live SLO engine's
@@ -84,7 +94,18 @@ impl SloResponse {
                 burn_3d: pick(&s.burn_rates, 72),
             })
             .collect();
-        Self { slis }
+        Self {
+            slis,
+            enforcement: None,
+        }
+    }
+
+    /// Attach the engine's enforcement counter (SLO-P1). Kept as
+    /// a builder so `from_budget_status` call sites without an
+    /// engine handle stay unchanged.
+    pub fn with_enforcement(mut self, stats: crate::slo::EnforcementStats) -> Self {
+        self.enforcement = Some(stats);
+        self
     }
 }
 
@@ -435,7 +456,8 @@ impl TrackingHandler {
     pub fn render_slo(&self) -> String {
         let body = match self.slo() {
             None => SloResponse::placeholder(),
-            Some(engine) => SloResponse::from_budget_status(engine.budget_status()),
+            Some(engine) => SloResponse::from_budget_status(engine.budget_status())
+                .with_enforcement(engine.enforcement_stats()),
         };
         serde_json::to_string(&body).unwrap_or_else(|_| "{}".into())
     }
@@ -537,7 +559,8 @@ impl TrackingHandler {
         let upstream = self.upstream_handler.snapshot();
         let slo = match self.slo() {
             None => SloResponse::placeholder(),
-            Some(e) => SloResponse::from_budget_status(e.budget_status()),
+            Some(e) => SloResponse::from_budget_status(e.budget_status())
+                .with_enforcement(e.enforcement_stats()),
         };
         let certs = match self.certs() {
             None => CertsResponse::placeholder(),
@@ -618,6 +641,29 @@ mod tests {
     fn active_alerts_empty_when_no_engine_wired() {
         let h = handler();
         assert!(h.active_alerts().is_empty());
+    }
+
+    // SLO-P1 — with an engine wired, /api/slo carries the
+    // enforcement info series; without one the key is omitted
+    // entirely (placeholder shape unchanged).
+    #[test]
+    fn slo_response_surfaces_enforcement_counter() {
+        let no_engine: serde_json::Value =
+            serde_json::from_str(&handler().render_slo()).unwrap();
+        assert!(
+            no_engine.get("enforcement").is_none(),
+            "no engine → no enforcement key",
+        );
+
+        let h = handler();
+        let engine =
+            Arc::new(crate::slo::SloEngine::new(crate::slo::default_objectives()));
+        engine.record_enforcement(chrono::Utc::now());
+        engine.record_enforcement(chrono::Utc::now());
+        h.set_slo_engine(engine);
+        let v: serde_json::Value = serde_json::from_str(&h.render_slo()).unwrap();
+        assert_eq!(v["enforcement"]["total"], serde_json::json!(2));
+        assert_eq!(v["enforcement"]["last_hour"], serde_json::json!(2));
     }
 
     #[test]

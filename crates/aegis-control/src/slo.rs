@@ -1,11 +1,15 @@
 // SLO / SLI engine + multi-window multi-burn-rate alerting.
 //
 // SLIs tracked:
-//   - Data-plane availability (1 - error_rate)
-//   - WAF overhead p50/p95/p99 latency
-//   - Upstream availability per pool
-//   - Audit delivery rate (events in vs acknowledged)
-//   - Cert freshness (days to expiry)
+//   - Data-plane availability (1 - error_rate); SLO-P1: errors =
+//     gateway failures (timeout/circuit_breaker) + forwarded
+//     origin 5xx — security enforcement is EXCLUDED and tracked
+//     on the separate enforcement counter (see `classify`)
+//   - WAF overhead p50/p95/p99 latency (declared, no producer yet)
+//   - Upstream availability per pool (declared, no producer yet)
+//   - Audit delivery rate (declared; objective dropped in SLO-P1 —
+//     the old producer was a hardcoded-1.0 tautology)
+//   - Cert freshness (days to expiry; declared, no producer yet)
 //
 // Multi-burn: fast (1h/2%) → page; slow (6h/5%, 3d/10%) → ticket.
 
@@ -100,16 +104,12 @@ pub fn default_objectives() -> Vec<SloObjective> {
                 },
             ],
         },
-        SloObjective {
-            sli: SliKind::AuditDeliveryRate,
-            target: 0.9999,
-            window_days: 30,
-            burn_rates: vec![BurnRateWindow {
-                window_hours: 1,
-                budget_pct: 5.0,
-                severity: AlertSeverity::Page,
-            }],
-        },
+        // SLO-P1 (2026-07-03): the AuditDeliveryRate objective was
+        // dropped — its producer hardcoded `1.0` per observed
+        // event, so the 99.99% target was a tautology that could
+        // never breach. Real delivery measurement (events in vs
+        // sink-acked) is future work; the SliKind stays for wire
+        // compat.
     ]
 }
 
@@ -672,13 +672,23 @@ impl SloEngine {
     /// Record one security-enforcement event (block / challenge /
     /// rate_limit) — SLO-P1. Kept OFF the availability SLI.
     pub fn record_enforcement(&self, ts: DateTime<Utc>) {
-        let _ = ts;
-        todo!("SLO-P1: implement after RED is validated")
+        let mut ring = self.enforcement.lock().unwrap();
+        ring.total = ring.total.saturating_add(1);
+        if ring.recent.len() >= MAX_ENFORCEMENT_EVENTS {
+            ring.recent.pop_front();
+        }
+        ring.recent.push_back(ts);
     }
 
     /// Current enforcement counter snapshot for `/api/slo`.
     pub fn enforcement_stats(&self) -> EnforcementStats {
-        todo!("SLO-P1: implement after RED is validated")
+        let ring = self.enforcement.lock().unwrap();
+        let cutoff = Utc::now() - Duration::hours(1);
+        let last_hour = ring.recent.iter().filter(|ts| **ts >= cutoff).count() as u64;
+        EnforcementStats {
+            total: ring.total,
+            last_hour,
+        }
     }
 
     /// Record an SLI observation.
@@ -1124,20 +1134,24 @@ mod tests {
     #[test]
     fn multi_burn_rate_config() {
         let objs = default_objectives();
-        assert_eq!(objs.len(), 2);
         let avail = &objs[0];
         assert_eq!(avail.burn_rates.len(), 3);
         assert_eq!(avail.burn_rates[0].severity, AlertSeverity::Page);
         assert_eq!(avail.burn_rates[1].severity, AlertSeverity::Ticket);
     }
 
+    // SLO-P1 — samples for an SLI with no configured objective
+    // (here AuditDeliveryRate) are stored but never surface in
+    // budget_status, and never alert.
     #[test]
-    fn multi_objective_tracking() {
+    fn unconfigured_sli_samples_do_not_surface() {
         let engine = SloEngine::new(default_objectives());
         engine.record(availability_sample(1.0));
-        engine.record(audit_sample(1.0));
+        engine.record(audit_sample(0.0)); // would breach if it had an objective
         let status = engine.budget_status();
-        assert_eq!(status.len(), 2);
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].sli, SliKind::DataPlaneAvailability);
+        assert!(engine.evaluate().is_empty());
     }
 
     // -- SLI kind tests ----------------------------------------------------

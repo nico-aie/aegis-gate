@@ -796,9 +796,10 @@ pub(crate) async fn admin_accept_loop(
         .set(crate::route::route_summaries(&cfg.routes));
 
     // CI-T4 — wire the SLO engine. `default_objectives()` covers
-    // availability + audit delivery + overhead. The engine is
-    // also fed by the audit-bus drain task spawned below so
-    // /api/slo + /api/alerts return live data.
+    // data-plane availability (SLO-P1 dropped the tautological
+    // audit-delivery objective; overhead never had one). The
+    // engine is also fed by the audit-bus drain task spawned
+    // below so /api/slo + /api/alerts return live data.
     let slo_engine = Arc::new(
         aegis_control::slo::SloEngine::new(aegis_control::slo::default_objectives()),
     );
@@ -1276,30 +1277,36 @@ pub(crate) async fn admin_accept_loop(
 
     let services = Arc::new(services);
 
-    // CI-T4 — drive the SLO engine from the audit bus. Every
-    // `Detection` / `Access` event with `action == "allow"` is a
-    // 1.0 availability sample; everything else (block, challenge,
-    // rate_limit) is a 0.0 sample. Every event landing here also
-    // counts as a 1.0 audit-delivery sample (we observed it).
+    // CI-T4 / SLO-P1 — drive the SLO engine from the audit bus.
+    // Availability now counts only *service* outcomes
+    // (`slo::classify`): `allow` is good unless the forwarded
+    // origin status was 5xx (`fields.status`); `timeout` /
+    // `circuit_breaker` are bad. Security enforcement (`block` /
+    // `challenge` / `rate_limit`) is EXCLUDED — the WAF doing its
+    // job is not an outage — and lands on the enforcement counter
+    // instead. Admin/system events are ignored (pre-P1 both they
+    // and enforcement recorded 0.0 availability samples, so a
+    // blocked attack wave drained the budget and could page).
+    // The old per-event 1.0 AuditDeliveryRate sample is gone with
+    // its tautological objective.
     {
+        use aegis_control::slo::classify::{classify_event, SliClass};
         let engine = Arc::clone(&slo_engine);
         let mut rx = services.bus.subscribe();
         tokio::spawn(async move {
             loop {
                 match rx.recv().await {
-                    Ok(ev) => {
-                        let allow = ev.action == "allow";
-                        engine.record(aegis_control::slo::SliSample {
-                            kind: aegis_control::slo::SliKind::DataPlaneAvailability,
-                            value: if allow { 1.0 } else { 0.0 },
-                            ts: ev.ts,
-                        });
-                        engine.record(aegis_control::slo::SliSample {
-                            kind: aegis_control::slo::SliKind::AuditDeliveryRate,
-                            value: 1.0,
-                            ts: ev.ts,
-                        });
-                    }
+                    Ok(ev) => match classify_event(&ev) {
+                        Some(class @ (SliClass::Good | SliClass::Bad)) => {
+                            engine.record(aegis_control::slo::SliSample {
+                                kind: aegis_control::slo::SliKind::DataPlaneAvailability,
+                                value: if class == SliClass::Good { 1.0 } else { 0.0 },
+                                ts: ev.ts,
+                            });
+                        }
+                        Some(SliClass::Enforcement) => engine.record_enforcement(ev.ts),
+                        None => {}
+                    },
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 }
