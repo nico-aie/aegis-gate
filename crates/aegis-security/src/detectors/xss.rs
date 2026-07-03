@@ -97,19 +97,22 @@ impl Detector for XssDetector {
     fn inspect(&self, req: &RequestView<'_>) -> Vec<Signal> {
         let mut signals = Vec::new();
 
-        // GAP-012 (Run-6, 2026-05-09) — three-stage decode chain:
-        // raw → URL-decoded → HTML-entity-decoded. The named-entity
-        // bypass (`&lt;script&gt;`) doesn't match the existing
-        // `&#NN;` numeric-entity pattern; entity-decoding the value
-        // before pattern match closes that gap.
+        // GAP-012 (Run-6) + AC-P1-d (2026-07-03) — the URI now runs the
+        // central `normalize_for_detection` pipeline (raw → repeated
+        // URL-decode → HTML-entity → unicode-escape → hex-blob), the
+        // same superset sqli uses. This closes the double-URL-encoded
+        // (`%253Cscript`) evasion the old single-pass `url_decode`
+        // missed while still covering the named/numeric-entity bypass.
         let raw_uri = req.uri.to_string();
-        let url_decoded_uri = super::url_decode(&raw_uri);
-        let entity_decoded_uri = super::html_entity_decode(&url_decoded_uri);
-        check_xss(&url_decoded_uri, "uri", &mut signals);
-        if entity_decoded_uri != url_decoded_uri {
-            check_xss(&entity_decoded_uri, "uri", &mut signals);
+        let uri_before = signals.len();
+        for variant in super::normalize_for_detection(&raw_uri) {
+            check_xss(&variant, "uri", &mut signals);
+            if signals.len() > uri_before {
+                break;
+            }
         }
-        check_css(&url_decoded_uri, "uri", &mut signals);
+        // CSS check keeps the single URL-decode form (behavior-preserving).
+        check_css(&super::url_decode(&raw_uri), "uri", &mut signals);
 
         let body = std::str::from_utf8(req.body.peek(8192)).unwrap_or("");
         // S-B (2026-06-18 round-2) — skip bot-management sensor beacons
@@ -117,13 +120,30 @@ impl Detector for XssDetector {
         // blob coincidentally matches tag/handler/`javascript:` shapes and
         // drove the xss benign blocks. Mirrors the cmdi/sqli body gate.
         if !body.is_empty() && !super::form_body_is_opaque_beacon(req.headers, body) {
-            let url_decoded_body = super::url_decode(body);
-            let entity_decoded_body = super::html_entity_decode(&url_decoded_body);
-            check_xss(&url_decoded_body, "body", &mut signals);
-            if entity_decoded_body != url_decoded_body {
-                check_xss(&entity_decoded_body, "body", &mut signals);
+            // AC-P1-d — parity with sqli's body posture: structured-text
+            // bodies the origin will parse (`body_is_scannable`: JSON /
+            // form / XML / text) get the full multi-variant decode so
+            // `{"x":"<script>"}` and double-URL-encoded forms
+            // are caught. Untyped / opaque bodies keep the legacy narrow
+            // scan — the heavier decode there is unjustified cost and an
+            // FP surface, exactly why sqli gates the same way.
+            let body_before = signals.len();
+            if super::body_is_scannable(req.headers) {
+                for variant in super::normalize_for_detection(body) {
+                    check_xss(&variant, "body", &mut signals);
+                    if signals.len() > body_before {
+                        break;
+                    }
+                }
+            } else {
+                let url_decoded_body = super::url_decode(body);
+                let entity_decoded_body = super::html_entity_decode(&url_decoded_body);
+                check_xss(&url_decoded_body, "body", &mut signals);
+                if entity_decoded_body != url_decoded_body {
+                    check_xss(&entity_decoded_body, "body", &mut signals);
+                }
             }
-            check_css(&url_decoded_body, "body", &mut signals);
+            check_css(&super::url_decode(body), "body", &mut signals);
         }
 
         // 2026-05-22 — `cookie` removed from the XSS scan set. Cookies
