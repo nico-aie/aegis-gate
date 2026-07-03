@@ -595,6 +595,108 @@ mod tests {
         }
     }
 
+    /// AC-P1-c (2026-07-03) — spray-evasion fix. The per-user axis
+    /// keyed on the raw wire string, so `Alice` / `alice` / `ALICE`
+    /// counted as three separate users and a case-rotating sprayer
+    /// never crossed the distinct-IP threshold. The KEY is now
+    /// canonicalized (trim + ASCII-lowercase); the audit field keeps
+    /// the raw submitted string (see the companion test below).
+    #[test]
+    fn spray_with_case_and_whitespace_variants_counts_as_one_user() {
+        let mut d = BruteForceDetector::new(100, Duration::from_secs(60), 40);
+        d.user_threshold = 3;
+        let (m, u, h, _) = make_req(http::Method::POST, "/login");
+
+        // Three case variants from three distinct IPs — same user,
+        // still under threshold (3 not > 3).
+        for (octet, name) in [(1, "Alice"), (2, "alice"), (3, "ALICE")] {
+            let body = BodyPeek::new(
+                format!(r#"{{"username":"{name}","password":"x"}}"#).into_bytes(),
+                None,
+                false,
+            );
+            let s = d.inspect(&view_with_body(&m, &u, &h, &body, &format!("16.0.0.{octet}:443")));
+            assert!(
+                !s.iter().any(|sig| sig.tag == "brute_force_user"),
+                "under threshold at {octet} distinct IPs: {s:?}",
+            );
+        }
+        // 4th distinct IP submits a whitespace variant via a form
+        // body (form extraction preserves the padding) → 4 distinct
+        // IPs for the canonical user → fires.
+        let body = BodyPeek::new(b"username=alice &password=x".to_vec(), None, false);
+        let signals =
+            d.inspect(&view_with_body(&m, &u, &h, &body, "16.0.0.4:443"));
+        assert!(
+            signals.iter().any(|s| s.tag == "brute_force_user"),
+            "case/whitespace variants must aggregate as ONE user: {signals:?}",
+        );
+    }
+
+    /// AC-P1-c — canonicalize the KEY only: the audit signal still
+    /// reports the raw submitted username so ops see what was sent
+    /// on the wire (and the naive fix — canonicalizing inside
+    /// `extract_username` — stays caught).
+    #[test]
+    fn signal_field_reports_raw_submitted_username() {
+        let mut d = BruteForceDetector::new(100, Duration::from_secs(60), 40);
+        d.user_threshold = 1;
+        let (m, u, h, _) = make_req(http::Method::POST, "/login");
+        let body_lower = BodyPeek::new(
+            br#"{"username":"alice","password":"x"}"#.to_vec(),
+            None,
+            false,
+        );
+        let _ = d.inspect(&view_with_body(&m, &u, &h, &body_lower, "17.0.0.1:443"));
+        // Second distinct IP crosses threshold (2 > 1) with the
+        // MiXeD-case variant — the field must echo that raw form.
+        let body_mixed = BodyPeek::new(
+            br#"{"username":"AliCe","password":"x"}"#.to_vec(),
+            None,
+            false,
+        );
+        let signals =
+            d.inspect(&view_with_body(&m, &u, &h, &body_mixed, "17.0.0.2:443"));
+        let field = signals
+            .iter()
+            .find(|s| s.tag == "brute_force_user")
+            .map(|s| s.field.clone());
+        assert_eq!(
+            field.as_deref(),
+            Some("user:AliCe"),
+            "audit field must keep the raw wire username",
+        );
+    }
+
+    /// AC-P1-c — canonicalization must NOT merge genuinely distinct
+    /// users: bob's attempts don't inherit alice's distinct-IP count.
+    #[test]
+    fn distinct_users_still_track_independently() {
+        let mut d = BruteForceDetector::new(100, Duration::from_secs(60), 40);
+        d.user_threshold = 2;
+        let (m, u, h, _) = make_req(http::Method::POST, "/login");
+        for octet in 1..=3 {
+            let body = BodyPeek::new(
+                br#"{"username":"alice","password":"x"}"#.to_vec(),
+                None,
+                false,
+            );
+            let _ = d.inspect(&view_with_body(&m, &u, &h, &body, &format!("18.0.0.{octet}:443")));
+        }
+        // bob from ONE fresh IP — nowhere near his own threshold.
+        let body = BodyPeek::new(
+            br#"{"username":"bob","password":"x"}"#.to_vec(),
+            None,
+            false,
+        );
+        let signals =
+            d.inspect(&view_with_body(&m, &u, &h, &body, "18.0.0.9:443"));
+        assert!(
+            !signals.iter().any(|s| s.tag == "brute_force_user"),
+            "bob must not inherit alice's distinct-IP count: {signals:?}",
+        );
+    }
+
     /// Per-user axis pulls username from JSON body.
     #[test]
     fn extract_username_from_json_body() {
