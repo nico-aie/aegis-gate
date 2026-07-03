@@ -566,51 +566,134 @@ pub fn default_receivers() -> Vec<AlertReceiver> {
 }
 
 // ---------------------------------------------------------------------------
-// SLI ring buffer (in-memory time series)
+// SLI bucket store (in-memory time series) — SLO-P2
 // ---------------------------------------------------------------------------
 
-// 2026-05-17 F-CRITICAL-016 (control audit): pre-fix this buffer
-// stored samples in a `Vec` and used `Vec::remove(0)` on overflow —
-// O(n) memcpy of up to 10 000 entries per push under a global
-// `Mutex<HashMap<SliKind, SliRingBuffer>>`. At 5k req/s on the
-// data plane that's a multi-millisecond stall per record call, on
-// the hot path that emits SLI observations. The 20/120 Performance
-// rubric breaks before any other gate fires.
+// SLO-P2 (2026-07-03): replaced the 10 000-sample ring buffer.
+// The ring capped HISTORY BY SAMPLE COUNT, so at production rates
+// the 6h/72h burn windows and the 30d budget silently evaluated
+// over the last few minutes of traffic — slow burns were
+// undetectable and error bursts "resolved" as soon as enough
+// healthy volume evicted them. Fixed-width time buckets keep the
+// windows exact at O(1) record cost and bounded memory, and make
+// "no data" distinguishable from "healthy".
 //
-// `VecDeque::pop_front` is O(1). Same cap (10 000), same access
-// pattern (push back, iterate forward), but the overflow path now
-// costs a pointer swap instead of 10 000 byte copies.
-struct SliRingBuffer {
-    samples: std::collections::VecDeque<SliSample>,
-    max_len: usize,
+// (History: the ring itself replaced a `Vec::remove(0)` buffer —
+// F-CRITICAL-016, 2026-05-17. The hot-path O(1) record property
+// is preserved here: one add per tier under the same mutex.)
+
+/// Fine tier: 10s buckets retained 72h — serves every burn
+/// window up to the longest (3d) alerting window.
+const FINE_BUCKET_SECS: i64 = 10;
+const FINE_RETENTION_SECS: i64 = 72 * 3_600;
+/// Coarse tier: 1m buckets retained 30d — serves the SLO budget
+/// window.
+const COARSE_BUCKET_SECS: i64 = 60;
+const COARSE_RETENTION_SECS: i64 = 30 * 86_400;
+
+/// One time bucket: sum of sample values (`good`) over `count`
+/// observations for bucket index `epoch` (= unix_secs / width).
+#[derive(Clone, Copy, Debug, Default)]
+struct Bucket {
+    epoch: i64,
+    good: f64,
+    count: u64,
 }
 
-impl SliRingBuffer {
-    fn new(max_len: usize) -> Self {
+/// Fixed-size circular bucket array for one tier. Slot index is
+/// `epoch % len`; a slot is live for a queried epoch only when
+/// its stored `epoch` matches, so recycled slots never leak into
+/// window sums.
+struct TierRing {
+    width_secs: i64,
+    slots: Vec<Bucket>,
+}
+
+impl TierRing {
+    fn new(width_secs: i64, retention_secs: i64) -> Self {
         Self {
-            samples: std::collections::VecDeque::with_capacity(max_len),
-            max_len,
+            width_secs,
+            slots: vec![Bucket::default(); (retention_secs / width_secs) as usize],
         }
     }
 
-    fn push(&mut self, sample: SliSample) {
-        if self.samples.len() >= self.max_len {
-            self.samples.pop_front();
+    fn record(&mut self, ts_secs: i64, value: f64) {
+        let epoch = ts_secs.div_euclid(self.width_secs);
+        let len = self.slots.len() as i64;
+        let slot = &mut self.slots[epoch.rem_euclid(len) as usize];
+        if slot.count > 0 && slot.epoch > epoch {
+            // Sample older than retention — its slot has been
+            // recycled by a newer epoch. Drop it.
+            return;
         }
-        self.samples.push_back(sample);
+        if slot.count == 0 || slot.epoch < epoch {
+            *slot = Bucket {
+                epoch,
+                good: 0.0,
+                count: 0,
+            };
+        }
+        slot.good += value;
+        slot.count += 1;
     }
 
-    fn average_in_window(&self, window: Duration) -> Option<f64> {
-        let cutoff = Utc::now() - window;
-        let (sum, count) = self
-            .samples
-            .iter()
-            .filter(|s| s.ts >= cutoff)
-            .fold((0.0_f64, 0_u64), |(s, n), x| (s + x.value, n + 1));
-        if count == 0 {
-            return None;
+    /// Sum `(good, count)` over buckets covering
+    /// `[from_secs, to_secs]`, clamped to retention.
+    fn totals(&self, from_secs: i64, to_secs: i64) -> (f64, u64) {
+        let len = self.slots.len() as i64;
+        let to_epoch = to_secs.div_euclid(self.width_secs);
+        let first = from_secs
+            .div_euclid(self.width_secs)
+            .max(to_epoch - len + 1);
+        let (mut good, mut count) = (0.0_f64, 0_u64);
+        for epoch in first..=to_epoch {
+            let slot = &self.slots[epoch.rem_euclid(len) as usize];
+            if slot.epoch == epoch && slot.count > 0 {
+                good += slot.good;
+                count += slot.count;
+            }
         }
-        Some(sum / count as f64)
+        (good, count)
+    }
+}
+
+/// Per-SLI two-tier bucket store.
+struct BucketStore {
+    fine: TierRing,
+    coarse: TierRing,
+}
+
+impl BucketStore {
+    fn new() -> Self {
+        Self {
+            fine: TierRing::new(FINE_BUCKET_SECS, FINE_RETENTION_SECS),
+            coarse: TierRing::new(COARSE_BUCKET_SECS, COARSE_RETENTION_SECS),
+        }
+    }
+
+    fn record(&mut self, ts: DateTime<Utc>, value: f64) {
+        let secs = ts.timestamp();
+        self.fine.record(secs, value);
+        self.coarse.record(secs, value);
+    }
+
+    /// `(good_sum, observation_count)` in the trailing `window`
+    /// as of `now`. Windows within fine retention read the fine
+    /// tier; longer windows (the 30d budget) read the coarse tier.
+    fn window_totals(&self, now: DateTime<Utc>, window: Duration) -> (f64, u64) {
+        let ring = if window.num_seconds() <= FINE_RETENTION_SECS {
+            &self.fine
+        } else {
+            &self.coarse
+        };
+        ring.totals((now - window).timestamp(), now.timestamp())
+    }
+
+    /// Mean sample value in the window; `None` when there are no
+    /// observations (no data ≠ healthy).
+    fn average_in_window(&self, now: DateTime<Utc>, window: Duration) -> Option<f64> {
+        let (good, count) = self.window_totals(now, window);
+        (count > 0).then(|| good / count as f64)
     }
 }
 
@@ -665,7 +748,7 @@ impl Default for EnforcementRing {
 /// The SLO engine: tracks SLIs and fires alerts.
 pub struct SloEngine {
     objectives: Vec<SloObjective>,
-    buffers: Mutex<HashMap<SliKind, SliRingBuffer>>,
+    buffers: Mutex<HashMap<SliKind, BucketStore>>,
     active_alerts: Mutex<Vec<SloAlert>>,
     fired_history: Mutex<Vec<SloAlert>>,
     enforcement: Mutex<EnforcementRing>,
@@ -709,17 +792,13 @@ impl SloEngine {
         let mut buffers = self.buffers.lock().unwrap();
         let buf = buffers
             .entry(sample.kind.clone())
-            .or_insert_with(|| SliRingBuffer::new(10_000));
-        buf.push(sample);
+            .or_insert_with(BucketStore::new);
+        buf.record(sample.ts, sample.value);
     }
 
-    /// Evaluate all objectives as of `now` and return newly
-    /// fired/resolved alerts. SLO-P2 — the injectable clock is
-    /// the deterministic seam for tests and the (P6) alert
-    /// simulator; production callers use [`Self::evaluate`].
-    pub fn evaluate_at(&self, now: DateTime<Utc>) -> Vec<SloAlert> {
-        let _ = now;
-        todo!("SLO-P2: implement after RED is validated")
+    /// Evaluate all objectives and return newly fired/resolved alerts.
+    pub fn evaluate(&self) -> Vec<SloAlert> {
+        self.evaluate_at(Utc::now())
     }
 
     /// Number of SLI observations recorded for `kind` inside the
@@ -732,12 +811,18 @@ impl SloEngine {
         window: Duration,
         now: DateTime<Utc>,
     ) -> u64 {
-        let _ = (kind, window, now);
-        todo!("SLO-P2: implement after RED is validated")
+        let buffers = self.buffers.lock().unwrap();
+        buffers
+            .get(kind)
+            .map(|b| b.window_totals(now, window).1)
+            .unwrap_or(0)
     }
 
-    /// Evaluate all objectives and return newly fired/resolved alerts.
-    pub fn evaluate(&self) -> Vec<SloAlert> {
+    /// Evaluate all objectives as of `now` and return newly
+    /// fired/resolved alerts. SLO-P2 — the injectable clock is
+    /// the deterministic seam for tests and the (P6) alert
+    /// simulator; production callers use [`Self::evaluate`].
+    pub fn evaluate_at(&self, now: DateTime<Utc>) -> Vec<SloAlert> {
         let buffers = self.buffers.lock().unwrap();
         let mut active = self.active_alerts.lock().unwrap();
         let mut history = self.fired_history.lock().unwrap();
@@ -751,7 +836,7 @@ impl SloEngine {
 
             for burn in &obj.burn_rates {
                 let window = Duration::hours(burn.window_hours as i64);
-                let avg = match buf.average_in_window(window) {
+                let avg = match buf.average_in_window(now, window) {
                     Some(v) => v,
                     None => continue,
                 };
@@ -777,7 +862,7 @@ impl SloEngine {
                     let alert = SloAlert {
                         sli: obj.sli.clone(),
                         severity: burn.severity,
-                        fired_at: Utc::now(),
+                        fired_at: now,
                         resolved_at: None,
                         burn_rate: error_rate / budget,
                         budget_consumed_pct: budget_consumed,
@@ -810,9 +895,9 @@ impl SloEngine {
                             && a.window_hours == burn.window_hours
                             && a.resolved_at.is_none()
                         {
-                            a.resolved_at = Some(Utc::now());
+                            a.resolved_at = Some(now);
                             let mut resolved = a.clone();
-                            resolved.resolved_at = Some(Utc::now());
+                            resolved.resolved_at = Some(now);
                             new_alerts.push(resolved);
                         }
                     }
@@ -861,13 +946,19 @@ impl SloEngine {
     /// 1h/6h/3d numbers instead of the placeholder zeros that
     /// shipped with CI-T4.
     pub fn budget_status(&self) -> Vec<BudgetStatus> {
+        self.budget_status_at(Utc::now())
+    }
+
+    /// Clock-injectable variant of [`Self::budget_status`]
+    /// (SLO-P2) — same seam rationale as [`Self::evaluate_at`].
+    pub fn budget_status_at(&self, now: DateTime<Utc>) -> Vec<BudgetStatus> {
         let buffers = self.buffers.lock().unwrap();
         self.objectives
             .iter()
             .map(|obj| {
                 let window = Duration::days(obj.window_days as i64);
                 let buf = buffers.get(&obj.sli);
-                let avg = buf.and_then(|b| b.average_in_window(window));
+                let avg = buf.and_then(|b| b.average_in_window(now, window));
                 let budget = 1.0 - obj.target;
                 let consumed = match avg {
                     Some(v) => {
@@ -890,7 +981,7 @@ impl SloEngine {
                     .iter()
                     .map(|burn| {
                         let win_dur = Duration::hours(burn.window_hours as i64);
-                        let win_avg = buf.and_then(|b| b.average_in_window(win_dur));
+                        let win_avg = buf.and_then(|b| b.average_in_window(now, win_dur));
                         let rate = match win_avg {
                             Some(v) if budget > 0.0 => (1.0 - v) / budget,
                             _ => 0.0,
@@ -1041,28 +1132,11 @@ mod tests {
         assert_eq!(engine.active_alerts().len(), 1);
     }
 
-    #[test]
-    fn alert_resolves_when_healthy() {
-        let engine = SloEngine::new(fast_burn_objective());
-        // Fire alert.
-        for _ in 0..100 {
-            engine.record(availability_sample(0.9));
-        }
-        engine.evaluate();
-        assert_eq!(engine.active_alerts().len(), 1);
-
-        // Push healthy samples to replace the bad ones.
-        // We need to exceed the buffer so only healthy ones remain.
-        for _ in 0..10_000 {
-            engine.record(availability_sample(1.0));
-        }
-        let alerts = engine.evaluate();
-        // Should get a resolve event.
-        assert!(!alerts.is_empty());
-        assert!(alerts[0].resolved_at.is_some());
-        // No active alerts.
-        assert!(engine.active_alerts().is_empty());
-    }
+    // (SLO-P2: the old `alert_resolves_when_healthy` test relied
+    // on 10k healthy samples EVICTING the bad ones from the ring —
+    // the exact bug the bucket store fixes. Deterministic
+    // fire→resolve coverage now lives in
+    // `alert_fires_then_resolves_when_burst_ages_out`.)
 
     #[test]
     fn alert_history_persists() {
@@ -1078,21 +1152,27 @@ mod tests {
     // 2026-05-20 memory-leak audit — across repeated fire→resolve
     // cycles, the active_alerts storage must NOT accrete resolved
     // entries (it previously marked-but-never-removed them).
+    // SLO-P2: cycles driven by the clock seam (bursts age out of
+    // the window) instead of ring eviction.
     #[test]
     fn resolved_alerts_are_dropped_from_active_storage() {
         let engine = SloEngine::new(fast_burn_objective());
-        for _ in 0..3 {
+        let t0 = Utc::now();
+        for cycle in 0..3 {
+            let fire_at = t0 + Duration::hours(3 * cycle);
             // Fire.
             for _ in 0..100 {
-                engine.record(availability_sample(0.9));
+                engine.record(availability_sample_at(0.9, fire_at));
             }
-            engine.evaluate();
+            engine.evaluate_at(fire_at + Duration::minutes(1));
             assert_eq!(engine.active_alerts().len(), 1);
-            // Resolve by flushing the buffer with healthy samples.
-            for _ in 0..10_000 {
-                engine.record(availability_sample(1.0));
+            // Resolve: 2h later the burst is outside the 1h
+            // window; fresh healthy traffic is all it sees.
+            let recover_at = fire_at + Duration::hours(2);
+            for _ in 0..100 {
+                engine.record(availability_sample_at(1.0, recover_at));
             }
-            engine.evaluate();
+            engine.evaluate_at(recover_at);
             assert!(engine.active_alerts().is_empty());
             // Raw storage never carries resolved rows forward.
             assert_eq!(
@@ -1530,41 +1610,57 @@ mod tests {
         assert_eq!(status[0].budget_remaining_pct, 100.0);
     }
 
-    // -- Ring buffer tests -------------------------------------------------
+    // -- Bucket store tests (SLO-P2) -----------------------------------------
 
     #[test]
-    fn ring_buffer_overflow() {
-        let mut buf = SliRingBuffer::new(3);
-        for i in 0..5 {
-            buf.push(SliSample {
-                kind: SliKind::DataPlaneAvailability,
-                value: i as f64,
-                ts: Utc::now(),
-            });
-        }
-        assert_eq!(buf.samples.len(), 3);
-        // Oldest samples removed.
-        assert_eq!(buf.samples[0].value, 2.0);
+    fn tier_ring_buckets_by_time_and_sums() {
+        let mut ring = TierRing::new(10, 100); // 10 slots
+        ring.record(0, 1.0);
+        ring.record(5, 0.0); // same bucket as ts=0
+        ring.record(15, 1.0); // next bucket
+        let (good, count) = ring.totals(0, 19);
+        assert_eq!(count, 3);
+        assert!((good - 2.0).abs() < 1e-9);
+        // Window covering only the second bucket.
+        let (good, count) = ring.totals(10, 19);
+        assert_eq!(count, 1);
+        assert!((good - 1.0).abs() < 1e-9);
     }
 
     #[test]
-    fn ring_buffer_average() {
-        let mut buf = SliRingBuffer::new(100);
-        for v in [1.0, 2.0, 3.0] {
-            buf.push(SliSample {
-                kind: SliKind::DataPlaneAvailability,
-                value: v,
-                ts: Utc::now(),
-            });
-        }
-        let avg = buf.average_in_window(Duration::hours(1)).unwrap();
-        assert!((avg - 2.0).abs() < 0.001);
+    fn tier_ring_recycles_slots_past_retention() {
+        let mut ring = TierRing::new(10, 100); // 10 slots
+        ring.record(0, 1.0);
+        // 100s later the epoch-0 slot is recycled by epoch 10.
+        ring.record(100, 0.0);
+        let (good, count) = ring.totals(0, 109);
+        assert_eq!(count, 1, "recycled slot must not leak old data");
+        assert!((good - 0.0).abs() < 1e-9);
+        // A sample older than retention is dropped, not misfiled.
+        ring.record(3, 1.0);
+        let (_, count) = ring.totals(0, 109);
+        assert_eq!(count, 1);
     }
 
     #[test]
-    fn ring_buffer_empty_average() {
-        let buf = SliRingBuffer::new(100);
-        assert!(buf.average_in_window(Duration::hours(1)).is_none());
+    fn bucket_store_empty_average_is_none() {
+        let store = BucketStore::new();
+        assert!(store
+            .average_in_window(Utc::now(), Duration::hours(1))
+            .is_none());
+    }
+
+    #[test]
+    fn bucket_store_routes_budget_window_to_coarse_tier() {
+        let mut store = BucketStore::new();
+        let now = Utc::now();
+        // Older than fine retention (72h), inside coarse (30d).
+        store.record(now - Duration::days(10), 1.0);
+        let (_, fine_count) = store.window_totals(now, Duration::hours(72));
+        assert_eq!(fine_count, 0);
+        let (good, count) = store.window_totals(now, Duration::days(30));
+        assert_eq!(count, 1);
+        assert!((good - 1.0).abs() < 1e-9);
     }
 
     // -- SloAlert tests ----------------------------------------------------
