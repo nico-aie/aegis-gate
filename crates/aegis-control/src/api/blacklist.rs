@@ -195,6 +195,28 @@ pub trait AccessListCountryLookup: Send + Sync {
     /// ISO-3166-1 alpha-2 country code for `peer`, uppercase,
     /// or `None` when MaxMind couldn't resolve.
     fn country_of(&self, peer: std::net::IpAddr) -> Option<String>;
+
+    /// AC-P2-c (2026-07-03) — autonomous-system number for `peer`, or
+    /// `None` when MaxMind couldn't resolve (or the ASN DB isn't
+    /// configured). Drives `kind: asn` access-list matching. Default
+    /// `None` keeps any impl that only knows country compiling and
+    /// silently missing ASN entries (same posture as a missing lookup).
+    fn asn_of(&self, _peer: std::net::IpAddr) -> Option<u32> {
+        None
+    }
+}
+
+/// Parse an access-list `kind: asn` entry value into an ASN number.
+/// Accepts a bare number (`"13335"`) or the `AS`-prefixed form
+/// (`"AS13335"` / `"as13335"`). Returns `None` on garbage.
+fn parse_asn(value: &str) -> Option<u32> {
+    let v = value.trim();
+    let digits = v
+        .strip_prefix("AS")
+        .or_else(|| v.strip_prefix("as"))
+        .or_else(|| v.strip_prefix("As"))
+        .unwrap_or(v);
+    digits.parse::<u32>().ok()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -502,7 +524,17 @@ impl AccessListStore {
                     .ok()
                     .map(|n| n.contains(&peer))
                     .unwrap_or(false),
-                "asn" => false, // ASN matching needs a separate lookup; not wired in v1
+                "asn" => match country_lookup {
+                    // AC-P2-c (2026-07-03) — resolve the peer's ASN via the
+                    // same geo reader the country path uses; compare to the
+                    // entry value (bare number "13335" or "AS13335"). No
+                    // lookup wired → silently miss, like the country path.
+                    Some(l) => match l.asn_of(peer) {
+                        Some(peer_asn) => parse_asn(&entry.value) == Some(peer_asn),
+                        None => false,
+                    },
+                    None => false,
+                },
                 "country" => {
                     let lookup = match country_lookup {
                         Some(l) => l,
@@ -752,12 +784,58 @@ mod tests {
         assert_eq!(s.list().len(), 3);
     }
 
-    /// Test stub for the AccessListCountryLookup trait.
-    struct StaticCountryLookup(std::collections::HashMap<std::net::IpAddr, String>);
-    impl AccessListCountryLookup for StaticCountryLookup {
+    /// Test stub for the AccessListCountryLookup trait (country + ASN).
+    #[derive(Default)]
+    struct StaticGeoLookup {
+        country: std::collections::HashMap<std::net::IpAddr, String>,
+        asn: std::collections::HashMap<std::net::IpAddr, u32>,
+    }
+    impl AccessListCountryLookup for StaticGeoLookup {
         fn country_of(&self, peer: std::net::IpAddr) -> Option<String> {
-            self.0.get(&peer).cloned()
+            self.country.get(&peer).cloned()
         }
+        fn asn_of(&self, peer: std::net::IpAddr) -> Option<u32> {
+            self.asn.get(&peer).copied()
+        }
+    }
+    // Back-compat alias for the country-only tests below.
+    fn country_stub(map: std::collections::HashMap<std::net::IpAddr, String>) -> StaticGeoLookup {
+        StaticGeoLookup { country: map, ..Default::default() }
+    }
+
+    // AC-P2-c (2026-07-03) — a `kind: asn` entry must block when the geo
+    // lookup resolves the peer's ASN to the entry's value. Pre-fix the
+    // matcher hard-coded `"asn" => false` (never wired in v1).
+    #[test]
+    fn matches_asn_kind_resolves_via_lookup() {
+        let s = AccessListStore::new();
+        s.put(entry("cf", "asn", "AS13335")).unwrap(); // Cloudflare
+        let bad: std::net::IpAddr = "203.0.113.9".parse().unwrap();
+        let good: std::net::IpAddr = "8.8.8.8".parse().unwrap();
+        let mut lookup = StaticGeoLookup::default();
+        lookup.asn.insert(bad, 13335);
+        lookup.asn.insert(good, 15169); // Google — not listed
+        assert_eq!(s.matches(bad, Some(&lookup)), Some("cf".to_string()));
+        assert_eq!(s.matches(good, Some(&lookup)), None);
+    }
+
+    #[test]
+    fn matches_asn_accepts_bare_number_value() {
+        // Entry value may be a bare number ("13335") or "AS13335".
+        let s = AccessListStore::new();
+        s.put(entry("cf", "asn", "13335")).unwrap();
+        let bad: std::net::IpAddr = "203.0.113.9".parse().unwrap();
+        let mut lookup = StaticGeoLookup::default();
+        lookup.asn.insert(bad, 13335);
+        assert_eq!(s.matches(bad, Some(&lookup)), Some("cf".to_string()));
+    }
+
+    #[test]
+    fn matches_asn_silently_misses_when_lookup_is_none() {
+        let s = AccessListStore::new();
+        s.put(entry("cf", "asn", "AS13335")).unwrap();
+        // No GeoIP wired → asn entries silently miss (same posture as country).
+        assert_eq!(s.matches("203.0.113.9".parse().unwrap(), None), None);
     }
 
     #[test]
@@ -788,7 +866,7 @@ mod tests {
         let good: std::net::IpAddr = "8.8.8.8".parse().unwrap();
         map.insert(bad, "CN".to_string());
         map.insert(good, "US".to_string());
-        let lookup = StaticCountryLookup(map);
+        let lookup = country_stub(map);
         assert_eq!(s.matches(bad, Some(&lookup)), Some("cn".to_string()));
         assert_eq!(s.matches(good, Some(&lookup)), None);
     }

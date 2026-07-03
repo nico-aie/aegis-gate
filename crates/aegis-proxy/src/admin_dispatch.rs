@@ -989,6 +989,9 @@ async fn handle_simulate(
         &services.detector_mask,
         &services.tiers,
         rules,
+        // AC-P2-c — same GeoIP reader the data plane uses, so a
+        // Country/Asn rule previews the identical verdict.
+        services.attacks.geo_lookup(),
     );
     let body = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".into());
     json_body_response(200, body, "private, no-store")

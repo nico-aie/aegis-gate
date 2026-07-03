@@ -853,6 +853,13 @@ impl AttacksHandler {
         *self.geo.lock().expect("attacks geo slot poisoned") = Some(lookup);
     }
 
+    /// AC-P2-c (2026-07-03) — clone out the live GeoIP reader (if wired)
+    /// so the rules simulator can resolve `Country`/`Asn` conditions with
+    /// the same reader the data plane uses. `None` when no DB is loaded.
+    pub fn geo_lookup(&self) -> Option<Arc<dyn aegis_security::geoip::GeoIpLookup>> {
+        self.geo.lock().expect("attacks geo slot poisoned").clone()
+    }
+
     /// `true` when [`set_geo_lookup`] has populated the slot.
     /// Read by `/api/geoip/status` and the new top_response
     /// `geoip_loaded` flag so the dashboard can distinguish
