@@ -400,6 +400,13 @@ pub(crate) async fn admin_accept_loop(
     // admin loop (GET/PUT/DELETE/test + SLO dispatch) share one ArcSwap.
     // A receiver edit folds into `cfg.alerting` and propagates fleet-wide.
     shared_receivers: Arc<arc_swap::ArcSwap<Vec<aegis_control::slo::AlertReceiver>>>,
+    // SLO-P4 — SLO engine + watchdog knob, created in `run()` so the
+    // config-plane watcher (`ApplyTargets.slo_engine` /
+    // `.slo_absent_after_secs`) and this loop's evaluation task share
+    // the same instances. An objective edit folds into `cfg.slo` and
+    // propagates fleet-wide.
+    slo_engine: Arc<aegis_control::slo::SloEngine>,
+    slo_absent_after_secs: Arc<std::sync::atomic::AtomicU64>,
 ) {
     let startup = aegis_control::health::StartupProbe::default();
     startup.mark_started();
@@ -795,14 +802,11 @@ pub(crate) async fn admin_accept_loop(
         .routes
         .set(crate::route::route_summaries(&cfg.routes));
 
-    // CI-T4 — wire the SLO engine. `default_objectives()` covers
-    // data-plane availability (SLO-P1 dropped the tautological
-    // audit-delivery objective; overhead never had one). The
-    // engine is also fed by the audit-bus drain task spawned
-    // below so /api/slo + /api/alerts return live data.
-    let slo_engine = Arc::new(
-        aegis_control::slo::SloEngine::new(aegis_control::slo::default_objectives()),
-    );
+    // CI-T4 / SLO-P4 — the SLO engine now arrives from `run()`
+    // (built from `cfg.slo` or the compiled defaults) so the
+    // config-plane watcher can hot-swap objectives. It is fed by
+    // the audit-bus drain task spawned below so /api/slo +
+    // /api/alerts return live data.
     services.tracking.set_slo_engine(Arc::clone(&slo_engine));
 
     // CI-T4 — wire the cert inventory provider. Reads PEM files
@@ -1326,16 +1330,13 @@ pub(crate) async fn admin_accept_loop(
         let engine = Arc::clone(&slo_engine);
         let shared = Arc::clone(&shared_receivers);
         let ring = dispatch_ring.clone();
+        let slo_absent_after = Arc::clone(&slo_absent_after_secs);
         tokio::spawn(async move {
             // 2026-05-20 alerts refactor — a process-lifetime dedup
             // cache so a multi-tick burn-rate breach in the same
             // window fires VipTalk once (with a `(+N suppressed)`
             // note on the next emission) instead of every 30 s.
             let dedup = aegis_control::slo::AlertDedupCache::default_window();
-            // SLO-P3 — how long the availability SLI may go
-            // silent (after having served) before the watchdog
-            // declares a blackout. Configurable in SLO-P4.
-            const TELEMETRY_ABSENT_AFTER_SECS: i64 = 600;
             let mut absent_slis: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
             let mut tick =
@@ -1351,16 +1352,25 @@ pub(crate) async fn admin_accept_loop(
                 // a fired alert active through silence), so every
                 // objective SLI that served traffic and then went
                 // silent raises its own Ticket. Fires once per
-                // SLI transition; recovery is logged.
+                // SLI transition; recovery is logged. SLO-P4: the
+                // threshold comes from `cfg.slo.telemetry_absent_
+                // after_secs` (hot-swapped by the config watcher);
+                // 0 disables the watchdog.
+                let absent_after_secs = slo_absent_after
+                    .load(std::sync::atomic::Ordering::Relaxed);
                 let now_utc = chrono::Utc::now();
-                let now_absent: std::collections::HashSet<String> = engine
-                    .telemetry_absent_slis(
-                        chrono::Duration::seconds(TELEMETRY_ABSENT_AFTER_SECS),
-                        now_utc,
-                    )
-                    .into_iter()
-                    .map(|kind| format!("{kind:?}"))
-                    .collect();
+                let now_absent: std::collections::HashSet<String> = if absent_after_secs == 0 {
+                    std::collections::HashSet::new()
+                } else {
+                    engine
+                        .telemetry_absent_slis(
+                            chrono::Duration::seconds(absent_after_secs as i64),
+                            now_utc,
+                        )
+                        .into_iter()
+                        .map(|kind| format!("{kind:?}"))
+                        .collect()
+                };
                 for sli in absent_slis.difference(&now_absent) {
                     tracing::info!(
                         sli = %sli,
@@ -1374,8 +1384,7 @@ pub(crate) async fn admin_accept_loop(
                             aegis_control::slo::AlertEvent::TelemetryAbsent {
                                 fired_at: now_utc,
                                 sli: sli.clone(),
-                                silent_seconds: TELEMETRY_ABSENT_AFTER_SECS
-                                    as u64,
+                                silent_seconds: absent_after_secs,
                             }
                         })
                         .collect();
@@ -1403,7 +1412,7 @@ pub(crate) async fn admin_accept_loop(
                         ring.record_failed(name, now, reason);
                     }
                     tracing::warn!(
-                        silent_for_secs = TELEMETRY_ABSENT_AFTER_SECS,
+                        silent_for_secs = absent_after_secs,
                         "telemetry-absent watchdog fired: SLI served \
                          traffic this boot but has gone silent",
                     );

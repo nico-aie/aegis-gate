@@ -91,6 +91,15 @@ pub struct ApplyTargets {
     /// node-local receiver store stays as-is).
     pub receiver_writer:
         Option<Arc<arc_swap::ArcSwap<Vec<aegis_control::slo::AlertReceiver>>>>,
+    /// SLO-P4 — live SLO engine; objectives re-derived from
+    /// `cfg.slo` on each swap so a threshold edit propagates
+    /// fleet-wide (SLI history untouched). `None` ⇒ not wired
+    /// (test bundle).
+    pub slo_engine: Option<Arc<aegis_control::slo::SloEngine>>,
+    /// SLO-P4 — telemetry-absent watchdog knob, read each tick by
+    /// the evaluation loop; re-derived from
+    /// `cfg.slo.telemetry_absent_after_secs` on each swap.
+    pub slo_absent_after_secs: Option<Arc<std::sync::atomic::AtomicU64>>,
     /// A2 (2026-06-14) — live inbound (downstream) mTLS trust store,
     /// re-derived from `cfg.zero_trust.downstream.ca_bundle` on each swap
     /// so a Zero Trust CA rotation activated on any node converges on every
@@ -373,6 +382,13 @@ async fn apply_and_swap(
     // N1 — re-derive the alert-receiver list so a fleet-managed channel
     // propagates to every node (no-op when `cfg.alerting` is unset).
     let _ = reload::apply_cfg_change_to_receivers(new_cfg, targets.receiver_writer.as_ref());
+    // SLO-P4 — re-derive SLO objectives + watchdog knob (no-op when
+    // `cfg.slo` is unset; invalid sections rejected, previous set stays).
+    let _ = reload::apply_cfg_change_to_slo(
+        new_cfg,
+        targets.slo_engine.as_ref(),
+        targets.slo_absent_after_secs.as_ref(),
+    );
     let _ = reload::apply_cfg_change_to_rules(
         new_cfg,
         targets.rules.as_ref(),
@@ -949,6 +965,8 @@ mod tests {
             upstream_writer: None,
             dns_refresh: None,
             receiver_writer: None,
+            slo_engine: None,
+            slo_absent_after_secs: None,
             // The one target under test.
             client_auth: Some(trust),
             ddos: None,
