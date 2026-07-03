@@ -57,7 +57,13 @@ pub struct SliSample {
 // ---------------------------------------------------------------------------
 
 /// SLO objective: target value and error budget.
+///
+/// `deny_unknown_fields` (P3 review MEDIUM-6): when SLO-P4 wires
+/// config-driven objectives, a stale key (e.g. the removed
+/// `budget_pct`) must fail validation loudly, not deserialize to
+/// silently-defaulted thresholds.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SloObjective {
     pub sli: SliKind,
     pub target: f64,
@@ -81,6 +87,7 @@ pub fn default_min_events() -> u64 {
 /// window makes alerts stop firing quickly after recovery and
 /// prevents stale re-fires).
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BurnRateWindow {
     pub window_hours: u64,
     /// Short confirmation window of the pair.
@@ -173,6 +180,10 @@ pub struct SloAlert {
     pub fired_at: DateTime<Utc>,
     pub resolved_at: Option<DateTime<Utc>>,
     pub burn_rate: f64,
+    /// % of the SLO budget one `window_hours` window spends at
+    /// the measured burn (SLO-P3). NOTE: a short-horizon
+    /// *projection* — `BudgetStatus::budget_remaining_pct` is the
+    /// measured 30d figure; the two legitimately differ.
     pub budget_consumed_pct: f64,
     pub window_hours: u64,
     pub runbook_url: String,
@@ -355,6 +366,12 @@ impl AlertEvent {
                 format!("{:?}", a.sli).hash(&mut h);
                 a.severity.hash(&mut h);
                 a.window_hours.hash(&mut h);
+                // P3 review MEDIUM-4 — fire and resolve are
+                // distinct notifications; without this a resolve
+                // landing within the dedup window of its fire was
+                // silently swallowed (P3's short-window recovery
+                // makes minute-scale cycles legitimate).
+                a.resolved_at.is_some().hash(&mut h);
             }
             AlertEvent::DdosModeEntered { trigger, .. } => {
                 "ddos_entered".hash(&mut h);
@@ -887,6 +904,24 @@ impl SloEngine {
         }
     }
 
+    /// Objective-driven variant of [`Self::telemetry_absent`]
+    /// (P3 review MEDIUM-5): every SLI with a configured
+    /// objective that has gone silent after serving. The
+    /// watchdog loop iterates this instead of hardcoding one
+    /// kind, so a future second objective inherits blackout
+    /// coverage automatically.
+    pub fn telemetry_absent_slis(
+        &self,
+        absent_after: Duration,
+        now: DateTime<Utc>,
+    ) -> Vec<SliKind> {
+        self.objectives
+            .iter()
+            .map(|o| o.sli.clone())
+            .filter(|kind| self.telemetry_absent(kind, absent_after, now))
+            .collect()
+    }
+
     /// Current enforcement counter snapshot for `/api/slo`.
     pub fn enforcement_stats(&self) -> EnforcementStats {
         let ring = self.enforcement.lock().unwrap();
@@ -983,13 +1018,27 @@ impl SloEngine {
                 } else {
                     0.0
                 };
-                // Short window with no data cannot confirm — a
-                // stale burst must not (re-)fire off the long
-                // window alone.
-                let short_confirms = match buf.average_in_window(now, short) {
-                    Some(avg) if budget > 0.0 => (1.0 - avg) / budget >= burn.burn_threshold,
-                    _ => false,
+                // Short-window state (P3 review HIGH-1/MEDIUM-3).
+                // FIRE needs the short window burning with
+                // proportional volume (min_events scaled to the
+                // window ratio) — a stale burst or one stray bad
+                // sample must not (re-)fire off the long window
+                // alone. RESOLVE needs the short window healthy
+                // WITH data — an empty short window is silence,
+                // not recovery, and must keep a fired alert
+                // active (the blackout watchdog rides alongside).
+                let (short_good, short_count) = buf.window_totals(now, short);
+                let short_min = (obj.min_events * burn.short_window_minutes)
+                    .checked_div(burn.window_hours * 60)
+                    .unwrap_or(0)
+                    .max(1);
+                let short_burn = if short_count > 0 && budget > 0.0 {
+                    (1.0 - short_good / short_count as f64) / budget
+                } else {
+                    0.0
                 };
+                let short_confirms = short_count >= short_min && short_burn >= burn.burn_threshold;
+                let short_recovered = short_count > 0 && short_burn < burn.burn_threshold;
                 let is_burning = long_count >= obj.min_events
                     && long_burn >= burn.burn_threshold
                     && short_confirms;
@@ -1037,8 +1086,10 @@ impl SloEngine {
                         history.drain(0..excess);
                     }
                     new_alerts.push(alert);
-                } else if !is_burning && already_active {
-                    // Resolve.
+                } else if !is_burning && already_active && short_recovered {
+                    // Resolve — only on CONFIRMED recovery
+                    // (healthy short window with data), never on
+                    // silence (P3 review HIGH-1).
                     for a in active.iter_mut() {
                         if a.sli == obj.sli
                             && a.window_hours == burn.window_hours
@@ -1472,6 +1523,57 @@ mod tests {
         assert!(!engine.telemetry_absent(&kind, absent_after, now + Duration::minutes(5)));
         // 15 minutes of silence after having served: blackout.
         assert!(engine.telemetry_absent(&kind, absent_after, now + Duration::minutes(15)));
+    }
+
+    // P3 review HIGH-1: a total blackout empties the short window
+    // within minutes — that must NOT auto-resolve a fired alert
+    // (silence is not recovery; only confirmed healthy traffic is).
+    #[test]
+    fn blackout_does_not_auto_resolve_fired_alert() {
+        let engine = SloEngine::new(fast_burn_objective());
+        let t0 = Utc::now();
+        for _ in 0..100 {
+            engine.record_at(availability_sample_at(0.0, t0), t0);
+        }
+        assert_eq!(engine.evaluate_at(t0 + Duration::minutes(1)).len(), 1);
+
+        // 30 minutes of complete silence: the 5m short window is
+        // empty. The alert must stay active — the outage did not
+        // end, the telemetry did.
+        let resolved = engine.evaluate_at(t0 + Duration::minutes(30));
+        assert!(resolved.is_empty(), "silence must not emit a resolve event",);
+        assert_eq!(engine.active_alerts().len(), 1, "alert stays active");
+
+        // Real recovery: healthy traffic returns.
+        let t2 = t0 + Duration::hours(2);
+        for _ in 0..100 {
+            engine.record_at(availability_sample_at(1.0, t2), t2);
+        }
+        let resolved = engine.evaluate_at(t2);
+        assert_eq!(resolved.len(), 1);
+        assert!(resolved[0].resolved_at.is_some());
+    }
+
+    // P3 review MEDIUM-3: one stray bad sample in the short window
+    // must not "confirm" a long-window burn — the short window
+    // needs proportional volume too.
+    #[test]
+    fn single_sample_cannot_confirm_short_window() {
+        let engine = SloEngine::new(fast_burn_objective());
+        let t0 = Utc::now();
+        // A real burst 40 minutes ago keeps the 1h long window
+        // burning with plenty of volume...
+        let burst = t0 - Duration::minutes(40);
+        for _ in 0..100 {
+            engine.record_at(availability_sample_at(0.0, burst), burst);
+        }
+        // ...and exactly ONE bad request lands in the 5m short
+        // window (min_events 60 scaled to 5m/1h → floor of 5).
+        engine.record_at(availability_sample_at(0.0, t0), t0);
+        assert!(
+            engine.evaluate_at(t0).is_empty(),
+            "1 sample in the short window is noise, not confirmation",
+        );
     }
 
     #[test]
