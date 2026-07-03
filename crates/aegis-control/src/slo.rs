@@ -20,6 +20,7 @@ use std::sync::Mutex;
 
 pub mod classify;
 pub mod dispatch;
+pub mod producers;
 
 // ---------------------------------------------------------------------------
 // SLI definitions
