@@ -41,6 +41,7 @@ use crate::admin_mutate::{
     handle_admin_undrain, handle_node_drain_get,
     handle_alert_ack, handle_alert_receiver_delete, handle_alert_receiver_test,
     handle_alert_receivers_put, handle_config_put, handle_config_rollback,
+    handle_slo_config_put,
     handle_detectors_put, handle_loadmode_put,
     handle_logging_put, handle_mode_put, handle_mtls_sans_delete,
     handle_mtls_sans_put, handle_mtls_sans_test, handle_pool_delete,
@@ -304,6 +305,11 @@ pub(crate) async fn handle_admin_request(
     //   POST   /api/alert-receivers/{name}/test  synthetic delivery
     if method == hyper::Method::PUT && path == "/api/alert-receivers" {
         return handle_alert_receivers_put(req, services).await;
+    }
+    // SLO-P6 (P4b) — objective editor write. Audit-mutated;
+    // CSRF-gated; folds `slo:` into the shared config doc.
+    if method == hyper::Method::PUT && path == "/api/slo/config" {
+        return handle_slo_config_put(req, services).await;
     }
     if let Some(suffix) = path.strip_prefix("/api/alert-receivers/") {
         if method == hyper::Method::POST {

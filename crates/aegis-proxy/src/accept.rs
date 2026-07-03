@@ -1191,6 +1191,8 @@ pub(crate) async fn admin_accept_loop(
     // and `ProxyContext::ddos.set(...)` has been called; the
     // dashboard renders an empty-state card in that case.
     services.ddos = upstream_ctx.ddos.get().cloned();
+    // SLO-P6 (P4b) — share the watchdog knob with /api/slo/config.
+    services.slo_absent_after = Some(Arc::clone(&slo_absent_after_secs));
 
     // DURABLE-T1 — audit chain durability. For each Jsonl sink the
     // operator configured under `cfg.audit.sinks`, open a real

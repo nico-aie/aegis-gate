@@ -1140,6 +1140,44 @@ pub(crate) fn admin_router(
 
         // D-M5: tracking
         "/api/slo" => json_body_response(200, services.tracking.render_slo(), "private, max-age=2"),
+        // SLO-P6 (P4b) — effective objectives + watchdog knob for the
+        // editor. Values are the LIVE engine set (compiled defaults or
+        // config-managed); the PUT counterpart folds into the doc.
+        "/api/slo/config" => {
+            let objectives: Vec<aegis_core::config::SloObjectiveConfig> = services
+                .tracking
+                .slo_objectives()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(crate::config_source::reload::objective_to_config)
+                .collect();
+            let absent = services
+                .slo_absent_after
+                .as_ref()
+                .map(|a| a.load(std::sync::atomic::Ordering::Relaxed))
+                .unwrap_or(aegis_control::slo::DEFAULT_TELEMETRY_ABSENT_AFTER_SECS);
+            json_body_response(
+                200,
+                serde_json::json!({
+                    "objectives": objectives,
+                    "telemetry_absent_after_secs": absent,
+                })
+                .to_string(),
+                "private, max-age=2",
+            )
+        }
+        // SLO-P6 — minute-resolution availability series for the
+        // Health page's error-budget timeline. `?window=` seconds,
+        // default 6h, clamped to [5m, 30d].
+        "/api/slo/timeseries" => {
+            let window =
+                parse_query_u32(query, "window", 21_600).clamp(300, 30 * 86_400) as i64;
+            json_body_response(
+                200,
+                services.tracking.render_slo_timeseries(window),
+                "private, max-age=10",
+            )
+        }
         "/api/cluster" => json_body_response(200, services.tracking.render_cluster(), "private, max-age=2"),
         // Fleet-scope status for per-panel badges + the degraded banner.
         // `configured` = the publish task is up (cluster deployment);
