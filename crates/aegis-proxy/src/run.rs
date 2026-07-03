@@ -126,6 +126,18 @@ pub async fn run(
     readiness: ReadinessSignal,
     reload_source: ConfigReloadSource,
 ) -> aegis_core::Result<()> {
+    // LT-P7 (2026-07-03) — surface broad private/loopback trusted_proxies
+    // at boot. `validate()` already REJECTS the internet-wide default
+    // route; these ranges are accepted (the single-host front-WAF sidecar
+    // is legitimate), but trusting an entire `10.0.0.0/8` / `127.0.0.0/8`
+    // for X-Forwarded-For lets any host inside it spoof the client IP, so
+    // it's worth a boot-time advisory.
+    for net in cfg_swap.load().proxy.parsed_trusted_proxies() {
+        if let Some(msg) = aegis_core::config::trusted_proxy_advisory(&net) {
+            tracing::warn!("{msg}");
+        }
+    }
+
     // 2026-05-11 (PR-DNS-1 boot, PR-DNS-2 soft-failure + refresh
     // specs). Resolve hostname-shaped upstream members before the
     // boot snapshot. The expansion is idempotent on IP-only
