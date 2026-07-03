@@ -228,6 +228,56 @@ mod tests {
         assert!(s.iter().any(|s| s.tag == "behavior_high_errors"), "expected errors: {s:?}");
     }
 
+    // AC-P3-b (2026-07-04) — the response-outcome channel. Detectors run
+    // INBOUND and never see the upstream status, so the error-ratio signal
+    // was dead (inbound `is_error` is always false). `observe_outcome`
+    // feeds the post-response outcome so a subsequent request's inbound
+    // scoring reflects prior failures (e.g. repeated upstream 401/403).
+    #[test]
+    fn observe_outcome_feeds_error_ratio() {
+        let analyzer = BehavioralAnalyzer::new(1000, 60);
+        // 11 inbound requests, is_error=false exactly as the data plane calls.
+        for _ in 0..11 {
+            let _ = analyzer.observe("atk", "/login", false, true);
+        }
+        // 11 error RESPONSES arrive out-of-band via the outcome channel.
+        for _ in 0..11 {
+            analyzer.observe_outcome("atk", true);
+        }
+        // Next inbound request now sees error_ratio 11/12 > 0.5, total > 10.
+        let s = analyzer.observe("atk", "/login", false, true);
+        assert!(
+            s.iter().any(|sig| sig.tag == "behavior_high_errors"),
+            "observe_outcome must feed the error ratio: {s:?}",
+        );
+    }
+
+    #[test]
+    fn observe_outcome_success_does_not_raise_errors() {
+        let analyzer = BehavioralAnalyzer::new(1000, 60);
+        for _ in 0..11 {
+            let _ = analyzer.observe("ok", "/login", false, true);
+        }
+        for _ in 0..11 {
+            analyzer.observe_outcome("ok", false); // all successful outcomes
+        }
+        let s = analyzer.observe("ok", "/login", false, true);
+        assert!(
+            !s.iter().any(|sig| sig.tag == "behavior_high_errors"),
+            "successful outcomes must not raise the error signal: {s:?}",
+        );
+    }
+
+    #[test]
+    fn observe_outcome_ignores_unknown_key() {
+        // An outcome for a source with no inbound session yet is a no-op
+        // (never creates a session) — outcome always follows an inbound
+        // observe in the data plane.
+        let analyzer = BehavioralAnalyzer::new(1000, 60);
+        analyzer.observe_outcome("ghost", true);
+        assert_eq!(analyzer.session_count(), 0);
+    }
+
     #[test]
     fn no_cookie_detected() {
         let analyzer = BehavioralAnalyzer::new(1000, 60);
