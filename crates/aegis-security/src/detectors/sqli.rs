@@ -394,4 +394,84 @@ mod tests {
             "text/plain sensor beacon with stray backtick must be skipped",
         );
     }
+
+    /// LT-P2 (2026-07-03) — evaluated `RegexSet` single-pass as a
+    /// replacement for the shipped `Vec<Regex>` + `.iter().any(is_match)`
+    /// loop, and **rejected it**: on the dominant benign traffic the
+    /// `regex` crate's per-`Regex` literal prefilter (memchr /
+    /// Aho-Corasick) rejects each pattern in ~one pass, and a combined
+    /// `RegexSet` automaton is measurably *slower* (~0.74× on a ~10 KB
+    /// benign input). See `PLAN-ltester-perf-and-hardening-2026-07-03.md`
+    /// LT-P2.
+    ///
+    /// This is an ignored regression guard, not a CI test — run
+    /// explicitly to re-measure before anyone reopens LT-P2:
+    ///   `cargo test -p aegis-security --release -- --ignored --nocapture regexset`
+    /// It asserts only *correctness equivalence* (the two forms agree on
+    /// every input) so it can never flake on timing; the ns/scan numbers
+    /// are printed as evidence.
+    #[test]
+    #[ignore = "LT-P2 perf guard; run explicitly with --ignored --release"]
+    fn regexset_evaluated_and_rejected_slower_than_vec_loop() {
+        use regex::{Regex, RegexSet};
+        use std::time::Instant;
+
+        // Subset of the shipped sqli pattern source (representative).
+        const SRC: &[&str] = &[
+            r"(?i)(?:UNION\s+(?:ALL\s+)?SELECT)",
+            r"(?i)(?:SELECT\s+.+\s+FROM\s+)",
+            r"(?i)(?:INSERT\s+INTO\s+)",
+            r"(?i)(?:DELETE\s+FROM\s+)",
+            r"(?i)(?:DROP\s+TABLE\s+)",
+            r"(?i)(?:OR\s+1\s*=\s*1)",
+            r"(?i)(?:AND\s+1\s*=\s*1)",
+            r"(?i)(?:WAITFOR\s+DELAY)",
+            r"(?i)(?:BENCHMARK\s*\()",
+            r"(?i)(?:SLEEP\s*\()",
+            r"(?i)(?:information_schema)",
+            r"(?i)(?:CHAR\s*\(\s*\d+\s*\))",
+            r"(?i)(?:ORDER\s+BY\s+\d+)",
+            r"(?i)(?:CASE\s+WHEN\s+)",
+        ];
+        let vec_re: Vec<Regex> = SRC.iter().map(|p| Regex::new(p).unwrap()).collect();
+        let set = RegexSet::new(SRC).unwrap();
+
+        // Correctness: the two forms agree on benign AND malicious inputs.
+        for probe in [
+            "María José München café resume text",          // benign
+            "id=1 UNION SELECT * FROM users",                // union
+            "q=1 OR 1=1",                                    // boolean
+            "name=alice&note=hello world",                   // benign
+            "x=BENCHMARK(1000,MD5('a'))",                    // timing
+        ] {
+            let vec_hit = vec_re.iter().any(|r| r.is_match(probe));
+            assert_eq!(vec_hit, set.is_match(probe), "disagreement on {probe:?}");
+        }
+
+        // Timing evidence (printed, never asserted → no flake).
+        let input = "María José München café ".repeat(400); // ~10 KB benign
+        let iters = 20_000u32;
+        let _ = vec_re.iter().any(|r| r.is_match(&input));
+        let _ = set.is_match(&input);
+
+        let t0 = Instant::now();
+        for _ in 0..iters {
+            std::hint::black_box(vec_re.iter().any(|r| r.is_match(std::hint::black_box(&input))));
+        }
+        let vec_ns = t0.elapsed().as_nanos() / iters as u128;
+
+        let t1 = Instant::now();
+        for _ in 0..iters {
+            std::hint::black_box(set.is_match(std::hint::black_box(&input)));
+        }
+        let set_ns = t1.elapsed().as_nanos() / iters as u128;
+
+        println!(
+            "LT-P2 guard (~10KB benign, {} patterns, {iters} iters): \
+             Vec<Regex> loop = {vec_ns} ns/scan, RegexSet = {set_ns} ns/scan, \
+             RegexSet is {:.2}x the Vec-loop time (>1.0 = slower → keep Vec)",
+            SRC.len(),
+            set_ns as f64 / vec_ns.max(1) as f64,
+        );
+    }
 }

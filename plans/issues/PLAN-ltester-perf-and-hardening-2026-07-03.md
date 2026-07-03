@@ -31,12 +31,21 @@ strip = "debuginfo"
 - **`panic = "abort"` caveat:** the workspace has 182 non-test `panic!` + 495 `.expect(` (LT-P4). With `abort`, any of those on the request path takes down the process instead of unwinding one task. **Do LT-P4's hot-path triage first, or ship LT-P1 without `panic="abort"` initially** and add it after triage. Also confirm no integration test depends on catching unwind.
 - **Verify:** `cargo build --release -p aegis-bin --features "redis alerts geoip"` clean; run `deploy/STAGING-BENCHMARK.md` before/after and record p99 + throughput delta here. This is the single cheapest Performance win — it must be measured, not claimed.
 
-## LT-P2 — per-detector `Vec<Regex>` → `RegexSet` single pass · **M** · *(audit O-2 · Performance)*
-~16 detectors each hold `LazyLock<Vec<Regex>>` and loop every pattern per request — many independent scans of the same bytes. A `regex::RegexSet` matches all patterns in **one pass**; only a surviving detector runs the specific-rule attribution pass.
-- Start with the heaviest scanners on the largest inputs: `sqli.rs`, `xss.rs`, `header_injection.rs` (1,281 LOC, largest), `ssrf.rs`.
-- **Keep attribution:** `RegexSet` says *which* patterns matched but not *where*; retain a per-hit second pass only on the matched subset for the audit `rule_id`/score.
-- **Coordinate with AC-P1-d** (XSS body decode parity): if that lands first, build its added patterns into the `RegexSet` from the start rather than a new `Vec<Regex>` loop.
-- **Verify:** identical detection results on the existing detector test corpus (no coverage regression — [[feedback_test_suite_green_baseline]]) + benchmark CPU/p99 on large query/body inputs before/after.
+## LT-P2 — per-detector `Vec<Regex>` → `RegexSet` single pass · **REJECTED (measured slower) 2026-07-03** · *(audit O-2 · Performance)*
+
+> **Outcome: evaluated, implemented, benchmarked, and reverted — `RegexSet` is _slower_ here, not faster.** The audit's "many independent scans of the same bytes" intuition is wrong for this codebase: the `regex` crate already compiles a highly-optimized **literal prefilter** (memchr / Aho-Corasick) into *each individual* `Regex`, so on the dominant benign traffic every pattern rejects in ~one memchr pass. Collapsing them into one `RegexSet` builds a larger combined automaton whose single prefilter is *worse* than N cheap per-pattern ones.
+>
+> **Measured** (release micro-bench, ~10 KB benign input, sqli's 18-pattern set, 20 k iters, 3 runs — the guard test `sqli.rs::regexset_single_pass_is_faster_than_vec_loop`):
+>
+> | | ns/scan |
+> |---|---|
+> | `Vec<Regex>` + `.iter().any(is_match)` (shipped) | ~16,600 |
+> | `RegexSet::is_match` | ~22,300 |
+> | **speedup** | **0.74× (26–34 % _slower_)** |
+>
+> End-to-end (prod-balanced-5k, 100 %-large-body worst case) the delta washed out to noise because the regex scan is a small fraction of per-request cost (I/O-bound at ~12.5 k rps loopback), i.e. there was **no upside to bank and a real CPU regression to risk**. The `RegexSet` swap (sqli / xss / ssrf / header_injection, all corpus-green) was reverted; the micro-bench stays as a `#[ignore]` regression guard so a future well-meaning retry re-measures first.
+>
+> **Do not reopen** without a materially different approach — e.g. a hand-built shared literal pref​ilter, or `regex-automata`'s multi-pattern DFA with explicit prefilter control — and a micro-bench that beats the per-`Regex` prefilter baseline above. The plain `RegexSet` path is a dead end here.
 
 ## LT-P3 — realistic default per-IP limit OR documented ddos division-of-labor · **S** · *(audit O-3 / I-2 · Security+Perf)*
 `DEFAULT_LIMIT = 1_000_000` per 60s (`ip_limiter.rs:46`) is a "backstop, not a throughput cap" — but at 1M/min the local per-IP volumetric gate effectively **never fires** unless buckets are configured. Under the §7 "DDoS aimed at the WAF" scenario this leaves a single flooding source un-throttled by *this* gate.
