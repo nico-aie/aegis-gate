@@ -358,11 +358,14 @@ mod slo_alert_lifecycle {
         // was the store bug, not a recovery.)
         let t2 = t0 + chrono::Duration::hours(2);
         for _ in 0..200 {
-            engine.record(SliSample {
-                kind: SliKind::DataPlaneAvailability,
-                value: 1.0,
-                ts: t2,
-            });
+            engine.record_at(
+                SliSample {
+                    kind: SliKind::DataPlaneAvailability,
+                    value: 1.0,
+                    ts: t2,
+                },
+                t2,
+            );
         }
 
         let alerts = engine.evaluate_at(t2);

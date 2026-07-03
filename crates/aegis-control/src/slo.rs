@@ -32,7 +32,14 @@ pub enum SliKind {
     WafOverheadP50,
     WafOverheadP95,
     WafOverheadP99,
-    UpstreamAvailability { pool: String },
+    /// Per-pool upstream availability. No producer yet (SLO-P5
+    /// candidate); when one lands, `pool` MUST come from the
+    /// fixed configured pool list — each distinct kind lazily
+    /// allocates a ~1.6MB bucket store, so unbounded/user-derived
+    /// names would grow the SLI map without limit.
+    UpstreamAvailability {
+        pool: String,
+    },
     AuditDeliveryRate,
     CertFreshnessDays,
 }
@@ -639,6 +646,11 @@ impl TierRing {
 
     /// Sum `(good, count)` over buckets covering
     /// `[from_secs, to_secs]`, clamped to retention.
+    ///
+    /// The bucket containing `from_secs` is included WHOLE, so a
+    /// window can over-include up to one bucket width of history
+    /// (10s fine / 60s coarse) — negligible vs. the ≥1h windows
+    /// served, and the price of fixed-width buckets.
     fn totals(&self, from_secs: i64, to_secs: i64) -> (f64, u64) {
         let len = self.slots.len() as i64;
         let to_epoch = to_secs.div_euclid(self.width_secs);
@@ -756,6 +768,26 @@ pub struct SloEngine {
 
 impl SloEngine {
     pub fn new(objectives: Vec<SloObjective>) -> Self {
+        // SLO-P2 — the bucket store retains 72h at burn-window
+        // resolution and 30d at budget resolution. A wider window
+        // would silently evaluate over truncated history, which is
+        // exactly the dishonesty P2 removes; refuse it loudly in
+        // dev and warn in release. (Config-driven objectives land
+        // in SLO-P4 and validate at the config boundary too.)
+        for obj in &objectives {
+            debug_assert!(
+                obj.window_days as i64 * 86_400 <= COARSE_RETENTION_SECS,
+                "SLO window_days {} exceeds the 30d bucket retention",
+                obj.window_days,
+            );
+            for burn in &obj.burn_rates {
+                debug_assert!(
+                    burn.window_hours as i64 * 3_600 <= FINE_RETENTION_SECS,
+                    "burn window {}h exceeds the 72h bucket retention",
+                    burn.window_hours,
+                );
+            }
+        }
         Self {
             objectives,
             buffers: Mutex::new(HashMap::new()),
@@ -789,11 +821,27 @@ impl SloEngine {
 
     /// Record an SLI observation.
     pub fn record(&self, sample: SliSample) {
+        self.record_at(sample, Utc::now());
+    }
+
+    /// Clock-injectable variant of [`Self::record`] (SLO-P2) —
+    /// pairs with [`Self::evaluate_at`] for deterministic tests /
+    /// simulation. Also the clock-skew guard: a sample stamped
+    /// far in the future would park a huge epoch in its slot and
+    /// silently drop every legitimate sample hashing there for
+    /// the rest of the process's life (one slot per ~72h/30d
+    /// cycle), so future-skewed timestamps are clamped to `now`.
+    pub fn record_at(&self, sample: SliSample, now: DateTime<Utc>) {
+        let ts = if sample.ts > now + Duration::minutes(1) {
+            now
+        } else {
+            sample.ts
+        };
         let mut buffers = self.buffers.lock().unwrap();
         let buf = buffers
             .entry(sample.kind.clone())
             .or_insert_with(BucketStore::new);
-        buf.record(sample.ts, sample.value);
+        buf.record(ts, sample.value);
     }
 
     /// Evaluate all objectives and return newly fired/resolved alerts.
@@ -1162,7 +1210,7 @@ mod tests {
             let fire_at = t0 + Duration::hours(3 * cycle);
             // Fire.
             for _ in 0..100 {
-                engine.record(availability_sample_at(0.9, fire_at));
+                engine.record_at(availability_sample_at(0.9, fire_at), fire_at);
             }
             engine.evaluate_at(fire_at + Duration::minutes(1));
             assert_eq!(engine.active_alerts().len(), 1);
@@ -1170,7 +1218,7 @@ mod tests {
             // window; fresh healthy traffic is all it sees.
             let recover_at = fire_at + Duration::hours(2);
             for _ in 0..100 {
-                engine.record(availability_sample_at(1.0, recover_at));
+                engine.record_at(availability_sample_at(1.0, recover_at), recover_at);
             }
             engine.evaluate_at(recover_at);
             assert!(engine.active_alerts().is_empty());
@@ -1235,18 +1283,12 @@ mod tests {
         for _ in 0..20_000 {
             engine.record(availability_sample_at(1.0, earlier));
         }
-        let count = engine.sample_count_in_window(
-            &SliKind::DataPlaneAvailability,
-            Duration::hours(6),
-            now,
-        );
+        let count =
+            engine.sample_count_in_window(&SliKind::DataPlaneAvailability, Duration::hours(6), now);
         assert_eq!(count, 20_000, "6h window must not truncate at 10k samples");
         // And those samples are OUTSIDE a 1h window.
-        let count_1h = engine.sample_count_in_window(
-            &SliKind::DataPlaneAvailability,
-            Duration::hours(1),
-            now,
-        );
+        let count_1h =
+            engine.sample_count_in_window(&SliKind::DataPlaneAvailability, Duration::hours(1), now);
         assert_eq!(count_1h, 0);
     }
 
@@ -1255,11 +1297,8 @@ mod tests {
         let engine = SloEngine::new(fast_burn_objective());
         let now = Utc::now();
         assert_eq!(
-            engine.sample_count_in_window(
-                &SliKind::DataPlaneAvailability,
-                Duration::hours(1),
-                now,
-            ),
+            engine
+                .sample_count_in_window(&SliKind::DataPlaneAvailability, Duration::hours(1), now,),
             0,
             "empty engine → zero observations, not implicit health",
         );
@@ -1273,7 +1312,7 @@ mod tests {
         let engine = SloEngine::new(fast_burn_objective());
         let t0 = Utc::now();
         for _ in 0..100 {
-            engine.record(availability_sample_at(0.0, t0));
+            engine.record_at(availability_sample_at(0.0, t0), t0);
         }
         let fired = engine.evaluate_at(t0 + Duration::minutes(1));
         assert_eq!(fired.len(), 1, "burst inside 1h window fires");
@@ -1283,7 +1322,7 @@ mod tests {
         // fresh healthy traffic is all the window sees.
         let t2 = t0 + Duration::hours(2);
         for _ in 0..100 {
-            engine.record(availability_sample_at(1.0, t2));
+            engine.record_at(availability_sample_at(1.0, t2), t2);
         }
         let resolved = engine.evaluate_at(t2);
         assert_eq!(resolved.len(), 1, "aged-out burst resolves");
@@ -1640,6 +1679,60 @@ mod tests {
         ring.record(3, 1.0);
         let (_, count) = ring.totals(0, 109);
         assert_eq!(count, 1);
+    }
+
+    // Boundary-exact: a sample stamped exactly `now - window`
+    // sits in the bucket containing the window start, which is
+    // included whole (documented drift of ≤1 bucket width).
+    #[test]
+    fn tier_ring_window_start_bucket_is_included_whole() {
+        let mut ring = TierRing::new(10, 100);
+        ring.record(100, 1.0); // exactly at window start
+        let (_, count) = ring.totals(100, 150);
+        assert_eq!(count, 1);
+        // One bucket earlier is outside.
+        let mut ring = TierRing::new(10, 100);
+        ring.record(99, 1.0);
+        let (_, count) = ring.totals(100, 150);
+        assert_eq!(count, 0);
+    }
+
+    // Boundary-exact: retention edge. With len slots the ring
+    // holds exactly `len` distinct epochs ending at `to`.
+    #[test]
+    fn tier_ring_retention_edge_is_exact() {
+        let mut ring = TierRing::new(10, 100); // 10 slots
+                                               // Oldest representable epoch for to=999 is epoch 90..=99.
+        ring.record(900, 1.0); // epoch 90 — the oldest retained
+        let (_, count) = ring.totals(0, 999);
+        assert_eq!(count, 1, "oldest retained epoch must be counted");
+        ring.record(999, 1.0); // epoch 99 — newest
+        let (_, count) = ring.totals(0, 999);
+        assert_eq!(count, 2);
+    }
+
+    // Clock-skew guard: a far-future stamp must not park a huge
+    // epoch in a slot (it would silently drop every legitimate
+    // sample hashing there for the process lifetime).
+    #[test]
+    fn record_clamps_far_future_timestamps() {
+        let engine = SloEngine::new(fast_burn_objective());
+        let now = Utc::now();
+        engine.record_at(availability_sample_at(1.0, now + Duration::days(400)), now);
+        // Clamped to `now` → visible in the current 1h window.
+        assert_eq!(
+            engine
+                .sample_count_in_window(&SliKind::DataPlaneAvailability, Duration::hours(1), now,),
+            1,
+        );
+        // And a normal sample right after still lands (no
+        // poisoned slot dropping it).
+        engine.record_at(availability_sample_at(1.0, now), now);
+        assert_eq!(
+            engine
+                .sample_count_in_window(&SliKind::DataPlaneAvailability, Duration::hours(1), now,),
+            2,
+        );
     }
 
     #[test]
