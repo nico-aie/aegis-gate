@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+pub mod classify;
 pub mod dispatch;
 
 // ---------------------------------------------------------------------------
@@ -622,12 +623,39 @@ impl SliRingBuffer {
 /// without growing unbounded over a long-running process.
 const MAX_FIRED_HISTORY: usize = 200;
 
+/// Cap on retained enforcement timestamps — same bound as the
+/// SLI ring. `EnforcementStats::last_hour` is therefore a floor
+/// under extreme block volume (>10k enforcements/hour); `total`
+/// is exact.
+const MAX_ENFORCEMENT_EVENTS: usize = 10_000;
+
+/// Node-local enforcement counter (SLO-P1). Blocks / challenges /
+/// rate-limits are the WAF *working* — excluded from the
+/// availability SLI and surfaced as this info series instead
+/// (`/api/slo`), never as an objective.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnforcementStats {
+    /// Enforcement events since boot.
+    pub total: u64,
+    /// Enforcement events in the trailing hour (capped by the
+    /// retention ring — see [`MAX_ENFORCEMENT_EVENTS`]).
+    pub last_hour: u64,
+}
+
+/// Retention ring behind [`SloEngine::record_enforcement`].
+#[derive(Debug, Default)]
+struct EnforcementRing {
+    recent: std::collections::VecDeque<DateTime<Utc>>,
+    total: u64,
+}
+
 /// The SLO engine: tracks SLIs and fires alerts.
 pub struct SloEngine {
     objectives: Vec<SloObjective>,
     buffers: Mutex<HashMap<SliKind, SliRingBuffer>>,
     active_alerts: Mutex<Vec<SloAlert>>,
     fired_history: Mutex<Vec<SloAlert>>,
+    enforcement: Mutex<EnforcementRing>,
 }
 
 impl SloEngine {
@@ -637,7 +665,20 @@ impl SloEngine {
             buffers: Mutex::new(HashMap::new()),
             active_alerts: Mutex::new(Vec::new()),
             fired_history: Mutex::new(Vec::new()),
+            enforcement: Mutex::new(EnforcementRing::default()),
         }
+    }
+
+    /// Record one security-enforcement event (block / challenge /
+    /// rate_limit) — SLO-P1. Kept OFF the availability SLI.
+    pub fn record_enforcement(&self, ts: DateTime<Utc>) {
+        let _ = ts;
+        todo!("SLO-P1: implement after RED is validated")
+    }
+
+    /// Current enforcement counter snapshot for `/api/slo`.
+    pub fn enforcement_stats(&self) -> EnforcementStats {
+        todo!("SLO-P1: implement after RED is validated")
     }
 
     /// Record an SLI observation.
@@ -1026,6 +1067,56 @@ mod tests {
         }
         let alerts = engine.evaluate();
         assert!(alerts[0].runbook_url.contains("runbooks.aegis.local"));
+    }
+
+    // -- SLO-P1: default objectives + enforcement counter --------------------
+
+    // SLO-P1 — the AuditDeliveryRate objective was a tautology
+    // (its producer hardcoded 1.0 per observed event, so it could
+    // never breach 99.99%). Defaults now carry availability only.
+    #[test]
+    fn default_objectives_are_availability_only() {
+        let objs = default_objectives();
+        assert_eq!(objs.len(), 1, "audit-delivery tautology objective dropped");
+        assert_eq!(objs[0].sli, SliKind::DataPlaneAvailability);
+    }
+
+    #[test]
+    fn enforcement_counter_tracks_total_and_last_hour() {
+        let engine = SloEngine::new(fast_burn_objective());
+        // Two recent, one stale (2h old — outside the 1h window).
+        engine.record_enforcement(Utc::now());
+        engine.record_enforcement(Utc::now());
+        engine.record_enforcement(Utc::now() - Duration::hours(2));
+        let stats = engine.enforcement_stats();
+        assert_eq!(stats.total, 3);
+        assert_eq!(stats.last_hour, 2);
+    }
+
+    #[test]
+    fn enforcement_events_do_not_touch_availability_budget() {
+        let engine = SloEngine::new(fast_burn_objective());
+        for _ in 0..10 {
+            engine.record(availability_sample(1.0));
+            engine.record_enforcement(Utc::now());
+        }
+        // Pre-P1 a blocked attack wave drained the availability
+        // budget; enforcement must now leave it untouched.
+        assert!(engine.evaluate().is_empty());
+        let status = engine.budget_status();
+        assert_eq!(status[0].budget_remaining_pct, 100.0);
+    }
+
+    #[test]
+    fn enforcement_ring_is_bounded() {
+        let engine = SloEngine::new(fast_burn_objective());
+        for _ in 0..(MAX_ENFORCEMENT_EVENTS + 500) {
+            engine.record_enforcement(Utc::now());
+        }
+        let stats = engine.enforcement_stats();
+        assert_eq!(stats.total, (MAX_ENFORCEMENT_EVENTS + 500) as u64);
+        // Windowed count is capped by retention, never above it.
+        assert_eq!(stats.last_hour, MAX_ENFORCEMENT_EVENTS as u64);
     }
 
     // -- Multi-burn tests --------------------------------------------------
