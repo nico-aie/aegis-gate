@@ -202,8 +202,17 @@ impl Detector for BruteForceDetector {
         // — RequestView.body.peek() returns the buffered bytes
         // the detector chain already collected.
         let username = extract_username(req);
+        // AC-P1-c (2026-07-03) — canonicalize the KEY only (trim +
+        // ASCII-lowercase): `Alice` / `alice` / `alice ` are one
+        // account to the upstream auth server, and raw-string keying
+        // let a case-rotating sprayer split the distinct-IP count
+        // below threshold. The raw wire form stays in `username` for
+        // the audit signal below.
         let user_fired = match &username {
-            Some(u) => self.record_user_and_check(u, peer_ip),
+            Some(u) => {
+                let canonical = u.trim().to_ascii_lowercase();
+                self.record_user_and_check(&canonical, peer_ip)
+            }
             None => false,
         };
 
@@ -265,10 +274,12 @@ impl Detector for BruteForceDetector {
 /// 2. Body parsing for `username=` in `application/x-www-form-
 ///    urlencoded` or top-level `"username":"…"` in JSON.
 ///
-/// Returns `None` when no recognisable username appears. We don't
-/// canonicalise (lowercase / trim) — the per-user counter keys on
-/// the exact string the attacker sent, which is the same shape an
-/// upstream auth server would see.
+/// Returns `None` when no recognisable username appears — always
+/// the RAW wire string. Canonicalization (trim + ASCII-lowercase)
+/// happens at the per-user KEYING site in `inspect` (AC-P1-c,
+/// 2026-07-03): the counter aggregates `Alice`/`alice`/`alice ` as
+/// one account, while the audit signal keeps the raw form so ops
+/// see exactly what was sent.
 fn extract_username(req: &RequestView<'_>) -> Option<String> {
     // 1. Basic auth header.
     if let Some(auth) = req
