@@ -987,9 +987,7 @@ impl SloEngine {
                 // stale burst must not (re-)fire off the long
                 // window alone.
                 let short_confirms = match buf.average_in_window(now, short) {
-                    Some(avg) if budget > 0.0 => {
-                        (1.0 - avg) / budget >= burn.burn_threshold
-                    }
+                    Some(avg) if budget > 0.0 => (1.0 - avg) / budget >= burn.burn_threshold,
                     _ => false,
                 };
                 let is_burning = long_count >= obj.min_events
@@ -1008,8 +1006,8 @@ impl SloEngine {
                     // by one long window at this pace — the
                     // pre-P3 code reported burn×100 here, with
                     // no time factor.
-                    let window_fraction = burn.window_hours as f64
-                        / (obj.window_days.max(1) as f64 * 24.0);
+                    let window_fraction =
+                        burn.window_hours as f64 / (obj.window_days.max(1) as f64 * 24.0);
                     let alert = SloAlert {
                         sli: obj.sli.clone(),
                         severity: burn.severity,
