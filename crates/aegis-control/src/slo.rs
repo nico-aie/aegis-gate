@@ -326,7 +326,17 @@ impl AlertEvent {
                 }
             }
             AlertEvent::StrikeBlockSurge { .. } => AlertSeverity::Page,
-            AlertEvent::UpstreamPoolDegraded { .. } => AlertSeverity::Page,
+            // SLO-P5 — zero healthy members means the pool is DOWN
+            // (page-worthy); losing some members while others still
+            // serve is a Ticket (`pick()` fails closed, traffic
+            // still flows).
+            AlertEvent::UpstreamPoolDegraded { healthy, .. } => {
+                if *healthy == 0 {
+                    AlertSeverity::Page
+                } else {
+                    AlertSeverity::Ticket
+                }
+            }
             AlertEvent::UpstreamPoolRecovered { .. } => AlertSeverity::Info,
             AlertEvent::HotReloadFailed { .. } => AlertSeverity::Ticket,
             AlertEvent::GitOpsDrift { .. } => AlertSeverity::Ticket,

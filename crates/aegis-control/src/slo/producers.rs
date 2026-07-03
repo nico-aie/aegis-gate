@@ -46,8 +46,33 @@ impl PoolAlertState {
         observations: &[PoolHealthObservation],
         now: DateTime<Utc>,
     ) -> Vec<AlertEvent> {
-        let _ = (observations, now);
-        todo!("SLO-P5: implement after RED is validated")
+        let mut events = Vec::new();
+        for obs in observations {
+            // A configured-but-empty pool has nothing to lose.
+            if obs.total == 0 {
+                continue;
+            }
+            let is_degraded = obs.healthy < obs.total;
+            let was_degraded = self
+                .degraded
+                .insert(obs.pool.clone(), is_degraded)
+                .unwrap_or(false);
+            if is_degraded && !was_degraded {
+                events.push(AlertEvent::UpstreamPoolDegraded {
+                    fired_at: now,
+                    pool: obs.pool.clone(),
+                    healthy: obs.healthy,
+                    total: obs.total,
+                    first_down: obs.first_down.clone().unwrap_or_default(),
+                });
+            } else if !is_degraded && was_degraded {
+                events.push(AlertEvent::UpstreamPoolRecovered {
+                    fired_at: now,
+                    pool: obs.pool.clone(),
+                });
+            }
+        }
+        events
     }
 }
 
@@ -70,8 +95,11 @@ pub enum CertBand {
 
 /// Band for a days-remaining figure.
 pub fn cert_band(days_remaining: u32) -> CertBand {
-    let _ = days_remaining;
-    todo!("SLO-P5: implement after RED is validated")
+    match days_remaining {
+        0..=6 => CertBand::Critical,
+        7..=29 => CertBand::Warning,
+        _ => CertBand::Ok,
+    }
 }
 
 /// One cert as observed by the inventory sweep.
@@ -98,8 +126,23 @@ impl CertAlertState {
         certs: &[CertObservation],
         now: DateTime<Utc>,
     ) -> Vec<AlertEvent> {
-        let _ = (certs, now);
-        todo!("SLO-P5: implement after RED is validated")
+        let mut events = Vec::new();
+        for c in certs {
+            let band = cert_band(c.days_remaining);
+            let prev = self
+                .bands
+                .insert(c.host.clone(), band)
+                .unwrap_or(CertBand::Ok);
+            if band > prev {
+                events.push(AlertEvent::CertExpiringSoon {
+                    fired_at: now,
+                    host: c.host.clone(),
+                    days_remaining: c.days_remaining,
+                    not_after: c.not_after,
+                });
+            }
+        }
+        events
     }
 }
 
