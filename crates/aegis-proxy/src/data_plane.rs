@@ -132,6 +132,21 @@ pub(crate) async fn handle_data_request(
         tls_fingerprint,
     ).await;
     tracing::Span::current().record("action", tag.action.as_str());
+    // AC-P3-b (2026-07-04) — response-outcome channel. Feed the upstream
+    // outcome of a FORWARDED request back into the behavioral analyzer so
+    // the error-ratio signal (inert inbound) reflects prior failures — e.g.
+    // repeated upstream 401/403 on credential stuffing. Gated on
+    // `Action::Allow` so the WAF's OWN blocks/challenges (403/429) never
+    // inflate the client error ratio. Only client errors (4xx: auth
+    // 401/403, enumeration 404, bad-request 400) count as "the client
+    // misbehaving"; upstream 5xx outages are the server's fault, not a
+    // client signal, so they're excluded. No-op when the analyzer is
+    // disabled (the `None` fast path).
+    if let Some(ba) = &upstream_ctx.behavior_analyzer {
+        if matches!(tag.action, aegis_control::interop::headers::Action::Allow) {
+            ba.observe_outcome(&peer.ip().to_string(), resp.status().is_client_error());
+        }
+    }
     (resp, tag)
 }
 
@@ -6055,6 +6070,32 @@ mod log_only_enforce_tests {
 
     /// Mock upstream that 200s everything, so a *forwarded* request is
     /// distinguishable from a 403 block by status code.
+    /// AC-P3-b — an upstream that always replies with a fixed status code
+    /// (e.g. 401 to simulate the app rejecting bad credentials), so the
+    /// response-outcome channel can be exercised.
+    async fn spawn_upstream_status(code: u16) -> std::net::SocketAddr {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((s, _)) = l.accept().await {
+                tokio::spawn(async move {
+                    let svc = service_fn(move |_r: hyper::Request<hyper::body::Incoming>| async move {
+                        Ok::<_, Infallible>(
+                            hyper::Response::builder()
+                                .status(code)
+                                .body(crate::body::full(Bytes::from("x")))
+                                .unwrap(),
+                        )
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(s), svc)
+                        .await;
+                });
+            }
+        });
+        addr
+    }
+
     async fn spawn_upstream() -> std::net::SocketAddr {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
@@ -6935,6 +6976,123 @@ detectors:
             last = *seen.lock().unwrap();
         }
         last.flatten()
+    }
+
+    // AC-P3-b (2026-07-04) — the response-outcome channel. `observe_outcome`
+    // is fed the upstream status of a FORWARDED request, so repeated
+    // upstream client errors (401/403 on bad creds) raise the error-ratio
+    // and eventually fire `behavior_high_errors`. Requests carry a Cookie
+    // so the no-cookie signal doesn't confound the score.
+    async fn run_error_outcome_probe(analyzer_enabled: bool, upstream_status: u16) -> Option<u32> {
+        let backend = spawn_upstream_status(upstream_status).await;
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: pool }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend}" }}] }}
+state: {{ backend: in_memory }}
+detectors:
+  behavior_analyzer: {{ enabled: {analyzer_enabled} }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
+        ctx.interop_modes.set(Arc::new(ModeStore::new(Mode::Enforce))).ok();
+
+        let metrics = aegis_control::metrics::MetricsRegistry::init();
+        let args = Arc::new(Args {
+            detectors: aegis_security::detectors::default_detectors(),
+            mask: aegis_security::detectors::SharedDetectorMask::from_config(&cfg.detectors),
+            risk: aegis_security::risk::RiskTracker::new(&cfg.risk),
+            ip_rl: aegis_security::rate_limit::IpRateLimiter::new(
+                crate::config_source::reload::derive_ip_rate_cfg(&cfg),
+            ),
+            load_gauge: aegis_core::LoadGauge::new(cfg.load_mode.clone()),
+            verbosity: aegis_core::SharedVerbosity::from_config(&cfg.logging),
+            rsh: aegis_control::metrics::request_duration::RequestStageHistogram::register(&metrics)
+                .unwrap(),
+            rlh: aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&metrics)
+                .unwrap(),
+            ra: aegis_control::metrics::route_activity::RouteActivityWindow::new(),
+            dlh: aegis_control::metrics::detector_latency::DetectorLatencyHistogram::register(&metrics)
+                .unwrap(),
+            dhm: aegis_control::metrics::detector_hits::DetectorHitMetrics::register(&metrics)
+                .unwrap(),
+            bus: AuditBus::new(64),
+            ctx: ctx.clone(),
+        });
+        let seen: Arc<std::sync::Mutex<Option<Option<u32>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let args_l = args.clone();
+        let seen_l = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, peer)) = waf.accept().await {
+                let args_c = args_l.clone();
+                let seen_c = seen_l.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                        let a = args_c.clone();
+                        let seen = seen_c.clone();
+                        async move {
+                            let (resp, tag) = super::handle_data_request(
+                                req, peer, None, &a.detectors, &a.mask, &a.risk, &a.ip_rl,
+                                &a.load_gauge, &a.verbosity, &a.rsh, &a.rlh, &a.ra, &a.dlh,
+                                &a.bus, &a.ctx, &a.dhm, &ClientIdentity::Anonymous, None,
+                            )
+                            .await;
+                            *seen.lock().unwrap() = Some(tag.risk_score);
+                            Ok::<_, Infallible>(resp)
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // 12 cookie'd GETs from the same peer. When every upstream reply is
+        // a client error, the outcome channel drives error_ratio > 0.5 and
+        // total > 10 → behavior_high_errors (score 20) on the last request.
+        let mut last = None;
+        for _ in 0..12 {
+            let mut s = tokio::net::TcpStream::connect(waf_addr).await.unwrap();
+            let req = "GET / HTTP/1.1\r\nHost: any\r\nCookie: sess=abc\r\nConnection: close\r\n\r\n";
+            s.write_all(req.as_bytes()).await.unwrap();
+            let mut buf = Vec::new();
+            let _ = s.read_to_end(&mut buf).await;
+            last = *seen.lock().unwrap();
+        }
+        last.flatten()
+    }
+
+    #[tokio::test]
+    async fn error_outcome_channel_raises_high_errors_signal() {
+        // Every upstream reply is 401 → the outcome channel must feed the
+        // error ratio → behavior_high_errors (20) rides the last request.
+        let score = run_error_outcome_probe(true, 401).await;
+        assert!(
+            score.unwrap_or(0) >= 20,
+            "repeated upstream client errors must raise behavior_high_errors, got {score:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn success_outcomes_do_not_raise_high_errors() {
+        // Same traffic but every upstream reply is 200 → no error signal.
+        let score = run_error_outcome_probe(true, 200).await;
+        assert!(
+            score.unwrap_or(0) < 20,
+            "successful upstream outcomes must not trigger the error signal, got {score:?}",
+        );
     }
 
     #[tokio::test]

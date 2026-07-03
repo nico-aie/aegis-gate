@@ -5005,8 +5005,10 @@ pub struct DetectorsConfig {
     /// signals. **Default OFF** — richer + heavier than `behavior_signals`
     /// and the timing signal previously tripped on single-IP benchmark
     /// load, so it only runs when an operator opts in on real-IP traffic.
-    /// The error-ratio signal needs the response-outcome channel (AC-P3-b)
-    /// and stays inert until then (inbound `is_error` is always false).
+    /// The error-ratio signal is fed by the response-outcome channel
+    /// (AC-P3-b): the data plane calls `observe_outcome` with the upstream
+    /// status of each forwarded request, so repeated upstream 401/403 raise
+    /// `behavior_high_errors`.
     #[serde(default = "default_detector_toggle_off")]
     pub behavior_analyzer: DetectorToggle,
     /// AC-P2-e (2026-07-03) — Referer origin validation, a sub-feature of
