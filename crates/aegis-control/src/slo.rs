@@ -797,6 +797,30 @@ impl BucketStore {
         let (good, count) = self.window_totals(now, window);
         (count > 0).then(|| good / count as f64)
     }
+
+    /// SLO-P6 — per-minute points over the trailing `window`
+    /// from the coarse tier, ascending, empty buckets omitted.
+    fn minute_points(&self, now: DateTime<Utc>, window: Duration) -> Vec<SliPoint> {
+        let ring = &self.coarse;
+        let len = ring.slots.len() as i64;
+        let to_epoch = now.timestamp().div_euclid(ring.width_secs);
+        let first = (now - window)
+            .timestamp()
+            .div_euclid(ring.width_secs)
+            .max(to_epoch - len + 1);
+        let mut out = Vec::new();
+        for epoch in first..=to_epoch {
+            let slot = &ring.slots[epoch.rem_euclid(len) as usize];
+            if slot.epoch == epoch && slot.count > 0 {
+                out.push(SliPoint {
+                    ts: epoch * ring.width_secs,
+                    value: slot.good / slot.count as f64,
+                    count: slot.count,
+                });
+            }
+        }
+        out
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -947,7 +971,7 @@ impl SloEngine {
     /// editor's GET view; effective values, whether compiled
     /// defaults or config-managed).
     pub fn objectives(&self) -> Vec<SloObjective> {
-        todo!("SLO-P6: implement after RED is validated")
+        self.objectives.lock().unwrap().clone()
     }
 
     /// SLO-P6 — minute-resolution availability series over the
@@ -961,8 +985,11 @@ impl SloEngine {
         window: Duration,
         now: DateTime<Utc>,
     ) -> Vec<SliPoint> {
-        let _ = (kind, window, now);
-        todo!("SLO-P6: implement after RED is validated")
+        let buffers = self.buffers.lock().unwrap();
+        match buffers.get(kind) {
+            None => Vec::new(),
+            Some(buf) => buf.minute_points(now, window),
+        }
     }
 
     /// SLO-P3 telemetry-absent watchdog seam: `true` when `kind`
