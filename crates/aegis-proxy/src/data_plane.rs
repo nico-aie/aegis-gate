@@ -6680,6 +6680,15 @@ rate_limit:
     // the tier threshold; assert it's BLOCKED without a rule and ALLOWED with a
     // matching `then: allow` rule for the peer IP.
     async fn build_attack_waf(rule_yaml: Option<&str>) -> std::net::SocketAddr {
+        build_attack_waf_geo(rule_yaml, None).await
+    }
+
+    /// AC-P2-c — variant that also installs a GeoIP stub on `ctx.geoip`,
+    /// so a `Country`/`Asn` rule condition can resolve the loopback peer.
+    async fn build_attack_waf_geo(
+        rule_yaml: Option<&str>,
+        geoip: Option<std::sync::Arc<dyn aegis_security::geoip::GeoIpLookup>>,
+    ) -> std::net::SocketAddr {
         let backend = spawn_upstream().await;
         let yaml = format!(
             r#"
@@ -6698,6 +6707,9 @@ state: {{ backend: in_memory }}
         let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
         let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
         ctx.interop_modes.set(Arc::new(ModeStore::new(Mode::Enforce))).ok();
+        if let Some(g) = geoip {
+            ctx.geoip.set(g).ok();
+        }
         if let Some(rule_yaml) = rule_yaml {
             let rules: Vec<aegis_security::rules::ast::Rule> =
                 serde_yaml::from_str(rule_yaml).unwrap();
@@ -6769,6 +6781,38 @@ state: {{ backend: in_memory }}
     // A non-matching block rule (scopes to /admin; the attack hits /static/...).
     const BLOCK_ADMIN_RULE: &str =
         "- id: block-admin\n  priority: 100\n  when:\n    path_matches:\n      contains: \"/admin\"\n  then:\n    block:\n      status: 403\n  scope: global\n";
+
+    // AC-P2-c (2026-07-03) — a rules-engine `country` condition must
+    // resolve the peer's country via the geoip reader threaded into the
+    // data-plane `evaluate()` call (pre-fix both sites used the
+    // empty-context shim, so Country/Asn always evaluated false).
+    const GEO_BLOCK_CN_RULE: &str =
+        "- id: geo-block\n  priority: 100\n  when:\n    country: [\"CN\"]\n  then:\n    block:\n      status: 451\n  scope: global\n";
+
+    #[tokio::test]
+    async fn country_rule_blocks_via_data_plane_geoip() {
+        // Stub geoip resolves the loopback test peer to CN.
+        let geo: std::sync::Arc<dyn aegis_security::geoip::GeoIpLookup> = std::sync::Arc::new(
+            aegis_security::geoip::StaticGeoIp::new().with_country("127.0.0.1", "CN"),
+        );
+        let waf = build_attack_waf_geo(Some(GEO_BLOCK_CN_RULE), Some(geo)).await;
+        assert_eq!(
+            get_status(waf, "/").await,
+            451,
+            "a country rule must fire once the data plane threads geoip into evaluate()",
+        );
+    }
+
+    #[tokio::test]
+    async fn country_rule_does_not_block_when_no_geoip_wired() {
+        // Same rule, NO geoip reader → Country evaluates false → forwarded.
+        let waf = build_attack_waf_geo(Some(GEO_BLOCK_CN_RULE), None).await;
+        assert_ne!(
+            get_status(waf, "/").await,
+            451,
+            "no geoip reader → country condition stays false, request forwarded",
+        );
+    }
 
     #[tokio::test]
     async fn detector_block_fires_without_an_allow_rule() {
