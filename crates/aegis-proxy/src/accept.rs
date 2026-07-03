@@ -51,6 +51,42 @@ const HEADER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 const FLEET_EVENT_BUS_CAP: usize = 1024;
 
 /// Cluster Phase 2 (§2b) — wire the cross-node event fanout when
+/// SLO-P5 — dispatch one alert event through the dedup cache to
+/// the live receiver list, folding delivery outcomes into the
+/// `/api/alert-receivers` ring. The single path every alert class
+/// takes (SLO burn, watchdog, pool health, DDoS gate, certs,
+/// hot-reload) so routing/dedup behavior can't drift per class.
+///
+/// (VipTalk dispatch with the `alerts` feature off is a logged
+/// no-op counted in `delivered` — see CC-T2.1.b for the summary
+/// split.)
+async fn dispatch_and_record(
+    event: &aegis_control::slo::AlertEvent,
+    receivers: &[aegis_control::slo::AlertReceiver],
+    dedup: &aegis_control::slo::AlertDedupCache,
+    ring: &aegis_control::api::alert_receivers::DispatchOutcomeRing,
+) {
+    let summary =
+        aegis_control::slo::dispatch::dispatch_event(event, receivers, Some(dedup)).await;
+    let now = chrono::Utc::now().timestamp();
+    for name in &summary.delivered {
+        ring.record_delivered(name, now);
+    }
+    for name in &summary.external {
+        ring.record_external(name, now);
+    }
+    for (name, reason) in &summary.failed {
+        ring.record_failed(name, now, reason);
+    }
+    tracing::info!(
+        severity = ?event.severity(),
+        delivered = summary.delivered.len(),
+        external = summary.external.len(),
+        failed = summary.failed.len(),
+        "alert event dispatched",
+    );
+}
+
 /// `cluster.fleet_events` is enabled AND a Redis state backend is
 /// configured. Spawns the publisher (drains the local bus → Redis) and
 /// subscriber (Redis → the returned fleet bus) tasks, and returns the
@@ -407,6 +443,10 @@ pub(crate) async fn admin_accept_loop(
     // propagates fleet-wide.
     slo_engine: Arc<aegis_control::slo::SloEngine>,
     slo_absent_after_secs: Arc<std::sync::atomic::AtomicU64>,
+    // SLO-P5 — alert-event channel drained by the SLO dispatch
+    // loop; senders live in the pool health monitors and the
+    // hot-reload failure paths.
+    alert_rx: tokio::sync::mpsc::UnboundedReceiver<aegis_control::slo::AlertEvent>,
 ) {
     let startup = aegis_control::health::StartupProbe::default();
     startup.mark_started();
@@ -813,6 +853,11 @@ pub(crate) async fn admin_accept_loop(
     // referenced by `cfg.tls.certificates` on every /api/certs
     // call — cheap (small files, parsed off the hot path) and
     // reflects hot-reloads automatically.
+    // SLO-P5 — the SLO loop's hourly cert sweep shares the same
+    // provider (None when no TLS certs are configured).
+    let mut cert_provider_for_alerts: Option<
+        aegis_control::api::tracking::CertInventoryProvider,
+    > = None;
     if let Some(tls) = cfg.tls.as_ref() {
         let certs_cfg: Vec<aegis_core::config::CertConfig> = tls.certificates.clone();
         let provider: aegis_control::api::tracking::CertInventoryProvider =
@@ -825,6 +870,7 @@ pub(crate) async fn admin_accept_loop(
                 }
                 out
             });
+        cert_provider_for_alerts = Some(provider.clone());
         services.tracking.set_cert_provider(provider);
     }
 
@@ -1331,6 +1377,9 @@ pub(crate) async fn admin_accept_loop(
         let shared = Arc::clone(&shared_receivers);
         let ring = dispatch_ring.clone();
         let slo_absent_after = Arc::clone(&slo_absent_after_secs);
+        let ddos = services.ddos.clone();
+        let cert_provider = cert_provider_for_alerts.clone();
+        let mut alert_rx = alert_rx;
         tokio::spawn(async move {
             // 2026-05-20 alerts refactor — a process-lifetime dedup
             // cache so a multi-tick burn-rate breach in the same
@@ -1339,11 +1388,34 @@ pub(crate) async fn admin_accept_loop(
             let dedup = aegis_control::slo::AlertDedupCache::default_window();
             let mut absent_slis: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
+            // SLO-P5 — producer state owned by this loop.
+            let mut cert_state =
+                aegis_control::slo::producers::CertAlertState::default();
+            let mut ddos_active_since: Option<chrono::DateTime<chrono::Utc>> = None;
+            // Cert expiry moves daily; sweep hourly (120 × 30s
+            // ticks), starting with the first tick so an
+            // already-critical cert alerts ~30s after boot.
+            const CERT_SWEEP_EVERY_TICKS: u64 = 120;
+            let mut tick_count: u64 = 0;
             let mut tick =
                 tokio::time::interval(std::time::Duration::from_secs(30));
             tick.tick().await; // skip the immediate first tick
             loop {
-                tick.tick().await;
+                // SLO-P5 — external producers (pool health,
+                // hot-reload failures) land between ticks and
+                // dispatch immediately through the same
+                // dedup/receivers/outcome-ring path.
+                // (`Some(ev) = recv()` disables the branch when the
+                // channel is closed, degrading to a tick-only loop.)
+                let channel_event = tokio::select! {
+                    Some(ev) = alert_rx.recv() => Some(ev),
+                    _ = tick.tick() => None,
+                };
+                if let Some(event) = channel_event {
+                    let receivers = (**shared.load()).clone();
+                    dispatch_and_record(&event, &receivers, &dedup, &ring).await;
+                    continue;
+                }
                 let new_alerts = engine.evaluate();
 
                 // SLO-P3 — telemetry-absent watchdog. Burn-rate
@@ -1389,70 +1461,85 @@ pub(crate) async fn admin_accept_loop(
                         })
                         .collect();
                 absent_slis = now_absent;
+                let mut producer_events = watchdog_events;
 
-                if new_alerts.is_empty() && watchdog_events.is_empty() {
+                // SLO-P5 — DDoS spike-gate transitions, polled per
+                // tick like the watchdog (the auto-trigger flips
+                // state inside aegis-security; this loop is the
+                // alert-facing observer).
+                if let Some(d) = ddos.as_ref() {
+                    let active = d.is_spike_active();
+                    match (active, ddos_active_since) {
+                        (true, None) => {
+                            ddos_active_since = Some(now_utc);
+                            producer_events.push(
+                                aegis_control::slo::AlertEvent::DdosModeEntered {
+                                    fired_at: now_utc,
+                                    trigger: format!(
+                                        "rps spike: {} rps (baseline {})",
+                                        d.current_rps(),
+                                        d.baseline_rps(),
+                                    ),
+                                    observed_rps: d.current_rps().min(u32::MAX as u64)
+                                        as u32,
+                                },
+                            );
+                        }
+                        (false, Some(since)) => {
+                            ddos_active_since = None;
+                            producer_events.push(
+                                aegis_control::slo::AlertEvent::DdosModeCleared {
+                                    fired_at: now_utc,
+                                    duration_seconds: (now_utc - since)
+                                        .num_seconds()
+                                        .max(0)
+                                        as u64,
+                                },
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+
+                // SLO-P5 — hourly cert-expiry sweep; band
+                // transitions alert once per band per host
+                // (Warning=Ticket <30d, Critical=Page <7d).
+                if tick_count % CERT_SWEEP_EVERY_TICKS == 0 {
+                    if let Some(provider) = cert_provider.as_ref() {
+                        let observations: Vec<
+                            aegis_control::slo::producers::CertObservation,
+                        > = provider()
+                            .into_iter()
+                            .map(|e| {
+                                let days =
+                                    (e.expires_at - now_utc).num_days().max(0) as u32;
+                                aegis_control::slo::producers::CertObservation {
+                                    host: e.host,
+                                    days_remaining: days,
+                                    not_after: e.expires_at,
+                                }
+                            })
+                            .collect();
+                        producer_events.extend(cert_state.observe(&observations, now_utc));
+                    }
+                }
+                tick_count += 1;
+
+                if new_alerts.is_empty() && producer_events.is_empty() {
                     continue;
                 }
                 let receivers = (**shared.load()).clone();
-                for event in &watchdog_events {
-                    let summary = aegis_control::slo::dispatch::dispatch_event(
-                        event,
-                        &receivers,
-                        Some(&dedup),
-                    )
-                    .await;
-                    let now = chrono::Utc::now().timestamp();
-                    for name in &summary.delivered {
-                        ring.record_delivered(name, now);
-                    }
-                    for name in &summary.external {
-                        ring.record_external(name, now);
-                    }
-                    for (name, reason) in &summary.failed {
-                        ring.record_failed(name, now, reason);
-                    }
-                    tracing::warn!(
-                        silent_for_secs = absent_after_secs,
-                        "telemetry-absent watchdog fired: SLI served \
-                         traffic this boot but has gone silent",
-                    );
+                for event in &producer_events {
+                    dispatch_and_record(event, &receivers, &dedup, &ring).await;
                 }
                 for alert in &new_alerts {
                     let event =
                         aegis_control::slo::AlertEvent::Slo(alert.clone());
-                    let summary = aegis_control::slo::dispatch::dispatch_event(
-                        &event,
-                        &receivers,
-                        Some(&dedup),
-                    )
-                    .await;
-                    let now = chrono::Utc::now().timestamp();
-                    for name in &summary.delivered {
-                        // VipTalk dispatch with the `alerts`
-                        // feature off is logged as a no-op +
-                        // counted in `delivered` — the dispatch
-                        // module currently treats both states
-                        // the same on the summary side. Until
-                        // we split that signal, mark `delivered`
-                        // as `ok`; the dashboard can layer on
-                        // `skipped_no_feature` when CC-T2.1.b
-                        // refactors `DispatchSummary` to carry
-                        // it explicitly.
-                        ring.record_delivered(name, now);
-                    }
-                    for name in &summary.external {
-                        ring.record_external(name, now);
-                    }
-                    for (name, reason) in &summary.failed {
-                        ring.record_failed(name, now, reason);
-                    }
+                    dispatch_and_record(&event, &receivers, &dedup, &ring).await;
                     tracing::info!(
                         sli = ?alert.sli,
                         severity = ?alert.severity,
                         burn_rate = alert.burn_rate,
-                        delivered = summary.delivered.len(),
-                        failed = summary.failed.len(),
-                        external = summary.external.len(),
                         "slo alert dispatched",
                     );
                 }

@@ -212,27 +212,32 @@ pub struct SloAlert {
 /// [`Self::severity`]; per-variant chat formatting lives in
 /// [`crate::slo::dispatch::format_event_text`].
 ///
-/// Variants flagged "wired" emit from a production code path
-/// today; the rest are surface placeholders so the dispatcher
-/// shape is stable while later phases land the producers.
+/// SLO-P5 (2026-07-03): the "wired" flags below were re-verified
+/// against actual producers — several pre-P5 comments claimed
+/// wiring that never existed. `StrikeBlockSurge` and
+/// `AuditChainBreak` remain the only placeholders (producers need
+/// new detection logic — see `plans/future/`); the removed
+/// `GitOpsDrift` variant went with its deleted module.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AlertEvent {
-    /// SLO burn-rate breach (legacy path; wired).
+    /// SLO burn-rate breach (wired: the evaluation loop).
     Slo(SloAlert),
-    /// DDoS gate flipped into enforce mode (wired).
+    /// DDoS spike gate engaged (wired SLO-P5: polled per
+    /// evaluation tick from `DdosRuntime::is_spike_active`).
     DdosModeEntered {
         fired_at: DateTime<Utc>,
         trigger: String,
         observed_rps: u32,
     },
-    /// DDoS gate exited enforce mode back to normal (wired).
+    /// DDoS spike gate released (wired SLO-P5).
     DdosModeCleared {
         fired_at: DateTime<Utc>,
         duration_seconds: u64,
     },
-    /// One or more TLS certs are within the expiry warning
-    /// window (wired by the daily cert poll).
+    /// A TLS cert crossed an expiry band — <30d Ticket, <7d Page
+    /// (wired SLO-P5: hourly sweep of the cert inventory;
+    /// `producers::CertAlertState` fires once per band).
     CertExpiringSoon {
         fired_at: DateTime<Utc>,
         host: String,
@@ -240,16 +245,18 @@ pub enum AlertEvent {
         not_after: DateTime<Utc>,
     },
     /// Risk tracker observed N unique source IPs hitting
-    /// strike-block in a short window (not yet wired —
-    /// Phase B producer).
+    /// strike-block in a short window (placeholder — producer
+    /// needs new detection logic).
     StrikeBlockSurge {
         fired_at: DateTime<Utc>,
         unique_ips: u32,
         window_seconds: u32,
         top_rule_ids: Vec<String>,
     },
-    /// Upstream pool dropped below healthy membership (not
-    /// yet wired — Phase B producer).
+    /// Upstream pool dropped below full healthy membership
+    /// (wired SLO-P5: both health monitors via
+    /// `producers::PoolAlertState`; healthy=0 pages, partial
+    /// tickets).
     UpstreamPoolDegraded {
         fired_at: DateTime<Utc>,
         pool: String,
@@ -257,7 +264,7 @@ pub enum AlertEvent {
         total: u32,
         first_down: String,
     },
-    /// Upstream pool returned to fully healthy (not yet wired).
+    /// Upstream pool returned to fully healthy (wired SLO-P5).
     UpstreamPoolRecovered {
         fired_at: DateTime<Utc>,
         pool: String,
@@ -266,22 +273,18 @@ pub enum AlertEvent {
     // removed with the global leader concept — it never had a
     // producer (was "not yet wired").
     /// Hot-reload of config failed; last-known-good is still
-    /// live (not yet wired — Phase B producer).
+    /// live (wired SLO-P5: file-watcher validation/publish
+    /// failures + shared-config NACK).
     HotReloadFailed {
         fired_at: DateTime<Utc>,
         reason: String,
         last_known_good_version: u64,
     },
-    /// GitOps poll detected drift between repo and live config
-    /// (not yet wired).
-    GitOpsDrift {
-        fired_at: DateTime<Utc>,
-        repo: String,
-        expected: String,
-        observed: String,
-    },
-    /// Audit-chain verify detected a hash mismatch (not yet
-    /// wired — Phase B producer).
+    // SLO-P5: `GitOpsDrift` deleted — the gitops module was
+    // removed 2026-05-17 (F-CRITICAL-005) and the variant never
+    // had a producer.
+    /// Audit-chain verify detected a hash mismatch (placeholder —
+    /// producer needs new detection logic).
     AuditChainBreak {
         fired_at: DateTime<Utc>,
         last_good_seq: u64,
@@ -339,7 +342,6 @@ impl AlertEvent {
             }
             AlertEvent::UpstreamPoolRecovered { .. } => AlertSeverity::Info,
             AlertEvent::HotReloadFailed { .. } => AlertSeverity::Ticket,
-            AlertEvent::GitOpsDrift { .. } => AlertSeverity::Ticket,
             AlertEvent::AuditChainBreak { .. } => AlertSeverity::Page,
             AlertEvent::OperatorBriefing { .. } => AlertSeverity::Info,
             AlertEvent::TelemetryAbsent { .. } => AlertSeverity::Ticket,
@@ -357,7 +359,6 @@ impl AlertEvent {
             AlertEvent::UpstreamPoolDegraded { fired_at, .. } => *fired_at,
             AlertEvent::UpstreamPoolRecovered { fired_at, .. } => *fired_at,
             AlertEvent::HotReloadFailed { fired_at, .. } => *fired_at,
-            AlertEvent::GitOpsDrift { fired_at, .. } => *fired_at,
             AlertEvent::AuditChainBreak { fired_at, .. } => *fired_at,
             AlertEvent::OperatorBriefing { fired_at, .. } => *fired_at,
             AlertEvent::TelemetryAbsent { fired_at, .. } => *fired_at,
@@ -421,10 +422,6 @@ impl AlertEvent {
             } => {
                 "hot_reload_failed".hash(&mut h);
                 last_known_good_version.hash(&mut h);
-            }
-            AlertEvent::GitOpsDrift { repo, .. } => {
-                "gitops_drift".hash(&mut h);
-                repo.hash(&mut h);
             }
             AlertEvent::AuditChainBreak { observed_seq, .. } => {
                 "audit_chain_break".hash(&mut h);

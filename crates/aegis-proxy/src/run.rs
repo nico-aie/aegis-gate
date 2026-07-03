@@ -1097,11 +1097,19 @@ pub async fn run(
         }));
     }
 
+    // SLO-P5 — alert-event channel: producers scattered across the
+    // proxy (pool health monitors, hot-reload failure paths) send
+    // AlertEvents here; the SLO dispatch loop in `accept.rs` drains
+    // it through the shared dedup/receivers/outcome-ring path.
+    let (alert_tx, alert_rx) =
+        tokio::sync::mpsc::unbounded_channel::<aegis_control::slo::AlertEvent>();
+
     // Spawn live health-check tasks for every pool that carries
     // a `health:` block. Without this, configured probes never
     // ran and the dashboard's "members up" stayed at the
     // boot-time default forever.
-    let _health_handles = upstream_ctx.spawn_health_checks(&cfg, &bus);
+    let _health_handles =
+        upstream_ctx.spawn_health_checks(&cfg, &bus, Some(alert_tx.clone()));
 
     // Watcher spawn deferred until after the TLS resolver is
     // built so it can be threaded through. See spawn block
@@ -1300,6 +1308,7 @@ pub async fn run(
                     path,
                     file_store,
                     bus.clone(),
+                    Some(alert_tx.clone()),
                 ));
             }
         },
@@ -1444,6 +1453,8 @@ pub async fn run(
             // each swap.
             slo_engine: Some(Arc::clone(&slo_engine)),
             slo_absent_after_secs: Some(Arc::clone(&slo_absent_after_secs)),
+            // SLO-P5 — HotReloadFailed alerts on shared-config NACK.
+            alert_tx: Some(alert_tx.clone()),
             // A2 — re-derive the inbound mTLS trust store on each swap so a
             // Zero Trust CA rotation converges fleet-wide (was file-watcher
             // only).
@@ -2220,6 +2231,7 @@ pub async fn run(
         shared_receivers,
         slo_engine,
         slo_absent_after_secs,
+        alert_rx,
     )));
 
     readiness.config_loaded.store(true, Ordering::Relaxed);

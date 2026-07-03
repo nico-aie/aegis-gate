@@ -7499,6 +7499,7 @@ state:
             receiver_writer: None,
             slo_engine: None,
             slo_absent_after_secs: None,
+            alert_tx: None,
             client_auth: None,
             ddos: None,
             risk: None,
