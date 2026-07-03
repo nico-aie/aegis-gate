@@ -162,6 +162,44 @@ backend but have different thresholds:
 - Rate limit: per-tier policy (e.g., 100/min per IP)
 - DDoS burst: extreme spikes (e.g., 100/sec per IP) → auto-block
 
+### Division of labor — which gate throttles a single-IP flood (LT-P3)
+
+The two per-IP gates are evaluated in this order on the data-plane hot path
+(the ddos gate sits between strike-block and the rate limiter — see the
+comment at `data_plane.rs` "DDoS ... sits between the strike-block gate and the
+per-IP rate-limit token bucket"):
+
+```
+blacklist → strike-block → ddos gate → per-IP rate limiter → detectors
+```
+
+They are deliberately tuned for **different jobs**:
+
+| Gate | Code | Default | Role |
+|---|---|---|---|
+| **DDoS per-IP flood** | `src/ddos.rs` (`DdosDetector`) | **1000 req / 10 s** per `(tier, ip)` (~100 rps/IP), enabled by default | The **effective single-source volumetric defense**. Fires first under a flood; breach → local auto-block for `block_ttl_s` (default 300 s). |
+| **Per-IP rate limiter** | `src/rate_limit/ip_limiter.rs` (`IpRateLimiter`) | **1_000_000 req / 60 s** per composite key | A deliberately **loose backstop** + the hook for an operator-set strict per-IP cap (`PUT /api/rate-limit` / the `global-ip` bucket). Not the volumetric gate. |
+
+So under a single-IP L7 flood the **ddos gate fires ~167× sooner** than the
+rate-limiter backstop (pinned by the `ddos_gate_fires_far_sooner_than_ip_limiter_backstop`
+test in `ddos.rs`).
+
+**Why the rate-limiter default is left loose:** at a tight default it would
+throttle legitimate high-RPS traffic arriving from a *small set* of source IPs
+(a CDN/NAT front, or the benchmark's own load generator), producing false 429s —
+without adding any volumetric coverage `ddos.rs` doesn't already provide. Set a
+strict per-IP cap explicitly only when you know the client-IP cardinality is high.
+
+**L3/L4 packet floods** (SYN/UDP volumetric) are out of scope for both L7 gates —
+they belong to the kernel / load balancer / anycast tier upstream of the WAF
+(see the L4 posture note, AC-P3-d). These gates defend the L7 request path only.
+
+**Runbook — confirm which gate fired:** a single-source flood that stops at
+`~1000 requests / 10 s` with `403` + audit `rule_id: ddos` (not `429`) is the
+ddos gate doing its job. A `429` with `X-WAF-Rule-Id` from the rate limiter means
+an operator-configured strict bucket fired, not the default backstop (the default
+1M/60s effectively never trips first).
+
 ## Implementation
 
 - `src/rate_limit/sliding_window.rs` — in-memory backend
