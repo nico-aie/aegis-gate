@@ -885,6 +885,25 @@ impl SloEngine {
         ring.recent.push_back(ts);
     }
 
+    /// SLO-P4 — validate an objective set against the engine's
+    /// invariants (bucket-store retention, meaningful budget).
+    /// Shared by [`Self::set_objectives`] and the config API so a
+    /// bad `slo:` section fails loudly at the boundary.
+    pub fn validate_objectives(objectives: &[SloObjective]) -> Result<(), String> {
+        let _ = objectives;
+        todo!("SLO-P4: implement after RED is validated")
+    }
+
+    /// SLO-P4 — hot-swap the objective set (config apply path).
+    /// Thresholds change; the SLI **buffers are untouched**, so a
+    /// threshold edit does not discard observed history. Active
+    /// alerts for removed/changed windows resolve or refire on
+    /// the next evaluation naturally.
+    pub fn set_objectives(&self, objectives: Vec<SloObjective>) -> Result<(), String> {
+        let _ = objectives;
+        todo!("SLO-P4: implement after RED is validated")
+    }
+
     /// SLO-P3 telemetry-absent watchdog seam: `true` when `kind`
     /// has produced at least one sample since boot but none in
     /// the trailing `absent_after` window — a wedged data plane,
@@ -1396,6 +1415,79 @@ mod tests {
         }
         let alerts = engine.evaluate();
         assert!(alerts[0].runbook_url.contains("runbooks.aegis.local"));
+    }
+
+    // -- SLO-P4: hot-swappable, validated objectives --------------------------
+
+    #[test]
+    fn set_objectives_swaps_thresholds_but_keeps_data() {
+        let engine = SloEngine::new(fast_burn_objective());
+        let t0 = Utc::now();
+        for _ in 0..100 {
+            engine.record_at(availability_sample_at(0.98, t0), t0);
+        }
+        // 2% error rate vs 0.1% budget → budget exhausted.
+        assert_eq!(engine.budget_status()[0].budget_remaining_pct, 0.0);
+
+        // Loosen the objective to 97% — same data, new target.
+        let mut looser = fast_burn_objective();
+        looser[0].target = 0.97;
+        engine.set_objectives(looser).expect("valid objectives");
+        let status = engine.budget_status();
+        assert!((status[0].target - 0.97).abs() < 1e-9);
+        assert!(
+            (status[0].current - 0.98).abs() < 1e-6,
+            "observed history must survive the swap, got {}",
+            status[0].current,
+        );
+        assert!(
+            status[0].budget_remaining_pct > 0.0,
+            "2% errors within a 3% budget leaves budget remaining",
+        );
+    }
+
+    #[test]
+    fn validate_objectives_rejects_out_of_range_configs() {
+        // Budget window beyond the 30d coarse retention.
+        let mut too_wide = fast_burn_objective();
+        too_wide[0].window_days = 45;
+        assert!(SloEngine::validate_objectives(&too_wide).is_err());
+
+        // Burn window beyond the 72h fine retention.
+        let mut too_long = fast_burn_objective();
+        too_long[0].burn_rates[0].window_hours = 100;
+        assert!(SloEngine::validate_objectives(&too_long).is_err());
+
+        // Target must leave a non-empty budget below 100%.
+        for bad_target in [1.0, 1.5, 0.0, -0.1] {
+            let mut bad = fast_burn_objective();
+            bad[0].target = bad_target;
+            assert!(
+                SloEngine::validate_objectives(&bad).is_err(),
+                "target {bad_target} must be rejected",
+            );
+        }
+
+        // Short window must be shorter than its long window.
+        let mut inverted = fast_burn_objective();
+        inverted[0].burn_rates[0].short_window_minutes = 120;
+        assert!(SloEngine::validate_objectives(&inverted).is_err());
+
+        // The compiled defaults are, of course, valid.
+        assert!(SloEngine::validate_objectives(&default_objectives()).is_ok());
+        assert!(SloEngine::validate_objectives(&fast_burn_objective()).is_ok());
+    }
+
+    #[test]
+    fn set_objectives_rejects_invalid_and_keeps_previous() {
+        let engine = SloEngine::new(fast_burn_objective());
+        let mut bad = fast_burn_objective();
+        bad[0].window_days = 90;
+        assert!(engine.set_objectives(bad).is_err());
+        // Previous objectives still live.
+        let status = engine.budget_status();
+        assert_eq!(status.len(), 1);
+        assert!((status[0].target - 0.999).abs() < 1e-9);
     }
 
     // -- SLO-P3: multi-window multi-burn + guards -----------------------------
