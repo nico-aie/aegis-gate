@@ -290,11 +290,12 @@ pub fn apply_cfg_change_to_ai(
 pub enum ResponseFilterReloadOutcome {
     /// No writer handle wired (no-pipeline build / test bundle).
     NoWriter,
-    /// The three rungs were set from `cfg.response_filter`.
+    /// The four rungs were set from `cfg.response_filter`.
     Applied {
         scrub_stack_traces: bool,
         mask_internal_ips: bool,
         redact_dlp: bool,
+        strip_response_headers: bool,
     },
 }
 
@@ -315,11 +316,13 @@ pub fn apply_cfg_change_to_response_filter(
         scrub_stack_traces: rf.scrub_stack_traces,
         mask_internal_ips: rf.mask_internal_ips,
         redact_dlp: rf.redact_dlp,
+        strip_response_headers: rf.strip_response_headers,
     });
     ResponseFilterReloadOutcome::Applied {
         scrub_stack_traces: rf.scrub_stack_traces,
         mask_internal_ips: rf.mask_internal_ips,
         redact_dlp: rf.redact_dlp,
+        strip_response_headers: rf.strip_response_headers,
     }
 }
 
@@ -1328,6 +1331,8 @@ ai:
         assert!(cfg.response_filter.scrub_stack_traces);
         assert!(cfg.response_filter.mask_internal_ips);
         assert!(cfg.response_filter.redact_dlp);
+        // AC-P1-a — the header-strip rung defaults ON like the body rungs.
+        assert!(cfg.response_filter.strip_response_headers);
     }
 
     #[test]
@@ -1356,6 +1361,7 @@ ai:
                 scrub_stack_traces: true,
                 mask_internal_ips: true,
                 redact_dlp: true,
+                strip_response_headers: true,
             },
         )));
         let yaml = r#"
@@ -1377,6 +1383,7 @@ state:
 response_filter:
   scrub_stack_traces: false
   redact_dlp: false
+  strip_response_headers: false
 "#;
         let cfg = parse(yaml);
         let out = apply_cfg_change_to_response_filter(&cfg, Some(&writer));
@@ -1386,12 +1393,14 @@ response_filter:
                 scrub_stack_traces: false,
                 mask_internal_ips: true, // omitted → default true
                 redact_dlp: false,
+                strip_response_headers: false,
             },
         );
         let got = writer.get();
         assert!(!got.scrub_stack_traces);
         assert!(got.mask_internal_ips);
         assert!(!got.redact_dlp);
+        assert!(!got.strip_response_headers);
     }
 
     #[test]

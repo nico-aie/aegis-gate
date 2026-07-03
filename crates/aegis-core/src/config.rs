@@ -5387,6 +5387,12 @@ pub struct ResponseFilterConfig {
     pub mask_internal_ips: bool,
     #[serde(default = "default_true")]
     pub redact_dlp: bool,
+    /// AC-P1-a (2026-07-03) — strip `Server` / `X-Powered-By` /
+    /// `X-Debug*` / `X-Internal*` etc. from proxied responses.
+    /// Defaults on like the body rungs; a config that omits the
+    /// field keeps the safe posture.
+    #[serde(default = "default_true")]
+    pub strip_response_headers: bool,
 }
 
 impl Default for ResponseFilterConfig {
@@ -5395,6 +5401,7 @@ impl Default for ResponseFilterConfig {
             scrub_stack_traces: true,
             mask_internal_ips: true,
             redact_dlp: true,
+            strip_response_headers: true,
         }
     }
 }

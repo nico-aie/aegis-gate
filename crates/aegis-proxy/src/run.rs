@@ -230,6 +230,7 @@ pub async fn run(
         scrub_stack_traces: cfg.response_filter.scrub_stack_traces,
         mask_internal_ips: cfg.response_filter.mask_internal_ips,
         redact_dlp: cfg.response_filter.redact_dlp,
+        strip_response_headers: cfg.response_filter.strip_response_headers,
     });
 
     // 2026-05-27 (Phase B) — create the shared TierStore here so the same

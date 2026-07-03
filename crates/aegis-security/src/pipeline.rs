@@ -55,6 +55,14 @@ pub struct ResponseFilterConfig {
     pub scrub_stack_traces: bool,
     pub mask_internal_ips: bool,
     pub redact_dlp: bool,
+    /// AC-P1-a (2026-07-03) — strip version-banner / debug / internal
+    /// headers (`response_filter::should_strip_header` set) from
+    /// proxied responses. Fourth rung, header-side peer of the three
+    /// body rungs above; same safe-by-default posture. Strip-only:
+    /// security-header *injection* (CSP/HSTS) stays opt-in and
+    /// unwired here — forcing those onto arbitrary upstreams breaks
+    /// apps.
+    pub strip_response_headers: bool,
 }
 
 impl Default for ResponseFilterConfig {
@@ -63,6 +71,7 @@ impl Default for ResponseFilterConfig {
             scrub_stack_traces: true,
             mask_internal_ips: true,
             redact_dlp: true,
+            strip_response_headers: true,
         }
     }
 }
@@ -256,6 +265,25 @@ impl SecurityPipeline for Pipeline {
             return OutboundAction::PassThrough;
         }
         OutboundAction::Rewrite(bytes::Bytes::from(working.into_owned()))
+    }
+
+    /// AC-P1-a — strip the leak-header set in place. O(header count)
+    /// key comparisons; the common clean-response path allocates
+    /// nothing (the removal Vec stays empty). Collect-then-remove
+    /// because `HeaderMap` has no retain and removal invalidates
+    /// iteration.
+    fn on_response_headers(&self, headers: &mut http::HeaderMap) {
+        if !self.filter.load().strip_response_headers {
+            return;
+        }
+        let to_remove: Vec<http::HeaderName> = headers
+            .keys()
+            .filter(|k| crate::response_filter::should_strip_header(k.as_str()))
+            .cloned()
+            .collect();
+        for name in to_remove {
+            headers.remove(&name);
+        }
     }
 }
 

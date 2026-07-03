@@ -32,6 +32,11 @@ pub struct ResponseFilterPatch {
     pub mask_internal_ips: bool,
     #[serde(default = "default_true")]
     pub redact_dlp: bool,
+    /// AC-P1-a (2026-07-03) — fourth rung: strip leak headers
+    /// (`Server`, `X-Powered-By`, `X-Debug*`, …) from proxied
+    /// responses. Same default-on posture as the body rungs.
+    #[serde(default = "default_true")]
+    pub strip_response_headers: bool,
 }
 
 fn default_true() -> bool {
@@ -47,6 +52,7 @@ pub struct ResponseFilterView {
     pub scrub_stack_traces: bool,
     pub mask_internal_ips: bool,
     pub redact_dlp: bool,
+    pub strip_response_headers: bool,
     pub wired: bool,
 }
 
@@ -56,6 +62,7 @@ impl ResponseFilterView {
             scrub_stack_traces: true,
             mask_internal_ips: true,
             redact_dlp: true,
+            strip_response_headers: true,
             wired: false,
         }
     }
@@ -80,6 +87,7 @@ impl ResponseFilterWriter for aegis_security::Pipeline {
             scrub_stack_traces: patch.scrub_stack_traces,
             mask_internal_ips: patch.mask_internal_ips,
             redact_dlp: patch.redact_dlp,
+            strip_response_headers: patch.strip_response_headers,
         });
     }
     fn get(&self) -> ResponseFilterPatch {
@@ -88,6 +96,7 @@ impl ResponseFilterWriter for aegis_security::Pipeline {
             scrub_stack_traces: snap.scrub_stack_traces,
             mask_internal_ips: snap.mask_internal_ips,
             redact_dlp: snap.redact_dlp,
+            strip_response_headers: snap.strip_response_headers,
         }
     }
 }
@@ -114,6 +123,7 @@ mod tests {
             scrub_stack_traces: true,
             mask_internal_ips: false,
             redact_dlp: true,
+            strip_response_headers: true,
         };
         let s = serde_json::to_string(&p).unwrap();
         let back: ResponseFilterPatch = serde_json::from_str(&s).unwrap();
@@ -127,6 +137,7 @@ mod tests {
         assert!(p.scrub_stack_traces);
         assert!(p.mask_internal_ips);
         assert!(p.redact_dlp);
+        assert!(p.strip_response_headers);
     }
 
     #[test]
@@ -139,6 +150,7 @@ mod tests {
         assert!(v.scrub_stack_traces);
         assert!(v.mask_internal_ips);
         assert!(v.redact_dlp);
+        assert!(v.strip_response_headers);
     }
 
     #[test]
@@ -156,10 +168,12 @@ mod tests {
             scrub_stack_traces: true,
             mask_internal_ips: false,
             redact_dlp: true,
+            strip_response_headers: false,
         });
         let after = pipe.get();
         assert!(after.scrub_stack_traces);
         assert!(!after.mask_internal_ips);
         assert!(after.redact_dlp);
+        assert!(!after.strip_response_headers);
     }
 }
