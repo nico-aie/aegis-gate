@@ -15,6 +15,8 @@
 //! | `login → withdrawal` | 5 s | 70 | ATO cashout — even faster + higher value than deposit |
 //! | `otp → deposit` | 5 s | 50 | Same shape after OTP step (most ATOs go through 2FA) |
 //! | `otp → withdrawal` | 5 s | 60 | Same shape, cashout |
+//! | `deposit → withdrawal` | 5 s | 70 | Rapid in-out laundering (AC-P1-b, 2026-07-03) |
+//! | `limit_change → withdrawal` | 5 s | 70 | Raise the cap, drain the account (AC-P1-b) |
 //!
 //! The ruleset is hardcoded for v1 — operator-tunable config lands
 //! when `aegis_core::config::VelocitySequenceConfig` is wired (a
@@ -45,6 +47,7 @@
 //! | `deposit`, `topup`, `recharge` | `Deposit` |
 //! | `withdraw`, `cashout`, `payout` | `Withdrawal` |
 //! | `transfer`, `send-money` | `Withdrawal` (treated as cash movement) |
+//! | `limit` (after the cash tags) | `LimitChange` (AC-P1-b) |
 //! | (anything else) | `Other` (not stored — keeps the ring buffer focused) |
 //!
 //! Only "interesting" tags go into the ring buffer; the `Other`
@@ -65,6 +68,12 @@ enum EndpointTag {
     Otp,
     Deposit,
     Withdrawal,
+    /// AC-P1-b (2026-07-03) — account-limit mutation routes
+    /// (`/api/account/limits`, `/settings/limit`, …). Only ever a
+    /// `prev` in the rule table: raising a cap right before a
+    /// withdrawal is the fraud shape; the limit change alone is
+    /// benign.
+    LimitChange,
 }
 
 impl EndpointTag {
@@ -82,6 +91,15 @@ impl EndpointTag {
         if p.contains("deposit") || p.contains("topup") || p.contains("recharge") {
             return Some(Self::Deposit);
         }
+        // AC-P1-b — checked AFTER withdraw/deposit so a route like
+        // `/settings/withdrawal-limit` keeps the higher-signal
+        // Withdrawal tag. "limit" alone is deliberately generous
+        // (matches `/limits`, `/profile-limit`); a false LimitChange
+        // tag costs one ring-buffer slot and can only score if a
+        // withdrawal follows within the window.
+        if p.contains("limit") {
+            return Some(Self::LimitChange);
+        }
         if p.contains("otp") || p.contains("2fa") || p.contains("verify") {
             return Some(Self::Otp);
         }
@@ -97,6 +115,7 @@ impl EndpointTag {
             Self::Otp => "otp",
             Self::Deposit => "deposit",
             Self::Withdrawal => "withdrawal",
+            Self::LimitChange => "limit_change",
         }
     }
 }
@@ -133,6 +152,21 @@ const RULES: &[SequenceRule] = &[
         next: EndpointTag::Withdrawal,
         window: Duration::from_secs(5),
         score: 60,
+    },
+    // AC-P1-b (2026-07-03) — fraud shapes with no auth step in the
+    // window. Withdrawal target → block-class 70, matching
+    // login→withdrawal above.
+    SequenceRule {
+        prev: EndpointTag::Deposit,
+        next: EndpointTag::Withdrawal,
+        window: Duration::from_secs(5),
+        score: 70,
+    },
+    SequenceRule {
+        prev: EndpointTag::LimitChange,
+        next: EndpointTag::Withdrawal,
+        window: Duration::from_secs(5),
+        score: 70,
     },
 ];
 
