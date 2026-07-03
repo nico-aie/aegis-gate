@@ -1022,6 +1022,175 @@ pub(crate) fn receiver_to_config(
     }
 }
 
+// ---------------------------------------------------------------------------
+// SLO-P4 — SLO objective fold
+// ---------------------------------------------------------------------------
+
+/// Outcome of re-deriving the SLO objectives from config.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SloReloadOutcome {
+    /// No engine handle wired (test bundle).
+    NoEngine,
+    /// `cfg.slo` is `None` — objectives are not config-managed on
+    /// this node; the compiled defaults stay live.
+    NotManaged,
+    /// Swapped `objectives` thresholds into the live engine
+    /// (SLI history untouched).
+    Applied { objectives: usize },
+    /// The section failed [`SloEngine::validate_objectives`]; the
+    /// previous objectives stay live. Carries the reason for the
+    /// log/audit trail.
+    Rejected { reason: String },
+}
+
+/// SLO-P4 — re-derive the live SLO objective set (and the
+/// telemetry-absent watchdog knob) from `cfg.slo`, mirroring
+/// [`apply_cfg_change_to_receivers`]'s managed/not-managed
+/// semantics. Invalid sections are REJECTED (previous objectives
+/// stay live) rather than partially applied — alerting must never
+/// be left half-configured by a bad doc.
+pub fn apply_cfg_change_to_slo(
+    new_cfg: &WafConfig,
+    slo_engine: Option<&Arc<aegis_control::slo::SloEngine>>,
+    absent_after_secs: Option<&Arc<std::sync::atomic::AtomicU64>>,
+) -> SloReloadOutcome {
+    let Some(engine) = slo_engine else {
+        return SloReloadOutcome::NoEngine;
+    };
+    let Some(slo) = new_cfg.slo.as_ref() else {
+        return SloReloadOutcome::NotManaged;
+    };
+    // Watchdog knob: a managed section is authoritative — absent
+    // key means "the compiled default", not "keep whatever".
+    if let Some(store) = absent_after_secs {
+        store.store(
+            slo.telemetry_absent_after_secs
+                .unwrap_or(aegis_control::slo::DEFAULT_TELEMETRY_ABSENT_AFTER_SECS),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+    let objectives: Vec<aegis_control::slo::SloObjective> = if slo.objectives.is_empty() {
+        aegis_control::slo::default_objectives()
+    } else {
+        slo.objectives.iter().map(objective_from_config).collect()
+    };
+    let count = objectives.len();
+    match engine.set_objectives(objectives) {
+        Ok(()) => SloReloadOutcome::Applied { objectives: count },
+        Err(reason) => {
+            tracing::warn!(
+                %reason,
+                "slo config section rejected — keeping previous objectives",
+            );
+            SloReloadOutcome::Rejected { reason }
+        }
+    }
+}
+
+/// Boot-time helper: the objective set a fresh engine should be
+/// constructed with. Invalid config falls back to the compiled
+/// defaults WITH a loud error — boot must not panic on a bad
+/// `slo:` section (the alerting engine is report-only,
+/// never fail-closed).
+pub fn slo_objectives_from_cfg(cfg: &WafConfig) -> Vec<aegis_control::slo::SloObjective> {
+    let configured: Vec<aegis_control::slo::SloObjective> = match cfg.slo.as_ref() {
+        Some(slo) if !slo.objectives.is_empty() => {
+            slo.objectives.iter().map(objective_from_config).collect()
+        }
+        _ => return aegis_control::slo::default_objectives(),
+    };
+    match aegis_control::slo::SloEngine::validate_objectives(&configured) {
+        Ok(()) => configured,
+        Err(reason) => {
+            tracing::error!(
+                %reason,
+                "invalid `slo:` config section at boot — using compiled default objectives",
+            );
+            aegis_control::slo::default_objectives()
+        }
+    }
+}
+
+/// Map a config-side [`aegis_core::config::SloObjectiveConfig`] to the
+/// live [`aegis_control::slo::SloObjective`]. Explicit field map (not
+/// serde) so the two crates' types stay independent.
+pub(crate) fn objective_from_config(
+    oc: &aegis_core::config::SloObjectiveConfig,
+) -> aegis_control::slo::SloObjective {
+    use aegis_control::slo::{BurnRateWindow, SliKind, SloObjective};
+    use aegis_core::config::SliKindConfig as KC;
+    SloObjective {
+        sli: match oc.sli {
+            KC::DataPlaneAvailability => SliKind::DataPlaneAvailability,
+        },
+        target: oc.target,
+        window_days: oc.window_days,
+        min_events: oc
+            .min_events
+            .unwrap_or_else(aegis_control::slo::default_min_events),
+        burn_rates: oc
+            .burn_rates
+            .iter()
+            .map(|b| BurnRateWindow {
+                window_hours: b.window_hours,
+                short_window_minutes: b.short_window_minutes,
+                burn_threshold: b.burn_threshold,
+                severity: severity_from_config(b.severity),
+            })
+            .collect(),
+    }
+}
+
+pub(crate) fn severity_from_config(
+    s: aegis_core::config::AlertSeverityConfig,
+) -> aegis_control::slo::AlertSeverity {
+    use aegis_control::slo::AlertSeverity;
+    use aegis_core::config::AlertSeverityConfig as SC;
+    match s {
+        SC::Page => AlertSeverity::Page,
+        SC::Ticket => AlertSeverity::Ticket,
+        SC::Info => AlertSeverity::Info,
+    }
+}
+
+/// Inverse of [`objective_from_config`] (SLO-P6) — renders the
+/// engine's live objectives back into the config shape for the
+/// `GET /api/slo/config` editor view. Returns `None` for SLI
+/// kinds with no config representation (declared-but-unproduced
+/// kinds are not editable).
+pub(crate) fn objective_to_config(
+    o: &aegis_control::slo::SloObjective,
+) -> Option<aegis_core::config::SloObjectiveConfig> {
+    use aegis_control::slo::{AlertSeverity, SliKind};
+    use aegis_core::config::{
+        AlertSeverityConfig as SC, BurnWindowConfig, SliKindConfig as KC, SloObjectiveConfig,
+    };
+    let sli = match o.sli {
+        SliKind::DataPlaneAvailability => KC::DataPlaneAvailability,
+        _ => return None,
+    };
+    Some(SloObjectiveConfig {
+        sli,
+        target: o.target,
+        window_days: o.window_days,
+        min_events: Some(o.min_events),
+        burn_rates: o
+            .burn_rates
+            .iter()
+            .map(|b| BurnWindowConfig {
+                window_hours: b.window_hours,
+                short_window_minutes: b.short_window_minutes,
+                burn_threshold: b.burn_threshold,
+                severity: match b.severity {
+                    AlertSeverity::Page => SC::Page,
+                    AlertSeverity::Ticket => SC::Ticket,
+                    AlertSeverity::Info => SC::Info,
+                },
+            })
+            .collect(),
+    })
+}
+
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
@@ -2537,6 +2706,135 @@ alerting:
         assert_eq!(
             live[0].severities,
             vec![aegis_control::slo::AlertSeverity::Page]
+        );
+    }
+
+    // ---- SLO-P4: slo objective fold ------------------------------------
+
+    fn yaml_with_slo() -> String {
+        r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+slo:
+  telemetry_absent_after_secs: 300
+  objectives:
+    - sli: data_plane_availability
+      target: 0.995
+      window_days: 30
+      min_events: 100
+      burn_rates:
+        - window_hours: 1
+          short_window_minutes: 5
+          burn_threshold: 14.4
+          severity: Page
+"#
+        .to_string()
+    }
+
+    fn test_engine() -> std::sync::Arc<aegis_control::slo::SloEngine> {
+        std::sync::Arc::new(aegis_control::slo::SloEngine::new(
+            aegis_control::slo::default_objectives(),
+        ))
+    }
+
+    #[test]
+    fn slo_reload_no_engine_when_handle_absent() {
+        let cfg = parse(&yaml_with_slo());
+        assert_eq!(
+            apply_cfg_change_to_slo(&cfg, None, None),
+            SloReloadOutcome::NoEngine
+        );
+    }
+
+    #[test]
+    fn slo_reload_not_managed_leaves_defaults() {
+        // No `slo:` block → compiled defaults stay live.
+        let cfg = parse(&yaml_with_per_tier());
+        let engine = test_engine();
+        assert_eq!(
+            apply_cfg_change_to_slo(&cfg, Some(&engine), None),
+            SloReloadOutcome::NotManaged
+        );
+        let status = engine.budget_status();
+        assert!((status[0].target - 0.999).abs() < 1e-9, "defaults live");
+    }
+
+    #[test]
+    fn slo_reload_applies_config_objectives_and_watchdog_knob() {
+        let cfg = parse(&yaml_with_slo());
+        let engine = test_engine();
+        let absent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
+            aegis_control::slo::DEFAULT_TELEMETRY_ABSENT_AFTER_SECS,
+        ));
+        let out = apply_cfg_change_to_slo(&cfg, Some(&engine), Some(&absent));
+        assert_eq!(out, SloReloadOutcome::Applied { objectives: 1 });
+        let status = engine.budget_status();
+        assert!((status[0].target - 0.995).abs() < 1e-9, "config target live");
+        assert_eq!(
+            absent.load(std::sync::atomic::Ordering::Relaxed),
+            300,
+            "watchdog knob applied",
+        );
+    }
+
+    #[test]
+    fn slo_reload_rejects_invalid_and_keeps_previous() {
+        let mut yaml = yaml_with_slo();
+        yaml = yaml.replace("window_days: 30", "window_days: 90");
+        let cfg = parse(&yaml);
+        let engine = test_engine();
+        let out = apply_cfg_change_to_slo(&cfg, Some(&engine), None);
+        assert!(
+            matches!(out, SloReloadOutcome::Rejected { .. }),
+            "got: {out:?}",
+        );
+        let status = engine.budget_status();
+        assert!((status[0].target - 0.999).abs() < 1e-9, "previous set live");
+    }
+
+    #[test]
+    fn slo_boot_helper_falls_back_to_defaults_on_invalid() {
+        // Valid section → configured objectives.
+        let cfg = parse(&yaml_with_slo());
+        let objs = slo_objectives_from_cfg(&cfg);
+        assert!((objs[0].target - 0.995).abs() < 1e-9);
+        assert_eq!(objs[0].min_events, 100);
+
+        // Invalid section → compiled defaults, no panic.
+        let cfg = parse(&yaml_with_slo().replace("target: 0.995", "target: 1.5"));
+        let objs = slo_objectives_from_cfg(&cfg);
+        assert!((objs[0].target - 0.999).abs() < 1e-9);
+
+        // No section → compiled defaults.
+        let cfg = parse(&yaml_with_per_tier());
+        let objs = slo_objectives_from_cfg(&cfg);
+        assert!((objs[0].target - 0.999).abs() < 1e-9);
+    }
+
+    #[test]
+    fn stale_budget_pct_key_fails_config_parse() {
+        // The pre-P3 threshold key must be a loud parse error,
+        // never a silently-defaulted threshold.
+        let yaml = yaml_with_slo().replace(
+            "burn_threshold: 14.4",
+            "budget_pct: 2.0\n          burn_threshold: 14.4",
+        );
+        assert!(
+            aegis_core::load_config_str(&yaml).is_err(),
+            "stale budget_pct must be rejected by deny_unknown_fields",
         );
     }
 

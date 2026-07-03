@@ -380,16 +380,32 @@ pub fn format_alert_text(alert: &SloAlert, identity: Option<&AlertIdentity>) -> 
     }
     s.push('\n');
     s.push_str(&format!(
-        "{sli} is below target — the {window}h error budget is {budget:.0}% consumed \
-         (burning ~{burn} faster than sustainable).\n\n"
+        "{sli} is below target — burning ~{burn} faster than sustainable; \
+         each {window}h at this pace leaves the SLO budget {budget:.0}% consumed.\n\n"
     ));
     s.push_str(&format!(
         "  Measured       {measured_pct:.1}%   (target {target_pct:.2}%)\n"
     ));
     s.push_str(&format!("  Burn rate      {burn}   over {window}h\n"));
     s.push_str(&format!(
-        "  Error budget   {budget:.0}% consumed   ({window}h window)\n\n"
+        "  Error budget   {budget:.0}% consumed   ({window}h window)\n"
     ));
+    // SLO-P3 — time-to-exhaustion, derived from the unclamped
+    // consumption figure: hours = window / (consumed/100).
+    if alert.budget_consumed_pct > 0.0 && alert.resolved_at.is_none() {
+        let hours = alert.window_hours as f64 * 100.0 / alert.budget_consumed_pct;
+        let human = if hours < 1.0 {
+            "under an hour".to_string()
+        } else if hours < 48.0 {
+            format!("~{hours:.0}h")
+        } else {
+            format!("~{:.0} days", hours / 24.0)
+        };
+        s.push_str(&format!(
+            "  Exhaustion     {human} to spend the whole budget at this rate\n"
+        ));
+    }
+    s.push('\n');
     s.push_str(&format!(
         "Started  {started}  ({})",
         humanize_ago(alert.fired_at)
@@ -424,6 +440,19 @@ pub fn format_event_text(
     // `format_alert_text` (it has measured-vs-target + its own footer).
     let (title, body): (&str, String) = match event {
         AlertEvent::Slo(a) => return append_suppressed(format_alert_text(a, identity), suppressed),
+        AlertEvent::TelemetryAbsent {
+            sli,
+            silent_seconds,
+            ..
+        } => (
+            "Telemetry absent — data plane may be wedged",
+            format!(
+                "{sli} produced traffic earlier this boot but no samples \
+                 for ≥{}m.\nNo traffic means no SLO evaluation — this is \
+                 the blackout the burn-rate alerts cannot see.",
+                silent_seconds / 60,
+            ),
+        ),
         AlertEvent::DdosModeEntered {
             trigger,
             observed_rps,
@@ -488,15 +517,6 @@ pub fn format_event_text(
         } => (
             "Hot-reload FAILED — last-known-good still live",
             format!("Reason: {reason}\nLKG config version: {last_known_good_version}"),
-        ),
-        AlertEvent::GitOpsDrift {
-            repo,
-            expected,
-            observed,
-            ..
-        } => (
-            "GitOps drift detected",
-            format!("Repo: {repo}\nExpected: {expected}\nObserved: {observed}"),
         ),
         AlertEvent::AuditChainBreak {
             last_good_seq,
@@ -588,6 +608,34 @@ mod tests {
         resolved.resolved_at = Some(chrono::Utc::now());
         let resolved_text = format_alert_text(&resolved, None);
         assert!(resolved_text.contains("Resolved"), "got: {resolved_text}");
+    }
+
+    // SLO-P3 — the alert body carries time-to-exhaustion derived
+    // from the (now time-scaled) budget consumption.
+    #[test]
+    fn format_alert_text_includes_time_to_exhaustion() {
+        // burn 14 over 1h, 2% consumed → 50h ≈ ~2 days.
+        let text = format_alert_text(&fake_alert(), None);
+        assert!(text.contains("Exhaustion"), "got: {text}");
+        assert!(text.contains("~2 days"), "got: {text}");
+        // Resolved alerts drop the projection.
+        let mut resolved = fake_alert();
+        resolved.resolved_at = Some(chrono::Utc::now());
+        let text = format_alert_text(&resolved, None);
+        assert!(!text.contains("Exhaustion"), "got: {text}");
+    }
+
+    #[test]
+    fn format_telemetry_absent_names_the_blackout() {
+        let ev = AlertEvent::TelemetryAbsent {
+            fired_at: chrono::Utc::now(),
+            sli: "DataPlaneAvailability".into(),
+            silent_seconds: 600,
+        };
+        let text = format_event_text(&ev, 0, None);
+        assert!(text.contains("🟠 TICKET"), "got: {text}");
+        assert!(text.contains("Telemetry absent"), "got: {text}");
+        assert!(text.contains("≥10m"), "got: {text}");
     }
 
     #[test]

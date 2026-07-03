@@ -119,9 +119,12 @@ pub fn spawn_config_watcher(
     path: PathBuf,
     store: ConfigStore,
     bus: AuditBus,
+    // SLO-P5 — HotReloadFailed alerts into the SLO dispatch loop;
+    // `None` in tests.
+    alert_tx: Option<tokio::sync::mpsc::UnboundedSender<aegis_control::slo::AlertEvent>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        if let Err(e) = watch_loop(path, store, bus).await {
+        if let Err(e) = watch_loop(path, store, bus, alert_tx).await {
             tracing::error!("config watcher exited with error: {e}");
         }
     })
@@ -150,11 +153,29 @@ pub(crate) async fn publish_file_change(
     store: &ConfigStore,
     path: &Path,
     bus: &AuditBus,
+    alert_tx: Option<&tokio::sync::mpsc::UnboundedSender<aegis_control::slo::AlertEvent>>,
 ) -> PublishOutcome {
     // Validate before publishing — a broken edit must never reach the doc.
     if let Err(e) = load_config(path) {
         tracing::error!("config file changed but failed validation, not publishing: {e}");
         emit_file_audit(bus, path, "config_reload_failed", format!("{e}"));
+        // SLO-P5 — a failed hot-reload is silent-until-restart
+        // otherwise: the operator thinks the edit is live while
+        // last-known-good serves. Version read is best-effort.
+        if let Some(tx) = alert_tx {
+            let last_good = store
+                .load()
+                .await
+                .ok()
+                .flatten()
+                .map(|d| d.version)
+                .unwrap_or(0);
+            let _ = tx.send(aegis_control::slo::AlertEvent::HotReloadFailed {
+                fired_at: chrono::Utc::now(),
+                reason: format!("{e}"),
+                last_known_good_version: last_good,
+            });
+        }
         return PublishOutcome::Invalid;
     }
     // Store the file text as the DYNAMIC doc — H2a strips the bootstrap keys so
@@ -211,6 +232,13 @@ pub(crate) async fn publish_file_change(
         Err(e) => {
             tracing::error!("config file publish failed, keeping live config: {e}");
             emit_file_audit(bus, path, "config_reload_failed", format!("{e}"));
+            if let Some(tx) = alert_tx {
+                let _ = tx.send(aegis_control::slo::AlertEvent::HotReloadFailed {
+                    fired_at: chrono::Utc::now(),
+                    reason: format!("{e}"),
+                    last_known_good_version: expected,
+                });
+            }
             PublishOutcome::Error
         }
     }
@@ -237,7 +265,12 @@ fn emit_file_audit(bus: &AuditBus, path: &Path, action: &str, reason: String) {
     });
 }
 
-async fn watch_loop(path: PathBuf, store: ConfigStore, bus: AuditBus) -> aegis_core::Result<()> {
+async fn watch_loop(
+    path: PathBuf,
+    store: ConfigStore,
+    bus: AuditBus,
+    alert_tx: Option<tokio::sync::mpsc::UnboundedSender<aegis_control::slo::AlertEvent>>,
+) -> aegis_core::Result<()> {
     let (tx, mut rx) = mpsc::channel::<notify::Result<Event>>(64);
 
     let mut watcher = RecommendedWatcher::new(
@@ -275,7 +308,7 @@ async fn watch_loop(path: PathBuf, store: ConfigStore, bus: AuditBus) -> aegis_c
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         tracing::info!("config file changed, publishing to the config plane…");
-        let _ = publish_file_change(&store, &path, &bus).await;
+        let _ = publish_file_change(&store, &path, &bus, alert_tx.as_ref()).await;
     }
 
     Ok(())
@@ -334,7 +367,7 @@ state:
         let bus = AuditBus::new(8);
 
         std::fs::write(&path, minimal_yaml().replace("127.0.0.1:3000", "127.0.0.1:8888")).unwrap();
-        let outcome = publish_file_change(&store, &path, &bus).await;
+        let outcome = publish_file_change(&store, &path, &bus, None).await;
 
         assert_eq!(outcome, PublishOutcome::Published { version: 2 });
         let doc = store.load().await.unwrap().unwrap();
@@ -353,7 +386,7 @@ state:
             .unwrap();
         let bus = AuditBus::new(8);
 
-        let outcome = publish_file_change(&store, &path, &bus).await;
+        let outcome = publish_file_change(&store, &path, &bus, None).await;
 
         assert_eq!(outcome, PublishOutcome::Unchanged);
         assert_eq!(
@@ -378,7 +411,7 @@ state:
 
         // Valid YAML, but an unknown top-level key → `deny_unknown_fields` fails.
         std::fs::write(&path, "not_a_real_waf_field: 123\n").unwrap();
-        let outcome = publish_file_change(&store, &path, &bus).await;
+        let outcome = publish_file_change(&store, &path, &bus, None).await;
 
         assert_eq!(outcome, PublishOutcome::Invalid);
         assert_eq!(
@@ -409,7 +442,7 @@ state:
         let bus = AuditBus::new(16);
         let mut rx = bus.subscribe();
 
-        let handle = spawn_config_watcher(config_path.clone(), store.clone(), bus);
+        let handle = spawn_config_watcher(config_path.clone(), store.clone(), bus, None);
 
         // Give the watcher time to register.
         tokio::time::sleep(Duration::from_millis(200)).await;

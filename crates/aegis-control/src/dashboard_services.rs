@@ -361,6 +361,11 @@ pub struct DashboardServices {
     /// config from this; absent → the page renders an empty-state
     /// card with a "DDoS gate disabled" message.
     pub ddos: Option<std::sync::Arc<aegis_security::ddos::DdosRuntime>>,
+    /// SLO-P6 (P4b) — the telemetry-absent watchdog knob shared
+    /// with the SLO evaluation loop + config apply fold, so
+    /// `GET /api/slo/config` renders the live value. `None` for
+    /// test bundles.
+    pub slo_absent_after: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
     /// 2026-05-19 — path to the source-of-truth `waf.yaml` the
     /// proxy booted from. Populated by `aegis-proxy::run` only
     /// when the reload source is `ConfigReloadSource::File`; left
@@ -756,6 +761,7 @@ impl DashboardServices {
                 // Test bundles boot without the gate; /api/gates/ddos
                 // returns the empty-state shape in that case.
                 ddos: None,
+                slo_absent_after: None,
                 // 2026-05-19 — populated by aegis-proxy::run only.
                 // Test bundles + etcd-sourced configs leave it `None`;
                 // the Reports page card renders an explanatory

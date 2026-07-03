@@ -1198,6 +1198,29 @@ function useFleetScopeApi() { return useApi('/api/fleet/status',   { intervalMs:
 // applied version (drift). Backed by GET /api/config (ConfigStore).
 function useConfigApi()   { return useApi('/api/config',          { intervalMs: 5000, fallback: null }); }
 function useSloApi()      { return useApi('/api/slo',             { intervalMs: 10000, fallback: null }); }
+// SLO-P6b — minute-bucket availability series for the Health page's
+// error-budget timeline. `windowSecs` rides the URL, so switching the
+// window chip re-arms useApi's fetch (same trick as useApiScoped).
+// Shape: { window_seconds, points: [{ ts (unix secs), value (0..1),
+// count }] } — gap minutes are omitted, not zero-filled.
+function useSloTimeseriesApi(windowSecs) {
+  return useApi(`/api/slo/timeseries?window=${windowSecs}`, { intervalMs: 10000, fallback: null });
+}
+// SLO-P6b — objective editor read side: the LIVE engine objectives in
+// config shape ({ objectives, telemetry_absent_after_secs }); the PUT
+// counterpart below folds edits into the shared config doc.
+function useSloConfigApi() {
+  return useApi('/api/slo/config', { intervalMs: 30000, fallback: null });
+}
+// Audit-mutated PUT /api/slo/config. Body is the config-shape
+// SloSection JSON (sli snake_case, severity PascalCase). 400 carries
+// the engine validator's message — surface it verbatim.
+async function sloConfigPut(body) {
+  return csrfMutate('/api/slo/config', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+}
 function useCertsApi()    { return useApi('/api/certs',           { intervalMs: 30000, fallback: null }); }
 function useLatencyApi()  { return useApi('/api/analytics/latency',{ intervalMs: 5000, fallback: null }); }
 function useRouteLatencyApi() { return useApi('/api/analytics/latency/routes',{ intervalMs: 5000, fallback: null }); }
@@ -1939,6 +1962,8 @@ Object.assign(window, {
   useConfigVersionsApi, configRollback, ROLLBACKABLE_ACTIONS,
   useAuditLogApi,
   useClusterApi, useFleetScopeApi, useFleetNodesApi, useFleetNodeScope, useSelfNode, useApiScoped, useConfigApi, useSloApi, useCertsApi, useLatencyApi, useRouteLatencyApi, useDetectorLatencyApi, useAnalyticsRoutesApi,
+  // SLO-P6b — error-budget timeline + objective editor
+  useSloTimeseriesApi, useSloConfigApi, sloConfigPut,
   useIncidentsApi, useThreatIntelFeedsApi, useGeoipStatusApi,
   incidentAck, incidentSnooze, incidentResolve,
   useAlertsApi, useGitopsApi, useUpstreamsApi, useRuntimeApi,

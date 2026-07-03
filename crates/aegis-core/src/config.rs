@@ -179,6 +179,13 @@ pub struct WafConfig {
     /// upstream credentials — the blob is never returned by a GET.
     #[serde(default)]
     pub alerting: Option<AlertingConfig>,
+    /// SLO-P4 — SLO objectives + watchdog tuning. `None` ⇒ the
+    /// compiled defaults (`aegis_control::slo::default_objectives`,
+    /// Google-SRE multi-window pairs). `Some` ⇒ authoritative and
+    /// fleet-propagated through the shared config doc, same as
+    /// `alerting`.
+    #[serde(default)]
+    pub slo: Option<SloSection>,
     /// CI-T8 — MaxMind GeoIP databases. When set, the
     /// `aegis-security/geoip` reader loads them at boot and the
     /// AttacksHandler enriches `/api/attacks/top` rows with
@@ -389,6 +396,8 @@ pub struct DynamicConfig {
     #[serde(default)]
     pub alerting: Option<AlertingConfig>,
     #[serde(default)]
+    pub slo: Option<SloSection>,
+    #[serde(default)]
     pub ai: AiConfig,
     #[serde(default)]
     pub ddos: DdosConfig,
@@ -439,6 +448,7 @@ impl From<&WafConfig> for DynamicConfig {
             compliance: c.compliance.clone(),
             tiers: c.tiers.clone(),
             alerting: c.alerting.clone(),
+            slo: c.slo.clone(),
             ai: c.ai.clone(),
             ddos: c.ddos.clone(),
             fail_mode_by_tier: c.fail_mode_by_tier.clone(),
@@ -487,6 +497,7 @@ impl WafConfig {
             compliance: dynamic.compliance,
             tiers: dynamic.tiers,
             alerting: dynamic.alerting,
+            slo: dynamic.slo,
             ai: dynamic.ai,
             ddos: dynamic.ddos,
             fail_mode_by_tier: dynamic.fail_mode_by_tier,
@@ -1487,6 +1498,64 @@ pub enum AlertSeverityConfig {
     Page,
     Ticket,
     Info,
+}
+
+/// SLO-P4 — the `slo:` config section. Mirrors
+/// `aegis_control::slo::{SloObjective, BurnRateWindow}` field-for-
+/// field; the proxy maps between the two explicitly (reload.rs) so
+/// the serde reprs stay independent. `deny_unknown_fields`
+/// throughout: a stale key (e.g. the pre-P3 `budget_pct`) must fail
+/// validation loudly, never deserialize to silently-defaulted
+/// thresholds.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SloSection {
+    /// Empty ⇒ keep the compiled default objectives.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub objectives: Vec<SloObjectiveConfig>,
+    /// Telemetry-absent watchdog: seconds of post-traffic silence
+    /// before a `TelemetryAbsent` Ticket fires. `None` ⇒ compiled
+    /// default (600); `Some(0)` disables the watchdog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry_absent_after_secs: Option<u64>,
+}
+
+/// One SLO objective (config representation).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SloObjectiveConfig {
+    pub sli: SliKindConfig,
+    /// e.g. `0.999` for 99.9% availability. Must be within (0, 1).
+    pub target: f64,
+    /// SLO budget window (≤ 30 — the engine's coarse retention).
+    pub window_days: u32,
+    /// Minimum observations in a burn window before it may fire.
+    /// `None` ⇒ engine default (60).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_events: Option<u64>,
+    pub burn_rates: Vec<BurnWindowConfig>,
+}
+
+/// SLI selector (config representation). Only SLIs with a live
+/// producer are configurable; more variants land with SLO-P5+.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SliKindConfig {
+    DataPlaneAvailability,
+}
+
+/// One multi-window burn-rate pair (config representation).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BurnWindowConfig {
+    /// Long window (≤ 72 — the engine's fine retention).
+    pub window_hours: u64,
+    /// Short confirmation window; must be shorter than the long.
+    pub short_window_minutes: u64,
+    /// Multiples of the break-even budget burn pace (14.4 = the
+    /// standard fast-burn page threshold).
+    pub burn_threshold: f64,
+    pub severity: AlertSeverityConfig,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -6701,7 +6770,7 @@ state:
         let legacy: BTreeSet<String> =
             super::LEGACY_BOOTSTRAP_KEYS.iter().map(|s| s.to_string()).collect();
 
-        assert_eq!(waf.len(), 34, "WafConfig field count drifted");
+        assert_eq!(waf.len(), 35, "WafConfig field count drifted");
         assert!(boot.is_disjoint(&dynamic), "a field is in BOTH halves");
         let union: BTreeSet<String> = boot.union(&dynamic).cloned().collect();
         assert_eq!(union, waf, "bootstrap+dynamic must cover WafConfig exactly");

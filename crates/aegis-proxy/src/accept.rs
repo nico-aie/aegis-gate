@@ -51,6 +51,42 @@ const HEADER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 const FLEET_EVENT_BUS_CAP: usize = 1024;
 
 /// Cluster Phase 2 (§2b) — wire the cross-node event fanout when
+/// SLO-P5 — dispatch one alert event through the dedup cache to
+/// the live receiver list, folding delivery outcomes into the
+/// `/api/alert-receivers` ring. The single path every alert class
+/// takes (SLO burn, watchdog, pool health, DDoS gate, certs,
+/// hot-reload) so routing/dedup behavior can't drift per class.
+///
+/// (VipTalk dispatch with the `alerts` feature off is a logged
+/// no-op counted in `delivered` — see CC-T2.1.b for the summary
+/// split.)
+async fn dispatch_and_record(
+    event: &aegis_control::slo::AlertEvent,
+    receivers: &[aegis_control::slo::AlertReceiver],
+    dedup: &aegis_control::slo::AlertDedupCache,
+    ring: &aegis_control::api::alert_receivers::DispatchOutcomeRing,
+) {
+    let summary =
+        aegis_control::slo::dispatch::dispatch_event(event, receivers, Some(dedup)).await;
+    let now = chrono::Utc::now().timestamp();
+    for name in &summary.delivered {
+        ring.record_delivered(name, now);
+    }
+    for name in &summary.external {
+        ring.record_external(name, now);
+    }
+    for (name, reason) in &summary.failed {
+        ring.record_failed(name, now, reason);
+    }
+    tracing::info!(
+        severity = ?event.severity(),
+        delivered = summary.delivered.len(),
+        external = summary.external.len(),
+        failed = summary.failed.len(),
+        "alert event dispatched",
+    );
+}
+
 /// `cluster.fleet_events` is enabled AND a Redis state backend is
 /// configured. Spawns the publisher (drains the local bus → Redis) and
 /// subscriber (Redis → the returned fleet bus) tasks, and returns the
@@ -400,6 +436,17 @@ pub(crate) async fn admin_accept_loop(
     // admin loop (GET/PUT/DELETE/test + SLO dispatch) share one ArcSwap.
     // A receiver edit folds into `cfg.alerting` and propagates fleet-wide.
     shared_receivers: Arc<arc_swap::ArcSwap<Vec<aegis_control::slo::AlertReceiver>>>,
+    // SLO-P4 — SLO engine + watchdog knob, created in `run()` so the
+    // config-plane watcher (`ApplyTargets.slo_engine` /
+    // `.slo_absent_after_secs`) and this loop's evaluation task share
+    // the same instances. An objective edit folds into `cfg.slo` and
+    // propagates fleet-wide.
+    slo_engine: Arc<aegis_control::slo::SloEngine>,
+    slo_absent_after_secs: Arc<std::sync::atomic::AtomicU64>,
+    // SLO-P5 — alert-event channel drained by the SLO dispatch
+    // loop; senders live in the pool health monitors and the
+    // hot-reload failure paths.
+    alert_rx: tokio::sync::mpsc::UnboundedReceiver<aegis_control::slo::AlertEvent>,
 ) {
     let startup = aegis_control::health::StartupProbe::default();
     startup.mark_started();
@@ -795,19 +842,22 @@ pub(crate) async fn admin_accept_loop(
         .routes
         .set(crate::route::route_summaries(&cfg.routes));
 
-    // CI-T4 — wire the SLO engine. `default_objectives()` covers
-    // availability + audit delivery + overhead. The engine is
-    // also fed by the audit-bus drain task spawned below so
-    // /api/slo + /api/alerts return live data.
-    let slo_engine = Arc::new(
-        aegis_control::slo::SloEngine::new(aegis_control::slo::default_objectives()),
-    );
+    // CI-T4 / SLO-P4 — the SLO engine now arrives from `run()`
+    // (built from `cfg.slo` or the compiled defaults) so the
+    // config-plane watcher can hot-swap objectives. It is fed by
+    // the audit-bus drain task spawned below so /api/slo +
+    // /api/alerts return live data.
     services.tracking.set_slo_engine(Arc::clone(&slo_engine));
 
     // CI-T4 — wire the cert inventory provider. Reads PEM files
     // referenced by `cfg.tls.certificates` on every /api/certs
     // call — cheap (small files, parsed off the hot path) and
     // reflects hot-reloads automatically.
+    // SLO-P5 — the SLO loop's hourly cert sweep shares the same
+    // provider (None when no TLS certs are configured).
+    let mut cert_provider_for_alerts: Option<
+        aegis_control::api::tracking::CertInventoryProvider,
+    > = None;
     if let Some(tls) = cfg.tls.as_ref() {
         let certs_cfg: Vec<aegis_core::config::CertConfig> = tls.certificates.clone();
         let provider: aegis_control::api::tracking::CertInventoryProvider =
@@ -820,6 +870,7 @@ pub(crate) async fn admin_accept_loop(
                 }
                 out
             });
+        cert_provider_for_alerts = Some(provider.clone());
         services.tracking.set_cert_provider(provider);
     }
 
@@ -1140,6 +1191,8 @@ pub(crate) async fn admin_accept_loop(
     // and `ProxyContext::ddos.set(...)` has been called; the
     // dashboard renders an empty-state card in that case.
     services.ddos = upstream_ctx.ddos.get().cloned();
+    // SLO-P6 (P4b) — share the watchdog knob with /api/slo/config.
+    services.slo_absent_after = Some(Arc::clone(&slo_absent_after_secs));
 
     // DURABLE-T1 — audit chain durability. For each Jsonl sink the
     // operator configured under `cfg.audit.sinks`, open a real
@@ -1276,30 +1329,36 @@ pub(crate) async fn admin_accept_loop(
 
     let services = Arc::new(services);
 
-    // CI-T4 — drive the SLO engine from the audit bus. Every
-    // `Detection` / `Access` event with `action == "allow"` is a
-    // 1.0 availability sample; everything else (block, challenge,
-    // rate_limit) is a 0.0 sample. Every event landing here also
-    // counts as a 1.0 audit-delivery sample (we observed it).
+    // CI-T4 / SLO-P1 — drive the SLO engine from the audit bus.
+    // Availability now counts only *service* outcomes
+    // (`slo::classify`): `allow` is good unless the forwarded
+    // origin status was 5xx (`fields.status`); `timeout` /
+    // `circuit_breaker` are bad. Security enforcement (`block` /
+    // `challenge` / `rate_limit`) is EXCLUDED — the WAF doing its
+    // job is not an outage — and lands on the enforcement counter
+    // instead. Admin/system events are ignored (pre-P1 both they
+    // and enforcement recorded 0.0 availability samples, so a
+    // blocked attack wave drained the budget and could page).
+    // The old per-event 1.0 AuditDeliveryRate sample is gone with
+    // its tautological objective.
     {
+        use aegis_control::slo::classify::{classify_event, SliClass};
         let engine = Arc::clone(&slo_engine);
         let mut rx = services.bus.subscribe();
         tokio::spawn(async move {
             loop {
                 match rx.recv().await {
-                    Ok(ev) => {
-                        let allow = ev.action == "allow";
-                        engine.record(aegis_control::slo::SliSample {
-                            kind: aegis_control::slo::SliKind::DataPlaneAvailability,
-                            value: if allow { 1.0 } else { 0.0 },
-                            ts: ev.ts,
-                        });
-                        engine.record(aegis_control::slo::SliSample {
-                            kind: aegis_control::slo::SliKind::AuditDeliveryRate,
-                            value: 1.0,
-                            ts: ev.ts,
-                        });
-                    }
+                    Ok(ev) => match classify_event(&ev) {
+                        Some(class @ (SliClass::Good | SliClass::Bad)) => {
+                            engine.record(aegis_control::slo::SliSample {
+                                kind: aegis_control::slo::SliKind::DataPlaneAvailability,
+                                value: if class == SliClass::Good { 1.0 } else { 0.0 },
+                                ts: ev.ts,
+                            });
+                        }
+                        Some(SliClass::Enforcement) => engine.record_enforcement(ev.ts),
+                        None => {}
+                    },
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 }
@@ -1319,58 +1378,170 @@ pub(crate) async fn admin_accept_loop(
         let engine = Arc::clone(&slo_engine);
         let shared = Arc::clone(&shared_receivers);
         let ring = dispatch_ring.clone();
+        let slo_absent_after = Arc::clone(&slo_absent_after_secs);
+        let ddos = services.ddos.clone();
+        let cert_provider = cert_provider_for_alerts.clone();
+        let mut alert_rx = alert_rx;
         tokio::spawn(async move {
             // 2026-05-20 alerts refactor — a process-lifetime dedup
             // cache so a multi-tick burn-rate breach in the same
             // window fires VipTalk once (with a `(+N suppressed)`
             // note on the next emission) instead of every 30 s.
             let dedup = aegis_control::slo::AlertDedupCache::default_window();
+            let mut absent_slis: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            // SLO-P5 — producer state owned by this loop.
+            let mut cert_state =
+                aegis_control::slo::producers::CertAlertState::default();
+            let mut ddos_active_since: Option<chrono::DateTime<chrono::Utc>> = None;
+            // Cert expiry moves daily; sweep hourly (120 × 30s
+            // ticks), starting with the first tick so an
+            // already-critical cert alerts ~30s after boot.
+            const CERT_SWEEP_EVERY_TICKS: u64 = 120;
+            let mut tick_count: u64 = 0;
             let mut tick =
                 tokio::time::interval(std::time::Duration::from_secs(30));
             tick.tick().await; // skip the immediate first tick
             loop {
-                tick.tick().await;
+                // SLO-P5 — external producers (pool health,
+                // hot-reload failures) land between ticks and
+                // dispatch immediately through the same
+                // dedup/receivers/outcome-ring path.
+                // (`Some(ev) = recv()` disables the branch when the
+                // channel is closed, degrading to a tick-only loop.)
+                let channel_event = tokio::select! {
+                    Some(ev) = alert_rx.recv() => Some(ev),
+                    _ = tick.tick() => None,
+                };
+                if let Some(event) = channel_event {
+                    let receivers = (**shared.load()).clone();
+                    dispatch_and_record(&event, &receivers, &dedup, &ring).await;
+                    continue;
+                }
                 let new_alerts = engine.evaluate();
-                if new_alerts.is_empty() {
+
+                // SLO-P3 — telemetry-absent watchdog. Burn-rate
+                // alerts cannot see a total blackout (no samples
+                // → no evaluation; the engine deliberately keeps
+                // a fired alert active through silence), so every
+                // objective SLI that served traffic and then went
+                // silent raises its own Ticket. Fires once per
+                // SLI transition; recovery is logged. SLO-P4: the
+                // threshold comes from `cfg.slo.telemetry_absent_
+                // after_secs` (hot-swapped by the config watcher);
+                // 0 disables the watchdog.
+                let absent_after_secs = slo_absent_after
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let now_utc = chrono::Utc::now();
+                let now_absent: std::collections::HashSet<String> = if absent_after_secs == 0 {
+                    std::collections::HashSet::new()
+                } else {
+                    engine
+                        .telemetry_absent_slis(
+                            chrono::Duration::seconds(absent_after_secs as i64),
+                            now_utc,
+                        )
+                        .into_iter()
+                        .map(|kind| format!("{kind:?}"))
+                        .collect()
+                };
+                for sli in absent_slis.difference(&now_absent) {
+                    tracing::info!(
+                        sli = %sli,
+                        "telemetry-absent watchdog: samples resumed",
+                    );
+                }
+                let watchdog_events: Vec<aegis_control::slo::AlertEvent> =
+                    now_absent
+                        .difference(&absent_slis)
+                        .map(|sli| {
+                            aegis_control::slo::AlertEvent::TelemetryAbsent {
+                                fired_at: now_utc,
+                                sli: sli.clone(),
+                                silent_seconds: absent_after_secs,
+                            }
+                        })
+                        .collect();
+                absent_slis = now_absent;
+                let mut producer_events = watchdog_events;
+
+                // SLO-P5 — DDoS spike-gate transitions, polled per
+                // tick like the watchdog (the auto-trigger flips
+                // state inside aegis-security; this loop is the
+                // alert-facing observer).
+                if let Some(d) = ddos.as_ref() {
+                    let active = d.is_spike_active();
+                    match (active, ddos_active_since) {
+                        (true, None) => {
+                            ddos_active_since = Some(now_utc);
+                            producer_events.push(
+                                aegis_control::slo::AlertEvent::DdosModeEntered {
+                                    fired_at: now_utc,
+                                    trigger: format!(
+                                        "rps spike: {} rps (baseline {})",
+                                        d.current_rps(),
+                                        d.baseline_rps(),
+                                    ),
+                                    observed_rps: d.current_rps().min(u32::MAX as u64)
+                                        as u32,
+                                },
+                            );
+                        }
+                        (false, Some(since)) => {
+                            ddos_active_since = None;
+                            producer_events.push(
+                                aegis_control::slo::AlertEvent::DdosModeCleared {
+                                    fired_at: now_utc,
+                                    duration_seconds: (now_utc - since)
+                                        .num_seconds()
+                                        .max(0)
+                                        as u64,
+                                },
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+
+                // SLO-P5 — hourly cert-expiry sweep; band
+                // transitions alert once per band per host
+                // (Warning=Ticket <30d, Critical=Page <7d).
+                if tick_count % CERT_SWEEP_EVERY_TICKS == 0 {
+                    if let Some(provider) = cert_provider.as_ref() {
+                        let observations: Vec<
+                            aegis_control::slo::producers::CertObservation,
+                        > = provider()
+                            .into_iter()
+                            .map(|e| {
+                                let days =
+                                    (e.expires_at - now_utc).num_days().max(0) as u32;
+                                aegis_control::slo::producers::CertObservation {
+                                    host: e.host,
+                                    days_remaining: days,
+                                    not_after: e.expires_at,
+                                }
+                            })
+                            .collect();
+                        producer_events.extend(cert_state.observe(&observations, now_utc));
+                    }
+                }
+                tick_count += 1;
+
+                if new_alerts.is_empty() && producer_events.is_empty() {
                     continue;
                 }
                 let receivers = (**shared.load()).clone();
+                for event in &producer_events {
+                    dispatch_and_record(event, &receivers, &dedup, &ring).await;
+                }
                 for alert in &new_alerts {
                     let event =
                         aegis_control::slo::AlertEvent::Slo(alert.clone());
-                    let summary = aegis_control::slo::dispatch::dispatch_event(
-                        &event,
-                        &receivers,
-                        Some(&dedup),
-                    )
-                    .await;
-                    let now = chrono::Utc::now().timestamp();
-                    for name in &summary.delivered {
-                        // VipTalk dispatch with the `alerts`
-                        // feature off is logged as a no-op +
-                        // counted in `delivered` — the dispatch
-                        // module currently treats both states
-                        // the same on the summary side. Until
-                        // we split that signal, mark `delivered`
-                        // as `ok`; the dashboard can layer on
-                        // `skipped_no_feature` when CC-T2.1.b
-                        // refactors `DispatchSummary` to carry
-                        // it explicitly.
-                        ring.record_delivered(name, now);
-                    }
-                    for name in &summary.external {
-                        ring.record_external(name, now);
-                    }
-                    for (name, reason) in &summary.failed {
-                        ring.record_failed(name, now, reason);
-                    }
+                    dispatch_and_record(&event, &receivers, &dedup, &ring).await;
                     tracing::info!(
                         sli = ?alert.sli,
                         severity = ?alert.severity,
                         burn_rate = alert.burn_rate,
-                        delivered = summary.delivered.len(),
-                        failed = summary.failed.len(),
-                        external = summary.external.len(),
                         "slo alert dispatched",
                     );
                 }

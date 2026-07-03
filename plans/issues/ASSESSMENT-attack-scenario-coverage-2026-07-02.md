@@ -1,9 +1,22 @@
 # Attack-scenario coverage assessment — 8-vector red-team matrix
 
-**Status:** 🔵 Assessment / gap analysis (no code changed). Source-verified against `develop`-era tree, 2026-07-02.
+**Status:** 🔵 Assessment / gap analysis (no code changed). Source-verified against `develop`-era tree, 2026-07-02. **Re-verified 2026-07-03** (4 parallel passes); corrections folded in — see *Corrections* below.
 **Author:** security review (4 parallel code-exploration passes, one per vector pair).
 **Input:** external red-team "Kịch bản tấn công (mở rộng)" — 8 attack vectors (DDoS L4/7, bot login & credential stuffing, relay/proxy, device-fingerprint evasion, behavioral bypass, transaction fraud, OWASP injection, canary/recon).
 **Method:** every claim below is traced to a `file:line`. Repo docs are known to overstate implementation in both directions, so nothing here is taken from `docs/` — only from code and its call sites.
+**Derived work:** the improvement backlog has been split into two shippable plans — [`FEAT-attack-coverage-wiring-2026-07-03.md`](./FEAT-attack-coverage-wiring-2026-07-03.md) (security coverage) and [`PLAN-ltester-perf-and-hardening-2026-07-03.md`](./PLAN-ltester-perf-and-hardening-2026-07-03.md) (performance + hardening, from the l-tester audit). This file stays as the umbrella analysis. See *Archival note* at the bottom.
+
+---
+
+## Corrections & re-verification (2026-07-03)
+
+Re-ran all `file:line` claims against the current tree. **Every claim held except one factual error**, plus two framings that needed a nuance. Everything else in this document is confirmed accurate.
+
+1. **[FIXED BELOW] DDoS auto-block returns HTTP 403, not 503.** The enforce path calls `blocked_response(...)` (`data_plane.rs:689`), which hard-codes `.status(403)` (`data_plane.rs:4424-4425`) — identical to every other WAF block. 503 is used **only** by the load-shedder and the fail-close backend-error path (`data_plane.rs:726`). The original doc had this inverted (it claimed the block was 503 and the `403` comment was stale); reality is the reverse — the block is **403**, and the stale comment is the `// Enforce — 503` at `data_plane.rs:678`. Vector 01's table row and gap bullet are corrected accordingly. *(No behavior change needed; the only fix is the stale source comment — folded into the l-tester hardening plan as a doc-hygiene nit.)*
+
+2. **[NUANCE] GeoIP is a compile-time feature that IS on in production builds — "off by default" is misleading for real deployments.** `geoip` is off in a plain `cargo build`, but the `production` meta-feature the Dockerfile ships pulls it in (`aegis-bin/Cargo.toml:92-95`). When compiled **and** an MMDB path is configured, the **country access-list is checked on every request** (`data_plane.rs:458`; MMDB queried lazily, only when a `kind: country` entry exists — not an unconditional DB hit). So "we always check GeoIP when the feature is enabled" is **true for the country access-list path** (and display-only ASN/bot enrichment). Theme 3's deeper point still stands and is the actual gap: *even with GeoIP on*, `kind: asn` is hard-coded `false` (`blacklist.rs:505`), rules-engine `Asn`/`Country` always eval false (empty-context `evaluate()` shim at every call site incl. the `/api/rules/validate` simulator, `simulator.rs:339`), and the Tor/VPN classifier is dead. Theme 3 reworded below.
+
+3. **[NUANCE] Fleet aggregation must gate on cluster mode.** The owner's constraint: cross-node counter sync should only apply in cluster mode. Confirmed the right surface — mirror the DDoS `spike_scope` pattern **but** also require a shared Redis `StateBackend` to be present (`cluster_enabled()`, `control.rs:493`), because the existing DDoS `spike_scope: fleet` toggle does **not** check for cluster mode and silently degrades to "fleet == this node" on an in-memory backend. P2-b reworded below. Note brute-force/velocity detectors hold no backend handle today (`Mutex`/`DashMap` only), so this is real plumbing, not a flag flip.
 
 ---
 
@@ -11,7 +24,7 @@
 
 | # | Vector | Coverage | One-line verdict |
 |---|--------|----------|------------------|
-| 01 | DDoS L4 & 7 | 🟢 **Strong (L7)** | HTTP-flood auto-block, Slowloris/RUDY timeouts, tier-aware load-shed that never sheds Critical. **L4 TCP/UDP flood is out of scope (L7 proxy).** Block counting is per-node. |
+| 01 | DDoS L4 & 7 | 🟢 **Strong (L7)** | HTTP-flood auto-block (**403**), Slowloris/RUDY timeouts, tier-aware load-shed that never sheds Critical (503 `load_shed`). **L4 TCP/UDP flood is out of scope (L7 proxy).** Block counting is per-node. |
 | 02 | Bot login & credential stuffing | 🟡 **Good structure, blind to outcome** | 3-axis brute-force (per-IP, per-user-across-IPs, per-device-across-IPs) is live and enforced. But the WAF **counts attempts, not failures** (never sees 401/403), counters are **per-node**, and usernames aren't canonicalized. |
 | 03 | Relay & proxy | 🟡 **XFF solid, ASN/Tor/VPN dead** | Trusted-proxy XFF resolution + country blacklist are enforced with a safe empty default. **ASN/Tor/VPN classification is display-only or dead code; rules-engine `Asn`/`Country` always evaluate false (empty GeoIP context).** |
 | 04 | Device-fingerprint evasion | 🟡 **Device→IP rotation works, fp is coarse** | Device→many-IPs detector is wired and enforced (JA4-keyed, UA-immune). But live TLS fp is a coarse "JA4-light" stub; **rotating UA mints a fresh rate-limit/risk bucket**; no one-device-many-accounts detector. |
@@ -36,7 +49,7 @@ Four systemic issues recur across vectors and are worth fixing structurally rath
 
 2. **Per-node counting vs. fleet.** Brute-force axes (`brute_force.rs:52-58`), the velocity-sequence ring buffer, and DDoS *block* counting are per-node in-process. Only the DDoS **spike signal** aggregates fleet-wide (`ddos.rs:448-495`, Redis, `spike_scope: fleet`). A campaign load-balanced across nodes dilutes every per-node distinct-IP / sequence count below threshold. Distributed credential stuffing (vector 2) and IP-rotating fraud (vector 6) are the direct beneficiaries.
 
-3. **GeoIP is a hard dependency that's off by default.** All ASN/country/Tor/VPN logic requires an operator-supplied MMDB behind the `geoip` feature (`accept.rs:831-834`). Worse, even *with* it, the rules-engine `Asn`/`Country` conditions are passed an **empty `EvalContext` (no geoip)** at both call sites (`data_plane.rs:1090, 2071` vs `eval.rs:326-336`), so they always return false. Vector 3's Tor/VPN/datacenter-to-`/login` story is essentially unshipped.
+3. **GeoIP: the country access-list works when provisioned; ASN + geo-rules are dead even then.** *(reworded 2026-07-03)* `geoip` is a compile-time feature — off in a plain `cargo build`, but **on in production builds** (pulled by the `production` meta-feature, `aegis-bin/Cargo.toml:92-95`) and enforced once an MMDB path is set (`accept.rs:831-834`). What actually consults it per request is **only the country access-list** (`data_plane.rs:458`, lazy MMDB lookup) — that path is live and correct. The real gap is that the rest of the geo surface is dead *even with GeoIP on*: `kind: asn` is hard-coded `false` (`blacklist.rs:505`); rules-engine `Asn`/`Country` conditions get an **empty `EvalContext` (no geoip)** at every call site — both data-plane sites (`data_plane.rs:1090, 2071` vs `eval.rs:326-336`, via the `evaluate()` shim `eval.rs:118-120`) *and* the `/api/rules/validate` simulator (`simulator.rs:339`) — so they always return false; and the Tor/VPN classifier (`ip_rep/asn.rs`) is never wired. Vector 3's Tor/VPN/datacenter-to-`/login` story is essentially unshipped.
 
 4. **The WAF is request-phase and outcome-blind.** No detector sees the upstream **response status**. Brute-force counts attempts not failures (vector 2); there is no login success/failure feedback loop; the one component that models error ratio (`behavior.rs`) is the dead code from theme 1. This caps how good bot/ATO detection can get without a response-signal channel.
 
@@ -47,7 +60,7 @@ Four systemic issues recur across vectors and are worth fixing structurally rath
 ### 01 — DDoS Layer 4 & 7 · 🟢 Strong (L7 only)
 
 **Enforced today:**
-- Per-`(tier,ip)` HTTP-flood sliding window → auto-block **503**, default `1000 req/10s`, 300s TTL (`ddos.rs:564-622`, wired `data_plane.rs:586-700`).
+- Per-`(tier,ip)` HTTP-flood sliding window → auto-block **403** (via `blocked_response`, `data_plane.rs:689`/`:4424-4425`), default `1000 req/10s`, 300s TTL (`ddos.rs:564-622`, wired `data_plane.rs:586-700`).
 - Independent per-IP RPS limiter layered underneath (`rate_limit/ip_limiter.rs`, `data_plane.rs:775-797`).
 - EWMA spike detection with hysteresis tightens every IP's window to ~20 rps while active (`ddos.rs:199-212, 787-829`).
 - Fleet-wide RPS aggregation for the **spike signal** (`ddos.rs:448-495`).
@@ -61,7 +74,7 @@ Four systemic issues recur across vectors and are worth fixing structurally rath
 - **L4 TCP/UDP flood is out of scope** — aegis is an L7 TLS/HTTP proxy; no UDP sockets exist. SYN/UDP-amp floods must be absorbed by kernel/LB/network upstream. `conn_limit` only mitigates app-layer TCP connection exhaustion.
 - DDoS **block** counting is per-node; only the spike *signal* aggregates fleet-wide (and only with Redis + `spike_scope: fleet`).
 - Pre-TLS connection-cap rejections drop silently at TCP (debug-logged only) — correct for cost, invisible to ops.
-- Stale doc-comment: `ddos.rs:38` says "403" but the block is **503** (`data_plane.rs:678`).
+- **Stale doc-comment (corrected 2026-07-03):** the block is **403** (via `blocked_response`); the misleading comment is `// Enforce — 503` at `data_plane.rs:678`. `ddos.rs:37` ("does NOT short-circuit with HTTP 403") is accurate. Doc-only fix — tracked in the l-tester hardening plan.
 
 ### 02 — Bot login & credential stuffing · 🟡 Good structure, outcome-blind
 
@@ -167,7 +180,9 @@ Four systemic issues recur across vectors and are worth fixing structurally rath
 
 ## Recommended improvement backlog
 
-Ordered by (impact × cheapness). Each item is independently shippable; file:line anchors are the starting point.
+Ordered by (impact × cheapness). Each item is independently shippable; file:line anchors are the starting point. **Now staged into [`FEAT-attack-coverage-wiring-2026-07-03.md`](./FEAT-attack-coverage-wiring-2026-07-03.md)** — the descriptions below remain the rationale; the FEAT file carries the PR breakdown, acceptance tests, and performance budget.
+
+> **Performance is a scored criterion (20 pts) and a hard requirement — every item here runs on the request hot path.** Guardrails carried into the FEAT plan: (a) new default-OFF detectors add **zero** cost when disabled (mask-derivation already gates them); (b) any wired signal must be O(1)/bounded per request — no unbounded maps, no new regex passes without `RegexSet` batching (see the l-tester perf plan); (c) fleet aggregation is async/fire-and-forget over the shared backend, never a blocking round-trip on the request path, and gated on cluster mode; (d) response-path work (header strip) is a fixed small set of header ops, not a scan. Measure each against `deploy/STAGING-BENCHMARK.md` before/after.
 
 ### P1 — high impact, logic already exists (wiring / small extension)
 
@@ -179,8 +194,8 @@ Ordered by (impact × cheapness). Each item is independently shippable; file:lin
 ### P2 — meaningful coverage, moderate work
 
 - **P2-a · Wire `BehavioralAnalyzer` into the request path (behind a default-OFF toggle).** Call `.observe()` from the data plane and feed its jitter/rate signals into risk (`behavior.rs` is ready; non-wiring noted at `run.rs:2596-2602`). Revives vector-5 timing detection and vector-2 error-ratio (needs the response-signal channel in P3-b to be fully useful). Re-tune thresholds so it doesn't trip benchmarks (the reason `behavior_burst` was removed).
-- **P2-b · Fleet-aggregate the brute-force axes.** Mirror the DDoS Redis fleet-bucket pattern (`ddos.rs:448-495`) for per-user / per-device distinct-IP counts so cross-node distributed stuffing doesn't dilute below threshold (theme 2). Behind `spike_scope: fleet`-style config.
-- **P2-c · Fix rules-engine `Asn`/`Country` evaluation + wire ASN blacklist.** Populate `EvalContext` with geoip at the two call sites (`data_plane.rs:1090, 2071`) so `Condition::Asn/Country` can be true; flip `kind: asn` blacklist from hardcoded-false (`blacklist.rs:505`). Prerequisite: GeoIP provisioned. Unlocks vector-3 datacenter-to-`/login` rules.
+- **P2-b · Fleet-aggregate the brute-force axes (cluster mode only).** Mirror the DDoS Redis fleet-bucket pattern (`ddos.rs:448-495`) for per-user / per-device distinct-IP counts so cross-node distributed stuffing doesn't dilute below threshold (theme 2). **Gating (per owner): only in cluster mode.** Add a per-detector `count_scope: per_node | fleet` (default `per_node`) mirroring `SpikeScope`, *and* require a shared Redis `StateBackend` present (`cluster_enabled()`, `control.rs:493`) — do **not** repeat the DDoS `spike_scope` gap where `fleet` on an in-memory backend silently means "fleet == this node". Prereq plumbing: thread a `StateBackend` handle into `BruteForceDetector` (which today holds only `Mutex`/`DashMap`, no backend). Perf: fire-and-forget increment + read-prior-bucket, fail-safe to per-node on backend error (as `tick_rps_fleet_at` does) — never block the request on Redis.
+- **P2-c · Fix rules-engine `Asn`/`Country` evaluation + wire ASN blacklist.** Populate `EvalContext` with geoip at the two data-plane call sites (`data_plane.rs:1090, 2071`) **and** the simulator (`simulator.rs:339`) so `Condition::Asn/Country` can be true; flip `kind: asn` blacklist from hardcoded-false (`blacklist.rs:505`). Prerequisite: GeoIP provisioned (already on in production builds). Unlocks vector-3 datacenter-to-`/login` rules. Perf: the MMDB reader is a `OnceLock` already threaded to the data plane; reuse the same lazy-cached lookup the country access-list uses (one lookup per request max, only when a geo condition is present).
 - **P2-d · Endpoint-enumeration / 404-rate detector.** Add a per-IP (and fleet) rolling counter of distinct-path 404s / non-signatured probes to `recon.rs`, scoring above the accumulation floor. Catches enumeration that today's per-path signatures miss.
 - **P2-e · Referer origin validation (optional, opt-in).** Upgrade `behavior_missing_referer` from presence to same-origin/allowlist checking (`behavior_signals.rs:159-171`) for CRITICAL routes. Guard against false positives on legitimate cross-origin flows.
 
@@ -203,5 +218,15 @@ Ordered by (impact × cheapness). Each item is independently shippable; file:lin
 ## Notes for whoever picks this up
 
 - Nothing here changes code. The P1 items are the intended first PR(s): they wire or minimally extend logic that already exists and is tested, so they carry the least risk and clear the most obvious external-red-team findings (leaked banners, missing fraud shapes, spray evasion, JSON-body XSS).
-- Verify each "unwired/dead" claim still holds before building — three were re-confirmed on 2026-07-02 (`BehavioralAnalyzer`, `velocity.rs`, `inject_security_headers` all have no non-test callers), but the tree moves.
+- Verify each "unwired/dead" claim still holds before building — three were re-confirmed on 2026-07-02 **and again 2026-07-03** (`BehavioralAnalyzer`, `velocity.rs`, `inject_security_headers` all have no non-test callers), but the tree moves.
 - Per the repo norm, treat FP-reduction gates (content-type body gating, exec-sink XSS, beacon skip) as deliberate — tightening them for coverage must be measured against benchmark false-positive rates, not just added blindly.
+
+---
+
+## Archival note (what to close out after the derived plans ship)
+
+This file is the umbrella analysis; it does not get archived on its own. Close it out as follows:
+
+- When **[`FEAT-attack-coverage-wiring-2026-07-03.md`](./FEAT-attack-coverage-wiring-2026-07-03.md)** ships **all P1 + the P2/P3 items its team commits to**, move *that* FEAT file to `plans/issues/archived/` and add a one-line "shipped" banner here pointing at the merge PRs. Any P2/P3 items deliberately **not** taken (e.g. L4 posture doc P3-d, per-account lockout P3-e) get either their own follow-up issue or an explicit "won't-do / out-of-scope" note in the FEAT file so nothing is silently dropped.
+- When **[`PLAN-ltester-perf-and-hardening-2026-07-03.md`](./PLAN-ltester-perf-and-hardening-2026-07-03.md)** ships, archive it the same way; it also closes the two doc-hygiene nits from *Corrections* above (the `data_plane.rs:678` "503" comment and `canary.rs:6` "score 90").
+- **Archive this ASSESSMENT** only once both derived plans are archived and every vector's residual gap is either shipped or captured as a standalone issue — at which point this becomes a historical record, not a live tracker. Until then it stays in `plans/issues/` as the source of truth for *why* each derived item exists.

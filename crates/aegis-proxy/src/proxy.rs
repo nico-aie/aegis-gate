@@ -379,6 +379,9 @@ impl ProxyContext {
         &self,
         cfg: &WafConfig,
         bus: &aegis_core::audit::AuditBus,
+        // SLO-P5 — degrade/recover alert channel into the SLO
+        // dispatch loop; `None` in tests.
+        alert_tx: Option<tokio::sync::mpsc::UnboundedSender<aegis_control::slo::AlertEvent>>,
     ) -> Vec<tokio::task::JoinHandle<()>> {
         // 2026-06-18 (upstream "up" badge report) — defaults for the
         // display-only TCP observer spawned for pools with no `health:`
@@ -408,6 +411,7 @@ impl ProxyContext {
                         health.interval,
                         health.timeout,
                         bus.clone(),
+                        alert_tx.clone(),
                     );
                     tracing::info!(
                         pool = %name,
@@ -433,6 +437,7 @@ impl ProxyContext {
                             PASSIVE_RECOVERY_INTERVAL,
                             PASSIVE_RECOVERY_TIMEOUT,
                             bus.clone(),
+                            alert_tx.clone(),
                         );
                         tracing::info!(
                             pool = %name,

@@ -711,6 +711,136 @@ fn patch_receivers(
     serde_yaml::to_string(&doc).map_err(|e| format!("re-serialize config: {e}"))
 }
 
+/// SLO-P6 (P4b) — set the whole `slo:` block in the YAML blob so
+/// objectives + the watchdog knob ride the shared config doc and
+/// propagate fleet-wide. Mirrors [`patch_receivers`]: after any
+/// edit the section is config-managed and authoritative.
+fn patch_slo(base: &str, slo: &aegis_core::config::SloSection) -> Result<String, String> {
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(base).map_err(|e| format!("base config not YAML: {e}"))?;
+    let serde_yaml::Value::Mapping(map) = &mut doc else {
+        return Err("base config is not a YAML mapping".into());
+    };
+    let block =
+        serde_yaml::to_value(slo).map_err(|e| format!("slo block not serialisable: {e}"))?;
+    map.insert(serde_yaml::Value::String("slo".into()), block);
+    serde_yaml::to_string(&doc).map_err(|e| format!("re-serialize config: {e}"))
+}
+
+/// SLO-P6 (P4b) — `PUT /api/slo/config`. Body is the config-shape
+/// `SloSection` JSON. Objectives are validated by the ENGINE's
+/// validator before touching the doc (window-vs-retention bounds,
+/// target range, short<long), so a bad edit 400s instead of being
+/// rejected later by every node's apply fold. Empty `objectives`
+/// = revert to compiled defaults (still config-managed).
+pub(crate) async fn handle_slo_config_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "slo-config-put");
+
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+    let parsed: aegis_core::config::SloSection = match serde_json::from_str(body_str) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            )
+        }
+    };
+
+    let mapped: Vec<aegis_control::slo::SloObjective> = parsed
+        .objectives
+        .iter()
+        .map(crate::config_source::reload::objective_from_config)
+        .collect();
+    if !mapped.is_empty() {
+        if let Err(e) = aegis_control::slo::SloEngine::validate_objectives(&mapped) {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            );
+        }
+    }
+
+    let (store, base_blob, expected) = match load_active_config_doc(services).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let new_blob = match patch_slo(&base_blob, &parsed) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
+    };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
+    }
+
+    let objective_count = parsed.objectives.len();
+    let after = serde_json::to_value(&parsed).unwrap_or(serde_json::Value::Null);
+
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/slo/config",
+        action: "slo_config_set",
+        reason: "operator updated SLO objectives",
+    };
+
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, serde_json::Value::Null, after, move || async move {
+            store_for_apply
+                .activate(expected, blob, &actor, "update slo config")
+                .await
+        })
+        .await;
+    match outcome {
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "version": version,
+                    "objectives": objective_count,
+                    "note": "config activated; propagates to all nodes within a few seconds",
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
+        Err(e) => mutation_error_response(e),
+    }
+}
+
 pub(crate) async fn handle_alert_receivers_put(
     req: hyper::Request<hyper::body::Incoming>,
     services: &aegis_control::dashboard_services::DashboardServices,
@@ -6898,6 +7028,55 @@ mod gate_toggle_patch_tests {
 mod tests {
     use super::*;
 
+    // SLO-P6 (P4b) — patch_slo folds the section into the doc and
+    // the result survives full config validation + round-trips.
+    #[test]
+    fn patch_slo_folds_section_into_doc() {
+        let base = r#"
+listeners:
+  data: [{ bind: "0.0.0.0:443" }]
+  admin: { bind: "127.0.0.1:9443" }
+routes:
+  - { id: catch-all, path: "/", upstream: api }
+upstreams:
+  api: { members: [{ addr: "127.0.0.1:3000" }] }
+state: { backend: in_memory }
+"#;
+        let section = aegis_core::config::SloSection {
+            objectives: vec![aegis_core::config::SloObjectiveConfig {
+                sli: aegis_core::config::SliKindConfig::DataPlaneAvailability,
+                target: 0.995,
+                window_days: 30,
+                min_events: Some(120),
+                burn_rates: vec![aegis_core::config::BurnWindowConfig {
+                    window_hours: 1,
+                    short_window_minutes: 5,
+                    burn_threshold: 14.4,
+                    severity: aegis_core::config::AlertSeverityConfig::Page,
+                }],
+            }],
+            telemetry_absent_after_secs: Some(300),
+        };
+        let patched = patch_slo(base, &section).expect("patch ok");
+        let cfg = aegis_core::load_config_str(&patched).expect("patched config valid");
+        let slo = cfg.slo.expect("slo section present");
+        assert_eq!(slo.telemetry_absent_after_secs, Some(300));
+        assert_eq!(slo.objectives.len(), 1);
+        assert!((slo.objectives[0].target - 0.995).abs() < 1e-9);
+        assert_eq!(slo.objectives[0].min_events, Some(120));
+
+        // Re-patching REPLACES the block (authoritative), never merges.
+        let emptied = aegis_core::config::SloSection {
+            objectives: Vec::new(),
+            telemetry_absent_after_secs: None,
+        };
+        let repatched = patch_slo(&patched, &emptied).expect("re-patch ok");
+        let cfg = aegis_core::load_config_str(&repatched).expect("still valid");
+        let slo = cfg.slo.expect("slo section still config-managed");
+        assert!(slo.objectives.is_empty(), "replaced, not merged");
+        assert_eq!(slo.telemetry_absent_after_secs, None);
+    }
+
     fn cfg_blob_with_pool_trust(trust: &str) -> String {
         format!(
             r#"
@@ -7497,6 +7676,9 @@ state:
             upstream_writer: None,
             dns_refresh: None,
             receiver_writer: None,
+            slo_engine: None,
+            slo_absent_after_secs: None,
+            alert_tx: None,
             client_auth: None,
             ddos: None,
             risk: None,
