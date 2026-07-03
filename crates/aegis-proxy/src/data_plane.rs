@@ -1198,6 +1198,19 @@ pub(crate) async fn handle_data_request_inner(
                 signals.push(rotation_signal);
             }
         }
+        // AC-P2-a (2026-07-03) — behavioral analyzer, opt-in
+        // (`detectors.behavior_analyzer`, default-OFF → `None` here, no
+        // work). Keyed per-source (peer IP); `is_error` is inbound-only
+        // false until the response-outcome channel lands (AC-P3-b), so the
+        // error-ratio signal stays inert. Rate / path-diversity / timing-
+        // jitter / no-cookie signals fold into the per-request signal set
+        // exactly like the device-rotation signal above.
+        if let Some(ba) = &upstream_ctx.behavior_analyzer {
+            let has_cookie = parts.headers.contains_key(http::header::COOKIE);
+            for sig in ba.observe(&peer_ip.to_string(), parts.uri.path(), false, has_cookie) {
+                signals.push(sig);
+            }
+        }
     }
 
     // v2.3 §5.3 — `log_only_intent` carries the WOULD-BE

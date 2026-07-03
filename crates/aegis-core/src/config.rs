@@ -4999,6 +4999,16 @@ pub struct DetectorsConfig {
     /// on once you have real-IP traffic to score.
     #[serde(default = "default_detector_toggle_off")]
     pub behavior_signals: DetectorToggle,
+    /// AC-P2-a (2026-07-03) — the full behavioral analyzer
+    /// (`aegis_security::behavior::BehavioralAnalyzer`): per-session
+    /// request-rate, path-diversity, timing-jitter (CV), and no-cookie
+    /// signals. **Default OFF** — richer + heavier than `behavior_signals`
+    /// and the timing signal previously tripped on single-IP benchmark
+    /// load, so it only runs when an operator opts in on real-IP traffic.
+    /// The error-ratio signal needs the response-outcome channel (AC-P3-b)
+    /// and stays inert until then (inbound `is_error` is always false).
+    #[serde(default = "default_detector_toggle_off")]
+    pub behavior_analyzer: DetectorToggle,
     /// AC-P2-e (2026-07-03) — Referer origin validation, a sub-feature of
     /// the `behavior_signals` detector. **Default OFF**; only active when
     /// `behavior_signals` is also enabled. Restart-to-change (boot-time
@@ -5161,6 +5171,7 @@ impl Default for DetectorsConfig {
             jwt_inspection: JwtInspectionConfig::default(),
             cookie_injection: default_detector_toggle_off(),
             behavior_signals: default_detector_toggle_off(),
+            behavior_analyzer: default_detector_toggle_off(),
             referer_origin: RefererOriginConfig::default(),
             velocity: default_detector_toggle(),
             canary: default_detector_toggle_off(),
@@ -6467,6 +6478,18 @@ redis:
         assert!(cfg.xss.enabled);
         assert!(cfg.path_traversal.enabled);
         assert!(cfg.ssrf.enabled);
+    }
+
+    // AC-P2-a (2026-07-03) — behavior_analyzer defaults OFF + parses.
+    #[test]
+    fn behavior_analyzer_defaults_off() {
+        assert!(!DetectorsConfig::default().behavior_analyzer.enabled);
+        let cfg: DetectorsConfig =
+            serde_yaml::from_str("behavior_analyzer: { enabled: true }").unwrap();
+        assert!(cfg.behavior_analyzer.enabled);
+        // Omitting the block keeps it off.
+        let bare: DetectorsConfig = serde_yaml::from_str("sqli: { enabled: true }").unwrap();
+        assert!(!bare.behavior_analyzer.enabled);
     }
 
     // AC-P2-e (2026-07-03) — referer_origin default-OFF + YAML wire shape.
