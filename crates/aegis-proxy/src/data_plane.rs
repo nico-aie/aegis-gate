@@ -2982,12 +2982,19 @@ pub(crate) async fn forward_allow_to_upstream(
                 // duration + bytes histograms, streamed counter). The
                 // metric guard rides the body and records on drop (stream
                 // end / client disconnect). No-op when metrics aren't wired.
-                let resp = match ctx.stream_metrics.as_ref() {
+                let mut resp = match ctx.stream_metrics.as_ref() {
                     Some(m) => resp.map(|body| {
                         crate::upstream::streaming::meter(body, m.clone())
                     }),
                     None => resp,
                 };
+                // AC-P1-a (2026-07-03) — the streaming bypass skips the
+                // body-side response filter (body can't be re-read) but
+                // headers are still writable: strip the leak set
+                // (`Server`, `X-Powered-By`, `X-Debug*`, …) here too so
+                // a streamed response doesn't become the banner-leak
+                // loophole.
+                ctx.pipeline.on_response_headers(resp.headers_mut());
                 return (
                     resp,
                     DecisionTag::allow()
@@ -3012,6 +3019,13 @@ pub(crate) async fn forward_allow_to_upstream(
             // path; `Pipeline::on_body_frame` is only used for
             // outbound response scrubbing.
             let (mut parts_out, body) = resp.into_parts();
+            // AC-P1-a (2026-07-03) — strip leak headers (`Server`,
+            // `X-Powered-By`, `X-Debug*`, `X-Internal*`, …) at the same
+            // pipeline stage as the body scrub below. Runs BEFORE the
+            // response cache store so cached entries are stored (and
+            // later served) already-clean. O(header count), no
+            // allocation when nothing matches.
+            ctx.pipeline.on_response_headers(&mut parts_out.headers);
             // `Full<Bytes>::Error` is `Infallible` — the collect
             // can't fail, but the trait still hands back a Result.
             let body_bytes = {

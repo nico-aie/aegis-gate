@@ -83,6 +83,17 @@ pub trait SecurityPipeline: Send + Sync + 'static {
         rctx: &RequestCtx,
         route: &RouteCtx,
     ) -> OutboundAction;
+
+    /// AC-P1-a (2026-07-03) — mutable response-header hook. Unlike
+    /// `on_response_start` (immutable inspection → action), this lets
+    /// the pipeline scrub leak headers (`Server`, `X-Powered-By`,
+    /// `X-Debug*`, …) in place before the response goes downstream.
+    /// Sync + default no-op: header work is O(header count) with no
+    /// await points, and impls that don't filter (NoopPipeline, test
+    /// doubles) inherit the no-op for free. The data plane calls this
+    /// on BOTH proxied-response branches — buffered and streaming —
+    /// since headers are writable even when the body can't be re-read.
+    fn on_response_headers(&self, _headers: &mut http::HeaderMap) {}
 }
 
 #[cfg(test)]

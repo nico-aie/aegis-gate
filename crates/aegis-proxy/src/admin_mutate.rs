@@ -5712,9 +5712,10 @@ pub(crate) async fn handle_response_filter_put(
 
     let before = serde_json::json!({ "version": expected });
     let after = serde_json::json!({
-        "scrub_stack_traces": patch.scrub_stack_traces,
-        "mask_internal_ips":  patch.mask_internal_ips,
-        "redact_dlp":         patch.redact_dlp,
+        "scrub_stack_traces":     patch.scrub_stack_traces,
+        "mask_internal_ips":      patch.mask_internal_ips,
+        "redact_dlp":             patch.redact_dlp,
+        "strip_response_headers": patch.strip_response_headers,
     });
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "PUT",
@@ -5766,7 +5767,7 @@ pub(crate) async fn handle_response_filter_put(
     }
 }
 
-/// Patch the three `response_filter` rungs on a YAML config blob via
+/// Patch the four `response_filter` rungs on a YAML config blob via
 /// `serde_yaml::Value` (`WafConfig` isn't `Serialize`). Creates the
 /// `response_filter` mapping if absent.
 fn patch_response_filter(
@@ -5788,6 +5789,7 @@ fn patch_response_filter(
         ("scrub_stack_traces", patch.scrub_stack_traces),
         ("mask_internal_ips", patch.mask_internal_ips),
         ("redact_dlp", patch.redact_dlp),
+        ("strip_response_headers", patch.strip_response_headers),
     ] {
         rf_map.insert(
             serde_yaml::Value::String(k.into()),
@@ -5804,17 +5806,19 @@ pub(crate) async fn handle_response_filter_get(
         Some(w) => {
             let snap = w.get();
             serde_json::json!({
-                "scrub_stack_traces": snap.scrub_stack_traces,
-                "mask_internal_ips":  snap.mask_internal_ips,
-                "redact_dlp":         snap.redact_dlp,
-                "wired":              true,
+                "scrub_stack_traces":     snap.scrub_stack_traces,
+                "mask_internal_ips":      snap.mask_internal_ips,
+                "redact_dlp":             snap.redact_dlp,
+                "strip_response_headers": snap.strip_response_headers,
+                "wired":                  true,
             })
         }
         None => serde_json::json!({
-            "scrub_stack_traces": true,
-            "mask_internal_ips":  true,
-            "redact_dlp":         true,
-            "wired":              false,
+            "scrub_stack_traces":     true,
+            "mask_internal_ips":      true,
+            "redact_dlp":             true,
+            "strip_response_headers": true,
+            "wired":                  false,
         }),
     };
     json_response(200, &body)
@@ -7203,13 +7207,14 @@ zero_trust:
     }
 
     #[test]
-    fn patch_response_filter_sets_all_three_rungs() {
+    fn patch_response_filter_sets_all_four_rungs() {
         use aegis_control::api::response_filter::ResponseFilterPatch;
         let base = "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\n";
         let patch = ResponseFilterPatch {
             scrub_stack_traces: false,
             mask_internal_ips: true,
             redact_dlp: false,
+            strip_response_headers: false,
         };
         let out = patch_response_filter(base, &patch).unwrap();
         let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
@@ -7223,6 +7228,10 @@ zero_trust:
         );
         assert_eq!(
             v["response_filter"]["redact_dlp"],
+            serde_yaml::Value::Bool(false)
+        );
+        assert_eq!(
+            v["response_filter"]["strip_response_headers"],
             serde_yaml::Value::Bool(false)
         );
     }
