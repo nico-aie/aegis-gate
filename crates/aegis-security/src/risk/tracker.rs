@@ -1667,6 +1667,37 @@ mod tests {
         assert_eq!(state.score, 65); // 80 - 15
     }
 
+    /// LT-P5 (2026-07-03) — the benchmarker's decay scenario: after risk
+    /// accumulates, a QUIET WINDOW of successive clean (allowed) requests
+    /// must show a **monotonically decreasing** score until it reaches 0.
+    /// Deterministic clock: each clean request is spaced 6 minutes apart
+    /// (per_hour=30 → 3 points recovered per step).
+    #[test]
+    fn quiet_window_of_clean_requests_monotonically_decays() {
+        let t = RiskTracker::new(&cfg());
+        let t0 = Instant::now();
+        t.record_malicious_at(ip("10.0.0.1"), 80, t0);
+
+        let mut prev = 80u32;
+        let mut hit_zero = false;
+        for step in 1..=40u32 {
+            let now = t0 + Duration::from_secs(u64::from(step) * 360); // +6 min each
+            let score = t.record_clean_at(ip("10.0.0.1"), now).score;
+            assert!(
+                score <= prev,
+                "score must never increase on a clean request: step {step} {prev} -> {score}",
+            );
+            if score < prev {
+                prev = score;
+            }
+            if score == 0 {
+                hit_zero = true;
+                break;
+            }
+        }
+        assert!(hit_zero, "a long quiet window must decay the score to 0, ended at {prev}");
+    }
+
     #[test]
     fn record_clean_caps_recovery_at_per_hour() {
         let t = RiskTracker::new(&cfg());
