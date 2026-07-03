@@ -454,6 +454,44 @@ mod tests {
         crate::api::tiers::TierStore::new()
     }
 
+    // AC-P2-c (2026-07-03) — the simulator must agree with the data plane
+    // on `Country`/`Asn` rules: threading a geoip reader lets a country
+    // rule fire in the preview exactly as it does live. Pre-fix the
+    // simulator used the empty-context `evaluate()` shim → geo always
+    // false → the operator saw "won't fire" for a rule that DOES block.
+    #[test]
+    fn country_rule_fires_in_simulator_with_geoip() {
+        use aegis_security::rules::ast::{Condition, Rule, RuleAction, Scope};
+        let rules = vec![Rule {
+            id: "geo-block".into(),
+            priority: 100,
+            scope: Scope::Global,
+            condition: Condition::Country(vec!["CN".into()]),
+            action: RuleAction::Block { status: 451 },
+        }];
+        let req = SimulateRequest {
+            method: Some("GET".into()),
+            path: "/".into(),
+            host: Some("app.example.com".into()),
+            headers: Default::default(),
+            body: None,
+            peer_ip: Some("203.0.113.9".parse().unwrap()),
+        };
+        let geo: std::sync::Arc<dyn aegis_security::geoip::GeoIpLookup> = std::sync::Arc::new(
+            aegis_security::geoip::StaticGeoIp::new().with_country("203.0.113.9", "CN"),
+        );
+        let resp = simulate(
+            &req,
+            &default_detectors(),
+            &live_mask(),
+            &live_tiers(),
+            &rules,
+            Some(geo),
+        );
+        assert_eq!(resp.decision_action, "block", "geo rule must block in the simulator");
+        assert_eq!(resp.rule_id.as_deref(), Some("geo-block"));
+    }
+
     #[test]
     fn benign_request_returns_allow_with_zero_risk() {
         let req = SimulateRequest {
