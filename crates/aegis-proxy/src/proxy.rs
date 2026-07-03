@@ -226,6 +226,12 @@ pub struct ProxyContext {
     /// `aegis_security::fingerprint::DeviceIpTracker::with_tuning`.
     pub device_ip_tracker:
         Arc<aegis_security::fingerprint::DeviceIpTracker>,
+    /// AC-P2-a (2026-07-03) — the behavioral analyzer, wired behind the
+    /// default-OFF `detectors.behavior_analyzer` toggle. `Some` only when
+    /// enabled, so a disabled deployment constructs nothing and the data
+    /// plane's `observe()` call is skipped entirely (zero cost).
+    pub behavior_analyzer:
+        Option<Arc<aegis_security::behavior::BehavioralAnalyzer>>,
     /// 2026-05-21 — gate-style on/off for the bot classifier
     /// (`cfg.bots.enabled`). The listener reads this before
     /// classifying; `false` skips classification and leaves
@@ -344,6 +350,11 @@ impl ProxyContext {
             device_ip_tracker: Arc::new(
                 aegis_security::fingerprint::DeviceIpTracker::new(),
             ),
+            // AC-P2-a — construct only when opted in. 100k sessions / 60s
+            // window matches the `behavior_signals` bound.
+            behavior_analyzer: cfg.detectors.behavior_analyzer.enabled.then(|| {
+                Arc::new(aegis_security::behavior::BehavioralAnalyzer::new(100_000, 60))
+            }),
             bots_enabled: Arc::new(std::sync::atomic::AtomicBool::new(
                 cfg.bots.enabled,
             )),

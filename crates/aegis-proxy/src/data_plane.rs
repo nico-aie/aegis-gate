@@ -1198,6 +1198,19 @@ pub(crate) async fn handle_data_request_inner(
                 signals.push(rotation_signal);
             }
         }
+        // AC-P2-a (2026-07-03) — behavioral analyzer, opt-in
+        // (`detectors.behavior_analyzer`, default-OFF → `None` here, no
+        // work). Keyed per-source (peer IP); `is_error` is inbound-only
+        // false until the response-outcome channel lands (AC-P3-b), so the
+        // error-ratio signal stays inert. Rate / path-diversity / timing-
+        // jitter / no-cookie signals fold into the per-request signal set
+        // exactly like the device-rotation signal above.
+        if let Some(ba) = &upstream_ctx.behavior_analyzer {
+            let has_cookie = parts.headers.contains_key(http::header::COOKIE);
+            for sig in ba.observe(&peer_ip.to_string(), parts.uri.path(), false, has_cookie) {
+                signals.push(sig);
+            }
+        }
     }
 
     // v2.3 §5.3 — `log_only_intent` carries the WOULD-BE
@@ -6830,6 +6843,115 @@ state: {{ backend: in_memory }}
             get_status(waf, "/").await,
             451,
             "no geoip reader → country condition stays false, request forwarded",
+        );
+    }
+
+    // AC-P2-a (2026-07-03) — the BehavioralAnalyzer must be wired into the
+    // data plane behind a default-OFF toggle. When enabled, a stateless
+    // no-cookie source accumulates `behavior_no_cookie` (fires after >5
+    // requests) → risk climbs. When disabled, the analyzer is never
+    // constructed and the same traffic stays at risk 0 (zero cost).
+    async fn run_behavior_probe(analyzer_enabled: bool) -> Option<u32> {
+        let backend = spawn_upstream().await;
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: pool }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend}" }}] }}
+state: {{ backend: in_memory }}
+detectors:
+  behavior_analyzer: {{ enabled: {analyzer_enabled} }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
+        ctx.interop_modes.set(Arc::new(ModeStore::new(Mode::Enforce))).ok();
+
+        let metrics = aegis_control::metrics::MetricsRegistry::init();
+        let args = Arc::new(Args {
+            detectors: aegis_security::detectors::default_detectors(),
+            mask: aegis_security::detectors::SharedDetectorMask::from_config(&cfg.detectors),
+            risk: aegis_security::risk::RiskTracker::new(&cfg.risk),
+            ip_rl: aegis_security::rate_limit::IpRateLimiter::new(
+                crate::config_source::reload::derive_ip_rate_cfg(&cfg),
+            ),
+            load_gauge: aegis_core::LoadGauge::new(cfg.load_mode.clone()),
+            verbosity: aegis_core::SharedVerbosity::from_config(&cfg.logging),
+            rsh: aegis_control::metrics::request_duration::RequestStageHistogram::register(&metrics)
+                .unwrap(),
+            rlh: aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&metrics)
+                .unwrap(),
+            ra: aegis_control::metrics::route_activity::RouteActivityWindow::new(),
+            dlh: aegis_control::metrics::detector_latency::DetectorLatencyHistogram::register(&metrics)
+                .unwrap(),
+            dhm: aegis_control::metrics::detector_hits::DetectorHitMetrics::register(&metrics)
+                .unwrap(),
+            bus: AuditBus::new(64),
+            ctx: ctx.clone(),
+        });
+        let seen: Arc<std::sync::Mutex<Option<Option<u32>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let args_l = args.clone();
+        let seen_l = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, peer)) = waf.accept().await {
+                let args_c = args_l.clone();
+                let seen_c = seen_l.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                        let a = args_c.clone();
+                        let seen = seen_c.clone();
+                        async move {
+                            let (resp, tag) = super::handle_data_request(
+                                req, peer, None, &a.detectors, &a.mask, &a.risk, &a.ip_rl,
+                                &a.load_gauge, &a.verbosity, &a.rsh, &a.rlh, &a.ra, &a.dlh,
+                                &a.bus, &a.ctx, &a.dhm, &ClientIdentity::Anonymous, None,
+                            )
+                            .await;
+                            *seen.lock().unwrap() = Some(tag.risk_score);
+                            Ok::<_, Infallible>(resp)
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // 6 clean no-cookie GETs from the same loopback peer → the 6th
+        // trips behavior_no_cookie (total_count > 5) when the analyzer is on.
+        let mut last = None;
+        for _ in 0..6 {
+            let _ = get_status(waf_addr, "/").await;
+            last = *seen.lock().unwrap();
+        }
+        last.flatten()
+    }
+
+    #[tokio::test]
+    async fn behavior_analyzer_wired_accumulates_risk_when_enabled() {
+        let score = run_behavior_probe(true).await;
+        assert!(
+            score.is_some_and(|s| s > 0),
+            "enabled analyzer must contribute behavior risk on a stateless source, got {score:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn behavior_analyzer_silent_when_disabled() {
+        let score = run_behavior_probe(false).await;
+        assert!(
+            score.unwrap_or(0) == 0,
+            "disabled analyzer must add no risk (zero cost), got {score:?}",
         );
     }
 
