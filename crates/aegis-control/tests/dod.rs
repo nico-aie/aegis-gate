@@ -308,9 +308,11 @@ mod slo_alert_lifecycle {
             window_days: 30,
             burn_rates: vec![BurnRateWindow {
                 window_hours: 1,
-                budget_pct: 2.0,
+                short_window_minutes: 5,
+                burn_threshold: 14.4,
                 severity: AlertSeverity::Page,
             }],
+            min_events: 60,
         }]
     }
 
@@ -340,26 +342,35 @@ mod slo_alert_lifecycle {
         let engine = SloEngine::new(fast_burn_objective());
 
         // Fire the alert.
+        let t0 = chrono::Utc::now();
         for _ in 0..200 {
             engine.record(SliSample {
                 kind: SliKind::DataPlaneAvailability,
                 value: 0.9,
-                ts: chrono::Utc::now(),
+                ts: t0,
             });
         }
-        engine.evaluate();
+        engine.evaluate_at(t0 + chrono::Duration::minutes(1));
         assert_eq!(engine.active_alerts().len(), 1);
 
-        // Recover: flood with healthy samples to push out the bad ones.
-        for _ in 0..10_000 {
-            engine.record(SliSample {
-                kind: SliKind::DataPlaneAvailability,
-                value: 1.0,
-                ts: chrono::Utc::now(),
-            });
+        // Recover: two hours later the burst has aged out of the
+        // 1h burn window and fresh traffic is healthy. (SLO-P2:
+        // recovery is time-based — pre-P2 this test flooded the
+        // sample ring until the bad samples were EVICTED, which
+        // was the store bug, not a recovery.)
+        let t2 = t0 + chrono::Duration::hours(2);
+        for _ in 0..200 {
+            engine.record_at(
+                SliSample {
+                    kind: SliKind::DataPlaneAvailability,
+                    value: 1.0,
+                    ts: t2,
+                },
+                t2,
+            );
         }
 
-        let alerts = engine.evaluate();
+        let alerts = engine.evaluate_at(t2);
         assert!(!alerts.is_empty(), "should get resolve event");
         assert!(alerts[0].resolved_at.is_some(), "alert should be resolved");
         assert!(engine.active_alerts().is_empty(), "no active alerts after recovery");
@@ -369,15 +380,11 @@ mod slo_alert_lifecycle {
     fn multi_burn_rate_windows() {
         let engine = SloEngine::new(default_objectives());
 
-        // Record healthy data.
+        // Record healthy data. (SLO-P1: defaults are availability
+        // only — the audit-delivery tautology objective is gone.)
         for _ in 0..100 {
             engine.record(SliSample {
                 kind: SliKind::DataPlaneAvailability,
-                value: 1.0,
-                ts: chrono::Utc::now(),
-            });
-            engine.record(SliSample {
-                kind: SliKind::AuditDeliveryRate,
                 value: 1.0,
                 ts: chrono::Utc::now(),
             });
@@ -387,7 +394,7 @@ mod slo_alert_lifecycle {
         assert!(alerts.is_empty(), "no alerts when healthy");
 
         let status = engine.budget_status();
-        assert_eq!(status.len(), 2);
+        assert_eq!(status.len(), 1);
         for bs in &status {
             assert!(bs.budget_remaining_pct > 99.0);
         }

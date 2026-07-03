@@ -1397,6 +1397,20 @@ pub async fn run(
         };
         Arc::new(arc_swap::ArcSwap::from_pointee(initial))
     };
+    // SLO-P4 — the SLO engine is built HERE (was accept.rs) so the
+    // config watcher can hot-swap objectives on doc convergence,
+    // mirroring shared_receivers. Boot objectives come from
+    // `cfg.slo` (invalid → compiled defaults + error log; the
+    // alerting engine is report-only and must never fail boot).
+    let slo_engine = Arc::new(aegis_control::slo::SloEngine::new(
+        crate::config_source::reload::slo_objectives_from_cfg(&cfg),
+    ));
+    let slo_absent_after_secs = Arc::new(std::sync::atomic::AtomicU64::new(
+        cfg.slo
+            .as_ref()
+            .and_then(|s| s.telemetry_absent_after_secs)
+            .unwrap_or(aegis_control::slo::DEFAULT_TELEMETRY_ABSENT_AFTER_SECS),
+    ));
     {
         let node_id = lease_store.self_id().to_string();
         // H2b — the watcher reads/seeds the SELECTED config backend (etcd when
@@ -1426,6 +1440,10 @@ pub async fn run(
             dns_refresh: dns_refresh_manager.clone(),
             // N1 — re-derive the alert-receiver list on each swap.
             receiver_writer: Some(Arc::clone(&shared_receivers)),
+            // SLO-P4 — re-derive SLO objectives + watchdog knob on
+            // each swap.
+            slo_engine: Some(Arc::clone(&slo_engine)),
+            slo_absent_after_secs: Some(Arc::clone(&slo_absent_after_secs)),
             // A2 — re-derive the inbound mTLS trust store on each swap so a
             // Zero Trust CA rotation converges fleet-wide (was file-watcher
             // only).
@@ -2200,6 +2218,8 @@ pub async fn run(
         // watcher reads, never splitting reads and writes across stores.
         config_backend,
         shared_receivers,
+        slo_engine,
+        slo_absent_after_secs,
     )));
 
     readiness.config_loaded.store(true, Ordering::Relaxed);

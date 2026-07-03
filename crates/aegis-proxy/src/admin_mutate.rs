@@ -7497,6 +7497,8 @@ state:
             upstream_writer: None,
             dns_refresh: None,
             receiver_writer: None,
+            slo_engine: None,
+            slo_absent_after_secs: None,
             client_auth: None,
             ddos: None,
             risk: None,
