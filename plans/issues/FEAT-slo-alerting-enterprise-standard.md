@@ -1,6 +1,6 @@
 # FEAT — SLO & Alerting: enterprise-standard burn-rate alerting + explainable Health page
 
-> **Type:** FEAT (observability track) · **Status:** ☐ Not started — planned 2026-07-03 · **Branch:** `feat/slo-enterprise-*` (per stage)
+> **Type:** FEAT (observability track) · **Status:** ◐ In progress — P1+P2+P3 done 2026-07-03 (`feat/slo-enterprise-p1`) · **Branch:** `feat/slo-enterprise-*` (per stage)
 > **Track ID prefix:** `SLO-P1<–6>`
 > **Code anchors:** engine `crates/aegis-control/src/slo.rs` · producers/eval loop `crates/aegis-proxy/src/accept.rs:1284-1379` · dispatch `slo/dispatch.rs` · UI `assets/dashboard/src/pages.jsx` (`PageTracking` :9062, `PageIncidents` :11742)
 > **Honors:** [[project_health_signals_reported_not_gating]] (alerting reports, never fail-closes the data plane), [[project_dashboard_js_hook_safety]] (JSX has no runtime tests — rebuild binary, respect hook aliasing), [[project_docs_overstate_impl]] (several "(wired)" doc comments in `slo.rs` are stale — verified below against code)
@@ -100,9 +100,9 @@ Producers for the classes whose subsystems already exist (each is a few lines at
 
 ## Acceptance
 
-- [ ] SLO-P1: origin 5xx burns budget; blocks/challenges don't; enforcement counter surfaced; dead AuditDeliveryRate gone.
-- [ ] SLO-P2: 72h/30d windows exact at ≥100 rps sustained (no ring truncation); no-data distinguishable.
-- [ ] SLO-P3: scenario table (a)–(f) green; alert text reads measured-vs-target + time-to-exhaustion; blackout alerts.
+- [x] SLO-P1: origin 5xx burns budget; blocks/challenges don't; enforcement counter surfaced; dead AuditDeliveryRate gone. *(2026-07-03, `feat/slo-enterprise-p1`, rust-reviewer approved)*
+- [x] SLO-P2: 72h/30d windows exact at ≥100 rps sustained (no ring truncation); no-data distinguishable. *(2026-07-03, same branch; two-tier 10s/72h + 1m/30d BucketStore, evaluate_at/record_at clock seam, rust-reviewer MEDIUMs addressed)*
+- [x] SLO-P3: scenario table (a)–(f) green; alert text reads measured-vs-target + time-to-exhaustion; blackout alerts. *(2026-07-03, same branch; review hardening: silence never auto-resolves a fired alert — only confirmed recovery; short window volume-gated; fingerprint carries fired/resolved state)*
 - [ ] SLO-P4: objectives/thresholds editable via YAML + API, fleet-propagated; defaults = compiled.
 - [ ] SLO-P5: pool-degraded, DDoS-mode, cert-expiry, hot-reload-failed alerts fire from real transitions; GitOpsDrift deleted.
 - [ ] SLO-P6: burn gauges + timeline + unified naming + severity-routing UI + objective editor shipped; hooks guard green.
