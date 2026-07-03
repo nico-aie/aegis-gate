@@ -132,6 +132,21 @@ pub(crate) async fn handle_data_request(
         tls_fingerprint,
     ).await;
     tracing::Span::current().record("action", tag.action.as_str());
+    // AC-P3-b (2026-07-04) — response-outcome channel. Feed the upstream
+    // outcome of a FORWARDED request back into the behavioral analyzer so
+    // the error-ratio signal (inert inbound) reflects prior failures — e.g.
+    // repeated upstream 401/403 on credential stuffing. Gated on
+    // `Action::Allow` so the WAF's OWN blocks/challenges (403/429) never
+    // inflate the client error ratio. Only client errors (4xx: auth
+    // 401/403, enumeration 404, bad-request 400) count as "the client
+    // misbehaving"; upstream 5xx outages are the server's fault, not a
+    // client signal, so they're excluded. No-op when the analyzer is
+    // disabled (the `None` fast path).
+    if let Some(ba) = &upstream_ctx.behavior_analyzer {
+        if matches!(tag.action, aegis_control::interop::headers::Action::Allow) {
+            ba.observe_outcome(&peer.ip().to_string(), resp.status().is_client_error());
+        }
+    }
     (resp, tag)
 }
 

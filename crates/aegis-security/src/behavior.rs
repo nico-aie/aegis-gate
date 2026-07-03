@@ -143,6 +143,29 @@ impl BehavioralAnalyzer {
         signals
     }
 
+    /// AC-P3-b (2026-07-04) — response-outcome channel. Detectors run
+    /// inbound and never see the upstream status, so the error-ratio
+    /// signal (checked in [`observe`](Self::observe)) was inert. The data
+    /// plane calls this AFTER the upstream responds — keyed on the same
+    /// source `key` as the inbound `observe` — so a request that ends in an
+    /// upstream error (e.g. a `401`/`403` on bad credentials) bumps the
+    /// session's error count. The NEXT inbound request then reads the
+    /// updated ratio and can fire `behavior_high_errors`.
+    ///
+    /// No-op when `is_error` is false or the session doesn't exist: an
+    /// outcome always follows an inbound `observe`, so we never create a
+    /// session here (that would let a response with no matching request
+    /// grow the map).
+    pub fn observe_outcome(&self, key: &str, is_error: bool) {
+        if !is_error {
+            return;
+        }
+        let mut map = self.sessions.lock().unwrap();
+        if let Some(session) = map.get_mut(key) {
+            session.error_count = session.error_count.saturating_add(1);
+        }
+    }
+
     /// Clear all sessions.
     pub fn clear(&self) {
         self.sessions.lock().unwrap().clear();
