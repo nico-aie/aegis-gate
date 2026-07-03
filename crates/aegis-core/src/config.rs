@@ -1278,6 +1278,49 @@ pub fn is_unsafe_trusted_proxy(net: &ipnet::IpNet) -> bool {
     net.prefix_len() == 0
 }
 
+/// LT-P7 (2026-07-03) — a soft **advisory** (not a rejection) for a
+/// `trusted_proxies` entry that trusts a BROAD private or loopback
+/// range for `X-Forwarded-For`. Unlike [`is_unsafe_trusted_proxy`]
+/// (which rejects the internet-wide default route at boot), these
+/// entries stay **accepted** — the single-host front-WAF sidecar
+/// (`127.0.0.1/32`) is a legitimate, common pattern. But trusting an
+/// entire `10.0.0.0/8` / `127.0.0.0/8` means *any* host in that range
+/// can assert the client IP and bypass rate-limit / blocklist / risk /
+/// GeoIP, so the operator should usually list the load balancer's
+/// narrow CIDR instead. Returns `Some(message)` to warn at boot; a
+/// single host route (`/32`, `/128`) or a public CIDR is silent.
+pub fn trusted_proxy_advisory(net: &ipnet::IpNet) -> Option<String> {
+    // Host routes (a specific proxy) are the intended shape — never advise.
+    if net.prefix_len() == net.max_prefix_len() {
+        return None;
+    }
+    if !is_private_or_loopback_net(net) {
+        return None;
+    }
+    Some(format!(
+        "proxy.trusted_proxies: '{net}' trusts a broad private/loopback range \
+         for X-Forwarded-For — any host inside it can spoof the client IP. \
+         Prefer the load balancer's narrow CIDR (or a /32 host route). \
+         Accepted, but review if this is not a same-host PROXY-protocol front.",
+    ))
+}
+
+/// Whether a CIDR's network address is loopback or a private / non-
+/// globally-routable range (RFC 1918, link-local, IPv6 loopback, ULA
+/// `fc00::/7`). Used by [`trusted_proxy_advisory`]; deliberately based
+/// on the network base address so a range like `10.0.0.0/8` classifies.
+fn is_private_or_loopback_net(net: &ipnet::IpNet) -> bool {
+    match net.network() {
+        std::net::IpAddr::V4(a) => {
+            a.is_loopback() || a.is_private() || a.is_link_local()
+        }
+        std::net::IpAddr::V6(a) => {
+            // Loopback (::1) or ULA fc00::/7 (first 7 bits == 1111110).
+            a.is_loopback() || (a.segments()[0] & 0xfe00) == 0xfc00
+        }
+    }
+}
+
 #[cfg(test)]
 mod trusted_proxy_guard_tests {
     use super::is_unsafe_trusted_proxy;
@@ -1299,6 +1342,34 @@ mod trusted_proxy_guard_tests {
             assert!(
                 !is_unsafe_trusted_proxy(&c.parse().unwrap()),
                 "{c} must be allowed",
+            );
+        }
+    }
+
+    // LT-P7 (2026-07-03) — a soft ADVISORY (boot warn, not reject) for
+    // trusting a BROAD private/loopback RANGE for X-Forwarded-For. These
+    // stay accepted (the single-host sidecar pattern is legit and common),
+    // but trusting the whole `10.0.0.0/8` / `127.0.0.0/8` lets any host in
+    // that range spoof the client IP — worth surfacing at boot. A single
+    // host route (`/32`, `/128`) is the legit sidecar and stays silent.
+    #[test]
+    fn advises_on_broad_private_or_loopback_ranges() {
+        for c in ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"] {
+            assert!(
+                super::trusted_proxy_advisory(&c.parse().unwrap()).is_some(),
+                "{c} (broad private/loopback range) must produce an advisory",
+            );
+        }
+    }
+
+    #[test]
+    fn no_advisory_for_host_routes_or_public_cidrs() {
+        // Single-host private/loopback (the sidecar) + narrow/public LB CIDRs
+        // are silent — no noise on legitimate configs.
+        for c in ["127.0.0.1/32", "::1/128", "192.168.1.5/32", "203.0.113.7/32", "198.51.100.0/24"] {
+            assert!(
+                super::trusted_proxy_advisory(&c.parse().unwrap()).is_none(),
+                "{c} must NOT produce an advisory",
             );
         }
     }
