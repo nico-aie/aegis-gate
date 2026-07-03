@@ -4999,6 +4999,12 @@ pub struct DetectorsConfig {
     /// on once you have real-IP traffic to score.
     #[serde(default = "default_detector_toggle_off")]
     pub behavior_signals: DetectorToggle,
+    /// AC-P2-e (2026-07-03) — Referer origin validation, a sub-feature of
+    /// the `behavior_signals` detector. **Default OFF**; only active when
+    /// `behavior_signals` is also enabled. Restart-to-change (boot-time
+    /// detector config, like `open_redirect.allowed_domains`).
+    #[serde(default)]
+    pub referer_origin: RefererOriginConfig,
     /// 2026-05-19 — Phase F cross-endpoint velocity engine.
     /// Detects login→deposit / login→withdrawal sequences tighter
     /// than 5 s. **Default ON** — zero cost when the upstream has
@@ -5155,6 +5161,7 @@ impl Default for DetectorsConfig {
             jwt_inspection: JwtInspectionConfig::default(),
             cookie_injection: default_detector_toggle_off(),
             behavior_signals: default_detector_toggle_off(),
+            referer_origin: RefererOriginConfig::default(),
             velocity: default_detector_toggle(),
             canary: default_detector_toggle_off(),
             persistence: None,
@@ -5376,6 +5383,47 @@ impl Default for OpenRedirectConfig {
         Self {
             enabled: true,
             allowed_domains: Vec::new(),
+        }
+    }
+}
+
+/// AC-P2-e (2026-07-03) — Referer origin validation config, a sub-feature
+/// of the `behavior_signals` detector. When `enabled`, a mutation request
+/// (POST / PUT / PATCH / DELETE) whose **present** `Referer` host is
+/// neither same-origin (vs the request `Host`) nor in `allowed_origins`
+/// scores `behavior_cross_origin_referer`. Presence-only checking (the
+/// absent-Referer case) stays the existing `behavior_missing_referer`.
+///
+/// **Default OFF** — stricter than presence and can false-positive on
+/// legitimate cross-origin flows (OAuth redirects, payment callbacks,
+/// embedded third-party forms), so it must be opted into with an
+/// allowlist. Only active when `behavior_signals` is also enabled (it is
+/// that detector's Referer logic). Each `allowed_origins` entry is a
+/// literal host (`checkout.partner.com`) or a `*.partner.com` glob —
+/// same shape as `open_redirect.allowed_domains`. YAML:
+///
+/// ```yaml
+/// detectors:
+///   behavior_signals: { enabled: true }
+///   referer_origin:
+///     enabled: true
+///     allowed_origins:
+///       - "checkout.partner.com"
+///       - "*.partner.com"
+/// ```
+#[derive(Clone, Debug, Deserialize)]
+pub struct RefererOriginConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+}
+
+impl Default for RefererOriginConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allowed_origins: Vec::new(),
         }
     }
 }
@@ -6419,6 +6467,37 @@ redis:
         assert!(cfg.xss.enabled);
         assert!(cfg.path_traversal.enabled);
         assert!(cfg.ssrf.enabled);
+    }
+
+    // AC-P2-e (2026-07-03) — referer_origin default-OFF + YAML wire shape.
+    #[test]
+    fn referer_origin_defaults_off() {
+        let cfg = DetectorsConfig::default();
+        assert!(!cfg.referer_origin.enabled);
+        assert!(cfg.referer_origin.allowed_origins.is_empty());
+    }
+
+    #[test]
+    fn referer_origin_parses_from_yaml() {
+        let cfg: DetectorsConfig = serde_yaml::from_str(
+            r#"
+behavior_signals: { enabled: true }
+referer_origin:
+  enabled: true
+  allowed_origins:
+    - "checkout.partner.com"
+    - "*.partner.com"
+"#,
+        )
+        .unwrap();
+        assert!(cfg.referer_origin.enabled);
+        assert_eq!(
+            cfg.referer_origin.allowed_origins,
+            vec!["checkout.partner.com".to_string(), "*.partner.com".to_string()],
+        );
+        // Omitting the block keeps it off (serde default).
+        let bare: DetectorsConfig = serde_yaml::from_str("sqli: { enabled: true }").unwrap();
+        assert!(!bare.referer_origin.enabled);
     }
 
     #[test]
