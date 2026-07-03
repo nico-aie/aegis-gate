@@ -1450,9 +1450,21 @@ pub(crate) async fn handle_data_request_inner(
     // genuinely clean request: a detection that just recorded a malicious
     // score (even one under the per-request threshold) must NOT claw it
     // back here. Same condition as the old clean-path branch.
-    if detected_under_threshold.is_none() && log_only_intent.is_none() {
-        risk.record_clean_with_key(build_risk_key(peer_ip, &parts.headers, tls_fingerprint));
-    }
+    // LT-P5 (2026-07-03) — capture the post-decay score. `record_clean`
+    // ages the bucket for elapsed-since-last-seen (trust recovery) and
+    // returns the new state; we stamp it on the genuinely-clean allow tag
+    // below so a residual, still-decaying score surfaces on
+    // `X-WAF-Risk-Score`. The benchmarker validates decay by watching that
+    // header decrease over a quiet window of allowed requests — without
+    // this, the plain Allow path stamped 0 and the curve was invisible.
+    let clean_allow_score = if detected_under_threshold.is_none() && log_only_intent.is_none() {
+        Some(
+            risk.record_clean_with_key(build_risk_key(peer_ip, &parts.headers, tls_fingerprint))
+                .score,
+        )
+    } else {
+        None
+    };
     // Per-tier cumulative thresholds, falling back to the global values
     // when the matched tier has no override (Option B).
     let global = risk.thresholds();
@@ -1826,7 +1838,7 @@ pub(crate) async fn handle_data_request_inner(
                 // its outcome onto a status code; we infer the
                 // contract action from that (allow on 2xx/3xx,
                 // block / circuit_breaker / timeout otherwise).
-                forward_allow_to_upstream(
+                let (resp, tag) = forward_allow_to_upstream(
                     parts,
                     body_bytes,
                     upstream_ctx,
@@ -1837,7 +1849,15 @@ pub(crate) async fn handle_data_request_inner(
                     peer_ip,
                     bus,
                 )
-                .await
+                .await;
+                // LT-P5 — surface residual (decaying) cumulative risk on the
+                // clean allow response. Only when > 0: a brand-new / fully-
+                // recovered source keeps stamping 0, unchanged.
+                let tag = match clean_allow_score {
+                    Some(s) if s > 0 => tag.with_risk_score(s),
+                    _ => tag,
+                };
+                (resp, tag)
             }
         }
     };
