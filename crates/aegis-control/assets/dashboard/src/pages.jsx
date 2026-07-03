@@ -8555,6 +8555,15 @@ function emptyKindBody(tag) {
   }
 }
 
+// SLO-P6b — receiver severity routing. Wire values are the Rust
+// enum's PascalCase (`AlertSeverity: Page | Ticket | Info`); an
+// empty / absent `severities` array means "no filter — deliver all".
+const ALERT_SEVERITIES = ['Page', 'Ticket', 'Info'];
+function toggleSeverity(list, sev) {
+  const cur = Array.isArray(list) ? list : [];
+  return cur.includes(sev) ? cur.filter(s => s !== sev) : [...cur, sev];
+}
+
 // Build a wire-shape AlertReceiver from the modal form draft.
 // Returns null when the kind tag isn't recognised.
 function draftToReceiver(draft) {
@@ -8583,7 +8592,15 @@ function draftToReceiver(draft) {
   } else if (draft.kindTag === 'alertmanager_webhook') {
     fields.url = draft.url || '';
   }
-  return { name: (draft.name || '').trim(), kind: { [variantKey]: fields } };
+  // SLO-P6b — severity routing filter. Canonical Page→Ticket→Info
+  // order; omitted entirely when empty (backend serde default =
+  // empty Vec = accept every severity).
+  const severities = ALERT_SEVERITIES.filter(s => (draft.severities || []).includes(s));
+  return {
+    name: (draft.name || '').trim(),
+    kind: { [variantKey]: fields },
+    ...(severities.length > 0 ? { severities } : {}),
+  };
 }
 
 function AlertChannelsCard({ receiversApi }) {
@@ -8592,10 +8609,20 @@ function AlertChannelsCard({ receiversApi }) {
   const [busy, setBusy] = useStateP(null);       // receiver-name being acted on
   const list = receiversApi.data?.receivers ?? [];
 
-  const openAdd = () => setEditing({ mode: 'add', draft: { kindTag: 'vip_talk', name: '' } });
+  const openAdd = () => setEditing({ mode: 'add', draft: { kindTag: 'vip_talk', name: '', severities: [] } });
+  // SLO-P6b caveat — GET /api/alert-receivers doesn't expose the
+  // `severities` filter yet (ReceiverEntry omits it), so an edit on
+  // such a backend seeds an empty filter and Save would clear a
+  // YAML-configured one. Seed from the entry when present so this
+  // heals the moment the read view carries the field.
   const openEdit = (entry) => setEditing({
     mode: 'edit',
-    draft: { kindTag: entry.kind?.type, name: entry.name, ...flatFieldsFromKind(entry.kind) },
+    draft: {
+      kindTag: entry.kind?.type,
+      name: entry.name,
+      severities: Array.isArray(entry.severities) ? entry.severities : [],
+      ...flatFieldsFromKind(entry.kind),
+    },
   });
 
   async function applyDraft(receivers, draft) {
@@ -8706,7 +8733,7 @@ function AlertChannelsCard({ receiversApi }) {
               key={entry.name}
               style={{
                 display: 'grid',
-                gridTemplateColumns: '120px 160px 1fr 220px auto',
+                gridTemplateColumns: '120px 160px 1fr 130px 220px auto',
                 gap: 10,
                 alignItems: 'center',
                 padding: '8px 10px',
@@ -8721,6 +8748,20 @@ function AlertChannelsCard({ receiversApi }) {
               <span className="mono">{entry.name}</span>
               <span className="mono dim" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {receiverTargetPreview(entry.kind)}
+              </span>
+              {/* SLO-P6b — severity routing filter. Backends that
+                  don't report `severities` on the read view render
+                  as the unfiltered default. */}
+              <span
+                className="pill neutral"
+                style={{ justifySelf: 'start' }}
+                title={Array.isArray(entry.severities) && entry.severities.length > 0
+                  ? `Delivers only ${entry.severities.join(' + ')} alerts`
+                  : 'No severity filter — delivers Page, Ticket and Info alerts'}
+              >
+                {Array.isArray(entry.severities) && entry.severities.length > 0
+                  ? entry.severities.join('/')
+                  : 'All severities'}
               </span>
               <span className={`pill ${pill.tone}`}>{pill.label}</span>
               <div style={{ display: 'flex', gap: 6 }}>
@@ -8866,6 +8907,30 @@ function AlertChannelModal({ mode, draft, existingNames, onSave, onCancel }) {
             </select>
           </label>
           <KindFieldset draft={d} setField={set} isEdit={isEdit} />
+          {/* SLO-P6b — severity routing. Unchecked-everything means
+              "no filter" (backend `accepts()` treats an empty list
+              as accept-all), so label that state explicitly instead
+              of letting it read like "delivers nothing". */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span className="field-label">Severity routing</span>
+            <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+              {ALERT_SEVERITIES.map(sev => (
+                <label key={sev} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={(d.severities || []).includes(sev)}
+                    onChange={() => set('severities', toggleSeverity(d.severities, sev))}
+                  />
+                  {sev}
+                </label>
+              ))}
+              <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+                {(d.severities || []).length === 0
+                  ? 'All severities (no filter)'
+                  : `Only ${ALERT_SEVERITIES.filter(s => d.severities.includes(s)).join(' + ')}`}
+              </span>
+            </div>
+          </div>
           {isEdit && (
             <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
               Secrets shown only as <span className="mono">****&lt;last4&gt;</span>.
@@ -9059,6 +9124,304 @@ function SloRootCauseHint({ slis }) {
   );
 }
 
+// SLO-P6b — burn-gauge windows. `page` is the burn-rate at which
+// that window's multi-window pair pages (the Google SRE fast/mid/
+// slow-burn ladder: 14.4× @1h, 6× @6h, 1× @3d); ≥ half of it is
+// the "worth watching" warn band. 1.0 = break-even (budget lasts
+// exactly the SLO window).
+const SLO_BURN_WINDOWS = [
+  { key: 'burn_1h', label: '1h', page: 14.4 },
+  { key: 'burn_6h', label: '6h', page: 6 },
+  { key: 'burn_3d', label: '3d', page: 1 },
+];
+function burnTone(rate, page) {
+  if (rate >= page) return 'down';
+  if (rate >= page / 2) return 'warn';
+  return 'up';
+}
+// "budget gone in ~X" — X = 720h / burn for the standard 30-day
+// budget window. Coarse on purpose (operators want a magnitude,
+// not a countdown).
+function humanizeHours(h) {
+  if (!Number.isFinite(h) || h <= 0) return '—';
+  if (h < 1) return `${Math.max(1, Math.round(h * 60))}m`;
+  if (h < 48) return `${h < 10 ? h.toFixed(1) : Math.round(h)}h`;
+  return `${Math.round(h / 24)}d`;
+}
+
+// SLO-P6b — error-budget timeline. Minute-resolution availability
+// from GET /api/slo/timeseries, rendered as a clipped-domain line
+// (a zero baseline flattens 99.9%-vs-100% into one pixel). Gap
+// minutes are omitted server-side; gapMs breaks the stroke there.
+const SLO_TIMELINE_WINDOWS = [
+  { label: '1h', secs: 3600 },
+  { label: '6h', secs: 21600 },
+  { label: '24h', secs: 86400 },
+];
+function SloBudgetTimelineCard() {
+  const [winLabel, setWinLabel] = useStateP('6h');
+  const win = SLO_TIMELINE_WINDOWS.find(w => w.label === winLabel) || SLO_TIMELINE_WINDOWS[1];
+  const ts = window.useSloTimeseriesApi(win.secs);
+  const raw = Array.isArray(ts.data?.points) ? ts.data.points : [];
+  // Wire shape: ts unix SECONDS, value 0..1 — chart wants ms + %.
+  const points = raw.map(p => ({ ts: p.ts * 1000, value: p.value * 100, count: p.count }));
+  // Sensible y-domain: floor of the worst minute, never above 99 —
+  // a healthy series still gets a readable 99..100 band.
+  const yMin = points.length > 0
+    ? Math.min(99, Math.floor(points.reduce((m, p) => Math.min(m, p.value), 100)))
+    : 99;
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <window.SectionHeader
+        title="Error-budget timeline"
+        sub={`Data-plane availability per minute over the last ${win.label} — dips are budget burn; gaps are minutes with no traffic, not downtime`}
+        actions={(
+          <div style={{ display: 'flex', gap: 4 }}>
+            {SLO_TIMELINE_WINDOWS.map(w => (
+              <button
+                key={w.label}
+                className={`chip ${winLabel === w.label ? 'active' : ''}`}
+                onClick={() => setWinLabel(w.label)}
+              >
+                {w.label}
+              </button>
+            ))}
+          </div>
+        )}
+      />
+      {points.length >= 2 ? (
+        <window.TimeseriesChart
+          points={points}
+          mode="line"
+          h={180}
+          yDomain={[yMin, 100]}
+          gapMs={150000}
+        />
+      ) : (
+        <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+          {points.length === 1
+            ? 'One availability sample so far — the timeline needs a second minute bucket.'
+            : 'No availability samples yet — drive traffic through the data plane to populate the series.'}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// SLO-P6b — objective editor. Reads the LIVE engine objectives
+// (GET /api/slo/config, config shape) and PUTs the whole SloSection
+// back through the audit-mutated config fold. The engine validator
+// runs server-side and its 400 message is operator-quality — show
+// it verbatim rather than paraphrasing.
+function draftFromSloConfig(cfg) {
+  const obj = (cfg.objectives || [])[0] || null;
+  return {
+    sli: obj ? obj.sli : 'data_plane_availability',
+    // +(...).toFixed(4) trims float dust: 0.999*100 → "99.9".
+    targetPct: obj ? String(+(obj.target * 100).toFixed(4)) : '',
+    windowDays: obj ? obj.window_days : 30,
+    minEvents: obj && obj.min_events != null ? String(obj.min_events) : '60',
+    burnRates: obj
+      ? obj.burn_rates.map(b => ({ ...b, burn_threshold: String(b.burn_threshold) }))
+      : [],
+    absentSecs: cfg.telemetry_absent_after_secs != null
+      ? String(cfg.telemetry_absent_after_secs)
+      : '600',
+  };
+}
+
+function SloObjectivesCard() {
+  const cfgApi = window.useSloConfigApi();
+  const [draft, setDraft] = useStateP(null);
+  const [dirty, setDirty] = useStateP(false);
+  const [busy, setBusy] = useStateP(false);
+  const [err, setErr] = useStateP(null);
+
+  // Seed / re-seed the form from the live view until the operator
+  // starts editing; `dirty` freezes it so a poll doesn't clobber
+  // half-typed numbers.
+  useEffectP(() => {
+    if (dirty || !cfgApi.data || !Array.isArray(cfgApi.data.objectives)) return;
+    setDraft(draftFromSloConfig(cfgApi.data));
+  }, [cfgApi.data, dirty]);
+
+  const edit = (patch) => {
+    setDirty(true);
+    setErr(null);
+    setDraft(prev => ({ ...prev, ...patch }));
+  };
+  const editBurn = (idx, patch) => {
+    setDirty(true);
+    setErr(null);
+    setDraft(prev => ({
+      ...prev,
+      burnRates: prev.burnRates.map((b, i) => (i === idx ? { ...b, ...patch } : b)),
+    }));
+  };
+
+  const numbersOk = draft
+    && Number.isFinite(Number(draft.targetPct))
+    && Number.isFinite(Number(draft.minEvents))
+    && Number.isFinite(Number(draft.absentSecs))
+    && draft.burnRates.every(b => Number.isFinite(Number(b.burn_threshold)));
+
+  async function save() {
+    if (!draft) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const body = {
+        objectives: [{
+          sli: draft.sli,
+          target: Number(draft.targetPct) / 100,
+          window_days: draft.windowDays,
+          min_events: Math.round(Number(draft.minEvents)),
+          burn_rates: draft.burnRates.map(b => ({
+            window_hours: b.window_hours,
+            short_window_minutes: b.short_window_minutes,
+            burn_threshold: Number(b.burn_threshold),
+            severity: b.severity,
+          })),
+        }],
+        telemetry_absent_after_secs: Math.round(Number(draft.absentSecs)),
+      };
+      const r = await window.sloConfigPut(body);
+      if (r.status >= 200 && r.status < 300 && r.ok !== false) {
+        window.aegisToast('SLO objectives saved — applies on the next config poll', 'ok');
+        setDirty(false);
+        cfgApi.reload && cfgApi.reload();
+      } else {
+        const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
+        setErr(msg);
+        window.aegisToast(`Save failed: ${msg}`, 'err');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const hasObjective = draft && draft.targetPct !== '';
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <window.SectionHeader
+        title="SLO objectives"
+        sub="Availability target + multi-window burn-rate alerting · audit-mutated · applies fleet-wide via the config plane"
+        actions={hasObjective && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {dirty && <span style={{ fontSize: 11, color: 'var(--warn)' }}>unsaved edits</span>}
+            <button
+              className="btn primary"
+              disabled={busy || !dirty || !numbersOk}
+              onClick={save}
+            >
+              {busy ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        )}
+      />
+      {!hasObjective ? (
+        <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+          No SLO objectives reported — the SLO engine isn't wired on this build.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span className="field-label">SLI</span>
+              <span className="mono" style={{ fontSize: 12, padding: '6px 0' }}>
+                {window.sliLabel(draft.sli)}
+                <span className="dim" style={{ marginLeft: 6, fontSize: 10 }}>{draft.windowDays}d window</span>
+              </span>
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span className="field-label">Target (%)</span>
+              <input
+                className="input mono"
+                type="number"
+                min="0"
+                max="100"
+                step="0.01"
+                value={draft.targetPct}
+                onChange={e => edit({ targetPct: e.target.value })}
+              />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span className="field-label">Min events / window</span>
+              <input
+                className="input mono"
+                type="number"
+                min="0"
+                step="1"
+                value={draft.minEvents}
+                onChange={e => edit({ minEvents: e.target.value })}
+              />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span className="field-label">Telemetry-absent watchdog (s)</span>
+              <input
+                className="input mono"
+                type="number"
+                min="0"
+                step="1"
+                value={draft.absentSecs}
+                onChange={e => edit({ absentSecs: e.target.value })}
+                title="Seconds of post-traffic silence before a TelemetryAbsent Ticket fires; 0 disables the watchdog"
+              />
+            </label>
+          </div>
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: '90px 110px 1fr 140px',
+            gap: 10,
+            alignItems: 'center',
+            fontSize: 10,
+            color: 'var(--ink-dim)',
+            textTransform: 'uppercase',
+            letterSpacing: 0.5,
+            paddingBottom: 4,
+            borderBottom: '1px solid var(--hairline)',
+            marginBottom: 4,
+          }}>
+            <span>Window</span>
+            <span>Confirm</span>
+            <span>Burn threshold (× break-even)</span>
+            <span>Severity</span>
+          </div>
+          {draft.burnRates.map((b, i) => (
+            <div
+              key={`${b.window_hours}h`}
+              style={{ display: 'grid', gridTemplateColumns: '90px 110px 1fr 140px', gap: 10, alignItems: 'center', fontSize: 12, marginBottom: 6 }}
+            >
+              <span className="mono">{b.window_hours}h</span>
+              <span className="mono dim">{b.short_window_minutes}m short</span>
+              <input
+                className="input mono"
+                type="number"
+                min="0"
+                step="0.1"
+                value={b.burn_threshold}
+                onChange={e => editBurn(i, { burn_threshold: e.target.value })}
+              />
+              <select
+                className="input"
+                value={b.severity}
+                onChange={e => editBurn(i, { severity: e.target.value })}
+              >
+                {ALERT_SEVERITIES.map(sev => <option key={sev} value={sev}>{sev}</option>)}
+              </select>
+            </div>
+          ))}
+          {err && (
+            <div className="mono" style={{ color: 'var(--down)', fontSize: 12, marginTop: 8 }} role="alert">
+              {err}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function PageTracking() {
   // Live API hooks. SLO / certs / alerts / gitops still return
   // placeholder shapes server-side (CI-T4 will replace those);
@@ -9119,7 +9482,7 @@ function PageTracking() {
         <div className="col-6 card">
           <window.SectionHeader
             title="SLO budget"
-            sub="Service-level objectives — current value vs. target, plus error-budget remaining over the rolling window. Budget drains when current drops below target."
+            sub="Current value vs. target, error-budget remaining, and burn rate per alert window. Availability counts origin 5xx + gateway failures; security blocks are excluded (see Enforcement)."
           />
           {/* S7 (2026-05-08) — root-cause hint when an SLO is below
               target. Pre-fix: the SOC analyst saw a red SLO and had
@@ -9160,27 +9523,68 @@ function PageTracking() {
                 {(slo.data?.slis || []).map(s => {
                   const tone = s.budget_remaining > 0.5 ? 'up' : s.budget_remaining > 0.1 ? 'warn' : 'down';
                   const meeting = s.current >= s.target;
+                  // SLO-P6b — burn gauges. Rate 1.0 = break-even
+                  // (budget lasts exactly the SLO window); the red
+                  // threshold is that window's page trigger.
+                  const burns = SLO_BURN_WINDOWS.map(w => ({
+                    ...w,
+                    rate: Number(s[w.key]) || 0,
+                  }));
+                  const worst = burns.reduce(
+                    (acc, b) => (b.rate >= b.page && (!acc || b.rate > acc.rate) ? b : acc),
+                    null,
+                  );
                   return (
-                    <div
-                      key={s.name}
-                      title={`${s.name} — currently ${s.current.toFixed(2)}% (target ${s.target.toFixed(2)}%). ${meeting ? 'Meeting target.' : 'Below target — error budget is draining.'}`}
-                      style={{ display: 'grid', gridTemplateColumns: '180px 80px 80px 1fr 80px', gap: 10, alignItems: 'center', fontSize: 12 }}
-                    >
-                      <span className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.name}</span>
-                      <span className="num" style={{ color: `var(--${tone === 'up' ? 'up' : tone === 'warn' ? 'warn' : 'down'})` }}>
-                        {s.current.toFixed(2)}%
-                      </span>
-                      <span className="dim">{s.target.toFixed(2)}%</span>
-                      <div style={{ height: 6, background: 'var(--surface-3)', borderRadius: 3, overflow: 'hidden' }}>
-                        <div style={{ width: `${(s.budget_remaining * 100).toFixed(0)}%`, height: '100%', background: tone === 'up' ? 'var(--up)' : tone === 'warn' ? 'var(--warn)' : 'var(--down)' }} />
+                    <div key={s.name} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <div
+                        title={`${s.name} — currently ${s.current.toFixed(2)}% (target ${s.target.toFixed(2)}%). ${meeting ? 'Meeting target.' : 'Below target — error budget is draining.'}`}
+                        style={{ display: 'grid', gridTemplateColumns: '180px 80px 80px 1fr 80px', gap: 10, alignItems: 'center', fontSize: 12 }}
+                      >
+                        <span className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{window.sliLabel(s.name)}</span>
+                        <span className="num" style={{ color: `var(--${tone === 'up' ? 'up' : tone === 'warn' ? 'warn' : 'down'})` }}>
+                          {s.current.toFixed(2)}%
+                        </span>
+                        <span className="dim">{s.target.toFixed(2)}%</span>
+                        <div style={{ height: 6, background: 'var(--surface-3)', borderRadius: 3, overflow: 'hidden' }}>
+                          <div style={{ width: `${(s.budget_remaining * 100).toFixed(0)}%`, height: '100%', background: tone === 'up' ? 'var(--up)' : tone === 'warn' ? 'var(--warn)' : 'var(--down)' }} />
+                        </div>
+                        <span className={`pill ${tone}`} style={{ textAlign: 'right' }}>{(s.budget_remaining * 100).toFixed(0)}% left</span>
                       </div>
-                      <span className={`pill ${tone}`} style={{ textAlign: 'right' }}>{(s.budget_remaining * 100).toFixed(0)}% left</span>
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <span style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Burn</span>
+                        {burns.map(b => (
+                          <span
+                            key={b.label}
+                            className={`pill ${burnTone(b.rate, b.page)}`}
+                            title={`${b.label}-window burn rate: ${b.rate.toFixed(1)}× break-even. 1× = budget lasts exactly the SLO window; pages at ${b.page}×.`}
+                          >
+                            {b.label} {b.rate.toFixed(1)}×
+                          </span>
+                        ))}
+                      </div>
+                      {worst && (
+                        <div style={{ fontSize: 11, color: 'var(--down)' }}>
+                          burning {worst.rate.toFixed(1)}× faster than sustainable — budget gone
+                          in ~{humanizeHours(720 / worst.rate)} at this pace
+                        </div>
+                      )}
                     </div>
                   );
                 })}
               </>
             )}
           </div>
+          {/* SLO-P1/P6b — enforcement is an info counter, never an
+              objective: blocks and challenges are the WAF doing its
+              job, so they are excluded from the availability SLI. */}
+          {slo.data?.enforcement && (
+            <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--hairline)', fontSize: 11, color: 'var(--ink-dim)' }}>
+              Enforcement:{' '}
+              <span className="num" style={{ color: 'var(--ink)' }}>{(slo.data.enforcement.total ?? 0).toLocaleString()}</span> total ·{' '}
+              <span className="num" style={{ color: 'var(--ink)' }}>{(slo.data.enforcement.last_hour ?? 0).toLocaleString()}</span> last hour
+              {' '}— blocks/challenges are the WAF working; they never drain this budget.
+            </div>
+          )}
         </div>
         <div className="col-6 card">
           {(() => {
@@ -9191,6 +9595,10 @@ function PageTracking() {
             const enriched = Array.isArray(incidentsApi.data?.incidents)
               ? incidentsApi.data.incidents.map(i => ({
                   name: `${i.sli}-${i.window_hours}h`,
+                  // SLO-P6b — same operator-facing SLI label as the
+                  // SLO card and Incidents table; `name` stays the
+                  // raw id (React key + legacy-shape parity).
+                  label: `${window.sliLabel(i.sli)} · ${i.window_hours}h`,
                   severity: i.severity,
                   since: i.fired_at,
                   runbook_url: i.runbook_url,
@@ -9217,7 +9625,7 @@ function PageTracking() {
                         {a.severity}
                       </span>
                       <div style={{ flex: 1 }}>
-                        <div className="mono" style={{ color: 'var(--ink)' }}>{a.name}</div>
+                        <div className="mono" style={{ color: 'var(--ink)' }}>{a.label || a.name}</div>
                         {a.runbook_url && (
                           <a href={a.runbook_url} target="_blank" rel="noopener noreferrer" className="dim" style={{ fontSize: 11 }}>
                             runbook ↗
@@ -9236,11 +9644,20 @@ function PageTracking() {
         </div>
       </div>
 
+      {/* SLO-P6b — minute-resolution availability under the budget
+          card: the card says how much budget is left, this says
+          when it went. */}
+      <SloBudgetTimelineCard />
+
       {/* CC-T2.2 — alert-channel management. Lives next to the
           Active alerts panel because the two are operationally
           paired: the alerts pane shows what fired; this pane
           configures *where* the next firing alert is sent. */}
       <AlertChannelsCard receiversApi={alertReceivers} />
+
+      {/* SLO-P6b — objective editor. After the channels card: first
+          you wire where alerts go, then you tune what fires them. */}
+      <SloObjectivesCard />
 
       <div className="card" style={{ marginBottom: 12 }}>
         {(() => {
@@ -11944,7 +12361,9 @@ function PageIncidents() {
                   </td>
                   <td><span className={`pill ${m.severity === 'critical' ? 'down' : 'warn'}`}>{m.severity}</span></td>
                   <td>
-                    <code style={{ fontSize: 11 }}>{m.sli}</code>
+                    {/* SLO-P6b — same label as the SLO card; raw SLI
+                        name stays hoverable for grep-ability. */}
+                    <code style={{ fontSize: 11 }} title={m.sli}>{window.sliLabel(m.sli)}</code>
                     {m.sli_window && (
                       <span className="pill neutral" style={{ fontSize: 9, marginLeft: 4, padding: '0 6px' }}>{m.sli_window}</span>
                     )}

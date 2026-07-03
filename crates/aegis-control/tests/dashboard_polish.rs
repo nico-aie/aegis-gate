@@ -116,7 +116,11 @@ fn bundle_under_documented_budget() {
     // full-trust exemption UI. Feature surface only: the React UMD
     // bundles are unchanged (10.8 + 131 KB) — no new deps. Headroom
     // restored to ~7% per assets/dashboard/bundle-budget.md.
-    const RAW_BUDGET_BYTES: usize = 840_000;
+    // Bumped 2026-07-03 from 840 → 900 KB — raw total reached
+    // ~834.7 KB after the SLO-P6 dashboard additions (burn chips,
+    // budget timeline, objective editor, severity routing). React
+    // UMD bundles unchanged; headroom restored to ~7%.
+    const RAW_BUDGET_BYTES: usize = 900_000;
     let mut total = 0usize;
     for path in ["index.html", "app.js", "aegis.css", "react.min.js", "react-dom.min.js", "i18n.json"] {
         let asset: EmbeddedAsset = lookup(path).unwrap_or_else(|| panic!("{path} must resolve"));
@@ -174,7 +178,15 @@ fn app_js_under_per_bundle_budget() {
     // queue_wait latency panel, per-IP rate-limit enable/disable toggle,
     // and the whitelist full-trust UI. No new libs (React stays
     // UMD-global); restoring the documented ~7% headroom.
-    const APP_JS_BUDGET: usize = 640_000;
+    // Bumped 2026-07-03 from 640 → 700 KB. app.js reached 648.9 KB
+    // after the SLO-P6 Health-page overhaul: per-window burn-rate
+    // chips + time-to-exhaustion copy, the error-budget
+    // TimeseriesChart card (line mode), the SLO objective editor
+    // (GET/PUT /api/slo/config), receiver severity-routing
+    // checkboxes, and the unified sliLabel helper. No new libs
+    // (React stays UMD-global); restores the documented ~7%
+    // headroom.
+    const APP_JS_BUDGET: usize = 700_000;
     let bytes = lookup("app.js").unwrap().bytes.len();
     assert!(
         bytes < APP_JS_BUDGET,
