@@ -836,7 +836,10 @@ impl Default for EnforcementRing {
 
 /// The SLO engine: tracks SLIs and fires alerts.
 pub struct SloEngine {
-    objectives: Vec<SloObjective>,
+    /// Behind a mutex since SLO-P4 (config-driven hot swap via
+    /// [`Self::set_objectives`]). Read once per evaluation /
+    /// status call — 30s / 10s cadence, contention-free.
+    objectives: Mutex<Vec<SloObjective>>,
     buffers: Mutex<HashMap<SliKind, BucketStore>>,
     active_alerts: Mutex<Vec<SloAlert>>,
     fired_history: Mutex<Vec<SloAlert>>,
@@ -845,28 +848,18 @@ pub struct SloEngine {
 
 impl SloEngine {
     pub fn new(objectives: Vec<SloObjective>) -> Self {
-        // SLO-P2 — the bucket store retains 72h at burn-window
-        // resolution and 30d at budget resolution. A wider window
-        // would silently evaluate over truncated history, which is
-        // exactly the dishonesty P2 removes; refuse it loudly in
-        // dev and warn in release. (Config-driven objectives land
-        // in SLO-P4 and validate at the config boundary too.)
-        for obj in &objectives {
-            debug_assert!(
-                obj.window_days as i64 * 86_400 <= COARSE_RETENTION_SECS,
-                "SLO window_days {} exceeds the 30d bucket retention",
-                obj.window_days,
-            );
-            for burn in &obj.burn_rates {
-                debug_assert!(
-                    burn.window_hours as i64 * 3_600 <= FINE_RETENTION_SECS,
-                    "burn window {}h exceeds the 72h bucket retention",
-                    burn.window_hours,
-                );
-            }
-        }
+        // SLO-P2/P4 — a window wider than the bucket-store
+        // retention would silently evaluate over truncated
+        // history, which is exactly the dishonesty P2 removes.
+        // Boot construction refuses loudly in dev; the config
+        // path ([`Self::set_objectives`]) returns the error.
+        debug_assert!(
+            Self::validate_objectives(&objectives).is_ok(),
+            "invalid boot objectives: {:?}",
+            Self::validate_objectives(&objectives),
+        );
         Self {
-            objectives,
+            objectives: Mutex::new(objectives),
             buffers: Mutex::new(HashMap::new()),
             active_alerts: Mutex::new(Vec::new()),
             fired_history: Mutex::new(Vec::new()),
@@ -890,8 +883,40 @@ impl SloEngine {
     /// Shared by [`Self::set_objectives`] and the config API so a
     /// bad `slo:` section fails loudly at the boundary.
     pub fn validate_objectives(objectives: &[SloObjective]) -> Result<(), String> {
-        let _ = objectives;
-        todo!("SLO-P4: implement after RED is validated")
+        for obj in objectives {
+            if !(obj.target > 0.0 && obj.target < 1.0) {
+                return Err(format!(
+                    "objective {:?}: target {} must be within (0, 1) — a target \
+                     of 1.0 leaves no error budget to alert on",
+                    obj.sli, obj.target,
+                ));
+            }
+            if obj.window_days as i64 * 86_400 > COARSE_RETENTION_SECS {
+                return Err(format!(
+                    "objective {:?}: window_days {} exceeds the 30d bucket \
+                     retention — the budget would be computed over truncated \
+                     history",
+                    obj.sli, obj.window_days,
+                ));
+            }
+            for burn in &obj.burn_rates {
+                if burn.window_hours as i64 * 3_600 > FINE_RETENTION_SECS {
+                    return Err(format!(
+                        "objective {:?}: burn window {}h exceeds the 72h \
+                         bucket retention",
+                        obj.sli, burn.window_hours,
+                    ));
+                }
+                if burn.short_window_minutes >= burn.window_hours * 60 {
+                    return Err(format!(
+                        "objective {:?}: short window {}m must be shorter \
+                         than its long window {}h",
+                        obj.sli, burn.short_window_minutes, burn.window_hours,
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// SLO-P4 — hot-swap the objective set (config apply path).
@@ -900,8 +925,9 @@ impl SloEngine {
     /// alerts for removed/changed windows resolve or refire on
     /// the next evaluation naturally.
     pub fn set_objectives(&self, objectives: Vec<SloObjective>) -> Result<(), String> {
-        let _ = objectives;
-        todo!("SLO-P4: implement after RED is validated")
+        Self::validate_objectives(&objectives)?;
+        *self.objectives.lock().unwrap() = objectives;
+        Ok(())
     }
 
     /// SLO-P3 telemetry-absent watchdog seam: `true` when `kind`
@@ -934,9 +960,17 @@ impl SloEngine {
         absent_after: Duration,
         now: DateTime<Utc>,
     ) -> Vec<SliKind> {
-        self.objectives
+        // Collect kinds first so the objectives lock is released
+        // before telemetry_absent takes the buffers lock.
+        let kinds: Vec<SliKind> = self
+            .objectives
+            .lock()
+            .unwrap()
             .iter()
             .map(|o| o.sli.clone())
+            .collect();
+        kinds
+            .into_iter()
             .filter(|kind| self.telemetry_absent(kind, absent_after, now))
             .collect()
     }
@@ -1004,12 +1038,16 @@ impl SloEngine {
     /// the deterministic seam for tests and the (P6) alert
     /// simulator; production callers use [`Self::evaluate`].
     pub fn evaluate_at(&self, now: DateTime<Utc>) -> Vec<SloAlert> {
+        // Snapshot the objective set up front (SLO-P4 hot swap) —
+        // small clone, and keeps this lock out of the ordering
+        // with the three locks below.
+        let objectives = self.objectives.lock().unwrap().clone();
         let buffers = self.buffers.lock().unwrap();
         let mut active = self.active_alerts.lock().unwrap();
         let mut history = self.fired_history.lock().unwrap();
         let mut new_alerts = Vec::new();
 
-        for obj in &self.objectives {
+        for obj in &objectives {
             let buf = match buffers.get(&obj.sli) {
                 Some(b) => b,
                 None => continue,
@@ -1171,8 +1209,9 @@ impl SloEngine {
     /// Clock-injectable variant of [`Self::budget_status`]
     /// (SLO-P2) — same seam rationale as [`Self::evaluate_at`].
     pub fn budget_status_at(&self, now: DateTime<Utc>) -> Vec<BudgetStatus> {
+        let objectives = self.objectives.lock().unwrap().clone();
         let buffers = self.buffers.lock().unwrap();
-        self.objectives
+        objectives
             .iter()
             .map(|obj| {
                 let window = Duration::days(obj.window_days as i64);
