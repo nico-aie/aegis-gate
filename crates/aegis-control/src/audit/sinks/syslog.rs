@@ -497,6 +497,10 @@ pub async fn run_forward_task(bus: AuditBus, sink: Arc<SyslogSink>) {
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                crate::metrics::audit_events::record_dropped(
+                    crate::metrics::audit_events::consumer_label::SYSLOG,
+                    n,
+                );
                 tracing::warn!(
                     dropped = n,
                     "syslog forward task lagged; events dropped from broadcast",

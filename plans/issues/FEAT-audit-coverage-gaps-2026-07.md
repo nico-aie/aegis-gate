@@ -44,23 +44,32 @@ are either fixed or documented as designed.
 
 ## 2. Staging
 
-### AU-1 — auth + destructive-action audit events · **S** · START HERE
-- Emit `AuditClass::Access` events from the login path: `login_success`, `login_failure`
-  (reason bucketed: bad-password / bad-totp / locked-out — **never** the submitted values),
-  `logout`. Aggregate/rate-limit failure events per IP per window so a credential-stuffing flood
-  can't melt the audit bus (piggyback the existing `login_rate_limiter` counters).
-- `reset_state`: emit an `Admin`-class event **before** the wipe (actor = control-plane secret
-  principal, source ip), so the wipe itself can't erase its own trail.
+### AU-1 — auth + destructive-action audit events · **S** · ✅ shipped 2026-07-04 (`feat/au1-audit-coverage`)
+- ✅ `Access` events from the login path via `api::login_audit::LoginAuditor`: `login_success`,
+  `login_failure`, `logout` (real revocations only). Per-IP flood aggregation (immediate first
+  event + `fields.count` roll-up, 30 s window; flush on next event / on success).
+  **Bucket deviation (deliberate):** reasons mirror `LoginOutcome` —
+  `invalid_credentials` / `locked_out` / `rate_limited` / `store_unavailable`. Bad-password vs
+  bad-totp are NOT distinguished: `authenticate()` deliberately collapses them (anti-enumeration,
+  F-CRITICAL-003) and splitting them would require touching M2's TF-1 territory in `login.rs`.
+- ✅ `reset_state`: `Admin`-class event emitted in `ControlContext::reset_state_async` **before**
+  the wipe (covers both dispatch paths: admin listener + data-plane loopback short-circuit);
+  order proven by test.
 - TOTP enroll/disable + password change events — land with `FEAT-2fa-enforcement` TF-2 and
-  AA-P1a/b (those PRs add the endpoints; this plan owns the event taxonomy).
+  AA-P1a/b (those PRs add the endpoints; this plan owns the event taxonomy — reuse
+  `login_audit::event` buckets).
 
-### AU-2 — delivery honesty + durability knob · **S–M**
-- Metrics: `waf_audit_events_dropped_total` (emit-side + lag-side) and per-sink delivery counters
-  (shared work with placeholder-cleanup #5 `/api/cold-tier`).
-- Config: `audit.fsync_interval` (default: current rotate/shutdown-only behavior) for operators
-  who want a bounded loss window; document the durability model honestly in `docs/`.
-- Do **not** promise guaranteed delivery — `[[project_health_signals_reported_not_gating]]`
-  posture: report degradation, never block the data plane on audit I/O.
+### AU-2 — delivery honesty + durability knob · **S–M** · ✅ shipped 2026-07-04 (narrowed — see below)
+- ✅ `waf_audit_events_dropped_total{consumer}` (dashboard / jsonl / syslog / metrics) wired into
+  every Lagged branch. **Emit-side counting dropped (verified unnecessary):** `broadcast::send`
+  only errs with zero subscribers — a boot/shutdown-window artifact, not a loss path; buffer
+  pressure always manifests as receiver lag, which IS counted. Documented in the metric's docs.
+- ✅ Per-sink delivery counters shipped with PE-2 (`/api/cold-tier` + `DeliveryRegistry`).
+- ✅ **`audit.fsync_interval` knob dropped (plan premise was stale):** the JSONL sink has done
+  per-batch `flush` + `sync_data` since F-CRITICAL-013 (2026-05-17) — loss window is already
+  bounded by `max_batch`/`flush_interval`, strictly stronger than the proposed knob. Durability
+  model documented honestly in `docs/operator/usage.md` §6.
+- Posture kept: best-effort delivery, never block the data plane on audit I/O.
 
 ### AU-3 — risk-decay caveats · **S–M**
 - **A (strike eviction):** owner decision — if "lifetime strikes" is the contract, exempt

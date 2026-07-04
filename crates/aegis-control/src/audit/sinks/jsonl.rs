@@ -564,6 +564,10 @@ pub async fn run_persist_task(
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    crate::metrics::audit_events::record_dropped(
+                        crate::metrics::audit_events::consumer_label::JSONL,
+                        n,
+                    );
                     tracing::warn!(
                         dropped = n,
                         "audit jsonl persist task lagged; events dropped from broadcast",

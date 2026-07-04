@@ -74,7 +74,7 @@ pub(crate) async fn handle_admin_request(
         return handle_admin_login(req, peer, services).await;
     }
     if method == hyper::Method::POST && path == "/admin/logout" {
-        return handle_admin_logout(req, services).await;
+        return handle_admin_logout(req, peer, services).await;
     }
     // FIX 2026-05-03 — GET /admin/login renders the standalone
     // login page (the SPA's CSRF interceptor + logout button both

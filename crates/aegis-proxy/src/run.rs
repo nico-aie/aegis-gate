@@ -929,6 +929,13 @@ pub async fn run(
         aegis_control::metrics::audit_events::AuditEventMetrics::register(&metrics)
             .expect("audit event metrics registration failed"),
     );
+    // AU-2 — waf_audit_events_dropped_total{consumer}. Installed
+    // globally so the consumer tasks (dashboard drain, jsonl persist,
+    // syslog forward, this metrics subscriber) can record their
+    // Lagged drops without threading the handle everywhere.
+    aegis_control::metrics::audit_events::AuditDropMetrics::register(&metrics)
+        .expect("audit drop metrics registration failed")
+        .install_global();
     {
         let bus_sub = bus.clone();
         let m = audit_event_metrics.clone();
@@ -938,6 +945,10 @@ pub async fn run(
                 match rx.recv().await {
                     Ok(ev) => m.record(ev.class),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        aegis_control::metrics::audit_events::record_dropped(
+                            aegis_control::metrics::audit_events::consumer_label::METRICS,
+                            n,
+                        );
                         tracing::warn!(dropped = n, "audit event metrics subscriber lagged",);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -2858,6 +2869,9 @@ pub(crate) fn build_interop_runtime(
         // Phase 5 — installed post-construction when cluster.pubsub_nudge
         // is on (see `set_cluster_nudge`); empty otherwise.
         cluster_nudge: std::sync::OnceLock::new(),
+        // AU-1 — installed post-construction in `accept` where the
+        // AuditBus lives (see `set_audit_bus`); empty in tests.
+        audit_bus: std::sync::OnceLock::new(),
     };
 
     Some(Arc::new(InteropRuntime {

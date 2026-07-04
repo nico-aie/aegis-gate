@@ -114,7 +114,42 @@ pub(crate) async fn process_admin_login(
         services.session_idle_seconds,
     ).await;
 
+    // AU-1 — every real auth attempt leaves an Access-class trail.
+    // BadRequest is excluded: a garbage body carries no credentials,
+    // so there's nothing to audit (and nothing worth flooding over).
+    let ip = peer.ip().to_string();
     use aegis_control::api::login::LoginOutcome;
+    match &outcome {
+        LoginOutcome::Ok { .. } => {
+            services
+                .login_auditor
+                .record_success(&ip, &services.admin_identity.user);
+        }
+        LoginOutcome::Unauthorized { .. } => {
+            services
+                .login_auditor
+                .record_failure(&ip, None, "invalid_credentials");
+        }
+        LoginOutcome::RateLimited { body, .. } => {
+            // The envelope distinguishes locked_out from rate_limited;
+            // the outcome enum doesn't — read our own reason field.
+            let reason = if body.contains("\"locked_out\"") {
+                "locked_out"
+            } else {
+                "rate_limited"
+            };
+            services.login_auditor.record_failure(&ip, None, reason);
+        }
+        LoginOutcome::StoreUnavailable { .. } => {
+            // Credentials were RIGHT — the session store failed.
+            // High-value ops signal, distinct bucket.
+            services
+                .login_auditor
+                .record_failure(&ip, None, "store_unavailable");
+        }
+        LoginOutcome::BadRequest { .. } => {}
+    }
+
     match outcome {
         LoginOutcome::Ok {
             session_cookie,
@@ -155,6 +190,7 @@ pub(crate) async fn process_admin_login(
 
 pub(crate) async fn handle_admin_logout(
     req: hyper::Request<hyper::body::Incoming>,
+    peer: std::net::SocketAddr,
     services: &aegis_control::dashboard_services::DashboardServices,
 ) -> Response<Full<Bytes>> {
     let cookie_value = req
@@ -164,11 +200,9 @@ pub(crate) async fn handle_admin_logout(
         .filter_map(|h| h.to_str().ok())
         .find_map(|raw| extract_named_cookie(raw, "aegis_session"))
         .map(|s| s.to_string());
-    process_admin_logout(services, cookie_value.as_deref()).await
+    process_admin_logout(services, peer, cookie_value.as_deref()).await
 }
 
-/// Pure body of logout — same testability story as
-/// [`process_admin_login`].
 #[cfg(test)]
 mod au1_wiring_tests {
     // AU-1 (committee round-2 🟡3) — the login path must leave an
@@ -255,7 +289,12 @@ mod au1_wiring_tests {
     #[tokio::test]
     async fn cookieless_logout_emits_no_event() {
         let (services, _drain, mut rx) = spawn_with_bus();
-        let resp = super::process_admin_logout(&services, None).await;
+        let resp = super::process_admin_logout(
+            &services,
+            "10.0.0.9:5555".parse().unwrap(),
+            None,
+        )
+        .await;
         assert_eq!(resp.status(), 204);
         assert!(
             drain_access(&mut rx).is_empty(),
@@ -264,8 +303,11 @@ mod au1_wiring_tests {
     }
 }
 
+/// Pure body of logout — same testability story as
+/// [`process_admin_login`].
 pub(crate) async fn process_admin_logout(
     services: &aegis_control::dashboard_services::DashboardServices,
+    peer: std::net::SocketAddr,
     session_cookie: Option<&str>,
 ) -> Response<Full<Bytes>> {
     let outcome = aegis_control::api::login::logout(
@@ -274,6 +316,13 @@ pub(crate) async fn process_admin_logout(
         &services.sessions,
     ).await;
     use aegis_control::api::login::LogoutOutcome;
+    // AU-1 — only a real revocation is audited; the idempotent
+    // no-cookie path changed nothing.
+    if matches!(outcome, LogoutOutcome::Ok { .. }) {
+        services
+            .login_auditor
+            .record_logout(&peer.ip().to_string());
+    }
     let (clear_session, clear_csrf) = match outcome {
         LogoutOutcome::Ok {
             clear_session_cookie,
