@@ -85,16 +85,36 @@ pub struct AnalyticsPoint {
     pub value: f64,
 }
 
+/// One series of a grouped range result. `metric` is Prometheus's
+/// label object verbatim (e.g. `{"route": "api"}`) so grouped
+/// allow-list keys (`errors_by_route`, `bench_detector_p99`) keep
+/// their per-dimension identity instead of collapsing.
+#[derive(Clone, Debug, Serialize)]
+pub struct AnalyticsSeries {
+    pub metric: serde_json::Value,
+    pub points: Vec<AnalyticsPoint>,
+}
+
+/// One labeled instant sample (vector results with >1 series).
+#[derive(Clone, Debug, Serialize)]
+pub struct AnalyticsSample {
+    pub metric: serde_json::Value,
+    pub value: Option<f64>,
+}
+
 /// JSON shape for `/api/analytics/query`. The `result_type` mirrors
-/// Prometheus's `/api/v1/query` taxonomy ("scalar" for instantaneous,
-/// "matrix" for range). `Scalar.value` is `None` (wire: `null`) when
-/// Prometheus returned an empty result — "no data yet" is a normal
-/// state and must never render as a fake `0.0`.
+/// Prometheus's `/api/v1/query` taxonomy. `Scalar.value` is `None`
+/// (wire: `null`) when Prometheus returned an empty result — "no
+/// data yet" is a normal state and must never render as a fake
+/// `0.0`. Instant queries return `Scalar` for ≤1 sample and
+/// `Vector` (all labeled samples) for grouped results; range
+/// queries return every series.
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "result_type", rename_all = "lowercase")]
 pub enum AnalyticsResult {
     Scalar { value: Option<f64> },
-    Matrix { points: Vec<AnalyticsPoint> },
+    Vector { samples: Vec<AnalyticsSample> },
+    Matrix { series: Vec<AnalyticsSeries> },
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -185,39 +205,62 @@ pub fn parse_prometheus_body(body: &str, is_range: bool) -> Result<AnalyticsResu
     let result = &data["result"];
     if is_range {
         // resultType "matrix": series of {metric, values: [[ts,"v"],..]}.
-        // Single-series queries (all allow-listed range exprs aggregate
-        // with sum()/quantile) — take the first series.
-        let mut points = Vec::new();
-        if let Some(series) = result.as_array().and_then(|a| a.first()) {
-            for pair in series["values"].as_array().into_iter().flatten() {
-                if let (Some(ts), Some(val)) = (pair[0].as_f64(), sample_value(&pair[1])) {
-                    if let Some(ts) = chrono::DateTime::from_timestamp(ts as i64, 0) {
-                        points.push(AnalyticsPoint { ts, value: val });
+        // Grouped allow-list keys (`errors_by_route`,
+        // `bench_detector_p99`) return one series per dimension —
+        // keep them all, labels included.
+        let series = result
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|s| {
+                let mut points = Vec::new();
+                for pair in s["values"].as_array().into_iter().flatten() {
+                    if let (Some(ts), Some(val)) = (pair[0].as_f64(), sample_value(&pair[1])) {
+                        if let Some(ts) = chrono::DateTime::from_timestamp(ts as i64, 0) {
+                            points.push(AnalyticsPoint { ts, value: val });
+                        }
                     }
                 }
-            }
-        }
-        Ok(AnalyticsResult::Matrix { points })
+                AnalyticsSeries { metric: s["metric"].clone(), points }
+            })
+            .collect();
+        Ok(AnalyticsResult::Matrix { series })
     } else {
         match data["resultType"].as_str() {
             // "scalar": result is one [ts, "v"] pair.
             Some("scalar") => Ok(AnalyticsResult::Scalar {
                 value: sample_value(&result[1]),
             }),
-            // "vector": instant samples per series; empty = no data.
+            // "vector": instant samples per series. ≤1 sample keeps
+            // the compact scalar shape; grouped results surface every
+            // labeled sample.
             Some("vector") => {
-                let value = result
+                let samples: Vec<AnalyticsSample> = result
                     .as_array()
-                    .and_then(|a| a.first())
-                    .and_then(|s| sample_value(&s["value"][1]));
-                Ok(AnalyticsResult::Scalar { value })
+                    .into_iter()
+                    .flatten()
+                    .map(|s| AnalyticsSample {
+                        metric: s["metric"].clone(),
+                        value: sample_value(&s["value"][1]),
+                    })
+                    .collect();
+                if samples.len() <= 1 {
+                    Ok(AnalyticsResult::Scalar {
+                        value: samples.first().and_then(|s| s.value),
+                    })
+                } else {
+                    Ok(AnalyticsResult::Vector { samples })
+                }
             }
             other => Err(format!("unexpected Prometheus resultType: {other:?}")),
         }
     }
 }
 
-/// Prometheus encodes sample values as JSON strings ("4.2").
+/// Prometheus encodes sample values as JSON strings ("4.2"). `NaN` /
+/// `Inf` parse to non-finite floats, which serde_json serializes as
+/// `null` — intentionally indistinguishable from "no data" on the
+/// wire (a 0/0 `block_ratio` has nothing meaningful to show).
 fn sample_value(v: &serde_json::Value) -> Option<f64> {
     v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64())
 }
@@ -341,7 +384,9 @@ mod pe2_prometheus_proxy_tests {
         let body = r#"{"status":"success","data":{"resultType":"matrix",
             "result":[{"metric":{},"values":[[1751600000.0,"1.5"],[1751600060.0,"2.5"]]}]}}"#;
         match parse_prometheus_body(body, true).unwrap() {
-            AnalyticsResult::Matrix { points } => {
+            AnalyticsResult::Matrix { series } => {
+                assert_eq!(series.len(), 1);
+                let points = &series[0].points;
                 assert_eq!(points.len(), 2);
                 assert_eq!(points[0].value, 1.5);
                 assert_eq!(points[1].value, 2.5);
@@ -352,12 +397,57 @@ mod pe2_prometheus_proxy_tests {
     }
 
     #[test]
-    fn parse_range_empty_matrix_is_empty_points() {
-        let body = r#"{"status":"success","data":{"resultType":"matrix","result":[]}}"#;
+    fn parse_range_multi_series_keeps_every_labeled_series() {
+        // errors_by_route / bench_detector_p99 are grouped queries —
+        // one series per route/detector must survive, labels intact.
+        let body = r#"{"status":"success","data":{"resultType":"matrix","result":[
+            {"metric":{"route":"api"},   "values":[[1751600000.0,"1.0"]]},
+            {"metric":{"route":"login"}, "values":[[1751600000.0,"7.0"]]}]}}"#;
         match parse_prometheus_body(body, true).unwrap() {
-            AnalyticsResult::Matrix { points } => assert!(points.is_empty()),
+            AnalyticsResult::Matrix { series } => {
+                assert_eq!(series.len(), 2);
+                assert_eq!(series[0].metric["route"].as_str(), Some("api"));
+                assert_eq!(series[1].metric["route"].as_str(), Some("login"));
+                assert_eq!(series[1].points[0].value, 7.0);
+            }
             other => panic!("expected matrix, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_range_empty_matrix_is_empty_series() {
+        let body = r#"{"status":"success","data":{"resultType":"matrix","result":[]}}"#;
+        match parse_prometheus_body(body, true).unwrap() {
+            AnalyticsResult::Matrix { series } => assert!(series.is_empty()),
+            other => panic!("expected matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_instant_multi_sample_returns_labeled_vector() {
+        let body = r#"{"status":"success","data":{"resultType":"vector","result":[
+            {"metric":{"route":"api"},   "value":[1751600000.0,"1.0"]},
+            {"metric":{"route":"login"}, "value":[1751600000.0,"2.0"]}]}}"#;
+        match parse_prometheus_body(body, false).unwrap() {
+            AnalyticsResult::Vector { samples } => {
+                assert_eq!(samples.len(), 2);
+                assert_eq!(samples[0].metric["route"].as_str(), Some("api"));
+                assert_eq!(samples[1].value, Some(2.0));
+            }
+            other => panic!("expected vector, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nan_sample_serializes_as_null_value() {
+        // 0/0 block_ratio → Prometheus "NaN" → wire null (same as
+        // no-data; nothing meaningful to render either way).
+        let body = r#"{"status":"success","data":{"resultType":"vector",
+            "result":[{"metric":{},"value":[1751600000.0,"NaN"]}]}}"#;
+        let result = parse_prometheus_body(body, false).unwrap();
+        let r = render_success("block_ratio", "x", result);
+        let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        assert!(v["value"].is_null(), "NaN must render as null, got {}", v["value"]);
     }
 
     #[test]

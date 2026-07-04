@@ -2033,8 +2033,13 @@ async fn fetch_prometheus(url: &str) -> Result<String, String> {
                 .into(),
         );
     }
-    let client: Client<_, Empty<Bytes>> =
-        Client::builder(TokioExecutor::new()).build_http();
+    // One shared client so dashboard chart refreshes reuse the
+    // Prometheus connection instead of handshaking per call.
+    static CLIENT: std::sync::OnceLock<
+        Client<hyper_util::client::legacy::connect::HttpConnector, Empty<Bytes>>,
+    > = std::sync::OnceLock::new();
+    let client =
+        CLIENT.get_or_init(|| Client::builder(TokioExecutor::new()).build_http());
     let fetch = async {
         let resp = client
             .get(uri)
@@ -2048,10 +2053,15 @@ async fn fetch_prometheus(url: &str) -> Result<String, String> {
             .map_err(|e| format!("Prometheus body read failed: {e}"))?
             .to_bytes();
         if !status.is_success() {
-            return Err(format!(
-                "Prometheus returned {status}: {}",
-                String::from_utf8_lossy(&body[..body.len().min(200)]),
-            ));
+            // Prefer Prometheus's structured `error` detail over a
+            // raw body dump.
+            let detail = serde_json::from_slice::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v["error"].as_str().map(String::from))
+                .unwrap_or_else(|| {
+                    String::from_utf8_lossy(&body[..body.len().min(200)]).into_owned()
+                });
+            return Err(format!("Prometheus returned {status}: {detail}"));
         }
         String::from_utf8(body.to_vec())
             .map_err(|e| format!("Prometheus body not UTF-8: {e}"))
@@ -2270,7 +2280,8 @@ state: { backend: in_memory }
         assert_eq!(resp.status(), 200);
         let v = body_json(resp).await;
         assert_eq!(v["result_type"].as_str(), Some("matrix"));
-        assert_eq!(v["points"].as_array().unwrap().len(), 1);
+        assert_eq!(v["series"].as_array().unwrap().len(), 1);
+        assert_eq!(v["series"][0]["points"].as_array().unwrap().len(), 1);
         let line = req_line.await.unwrap();
         assert!(line.contains("/api/v1/query_range?"), "got {line}");
         assert!(line.contains("start=1000") && line.contains("end=2000"), "got {line}");

@@ -303,10 +303,13 @@ external Prometheus configured at `admin.prometheus_url`
 `/api/v1/query_range` when `start`+`end` are set (`$step` is
 substituted server-side). Responses:
 
-- `200` — `{expr, promql, result_type: "scalar", value}` (instant;
-  `value` is `null` when Prometheus has no data yet — never a fake
-  `0.0`) or `{..., result_type: "matrix", points: [{ts, value}]}`
-  (range, first series of the aggregate).
+- `200` — instant: `{expr, promql, result_type: "scalar", value}`
+  (`value` is `null` when Prometheus has no data yet — never a fake
+  `0.0`), or `{..., result_type: "vector", samples: [{metric,
+  value}]}` for grouped keys with >1 sample. Range:
+  `{..., result_type: "matrix", series: [{metric, points: [{ts,
+  value}]}]}` — grouped keys (`errors_by_route`,
+  `bench_detector_p99`) keep one labeled series per dimension.
 - `502 prometheus_unreachable` — connect/timeout (3 s budget),
   non-2xx, or unparseable upstream response.
 - `503 analytics_not_implemented` / `503 no_history_backend` —
