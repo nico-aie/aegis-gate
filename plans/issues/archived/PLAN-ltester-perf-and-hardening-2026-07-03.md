@@ -1,6 +1,6 @@
 # PLAN — l-tester perf & hardening: convert the audit/scorecard findings into shippable work
 
-> **Type:** PLAN (performance + operability track) · **Status:** ⬜ Not started · **Branch:** `feat/ltester-perf-*` (per stage)
+> **Type:** PLAN (performance + operability track) · **Status:** ✅ **CLOSED 2026-07-04 — archived.** Shipped: LT-P1 release profile, LT-P8 hygiene sweep (+ watcher-test hardening, PR #150). Rejected on evidence: LT-P2 RegexSet (measured slower), LT-P1b panic=abort (defeats unwind isolation), LT-P4 (purpose removed with P1b). **Owner-skipped 2026-07-04: LT-P3, LT-P5, LT-P6, LT-P7** — deliberate scope cut, not silent drops; see each stanza. · **Branch:** `feat/ltester-perf-*` (per stage)
 > **Track ID prefix:** `LT-P1<–8>`
 > **Derived from:** `tests/l-tester/CODE_AUDIT_2026-07-02.md` (§5 optimization, §6 improvement, §7 verification) + `tests/l-tester/JUDGING_SCORECARD_2026-07-02.md` (103/120; Performance 15/20 is the biggest gap-to-ceiling).
 > **Honors:** [[project_rustfmt_whole_crate_hazard]] (repo NOT rustfmt-clean — hand-match style, only rustfmt files you fully author) · [[feedback_test_suite_green_baseline]] (`cargo test --workspace` green baseline; FP-reduction tests go stale by design) · [[feedback_e2e_docker_cleanup]] (bench harness restart recipe) · [[project_admin_public_http_contract]] (public-HTTP admin is a committee contract, not a bug — don't "harden" it away) · [[project_health_signals_reported_not_gating]]
@@ -47,7 +47,7 @@ strip = "debuginfo"
 >
 > **Do not reopen** without a materially different approach — e.g. a hand-built shared literal pref​ilter, or `regex-automata`'s multi-pattern DFA with explicit prefilter control — and a micro-bench that beats the per-`Regex` prefilter baseline above. The plain `RegexSet` path is a dead end here.
 
-## LT-P3 — realistic default per-IP limit OR documented ddos division-of-labor · **S** · *(audit O-3 / I-2 · Security+Perf)*
+## LT-P3 — realistic default per-IP limit OR documented ddos division-of-labor · **S** · *(audit O-3 / I-2 · Security+Perf)* — ❌ **OWNER-SKIPPED 2026-07-04.** SKIPPED — the DDoS gate (1000 req/10s per (tier,ip), default-ON) is the volumetric gate in practice; the 1M/min ip_limiter stays a backstop. AC-P3-d's L4-posture runbook already states the division of labor.
 `DEFAULT_LIMIT = 1_000_000` per 60s (`ip_limiter.rs:46`) is a "backstop, not a throughput cap" — but at 1M/min the local per-IP volumetric gate effectively **never fires** unless buckets are configured. Under the §7 "DDoS aimed at the WAF" scenario this leaves a single flooding source un-throttled by *this* gate.
 - **Option A:** lower `DEFAULT_LIMIT` to a sane backstop (a few thousand/min) — but validate it can't collaterally throttle the benchmark's own load generator (which may come from one IP). This is the risk; measure against the harness traffic shape first.
 - **Option B (safer if A regresses benchmark):** keep the high backstop but **prove + document** that `ddos.rs` (the per-`(tier,ip)` flood window, 1000 req/10s default) fully covers the volumetric case, and state the division of labor in a comment + runbook. Pairs with AC-P3-d (L4 posture doc).
@@ -67,17 +67,17 @@ strip = "debuginfo"
 >
 > *Original scope (for the record):* 182 `panic!` + 495 `.expect(` workspace-wide (majority `#[cfg(test)]`); triage request-path sites to `fail_open`/`fail_close`. Not pursued.
 
-## LT-P5 — verify risk **decay** shows on allowed-response `X-WAF-Risk-Score` · **M** · *(audit I-3 / scorecard §3 · Intelligence)*
+## LT-P5 — verify risk **decay** shows on allowed-response `X-WAF-Risk-Score` · **M** · *(audit I-3 / scorecard §3 · Intelligence)* — ❌ **OWNER-SKIPPED 2026-07-04.** SKIPPED — verification-only item; decay-on-read ships (`decay_on_read` in tracker) and no judging feedback flagged it. Revive only if a scorecard run shows non-decreasing scores on quiet traffic.
 Decay is configured (`decay_half_life`, default 5 min; `reconcile.rs`) but described as "monotonic in practice, decreased via separate `add_risk(_, -decay)`." Rules §5.5 requires score to **decrease on sustained normal behavior**, and the benchmarker validates accumulation *and* decay on **allowed** responses.
 - Confirm the decay path runs on the **allow** path (not only explicit reset) and that `X-WAF-Risk-Score` on allowed responses reflects it over a quiet window.
 - **This is verification-first:** if decay already surfaces correctly, close with a regression test. If it only applies on reset, that's a real fix (small).
 - **Verify:** integration test — accumulate risk, then a quiet window of allowed requests shows a monotonically *decreasing* `X-WAF-Risk-Score`.
 
-## LT-P6 — add a v2.6 contract-compliance CI gate · **S** · *(audit §7.4 / I-… · Deployment)*
+## LT-P6 — add a v2.6 contract-compliance CI gate · **S** · *(audit §7.4 / I-… · Deployment)* — ❌ **OWNER-SKIPPED 2026-07-04.** SKIPPED — v2.3 gate stays the only CI contract check; v2.6 surface is exercised by the l-tester scripts run manually.
 CI wires only the **v2.3** compliance script (`ci.yml:205-237` → `tests/contract/v2.3_compliance.sh`); the codebase targets **v2.6**. Add a v2.6 gate (new script or extend the existing) so contract drift is caught in CI, not at judging.
 - **Verify:** the gate runs the v2.6 control-plane surface (`capabilities`/`reset_state`/`set_profile`/`flush_cache`, unsupported→200+`unsupported[]`, required headers) against a booted binary.
 
-## LT-P7 — confirm judged config `trusted_proxies: []`, enforce `is_unsafe_trusted_proxy` at load · **S** · *(audit I-2 · Security / Contract §6)*
+## LT-P7 — confirm judged config `trusted_proxies: []`, enforce `is_unsafe_trusted_proxy` at load · **S** · *(audit I-2 · Security / Contract §6)* — ❌ **OWNER-SKIPPED 2026-07-04.** SKIPPED — default is safe (empty list) and the judged config is owner-controlled; the load-time reject stays unbuilt.
 Default is safe (empty `trusted_proxies` → TCP peer wins). But if the judged config ever trusts loopback/private CIDRs, `with_proxy_via` makes the audit `ip` the *asserted* client, breaking §6 (audit ip MUST be TCP peer) and the XFF-spoof test family. The `is_unsafe_trusted_proxy` guard exists — make it **reject/warn at config load**, not just be available.
 - **Not the admin-HTTP exposure** — that's a committee contract ([[project_admin_public_http_contract]]); this is specifically the `trusted_proxies`/XFF trust list.
 - **Verify:** config with `127.0.0.0/8` in `trusted_proxies` is rejected (or loudly warns) at boot; judged config asserted `[]`.
