@@ -406,9 +406,22 @@ pub async fn run(
     // and clone the handle into `DashboardServices` further down so
     // the admin mutation and the data-plane detector share state.
     let canary_paths = aegis_security::detectors::canary::CanaryPaths::new(&cfg.risk.canary_paths);
+    // AC-P2-b (2026-07-04) — build the brute-force detector as a shared
+    // handle so (a) the fleet backend can be installed AFTER the state
+    // backend exists (the chain is built before `state`), and (b) the
+    // config watchers can hot-apply `count_scope` via
+    // `apply_cfg_change_to_brute_force`. The chain slot runs this same
+    // instance through the delegating `Detector for Arc<…>` impl.
+    let brute_force = std::sync::Arc::new(
+        aegis_security::detectors::brute_force::BruteForceDetector::default(),
+    );
+    brute_force.set_count_scope(cfg.detectors.brute_force.count_scope);
     #[allow(unused_mut)]
-    let mut detector_vec =
-        aegis_security::detectors::default_detectors_with_canary(&cfg.detectors, &canary_paths);
+    let mut detector_vec = aegis_security::detectors::default_detectors_with_canary(
+        &cfg.detectors,
+        &canary_paths,
+        Some(brute_force.clone()),
+    );
     #[cfg(not(feature = "ai"))]
     {
         if cfg.ai.enabled {
@@ -1481,6 +1494,8 @@ pub async fn run(
             risk: Some(risk.clone()),
             canary_paths: Some(canary_paths.clone()),
             bots_enabled: Some(upstream_ctx.bots_enabled.clone()),
+            // AC-P2-b — converge `count_scope` fleet-wide on doc swap.
+            brute_force: Some(brute_force.clone()),
         };
         tracing::info!(
             node_id = %node_id,
@@ -1570,6 +1585,32 @@ pub async fn run(
     // later threaded into `DashboardServices` for the admin
     // control plane. Opted in via `cfg.interop.enabled`.
     let interop_runtime = build_interop_runtime(&cfg, &risk, &ip_rate_limiter);
+    // AC-P2-b — fleet-count capability gate (owner constraint: cluster
+    // mode only). The shared backend is installed whenever this node is
+    // capable — cluster propagation wired AND a Redis state backend — so
+    // a later hot-reload flip to `count_scope: fleet` works without a
+    // restart. When fleet is *requested* but the node isn't capable, warn
+    // loudly and run per-node: no silent "fleet == this node" (the DDoS
+    // `spike_scope` gap this deliberately closes).
+    {
+        let fleet_capable = interop_runtime
+            .as_ref()
+            .is_some_and(|rt| rt.control.cluster_enabled())
+            && matches!(
+                cfg.state.backend,
+                aegis_core::config::StateBackendKind::Redis
+            );
+        if fleet_capable {
+            brute_force.install_fleet_backend(state.clone());
+        } else if cfg.detectors.brute_force.count_scope
+            == aegis_core::config::BruteForceCountScope::Fleet
+        {
+            tracing::warn!(
+                "detectors.brute_force.count_scope = fleet requires cluster mode \
+                 + a Redis state backend; counting per-node on this node"
+            );
+        }
+    }
     if let Some(rt) = interop_runtime.as_ref() {
         if let Some(sink) = rt.audit.as_ref() {
             tracing::info!(
