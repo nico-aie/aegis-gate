@@ -797,6 +797,18 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_has_no_gitops_section() {
+        // PE-1 — the gitops module was deleted 2026-05-17; the
+        // snapshot must stop folding in its placeholder shape.
+        let body = handler().render_snapshot();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(
+            v.get("gitops").is_none(),
+            "snapshot still carries the removed gitops placeholder",
+        );
+    }
+
+    #[test]
     fn snapshot_is_cached() {
         let h = handler();
         let a = h.render_snapshot();

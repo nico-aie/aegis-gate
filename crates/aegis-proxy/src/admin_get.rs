@@ -83,8 +83,12 @@ fn fleet_view_scoped(
     }
 }
 
-pub(crate) fn admin_router(
-    req: hyper::Request<hyper::body::Incoming>,
+// Generic over the body type: the GET router only ever reads
+// `req.uri()`, and `hyper::body::Incoming` cannot be constructed
+// outside a live connection — `<B>` lets unit tests drive the route
+// table directly (PE-1 404 guard; PE-3 route walk builds on this).
+pub(crate) fn admin_router<B>(
+    req: hyper::Request<B>,
     cfg: &WafConfig,
     readiness: &ReadinessSignal,
     startup: &aegis_control::health::StartupProbe,
@@ -1880,6 +1884,80 @@ pub(crate) async fn handle_upstream_probe(
     .await;
     let body = serde_json::to_string(&result).unwrap_or_else(|_| "{}".into());
     json_body_response(200, body, "no-store")
+}
+
+#[cfg(test)]
+mod removed_placeholder_routes {
+    // PE-1 (committee round-2 🔴3) — placeholder endpoints must be
+    // gone, not "coming soon". Each removed path has to fall through
+    // to the router's 404 arm; a real neighbour endpoint on the same
+    // page keeps routing (positive control).
+    use std::sync::Arc;
+
+    use super::admin_router;
+    use aegis_control::api::upstreams::PoolHealthSnapshot;
+    use aegis_control::dashboard_services::DashboardServices;
+    use aegis_core::AuditBus;
+
+    const MINIMAL_CFG: &str = r#"
+listeners:
+  data: [{ bind: "0.0.0.0:443" }]
+  admin: { bind: "127.0.0.1:9443" }
+routes:
+  - { id: catch-all, path: "/", upstream: api }
+upstreams:
+  api: { members: [{ addr: "127.0.0.1:3000" }] }
+state: { backend: in_memory }
+"#;
+
+    fn route(
+        path: &str,
+        services: &DashboardServices,
+    ) -> hyper::Response<http_body_util::Full<bytes::Bytes>> {
+        let cfg = aegis_core::load_config_str(MINIMAL_CFG).expect("minimal cfg parses");
+        let readiness = aegis_core::ReadinessSignal::default();
+        let startup = aegis_control::health::StartupProbe::default();
+        let metrics = aegis_control::metrics::MetricsRegistry::init();
+        let req = hyper::Request::builder()
+            .uri(path)
+            .body(())
+            .expect("request builds");
+        admin_router(req, &cfg, &readiness, &startup, &metrics, services)
+    }
+
+    fn spawn_services() -> (DashboardServices, tokio::task::JoinHandle<()>) {
+        DashboardServices::spawn(
+            AuditBus::new(8),
+            Arc::new(|| PoolHealthSnapshot { pools: Vec::new(), ..Default::default() }),
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn removed_placeholder_endpoints_return_404() {
+        let (services, _drain) = spawn_services();
+        for path in [
+            "/api/threat-intel/feeds",
+            "/api/gitops/status",
+            "/api/audit/witness",
+        ] {
+            let resp = route(path, &services);
+            assert_eq!(
+                resp.status(),
+                404,
+                "{path} is a removed placeholder (PE-1) and must be unrouted",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn real_neighbour_endpoints_still_route() {
+        let (services, _drain) = spawn_services();
+        for path in ["/api/threat-intel/hits", "/api/geoip/status"] {
+            let resp = route(path, &services);
+            assert_eq!(resp.status(), 200, "{path} is real and must keep serving");
+        }
+    }
 }
 
 #[cfg(test)]
