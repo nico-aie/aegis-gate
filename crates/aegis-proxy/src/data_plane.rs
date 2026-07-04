@@ -160,6 +160,22 @@ pub(crate) async fn handle_data_request(
     (resp, tag)
 }
 
+/// Build an allow `DecisionTag`, optionally attributed to the reason the
+/// request was allowed (currently only `whitelist`). `None` → an
+/// unattributed allow (`X-WAF-Rule-Id: none`), preserving the prior
+/// behavior for ordinary clean traffic. Centralizes the attribution so the
+/// forward-path allow sites stay one-liners. `with_rule_id` labels the tag
+/// without changing its `Allow` action.
+fn build_allow_tag(
+    attribution: Option<&'static str>,
+) -> aegis_control::interop::headers::DecisionTag {
+    let tag = aegis_control::interop::headers::DecisionTag::allow();
+    match attribution {
+        Some(rule_id) => tag.with_rule_id(rule_id),
+        None => tag,
+    }
+}
+
 /// PROXY-01 (LT-RUN-11) — reject before buffering when the client declares a
 /// `Content-Length` larger than the body cap. A malformed/multi-valued header
 /// is treated as "not over cap" here (the streaming `Limited` wrapper still
@@ -1128,6 +1144,15 @@ pub(crate) async fn handle_data_request_inner(
     // bypasses the detector chain.
     let bypass_detectors = on_whitelist || rule_allow;
 
+    // Attribute a whitelist bypass on the eventual allow tag so
+    // `X-WAF-Rule-Id` (and the listener's allow-audit row) read
+    // `whitelist` instead of `none` — the operator can then see *why* a
+    // request was allowed, mirroring the blacklist BLOCK path which
+    // already stamps `blacklist`. Only the static whitelist is attributed
+    // here; operator `allow` rules already carry their own rule_id in the
+    // engine. `&'static str` so it's Copy across the forward-path sites.
+    let allow_rule_id: Option<&'static str> = on_whitelist.then_some("whitelist");
+
     // Tier-1A — GraphQL query guard. Runs on the buffered body for `POST`s
     // to a configured GraphQL path BEFORE the detector chain, so an abusive
     // query (excessive depth / node count / complexity, or a disabled-
@@ -1597,6 +1622,7 @@ pub(crate) async fn handle_data_request_inner(
             request_start,
             peer_ip,
             bus,
+            allow_rule_id,
         )
         .await;
         // Surface the accumulated risk on the allow response so the
@@ -1719,6 +1745,7 @@ pub(crate) async fn handle_data_request_inner(
                         request_start,
                         peer_ip,
                         bus,
+                        allow_rule_id,
                     )
                     .await
                 } else {
@@ -1862,6 +1889,7 @@ pub(crate) async fn handle_data_request_inner(
                         request_start,
                         peer_ip,
                         bus,
+                        allow_rule_id,
                     )
                     .await
                 } else if rc_mode == aegis_control::interop::headers::Mode::LogOnly {
@@ -1876,6 +1904,7 @@ pub(crate) async fn handle_data_request_inner(
                         request_start,
                         peer_ip,
                         bus,
+                        allow_rule_id,
                     )
                     .await
                 } else {
@@ -1898,6 +1927,7 @@ pub(crate) async fn handle_data_request_inner(
                     request_start,
                     peer_ip,
                     bus,
+                    allow_rule_id,
                 )
                 .await;
                 // LT-P5 — surface residual (decaying) cumulative risk on the
@@ -2003,6 +2033,11 @@ pub(crate) async fn forward_allow_to_upstream(
     // into the spawned bridge task so the close event lands
     // even after this handler has returned.
     bus: &AuditBus,
+    // Attribution for the allow tag: `Some("whitelist")` when the caller
+    // reached this leaf via a static-whitelist bypass, so `X-WAF-Rule-Id`
+    // (+ the allow-audit row) explain why the request was allowed. `None`
+    // for ordinary clean allows (stamps `none`, unchanged behavior).
+    allow_rule_id: Option<&'static str>,
 ) -> (
     Response<crate::body::DataBody>,
     aegis_control::interop::headers::DecisionTag,
@@ -2217,6 +2252,7 @@ pub(crate) async fn forward_allow_to_upstream(
                     peer_ip,
                     bus,
                     request_id,
+                    allow_rule_id,
                 )
                 .await;
             }
@@ -2809,7 +2845,7 @@ pub(crate) async fn forward_allow_to_upstream(
             let resp = resp_builder
                 .body(crate::body::full(Bytes::new()))
                 .unwrap();
-            return (resp, DecisionTag::allow().with_tier(route_ctx.tier));
+            return (resp, build_allow_tag(allow_rule_id).with_tier(route_ctx.tier));
         }
 
         // Non-101 — upstream rejected the upgrade.  Drain any
@@ -2847,7 +2883,7 @@ pub(crate) async fn forward_allow_to_upstream(
         let resp = resp_builder
             .body(crate::body::full(Bytes::from(body)))
             .unwrap();
-        return (resp, DecisionTag::allow().with_tier(route_ctx.tier));
+        return (resp, build_allow_tag(allow_rule_id).with_tier(route_ctx.tier));
     }
 
     // SC-1 — smart cache lookup (L1, in-process). Runs AFTER the auth +
@@ -2881,7 +2917,7 @@ pub(crate) async fn forward_allow_to_upstream(
                     tracing::Span::current().record("outcome", "cache-hit");
                     return (
                         cache_entry_response(&entry),
-                        DecisionTag::allow().with_tier(route_ctx.tier).with_cache(
+                        build_allow_tag(allow_rule_id).with_tier(route_ctx.tier).with_cache(
                             aegis_control::interop::headers::CacheState::Hit,
                         ),
                     );
@@ -3028,7 +3064,7 @@ pub(crate) async fn forward_allow_to_upstream(
             // Both serve stamps `X-WAF-Cache: HIT` (the wire enum is frozen).
             if let Some((pc, entry, key, _rule_idx)) = stale_serve.take() {
                 let hit = || {
-                    DecisionTag::allow().with_tier(route_ctx.tier).with_cache(
+                    build_allow_tag(allow_rule_id).with_tier(route_ctx.tier).with_cache(
                         aegis_control::interop::headers::CacheState::Hit,
                     )
                 };
@@ -3071,7 +3107,7 @@ pub(crate) async fn forward_allow_to_upstream(
                 ctx.pipeline.on_response_headers(resp.headers_mut());
                 return (
                     resp,
-                    DecisionTag::allow()
+                    build_allow_tag(allow_rule_id)
                         .with_tier(route_ctx.tier)
                         .with_streamed(true),
                 );
@@ -3169,7 +3205,7 @@ pub(crate) async fn forward_allow_to_upstream(
             // the rest of the admission rules (200-only, no Set-Cookie, no
             // no-store, content-type/deception armor, per-entry size cap);
             // a refusal still reports MISS on the wire (forwarded, not stored).
-            let mut allow_tag = DecisionTag::allow().with_tier(route_ctx.tier);
+            let mut allow_tag = build_allow_tag(allow_rule_id).with_tier(route_ctx.tier);
             if let Some((pc, key, rule_idx)) = cache_pending.take() {
                 pc.store(
                     key,
@@ -3204,7 +3240,7 @@ pub(crate) async fn forward_allow_to_upstream(
                 tracing::Span::current().record("outcome", "cache-stale-served");
                 return (
                     cache_entry_response(&entry),
-                    DecisionTag::allow().with_tier(route_ctx.tier).with_cache(
+                    build_allow_tag(allow_rule_id).with_tier(route_ctx.tier).with_cache(
                         aegis_control::interop::headers::CacheState::Hit,
                     ),
                 );
@@ -3264,11 +3300,13 @@ async fn forward_connect_tunnel(
     peer_ip: std::net::IpAddr,
     bus: &AuditBus,
     request_id: String,
+    // Same whitelist attribution as `forward_allow_to_upstream` — a
+    // whitelisted CONNECT tunnel's allow tag reads `whitelist`.
+    allow_rule_id: Option<&'static str>,
 ) -> (
     Response<crate::body::DataBody>,
     aegis_control::interop::headers::DecisionTag,
 ) {
-    use aegis_control::interop::headers::DecisionTag;
     use crate::tcp_tunnel::{
         bridge_tunnel, connect_admit, ConnectAdmission, ConnectAdmissionRequest,
         TunnelClosed, TunnelCloseReason,
@@ -3457,7 +3495,7 @@ async fn forward_connect_tunnel(
         .status(200)
         .body(crate::body::full(Bytes::new()))
         .unwrap();
-    (resp, DecisionTag::allow())
+    (resp, build_allow_tag(allow_rule_id))
 }
 
 /// 2026-06-17 — origin-form request target (`path?query`) for the
@@ -4754,6 +4792,7 @@ state: { backend: in_memory }
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
+            None,
         )
         .await;
 
@@ -4784,6 +4823,7 @@ state: { backend: in_memory }
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
+            None,
         )
         .await;
 
@@ -4816,6 +4856,7 @@ state: { backend: in_memory }
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
+            None,
         )
         .await;
 
@@ -4849,6 +4890,7 @@ state: { backend: in_memory }
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
+            None,
         )
         .await;
 
@@ -4878,6 +4920,7 @@ state: { backend: in_memory }
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
+            None,
         )
         .await;
 
@@ -4925,6 +4968,7 @@ state: { backend: in_memory }
             Instant::now(),
             peer,
             &bus,
+            None,
         )
         .await;
 
@@ -4961,6 +5005,7 @@ state: { backend: in_memory }
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
+            None,
         )
         .await;
 
@@ -5007,6 +5052,7 @@ state: { backend: in_memory }
                 Instant::now(),
                 peer,
                 &bus,
+                None,
             )
             .await;
         }
@@ -5056,6 +5102,7 @@ state: { backend: in_memory }
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
+            None,
         )
         .await;
 
@@ -5100,6 +5147,7 @@ state: { backend: in_memory }
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
+            None,
         )
         .await;
         assert_eq!(resp.status(), 403);
@@ -5260,6 +5308,7 @@ state: {{ backend: in_memory }}
                         Instant::now(),
                         peer.ip(),
                         &bus,
+                        None,
                     )
                     .await;
                     Ok::<_, Infallible>(resp)
@@ -5384,6 +5433,7 @@ state: {{ backend: in_memory }}
                         Instant::now(),
                         peer.ip(),
                         &bus,
+                        None,
                     )
                     .await;
                     Ok::<_, Infallible>(resp)
@@ -5516,6 +5566,7 @@ state: {{ backend: in_memory }}
                         Instant::now(),
                         peer.ip(),
                         &bus,
+                        None,
                     )
                     .await;
                     Ok::<_, Infallible>(resp)
@@ -5681,6 +5732,7 @@ state: {{ backend: in_memory }}
                         Instant::now(),
                         peer.ip(),
                         &bus,
+                        None,
                     )
                     .await;
                     Ok::<_, Infallible>(resp)
@@ -5838,6 +5890,7 @@ state: {{ backend: in_memory }}
                         Instant::now(),
                         peer.ip(),
                         &bus,
+                        None,
                     )
                     .await;
                     Ok::<_, Infallible>(resp)
@@ -5987,6 +6040,7 @@ state: {{ backend: in_memory }}
                         Instant::now(),
                         peer.ip(),
                         &bus,
+                        None,
                     )
                     .await;
                     Ok::<_, Infallible>(resp)
@@ -7256,6 +7310,129 @@ detectors:
         );
     }
 
+    // Whitelist-allow attribution — a whitelisted (detector-bypassed)
+    // request used to return an allow tag with `rule_id: None`, so it
+    // stamped `X-WAF-Rule-Id: none` and was indistinguishable from a
+    // clean allow. It should carry `rule_id: Some("whitelist")` (mirroring
+    // the blacklist BLOCK path, which already stamps `blacklist`). Drives
+    // one request from the loopback peer and returns the resolved
+    // `DecisionTag.rule_id` (what the listener stamps into X-WAF-Rule-Id).
+    async fn run_whitelist_attribution_probe(seed_whitelist: bool) -> Option<String> {
+        let backend = spawn_upstream().await;
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: pool }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend}" }}] }}
+state: {{ backend: in_memory }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
+        ctx.interop_modes.set(Arc::new(ModeStore::new(Mode::Enforce))).ok();
+
+        if seed_whitelist {
+            // Full-trust entry (empty `bypass`) for the loopback peer the
+            // test connects from. Dev doesn't trust XFF, so peer_ip is the
+            // raw 127.0.0.1 TCP peer — the whitelist matches it.
+            ctx.whitelist
+                .put(aegis_control::api::blacklist::AccessListEntry {
+                    id: "wl-loopback".into(),
+                    kind: "ip".into(),
+                    value: "127.0.0.1".into(),
+                    note: String::new(),
+                    expires_at: None,
+                    bypass: vec![],
+                    created_at: chrono::Utc::now(),
+                })
+                .expect("seed whitelist entry");
+        }
+
+        let metrics = aegis_control::metrics::MetricsRegistry::init();
+        let args = Arc::new(Args {
+            detectors: aegis_security::detectors::default_detectors(),
+            mask: aegis_security::detectors::SharedDetectorMask::from_config(&cfg.detectors),
+            risk: aegis_security::risk::RiskTracker::new(&cfg.risk),
+            ip_rl: aegis_security::rate_limit::IpRateLimiter::new(
+                crate::config_source::reload::derive_ip_rate_cfg(&cfg),
+            ),
+            load_gauge: aegis_core::LoadGauge::new(cfg.load_mode.clone()),
+            verbosity: aegis_core::SharedVerbosity::from_config(&cfg.logging),
+            rsh: aegis_control::metrics::request_duration::RequestStageHistogram::register(&metrics)
+                .unwrap(),
+            rlh: aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&metrics)
+                .unwrap(),
+            ra: aegis_control::metrics::route_activity::RouteActivityWindow::new(),
+            dlh: aegis_control::metrics::detector_latency::DetectorLatencyHistogram::register(&metrics)
+                .unwrap(),
+            dhm: aegis_control::metrics::detector_hits::DetectorHitMetrics::register(&metrics)
+                .unwrap(),
+            bus: AuditBus::new(64),
+            ctx: ctx.clone(),
+        });
+        let seen: Arc<std::sync::Mutex<Option<Option<String>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let args_l = args.clone();
+        let seen_l = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, peer)) = waf.accept().await {
+                let args_c = args_l.clone();
+                let seen_c = seen_l.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                        let a = args_c.clone();
+                        let seen = seen_c.clone();
+                        async move {
+                            let (resp, tag) = super::handle_data_request(
+                                req, peer, None, &a.detectors, &a.mask, &a.risk, &a.ip_rl,
+                                &a.load_gauge, &a.verbosity, &a.rsh, &a.rlh, &a.ra, &a.dlh,
+                                &a.bus, &a.ctx, &a.dhm, &ClientIdentity::Anonymous, None,
+                            )
+                            .await;
+                            *seen.lock().unwrap() = Some(tag.rule_id.clone());
+                            Ok::<_, Infallible>(resp)
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let _ = get_status(waf_addr, "/").await;
+        let observed = seen.lock().unwrap().clone().flatten();
+        observed
+    }
+
+    #[tokio::test]
+    async fn whitelisted_allow_is_attributed_on_rule_id() {
+        let rule_id = run_whitelist_attribution_probe(true).await;
+        assert_eq!(
+            rule_id.as_deref(),
+            Some("whitelist"),
+            "a whitelist-bypassed allow must carry rule_id=whitelist so \
+             X-WAF-Rule-Id / the audit row show why it was allowed",
+        );
+    }
+
+    #[tokio::test]
+    async fn normal_allow_carries_no_rule_id() {
+        let rule_id = run_whitelist_attribution_probe(false).await;
+        assert_eq!(
+            rule_id, None,
+            "a non-whitelisted clean allow must stay rule_id=None (stamps `none`)",
+        );
+    }
+
     #[tokio::test]
     async fn detector_block_fires_without_an_allow_rule() {
         let waf = build_attack_waf(None).await;
@@ -8007,6 +8184,7 @@ state: {{ backend: in_memory }}
             Instant::now(),
             "198.51.100.7".parse().unwrap(),
             bus,
+            None,
         )
         .await;
         let status = resp.status();
