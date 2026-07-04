@@ -7693,6 +7693,7 @@ state:
             risk: None,
             canary_paths: None,
             bots_enabled: None,
+            brute_force: None,
         };
         let store_b =
             ConfigStore::new(backend.clone() as Arc<dyn aegis_core::state::StateBackend>);

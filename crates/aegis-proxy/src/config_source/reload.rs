@@ -562,6 +562,9 @@ pub struct FoldedReloadTargets {
     pub canary_paths: Option<aegis_security::detectors::canary::CanaryPaths>,
     /// Bot-classifier gate toggle (shared `AtomicBool`).
     pub bots_enabled: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// AC-P2-b — the chain-resident brute-force detector, so a reload
+    /// re-derives its `count_scope` (fleet vs per-node).
+    pub brute_force: Option<Arc<aegis_security::detectors::brute_force::BruteForceDetector>>,
 }
 
 /// 2026-05-28 (Phase B fold parity) — re-derive the folded stores from
@@ -592,6 +595,7 @@ pub async fn apply_folded_stores(new_cfg: &WafConfig, t: &FoldedReloadTargets) {
     let _ = apply_cfg_change_to_ddos(new_cfg, t.ddos.as_ref());
     let _ = apply_cfg_change_to_risk(new_cfg, t.risk.as_ref(), t.canary_paths.as_ref());
     let _ = apply_cfg_change_to_bots(new_cfg, t.bots_enabled.as_ref());
+    let _ = apply_cfg_change_to_brute_force(new_cfg, t.brute_force.as_ref());
 }
 
 /// 2026-06-03 (config-plane fold) — rebuild the AI Operator Copilot from
@@ -700,6 +704,23 @@ pub fn apply_cfg_change_to_bots(
         return GateReloadOutcome::NoHandle;
     };
     toggle.store(new_cfg.bots.enabled, std::sync::atomic::Ordering::Relaxed);
+    GateReloadOutcome::Applied
+}
+
+/// AC-P2-b (2026-07-04) — push `detectors.brute_force.count_scope` into
+/// the live chain-resident detector on a config swap, so a cluster-wide
+/// scope flip converges on every node (not just the PUT-handling one).
+/// Only the *requested* scope is hot-reloadable; fleet capability (shared
+/// backend + cluster propagation) is fixed at boot — a node booted
+/// without it logs once and keeps counting per-node.
+pub fn apply_cfg_change_to_brute_force(
+    new_cfg: &WafConfig,
+    brute_force: Option<&Arc<aegis_security::detectors::brute_force::BruteForceDetector>>,
+) -> GateReloadOutcome {
+    let Some(bf) = brute_force else {
+        return GateReloadOutcome::NoHandle;
+    };
+    bf.set_count_scope(new_cfg.detectors.brute_force.count_scope);
     GateReloadOutcome::Applied
 }
 
@@ -1786,6 +1807,38 @@ bots:
         assert!(
             !rt.config_snapshot().enabled,
             "ddos runtime re-derived from doc → disabled (the read-back fix)",
+        );
+    }
+
+    /// AC-P2-b — a converged `count_scope` change re-derives on the live
+    /// detector (fleet → per-node and back); `None` handle is a no-op.
+    #[test]
+    fn brute_force_readback_reapplies_count_scope() {
+        let bf = Arc::new(
+            aegis_security::detectors::brute_force::BruteForceDetector::default(),
+        );
+        assert!(!bf.count_scope_is_fleet(), "precondition: default per_node");
+
+        let mut doc = parse(&gate_yaml(true, true, true));
+        doc.detectors.brute_force.count_scope =
+            aegis_core::config::BruteForceCountScope::Fleet;
+        assert_eq!(
+            apply_cfg_change_to_brute_force(&doc, Some(&bf)),
+            GateReloadOutcome::Applied,
+        );
+        assert!(bf.count_scope_is_fleet(), "scope flip must reach the live detector");
+
+        doc.detectors.brute_force.count_scope =
+            aegis_core::config::BruteForceCountScope::PerNode;
+        assert_eq!(
+            apply_cfg_change_to_brute_force(&doc, Some(&bf)),
+            GateReloadOutcome::Applied,
+        );
+        assert!(!bf.count_scope_is_fleet(), "and back to per_node");
+
+        assert_eq!(
+            apply_cfg_change_to_brute_force(&doc, None),
+            GateReloadOutcome::NoHandle,
         );
     }
 
