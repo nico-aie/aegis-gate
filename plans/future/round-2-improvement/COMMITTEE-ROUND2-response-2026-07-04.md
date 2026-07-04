@@ -3,6 +3,8 @@
 > **Status:** Drafted 2026-07-04 from the round-2 internal review. Every committee claim below was
 > re-verified against the codebase before planning (file:line evidence in the linked plans).
 > Nothing in this set is implemented yet — each linked plan waits for owner go-ahead.
+> **Team assignment & schedule:** [TEAM-PLAN-round2-3-members-2026-07.md](TEAM-PLAN-round2-3-members-2026-07.md) (tiếng Việt).
+> **Bản dịch tiếng Việt:** [COMMITTEE-ROUND2-response-2026-07-04.vi.md](COMMITTEE-ROUND2-response-2026-07-04.vi.md).
 
 ---
 
