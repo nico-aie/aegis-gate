@@ -199,6 +199,25 @@ assert_get "GET /api/detectors" /api/detectors 200 \
   '.overrides | type == "object"' \
   '.locked_classes | type == "array"'
 
+# PE-2 (2026-07-04) — completed placeholder endpoints.
+# Dev instance has no admin.prometheus_url → honest 503, never
+# 200-with-zeros (F-CRITICAL-018 posture).
+assert_get "GET /api/analytics/query (no backend)" \
+  "/api/analytics/query?expr=requests_rate" 503 \
+  '.error.code == "analytics_not_implemented"'
+
+# Per-sink delivery is real state now — "unknown" is banned.
+assert_get "GET /api/cold-tier" /api/cold-tier 200 \
+  '.sinks | type == "array"' \
+  '[.sinks[].delivery] | all(IN("ok","error","pending","unwired"))' \
+  '[.sinks[].delivered] | all(type == "number")'
+
+# indicator_count is a real count or null — never a hardcoded 0
+# while a DB is loaded (null when no lookup is wired, as in dev).
+assert_get "GET /api/geoip/status" /api/geoip/status 200 \
+  '.db_loaded | type == "boolean"' \
+  'has("indicator_count")'
+
 # --------------------------------------------------------------- #
 # Mutation gates — CSRF must reject without cookie                #
 # --------------------------------------------------------------- #

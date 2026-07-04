@@ -6002,6 +6002,14 @@ pub struct AdminConfig {
     /// topbar shows an em-dash placeholder.
     #[serde(default)]
     pub environment: Option<String>,
+    /// PE-2 — external Prometheus base URL (e.g.
+    /// `http://prometheus:9090`) backing `GET /api/analytics/query`.
+    /// When absent the endpoint answers an honest 503; when set,
+    /// allow-listed queries are proxied to
+    /// `<url>/api/v1/query[_range]`. `http://` only in v1 — front a
+    /// TLS Prometheus with a local gateway if needed.
+    #[serde(default)]
+    pub prometheus_url: Option<String>,
 }
 
 fn default_admin_bind() -> SocketAddr {
@@ -6016,6 +6024,7 @@ impl Default for AdminConfig {
             dashboard_auth: DashboardAuthConfig::default(),
             dashboard: DashboardConfig::default(),
             environment: None,
+            prometheus_url: None,
         }
     }
 }

@@ -1,22 +1,21 @@
-//! `/api/analytics/query` allow-listed PromQL proxy (D-M3-T3.11).
+//! `/api/analytics/query` allow-listed PromQL proxy (D-M3-T3.11,
+//! completed by PE-2 2026-07-04).
 //!
-//! The Analytics page consumes this endpoint to render six charts.
 //! Operators do **not** pass raw PromQL — `expr` is a key from a
 //! fixed allow-list documented in
 //! `docs/control-plane/enterprise/api.md` §"Analytics". The server
-//! resolves the key to its canonical PromQL string and either:
-//!   - answers from the in-process Prometheus registry (instantaneous
-//!     queries, no `start`/`end` provided), or
-//!   - falls back to an external Prometheus configured via
-//!     `admin.prometheus_url` for range queries, or
-//!   - returns 503 `no_history_backend` when the range query has no
-//!     history source available.
+//! resolves the key to its canonical PromQL string and proxies it
+//! to the external Prometheus configured via `admin.prometheus_url`
+//! (`/api/v1/query` for instantaneous, `/api/v1/query_range` when
+//! `start`+`end` are given). Without a configured backend the
+//! endpoint keeps the honest F-CRITICAL-018 503s
+//! (`analytics_not_implemented` / `no_history_backend`).
 //!
-//! For v1 the in-process resolution returns a synthetic value of
-//! `0.0` for every key — the registry doesn't yet expose the named
-//! series the allow-list references. The wire shape matches what
-//! Prometheus's `/api/v1/query` returns so the page module is ready
-//! once the registry is plumbed.
+//! This module owns the pure layers — plan ([`plan_query`]),
+//! `$step` substitution ([`substitute_step`]), Prometheus wire-shape
+//! parsing ([`parse_prometheus_body`]), and rendering. The HTTP
+//! fetch lives proxy-side (`aegis-proxy::admin_get::
+//! handle_analytics_query`) where the client stack is.
 
 
 use serde::Serialize;
@@ -86,15 +85,36 @@ pub struct AnalyticsPoint {
     pub value: f64,
 }
 
+/// One series of a grouped range result. `metric` is Prometheus's
+/// label object verbatim (e.g. `{"route": "api"}`) so grouped
+/// allow-list keys (`errors_by_route`, `bench_detector_p99`) keep
+/// their per-dimension identity instead of collapsing.
+#[derive(Clone, Debug, Serialize)]
+pub struct AnalyticsSeries {
+    pub metric: serde_json::Value,
+    pub points: Vec<AnalyticsPoint>,
+}
+
+/// One labeled instant sample (vector results with >1 series).
+#[derive(Clone, Debug, Serialize)]
+pub struct AnalyticsSample {
+    pub metric: serde_json::Value,
+    pub value: Option<f64>,
+}
+
 /// JSON shape for `/api/analytics/query`. The `result_type` mirrors
-/// Prometheus's `/api/v1/query` taxonomy ("scalar" for instantaneous,
-/// "matrix" for range) so the front-end stays compatible if we
-/// eventually proxy to a real Prometheus.
+/// Prometheus's `/api/v1/query` taxonomy. `Scalar.value` is `None`
+/// (wire: `null`) when Prometheus returned an empty result — "no
+/// data yet" is a normal state and must never render as a fake
+/// `0.0`. Instant queries return `Scalar` for ≤1 sample and
+/// `Vector` (all labeled samples) for grouped results; range
+/// queries return every series.
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "result_type", rename_all = "lowercase")]
 pub enum AnalyticsResult {
-    Scalar { value: f64 },
-    Matrix { points: Vec<AnalyticsPoint> },
+    Scalar { value: Option<f64> },
+    Vector { samples: Vec<AnalyticsSample> },
+    Matrix { series: Vec<AnalyticsSeries> },
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -125,64 +145,142 @@ pub struct AnalyticsRendering {
     pub body: String,
 }
 
-/// Render `GET /api/analytics/query?expr=<key>&start=&end=&step=`.
-/// `start` and `end` are unix epoch seconds; if both are absent or
-/// equal to 0 the query is instantaneous. `prometheus_url` is the
-/// configured external history backend (currently always `None` until
-/// `admin.prometheus_url` lands as a config field).
-pub fn render_query(
-    expr: &str,
-    start: u64,
-    end: u64,
-    _step: u32,
-    prometheus_url: Option<&str>,
-) -> AnalyticsRendering {
-    let promql = match lookup_promql(expr) {
-        Some(q) => q,
-        None => {
-            return error_response(400, "unknown_expr", format!("unknown expr key: {expr}"));
-        }
-    };
+/// Validated query plan for `GET /api/analytics/query`.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryPlan {
+    pub promql: &'static str,
+    pub is_range: bool,
+}
 
-    // 2026-05-17 F-CRITICAL-018 (control audit): pre-fix this
-    // function returned `value: 0.0` (instantaneous) or an empty
-    // matrix (range with no prometheus_url) and shipped it as a
-    // 200 OK. Dashboards then rendered those zeros as if they
-    // were live data — official rules §9 calls "mock data
-    // shipped to evaluation" a disqualification class. The
-    // analytics surface is a planned-future feature backed by an
-    // external Prometheus history backend; until that backend is
-    // wired in a follow-up, every query returns 503
-    // `analytics_not_implemented` so the dashboard surfaces the
-    // gap honestly rather than rendering fake 0.0 values.
+/// Validate `expr` against the allow-list and classify the query.
+/// `start`/`end` are unix epoch seconds; both non-zero with
+/// `end >= start` ⇒ range query, anything else ⇒ instantaneous.
+pub fn plan_query(expr: &str, start: u64, end: u64) -> Result<QueryPlan, AnalyticsRendering> {
+    let promql = lookup_promql(expr).ok_or_else(|| {
+        error_response(400, "unknown_expr", format!("unknown expr key: {expr}"))
+    })?;
     let is_range = start != 0 && end != 0 && end >= start;
-    if is_range && prometheus_url.is_none() {
-        return error_response(
+    Ok(QueryPlan { promql, is_range })
+}
+
+/// The honest no-backend 503s (F-CRITICAL-018: never 200-with-zeros).
+pub fn unconfigured_response(is_range: bool) -> AnalyticsRendering {
+    if is_range {
+        error_response(
             503,
             "no_history_backend",
-            "range queries require admin.prometheus_url (future plan)".into(),
-        );
-    }
-    if prometheus_url.is_none() {
-        return error_response(
+            "range queries require admin.prometheus_url".into(),
+        )
+    } else {
+        error_response(
             503,
             "analytics_not_implemented",
-            "instantaneous analytics queries are a planned-future feature; \
-             wire admin.prometheus_url to enable".into(),
-        );
+            "wire admin.prometheus_url to enable analytics queries".into(),
+        )
     }
-    // External Prometheus URL is configured — the upstream call
-    // happens here. Today we still return an empty result shape
-    // (the upstream-proxy call lands in a follow-up); future
-    // work: forward `promql` to the external Prometheus and pass
-    // through the response.
-    let result = if is_range {
-        AnalyticsResult::Matrix { points: Vec::new() }
+}
+
+/// Substitute the `$step` placeholder in a canonical PromQL string
+/// with a concrete `<step>s` window.
+pub fn substitute_step(promql: &str, step: u32) -> String {
+    promql.replace("$step", &format!("{step}s"))
+}
+
+/// Parse a Prometheus `/api/v1/query[_range]` response body into the
+/// wire result. Errors are human-readable strings for the 502
+/// envelope; a Prometheus-side `"status":"error"` surfaces its
+/// `error` detail.
+pub fn parse_prometheus_body(body: &str, is_range: bool) -> Result<AnalyticsResult, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("invalid JSON from Prometheus: {e}"))?;
+    match v["status"].as_str() {
+        Some("success") => {}
+        Some("error") => {
+            let detail = v["error"].as_str().unwrap_or("unknown error");
+            return Err(format!("Prometheus query error: {detail}"));
+        }
+        _ => return Err("Prometheus response missing status field".into()),
+    }
+    let data = &v["data"];
+    let result = &data["result"];
+    if is_range {
+        // resultType "matrix": series of {metric, values: [[ts,"v"],..]}.
+        // Grouped allow-list keys (`errors_by_route`,
+        // `bench_detector_p99`) return one series per dimension —
+        // keep them all, labels included.
+        let series = result
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|s| {
+                let mut points = Vec::new();
+                for pair in s["values"].as_array().into_iter().flatten() {
+                    if let (Some(ts), Some(val)) = (pair[0].as_f64(), sample_value(&pair[1])) {
+                        if let Some(ts) = chrono::DateTime::from_timestamp(ts as i64, 0) {
+                            points.push(AnalyticsPoint { ts, value: val });
+                        }
+                    }
+                }
+                AnalyticsSeries { metric: s["metric"].clone(), points }
+            })
+            .collect();
+        Ok(AnalyticsResult::Matrix { series })
     } else {
-        AnalyticsResult::Scalar { value: 0.0 }
-    };
-    let resp = AnalyticsResponse { expr: expr.to_string(), promql, result };
-    ok_response(&resp)
+        match data["resultType"].as_str() {
+            // "scalar": result is one [ts, "v"] pair.
+            Some("scalar") => Ok(AnalyticsResult::Scalar {
+                value: sample_value(&result[1]),
+            }),
+            // "vector": instant samples per series. ≤1 sample keeps
+            // the compact scalar shape; grouped results surface every
+            // labeled sample.
+            Some("vector") => {
+                let samples: Vec<AnalyticsSample> = result
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|s| AnalyticsSample {
+                        metric: s["metric"].clone(),
+                        value: sample_value(&s["value"][1]),
+                    })
+                    .collect();
+                if samples.len() <= 1 {
+                    Ok(AnalyticsResult::Scalar {
+                        value: samples.first().and_then(|s| s.value),
+                    })
+                } else {
+                    Ok(AnalyticsResult::Vector { samples })
+                }
+            }
+            other => Err(format!("unexpected Prometheus resultType: {other:?}")),
+        }
+    }
+}
+
+/// Prometheus encodes sample values as JSON strings ("4.2"). `NaN` /
+/// `Inf` parse to non-finite floats, which serde_json serializes as
+/// `null` — intentionally indistinguishable from "no data" on the
+/// wire (a 0/0 `block_ratio` has nothing meaningful to show).
+fn sample_value(v: &serde_json::Value) -> Option<f64> {
+    v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64())
+}
+
+/// 200 envelope around a parsed upstream result.
+pub fn render_success(
+    expr: &str,
+    promql: &'static str,
+    result: AnalyticsResult,
+) -> AnalyticsRendering {
+    ok_response(&AnalyticsResponse {
+        expr: expr.to_string(),
+        promql,
+        result,
+    })
+}
+
+/// 502 envelope — Prometheus unreachable / errored / unparseable.
+pub fn upstream_error(message: String) -> AnalyticsRendering {
+    error_response(502, "prometheus_unreachable", message)
 }
 
 fn ok_response<T: Serialize>(body: &T) -> AnalyticsRendering {
@@ -199,6 +297,193 @@ fn error_response(status: u16, code: &'static str, message: String) -> Analytics
     AnalyticsRendering {
         status,
         body: serde_json::to_string(&body).unwrap_or_else(|_| String::from("{}")),
+    }
+}
+
+#[cfg(test)]
+mod pe2_prometheus_proxy_tests {
+    // PE-2 (committee round-2 🔴3) — the Prometheus proxy call is
+    // real now: plan → substitute $step → fetch (proxy side) →
+    // parse the Prometheus wire shape → render. These tests pin the
+    // pure layers (plan/substitute/parse/render); the HTTP fetch
+    // itself is tested in aegis-proxy against a stub server.
+    use super::*;
+
+    #[test]
+    fn plan_query_rejects_unknown_expr_with_400() {
+        let err = plan_query("definitely-not-a-key", 0, 0).unwrap_err();
+        assert_eq!(err.status, 400);
+        let v: serde_json::Value = serde_json::from_str(&err.body).unwrap();
+        assert_eq!(v["error"]["code"].as_str(), Some("unknown_expr"));
+    }
+
+    #[test]
+    fn plan_query_detects_range_vs_instant() {
+        assert!(!plan_query("requests_rate", 0, 0).unwrap().is_range);
+        assert!(plan_query("requests_rate", 1_000, 2_000).unwrap().is_range);
+        // end < start is not a range — treated as instant.
+        assert!(!plan_query("requests_rate", 2_000, 1_000).unwrap().is_range);
+    }
+
+    #[test]
+    fn unconfigured_response_keeps_honest_503_codes() {
+        // F-CRITICAL-018 regression — never 200-with-zeros when no
+        // backend is wired.
+        let r = unconfigured_response(false);
+        assert_eq!(r.status, 503);
+        let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!(v["error"]["code"].as_str(), Some("analytics_not_implemented"));
+
+        let r = unconfigured_response(true);
+        assert_eq!(r.status, 503);
+        let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!(v["error"]["code"].as_str(), Some("no_history_backend"));
+    }
+
+    #[test]
+    fn substitute_step_replaces_placeholder_with_seconds() {
+        let q = substitute_step("sum(rate(waf_requests_total[$step]))", 60);
+        assert_eq!(q, "sum(rate(waf_requests_total[60s]))");
+        // No placeholder → unchanged.
+        assert_eq!(substitute_step("waf_bench_mode", 60), "waf_bench_mode");
+    }
+
+    #[test]
+    fn parse_instant_vector_takes_first_sample() {
+        let body = r#"{"status":"success","data":{"resultType":"vector",
+            "result":[{"metric":{},"value":[1751600000.0,"4.2"]}]}}"#;
+        match parse_prometheus_body(body, false).unwrap() {
+            AnalyticsResult::Scalar { value } => assert_eq!(value, Some(4.2)),
+            other => panic!("expected scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_instant_scalar_result_type() {
+        let body = r#"{"status":"success","data":{"resultType":"scalar",
+            "result":[1751600000.0,"7.5"]}}"#;
+        match parse_prometheus_body(body, false).unwrap() {
+            AnalyticsResult::Scalar { value } => assert_eq!(value, Some(7.5)),
+            other => panic!("expected scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_instant_empty_vector_is_null_value() {
+        // "No data yet" is a normal state, not an upstream error —
+        // surfaced as value: null, never a fake 0.0.
+        let body = r#"{"status":"success","data":{"resultType":"vector","result":[]}}"#;
+        match parse_prometheus_body(body, false).unwrap() {
+            AnalyticsResult::Scalar { value } => assert_eq!(value, None),
+            other => panic!("expected scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_range_matrix_maps_points() {
+        let body = r#"{"status":"success","data":{"resultType":"matrix",
+            "result":[{"metric":{},"values":[[1751600000.0,"1.5"],[1751600060.0,"2.5"]]}]}}"#;
+        match parse_prometheus_body(body, true).unwrap() {
+            AnalyticsResult::Matrix { series } => {
+                assert_eq!(series.len(), 1);
+                let points = &series[0].points;
+                assert_eq!(points.len(), 2);
+                assert_eq!(points[0].value, 1.5);
+                assert_eq!(points[1].value, 2.5);
+                assert!(points[1].ts > points[0].ts);
+            }
+            other => panic!("expected matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_range_multi_series_keeps_every_labeled_series() {
+        // errors_by_route / bench_detector_p99 are grouped queries —
+        // one series per route/detector must survive, labels intact.
+        let body = r#"{"status":"success","data":{"resultType":"matrix","result":[
+            {"metric":{"route":"api"},   "values":[[1751600000.0,"1.0"]]},
+            {"metric":{"route":"login"}, "values":[[1751600000.0,"7.0"]]}]}}"#;
+        match parse_prometheus_body(body, true).unwrap() {
+            AnalyticsResult::Matrix { series } => {
+                assert_eq!(series.len(), 2);
+                assert_eq!(series[0].metric["route"].as_str(), Some("api"));
+                assert_eq!(series[1].metric["route"].as_str(), Some("login"));
+                assert_eq!(series[1].points[0].value, 7.0);
+            }
+            other => panic!("expected matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_range_empty_matrix_is_empty_series() {
+        let body = r#"{"status":"success","data":{"resultType":"matrix","result":[]}}"#;
+        match parse_prometheus_body(body, true).unwrap() {
+            AnalyticsResult::Matrix { series } => assert!(series.is_empty()),
+            other => panic!("expected matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_instant_multi_sample_returns_labeled_vector() {
+        let body = r#"{"status":"success","data":{"resultType":"vector","result":[
+            {"metric":{"route":"api"},   "value":[1751600000.0,"1.0"]},
+            {"metric":{"route":"login"}, "value":[1751600000.0,"2.0"]}]}}"#;
+        match parse_prometheus_body(body, false).unwrap() {
+            AnalyticsResult::Vector { samples } => {
+                assert_eq!(samples.len(), 2);
+                assert_eq!(samples[0].metric["route"].as_str(), Some("api"));
+                assert_eq!(samples[1].value, Some(2.0));
+            }
+            other => panic!("expected vector, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nan_sample_serializes_as_null_value() {
+        // 0/0 block_ratio → Prometheus "NaN" → wire null (same as
+        // no-data; nothing meaningful to render either way).
+        let body = r#"{"status":"success","data":{"resultType":"vector",
+            "result":[{"metric":{},"value":[1751600000.0,"NaN"]}]}}"#;
+        let result = parse_prometheus_body(body, false).unwrap();
+        let r = render_success("block_ratio", "x", result);
+        let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        assert!(v["value"].is_null(), "NaN must render as null, got {}", v["value"]);
+    }
+
+    #[test]
+    fn parse_surfaces_prometheus_error_status() {
+        let body = r#"{"status":"error","errorType":"bad_data","error":"parse error"}"#;
+        let err = parse_prometheus_body(body, false).unwrap_err();
+        assert!(err.contains("parse error"), "error detail lost: {err}");
+    }
+
+    #[test]
+    fn parse_rejects_garbage_body() {
+        assert!(parse_prometheus_body("not json", false).is_err());
+        assert!(parse_prometheus_body("{}", false).is_err());
+    }
+
+    #[test]
+    fn render_success_flattens_result() {
+        let r = render_success(
+            "requests_rate",
+            "sum(rate(waf_requests_total[$step]))",
+            AnalyticsResult::Scalar { value: Some(4.2) },
+        );
+        assert_eq!(r.status, 200);
+        let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!(v["expr"].as_str(), Some("requests_rate"));
+        assert_eq!(v["result_type"].as_str(), Some("scalar"));
+        assert_eq!(v["value"].as_f64(), Some(4.2));
+    }
+
+    #[test]
+    fn upstream_error_returns_502_envelope() {
+        let r = upstream_error("connect refused".into());
+        assert_eq!(r.status, 502);
+        let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!(v["error"]["code"].as_str(), Some("prometheus_unreachable"));
+        assert!(v["error"]["message"].as_str().unwrap().contains("connect refused"));
     }
 }
 
@@ -233,81 +518,13 @@ mod tests {
     }
 
     #[test]
-    fn unknown_expr_returns_400() {
-        let r = render_query("definitely-not-a-key", 0, 0, 0, None);
-        assert_eq!(r.status, 400);
-        let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
-        assert_eq!(v["error"]["code"].as_str(), Some("unknown_expr"));
-    }
-
-    #[test]
-    fn instantaneous_query_without_prometheus_returns_503() {
-        // 2026-05-17 F-CRITICAL-018 (control audit) regression.
-        // Pre-fix this returned 200 + `value: 0.0` (mock scalar)
-        // when no prometheus_url was wired — that's the §9
-        // "mock data in evaluation" pattern. Now returns 503
-        // `analytics_not_implemented` honestly.
-        let r = render_query("requests_rate", 0, 0, 0, None);
-        assert_eq!(r.status, 503);
-        let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
-        assert_eq!(v["error"]["code"].as_str(), Some("analytics_not_implemented"));
-    }
-
-    #[test]
-    fn instantaneous_query_with_prometheus_returns_scalar_shape() {
-        // When prometheus_url IS configured, the (currently
-        // empty) scalar response shape is preserved so the
-        // dashboard's existing JSON parser still works once the
-        // upstream-proxy call lands in a follow-up.
-        let r = render_query("requests_rate", 0, 0, 0, Some("http://prom.example/"));
-        assert_eq!(r.status, 200);
-        let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
-        assert_eq!(v["expr"].as_str(), Some("requests_rate"));
-        assert_eq!(v["result_type"].as_str(), Some("scalar"));
-        assert!(v["value"].is_number());
-    }
-
-    #[test]
-    fn range_query_without_prometheus_returns_503() {
-        let r = render_query("requests_rate", 1_000, 2_000, 60, None);
-        assert_eq!(r.status, 503);
-        let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
-        assert_eq!(v["error"]["code"].as_str(), Some("no_history_backend"));
-    }
-
-    #[test]
-    fn range_query_with_prometheus_returns_empty_matrix() {
-        // Until the proxy-to-prometheus call lands we still serve a
-        // 200 with an empty matrix (rather than 503) when the config
-        // promises a backend — keeps the front-end happy and lets us
-        // wire the Prometheus call later without breaking clients.
-        let r = render_query(
-            "requests_rate",
-            1_000,
-            2_000,
-            60,
-            Some("http://prom.local"),
-        );
-        assert_eq!(r.status, 200);
-        let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
-        assert_eq!(v["result_type"].as_str(), Some("matrix"));
-        assert!(v["points"].as_array().unwrap().is_empty());
-    }
-
-    #[test]
-    fn every_documented_key_returns_parseable_response_with_prometheus() {
-        // Per the milestone: "each allow-listed key returns a
-        // parseable response shape." Post-F-CRITICAL-018 fix the
-        // shape is only ever returned when prometheus_url is
-        // configured (the 503 path is the unwired-feature
-        // surface).
+    fn every_documented_key_plans_successfully() {
+        // Each allow-listed key must resolve to a plan (PE-2 —
+        // the render path is exercised in pe2_prometheus_proxy_tests
+        // and the proxy-side stub-server tests).
         for (key, _) in ALLOW_LIST {
-            let r = render_query(key, 0, 0, 0, Some("http://prom.example/"));
-            assert_eq!(r.status, 200, "key {key} returned non-200");
-            let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
-            assert_eq!(v["expr"].as_str(), Some(*key));
-            assert!(v["promql"].as_str().is_some());
-            assert!(v["result_type"].as_str().is_some());
+            let plan = plan_query(key, 0, 0).unwrap_or_else(|_| panic!("key {key} rejected"));
+            assert!(!plan.promql.is_empty());
         }
     }
 
@@ -323,18 +540,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn response_serializes_with_flattened_result_when_prometheus_wired() {
-        // Scalar → top-level `value`; matrix → top-level `points`.
-        // Front-end relies on the flattening. Post-F-CRITICAL-018
-        // fix this only applies when prometheus_url is set (the
-        // 200 path).
-        let r = render_query("bench_mode", 0, 0, 0, Some("http://prom.example/"));
-        let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
-        let obj = v.as_object().unwrap();
-        assert!(obj.contains_key("expr"));
-        assert!(obj.contains_key("promql"));
-        assert!(obj.contains_key("result_type"));
-        assert!(obj.contains_key("value"));
-    }
 }

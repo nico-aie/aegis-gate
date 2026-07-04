@@ -34,7 +34,7 @@ One PR. Endpoint + route registration + dashboard tile/panel per item, together 
 rebuild binary to see JSX changes; run the acorn hooks guard). Note removals in the response doc
 for the committee ("removed unfinished surface" is an acceptable — and honest — resolution).
 
-### PE-2 — completions (#3, #5, #7) · **S–M**
+### PE-2 — completions (#3, #5, #7) · **S–M** · ✅ shipped 2026-07-04 (`feat/pe2-placeholder-completions`)
 - #3 analytics/query: implement the Prometheus HTTP call (respect `admin.prometheus_url`,
   timeout, error → honest 502/503 envelope). Range + instant queries.
 - #5 cold-tier: per-sink delivery status from sink task state (delivered/error counters + last
