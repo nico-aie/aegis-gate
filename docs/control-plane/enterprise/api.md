@@ -102,7 +102,6 @@ GET /api/audit/{request_id}
 GET /api/audit/since?cursor=<seq>&limit=200
 GET /api/filters
 GET /api/audit/{id}/sinks
-GET /api/audit/witness
 ```
 
 ### Rule Manager extras
@@ -185,16 +184,20 @@ GET /api/upstreams
 GET /api/upstreams/summary
 GET /api/cluster
 GET /api/certs
-POST /api/certs/{host}/renew
-GET /api/gitops/status
 GET /api/alerts
 GET /api/tracking/snapshot
 ```
 
 `/api/tracking/snapshot` is an aggregate read used by the Tracking
 page to keep the per-tab fan-out cheap. It returns the union of
-slo, upstreams summary, cluster peers, certs summary, gitops
-status, and alerts in one response (~5KB JSON typical).
+slo, upstreams summary, cluster peers, certs summary, and alerts
+in one response (~5KB JSON typical).
+
+> Removed 2026-07-04 (PE-1, committee round-2 🔴3): `GET
+> /api/gitops/status`, `GET /api/audit/witness`,
+> `GET /api/threat-intel/feeds`, and the never-routed
+> `POST /api/certs/{host}/renew` — all were placeholder or dead
+> surface; they now return 404.
 
 ### Scaling page (SC-T2)
 

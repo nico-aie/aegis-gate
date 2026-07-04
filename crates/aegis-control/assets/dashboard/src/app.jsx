@@ -460,36 +460,16 @@ function Sidebar({ active, onNav }) {
 //
 // Real:
 //   - cluster N/peers  ← /api/cluster
-//   - GitOps state     ← /api/gitops/status
 //   - Build SHA + ver  ← /api/about
 //   - Tick (uptime in current page session)
-// Demo (no backend yet):
-//   - SSE connected indicator (status reflects whether the page
-//     opens an SSE; not currently observed at this level)
-//   - Audit chain "verified" pill (witness signing is shipped but
-//     no realtime verify is exposed via API)
+// PE-1 (2026-07-04): GitOps pill removed with the /api/gitops/status
+// placeholder endpoint (gitops module deleted 2026-05-17).
 function StatusBar({ tick }) {
   const cluster = window.useClusterApi();
-  const gitops = window.useGitopsApi();
   const status = window.useStatusApi();
   const peers = cluster.data?.peers || [];
   const healthy = peers.filter(p => p.healthy !== false).length;
   const total = peers.length;
-  // 2026-05-03 — soften the GitOps tone when the operator
-  // hasn't configured the integration at all.  Previously
-  // `gitopsState || 'unknown'` rendered as red "UNKNOWN" on
-  // every fresh dev WAF, indistinguishable from a real failure.
-  // Now: configured + healthy = ok, configured + drift = warn,
-  // configured + unknown = info, not configured at all = muted
-  // "off" pill (neutral grey, not red).
-  const gitopsConfigured = Boolean(gitops.data?.repo) || Boolean(gitops.data?.repo_url);
-  const rawState = gitops.data?.state || gitops.data?.status;
-  const gitopsState = rawState
-    || (gitopsConfigured ? 'unknown' : 'off');
-  const gitopsTone = gitopsState === 'in_sync' || gitopsState === 'in-sync' ? 'ok'
-                   : gitopsState === 'drift' ? 'warn'
-                   : gitopsState === 'off' ? 'neutral'
-                   : rawState ? 'info' : 'neutral';
   const version = status.data?.version || '—';
   const buildSha = status.data?.build_sha;
   const buildLabel = buildSha ? `${version}-${String(buildSha).slice(0, 4)}` : version;
@@ -499,8 +479,6 @@ function StatusBar({ tick }) {
       <span>Cluster <span className={`num ${total === 0 ? 'dim' : ''}`}>
         {total === 0 ? 'single-node' : `${healthy}/${total}`}
       </span></span>
-      <span className="dim">|</span>
-      <span>GitOps <span className={`pill ${gitopsTone}`}>{gitopsState}</span></span>
       <span style={{ marginLeft: 'auto' }}>Build <span className="num">{buildLabel}</span> · session {tick}s</span>
     </div>
   );

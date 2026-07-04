@@ -11,10 +11,10 @@
 //!   `/api/risk*`, `/api/mode`, `/api/loadmode`, `/api/runtime`,
 //!   `/api/detectors`, `/api/blacklist`, `/api/whitelist`,
 //!   `/api/alerts`, `/api/slo`, `/api/certs`, `/api/cluster`,
-//!   `/api/gitops/*`, `/api/zero-trust/downstream*` (MTLS-T6), `/api/filters`,
+//!   `/api/zero-trust/downstream*` (MTLS-T6), `/api/filters`,
 //!   `/api/integrations`, `/api/admin/*`, `/api/cold-tier`,
-//!   `/api/logging`, `/api/analytics/*`, `/api/threat-intel/*`,
-//!   `/api/bots/*`, `/api/audit/witness`, `/api/tracking/*`,
+//!   `/api/logging`, `/api/analytics/*`, `/api/threat-intel/hits`,
+//!   `/api/bots/*`, `/api/tracking/*`,
 //!   `/api/upstreams/config` (CC-T1.1).
 //! - [`parse_query_u32`], [`parse_query_str`],
 //!   [`parse_query_u64`] — small `?key=value` helpers used by
@@ -616,19 +616,11 @@ pub(crate) fn admin_router<B>(
             });
             json_body_response(200, body.to_string(), "private, max-age=2")
         }
-        // Phase-3: configured threat-intel feeds + their status.
-        // Read from `cfg.threat_intel.feeds` if present; else
-        // returns an empty list with a clear "no feeds configured"
-        // body shape so the dashboard renders an actionable
-        // empty state.
-        "/api/threat-intel/feeds" => {
-            let body = serde_json::json!({
-                "feeds": [],
-                "configured_in_yaml": false,
-                "note": "Feed-management UI ships in Phase 4. Today: configure under `threat_intel:` in your YAML and restart.",
-            });
-            json_body_response(200, body.to_string(), "private, max-age=30")
-        }
+        // PE-1 (2026-07-04): `/api/threat-intel/feeds` removed — it
+        // returned a hardcoded empty list and claimed a
+        // `threat_intel:` config section that never existed.
+        // `/api/threat-intel/hits` below is real and stays.
+
         // Phase-3: GeoIP database status. The geoip feature is
         // gated at compile time; this endpoint lights up the
         // "DB loaded?" pill on the Threat Intel + Overview pages.
@@ -680,9 +672,10 @@ pub(crate) fn admin_router<B>(
             };
             json_body_response(200, body, "private, max-age=10")
         }
-        "/api/audit/witness" => {
-            json_body_response(200, services.witness.render(), "private, max-age=2")
-        }
+        // PE-1 (2026-07-04): `/api/audit/witness` removed — schema-only
+        // endpoint; the witness signing runtime was deleted 2026-05-17
+        // (F-CRITICAL-006) and nothing ever populated the state.
+
         // HACK-T4 — Tier-B bonus: config-change timeline.
         // Filters the audit ring to `class = Admin` events
         // (every audit-mutated PUT/POST/DELETE) and returns
@@ -1219,7 +1212,9 @@ pub(crate) fn admin_router<B>(
             json_body_response(200, body, "private, max-age=60")
         }
         "/api/certs" => json_body_response(200, services.tracking.render_certs(), "private, max-age=10"),
-        "/api/gitops/status" => json_body_response(200, services.tracking.render_gitops(), "private, max-age=5"),
+        // PE-1 (2026-07-04): `/api/gitops/status` removed — the gitops
+        // module was deleted 2026-05-17 (F-CRITICAL-005); the endpoint
+        // only ever served a static placeholder shape.
         "/api/alerts" => json_body_response(200, services.tracking.render_alerts(), "private, max-age=2"),
         // CC-T2.1 — alert-channel management surface. Returns
         // every configured `slo::AlertReceiver` with secrets

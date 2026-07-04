@@ -64,6 +64,8 @@ bolt a verifier onto TLS.
 1. **FEAT-2fa-enforcement** (small; extends already-planned AA-P1 in `plans/issues/`) — fastest 🔴 win.
 2. **FEAT-admin-mtls-default** P1 (wire the Admin scope — rejects certless connections when configured).
 3. **FEAT-placeholder-endpoints-cleanup** (small PRs, low risk, visible to committee).
+   *PE-1 removals shipped 2026-07-04: `/api/threat-intel/feeds`, `/api/gitops/status`,
+   `/api/audit/witness`, `render_cert_renew` — endpoints, dashboard tiles, and docs removed together.*
 4. **FEAT-audit-coverage-gaps** (login/reset_state events are cheap; do with #1).
 5. mTLS P2/P3 (bootstrap tooling, default flip) + **IMPROVE-detection-fp-tuning**.
 6. **PLAN-ops-validation** before round 3.

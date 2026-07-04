@@ -11,7 +11,7 @@
 //! the version identifier for this surface. Version numbers
 //! reset on process restart (the ring is in-process); the
 //! audit chain's hash linking is the cross-restart identity
-//! and ships independently via `/api/audit/witness`.
+//! (verified offline via `waf audit verify`).
 //!
 //! ## What counts as a "config change"
 //!
@@ -19,7 +19,7 @@
 //! covers every audit-mutated PUT/POST/DELETE handler
 //! (mode toggle, detector mask, rule CRUD, blacklist /
 //! whitelist edits, alert receivers, upstream pool config,
-//! risk thresholds, mTLS hot-reloads, GitOps applies, etc.).
+//! risk thresholds, mTLS hot-reloads, etc.).
 //! The dashboard renders one row per event with the action,
 //! reason, actor (extracted from the `fields.user` field when
 //! present), and an expandable JSON view of the full payload.

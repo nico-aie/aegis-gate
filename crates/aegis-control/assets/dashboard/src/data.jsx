@@ -1183,7 +1183,7 @@ async function detectorsPut(body, { ifMatch } = {}) {
   });
 }
 
-// Hook: cluster, slo, certs, alerts, gitops, upstreams (Tracking page)
+// Hook: cluster, slo, certs, alerts, upstreams (Tracking page)
 // HACK-T1 — fallbacks switched from static fixtures to `null`
 // per Hackathon v2.3 §2.2 ("Dashboard uses... local state, or
 // simulated responses that make the UI state inconsistent with
@@ -1228,7 +1228,8 @@ function useDetectorLatencyApi() { return useApi('/api/analytics/latency/detecto
 function useAnalyticsRoutesApi() { return useApi('/api/analytics/routes',{ intervalMs: 10000, fallback: null }); }
 // IF-P1b — scoped so the node selector filters the fleet incident roll-up.
 function useIncidentsApi(){ return useApiScoped('/api/incidents',   { intervalMs: 5000, fallback: null }); }
-function useThreatIntelFeedsApi() { return useApi('/api/threat-intel/feeds', { intervalMs: 30000, fallback: null }); }
+// PE-1 (2026-07-04): useThreatIntelFeedsApi removed — the
+// /api/threat-intel/feeds placeholder endpoint is gone.
 function useGeoipStatusApi() { return useApi('/api/geoip/status',   { intervalMs: 60000, fallback: null }); }
 
 // Phase-3 incident mutations (CSRF-double-submit, POST). All
@@ -1262,7 +1263,8 @@ async function incidentResolve(id, note) {
   });
 }
 function useAlertsApi()   { return useApi('/api/alerts',          { intervalMs: 5000, fallback: null }); }
-function useGitopsApi()   { return useApi('/api/gitops/status',   { intervalMs: 30000, fallback: null }); }
+// PE-1 (2026-07-04): useGitopsApi removed — /api/gitops/status is gone
+// (the gitops module itself was deleted 2026-05-17, F-CRITICAL-005).
 // HACK-T1 — empty list rather than seeded fixture.
 function useUpstreamsApi(){ return useApi('/api/upstreams',       { intervalMs: 5000, fallback: { pools: [] } }); }
 // SC-1 — per-upstream smart-cache stats (L1 in-process today; backend field
@@ -1968,9 +1970,9 @@ Object.assign(window, {
   useClusterApi, useFleetScopeApi, useFleetNodesApi, useFleetNodeScope, useSelfNode, useApiScoped, useConfigApi, useSloApi, useCertsApi, useLatencyApi, useRouteLatencyApi, useDetectorLatencyApi, useAnalyticsRoutesApi,
   // SLO-P6b — error-budget timeline + objective editor
   useSloTimeseriesApi, useSloConfigApi, sloConfigPut,
-  useIncidentsApi, useThreatIntelFeedsApi, useGeoipStatusApi,
+  useIncidentsApi, useGeoipStatusApi,
   incidentAck, incidentSnooze, incidentResolve,
-  useAlertsApi, useGitopsApi, useUpstreamsApi, useRuntimeApi,
+  useAlertsApi, useUpstreamsApi, useRuntimeApi,
   // SC-T2 — Scaling page hooks + drain mutation
   useStateApi, useNodeDrainApi, adminDrainPost, adminUndrainPost,
   // CC-T1.1 — upstream-pool config view + CC-T1.1.b mutation helpers

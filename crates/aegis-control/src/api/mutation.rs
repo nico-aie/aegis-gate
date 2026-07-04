@@ -137,14 +137,13 @@ impl AuditedMutate {
         Self { chain, bus }
     }
 
-    /// Expose the underlying chain so the witness signer + SIEM
-    /// sinks can read entries without going through the wrapper.
+    /// Expose the underlying chain so SIEM sinks can read entries
+    /// without going through the wrapper.
     pub fn chain(&self) -> Arc<Mutex<ChainWriter>> {
         Arc::clone(&self.chain)
     }
 
-    /// Snapshot the current chain head. Convenience for tests +
-    /// `/api/audit/witness` callers.
+    /// Snapshot the current chain head. Convenience for tests.
     pub fn head_hash(&self) -> String {
         let writer = self.chain.lock().expect("audit chain poisoned");
         writer.head_hash().to_string()
