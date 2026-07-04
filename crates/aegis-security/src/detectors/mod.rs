@@ -4,6 +4,7 @@ pub mod brute_force;
 pub mod canary;
 pub mod command_injection;
 pub mod cookie_injection;
+pub mod enumeration;
 pub mod header_injection;
 pub mod jwt_inspection;
 pub mod mask;
@@ -773,6 +774,11 @@ pub fn default_detectors_with_canary(
         v.push(Box::new(
             velocity_sequence::VelocitySequenceDetector::new(),
         ));
+    }
+    if cfg.enumeration.enabled {
+        // AC-P2-d (2026-07-04) — endpoint-enumeration detector. Stateful
+        // per-IP (bounded); default OFF, only in the chain when opted in.
+        v.push(Box::new(enumeration::EnumerationDetector::new()));
     }
     v
 }

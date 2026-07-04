@@ -5011,6 +5011,13 @@ pub struct DetectorsConfig {
     /// `behavior_high_errors`.
     #[serde(default = "default_detector_toggle_off")]
     pub behavior_analyzer: DetectorToggle,
+    /// AC-P2-d (2026-07-04) — endpoint-enumeration / directory-scan
+    /// detector: one source hitting many DISTINCT paths in a window
+    /// (bounded per-IP + fleet). **Default OFF** — a legit asset-heavy
+    /// SPA can hit a naive distinct-path threshold, so it needs tuning
+    /// against the benchmark FP corpus before it ships on.
+    #[serde(default = "default_detector_toggle_off")]
+    pub enumeration: DetectorToggle,
     /// AC-P2-e (2026-07-03) — Referer origin validation, a sub-feature of
     /// the `behavior_signals` detector. **Default OFF**; only active when
     /// `behavior_signals` is also enabled. Restart-to-change (boot-time
@@ -5174,6 +5181,7 @@ impl Default for DetectorsConfig {
             cookie_injection: default_detector_toggle_off(),
             behavior_signals: default_detector_toggle_off(),
             behavior_analyzer: default_detector_toggle_off(),
+            enumeration: default_detector_toggle_off(),
             referer_origin: RefererOriginConfig::default(),
             velocity: default_detector_toggle(),
             canary: default_detector_toggle_off(),
@@ -6492,6 +6500,15 @@ redis:
         // Omitting the block keeps it off.
         let bare: DetectorsConfig = serde_yaml::from_str("sqli: { enabled: true }").unwrap();
         assert!(!bare.behavior_analyzer.enabled);
+    }
+
+    // AC-P2-d (2026-07-04) — enumeration detector defaults OFF + parses.
+    #[test]
+    fn enumeration_defaults_off() {
+        assert!(!DetectorsConfig::default().enumeration.enabled);
+        let cfg: DetectorsConfig =
+            serde_yaml::from_str("enumeration: { enabled: true }").unwrap();
+        assert!(cfg.enumeration.enabled);
     }
 
     // AC-P2-e (2026-07-03) — referer_origin default-OFF + YAML wire shape.
