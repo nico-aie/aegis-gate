@@ -514,7 +514,12 @@ state:
             .and_then(|s| s.split(';').next())
             .unwrap();
 
-        let resp = process_admin_logout(&services, Some(session_value)).await;
+        let resp = process_admin_logout(
+            &services,
+            "127.0.0.1:9999".parse().unwrap(),
+            Some(session_value),
+        )
+        .await;
         assert_eq!(resp.status().as_u16(), 204);
         let clears: Vec<&str> = resp
             .headers()
@@ -534,7 +539,12 @@ state:
     #[tokio::test]
     async fn logout_handler_is_idempotent_without_cookie() {
         let services = services_with_admin("test-pw-1234");
-        let resp = process_admin_logout(&services, None).await;
+        let resp = process_admin_logout(
+            &services,
+            "127.0.0.1:9999".parse().unwrap(),
+            None,
+        )
+        .await;
         // Same 204 + cookie-clearing whether or not a session
         // existed — caller never has to know.
         assert_eq!(resp.status().as_u16(), 204);

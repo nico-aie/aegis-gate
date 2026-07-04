@@ -497,6 +497,40 @@ waf audit verify --from /var/log/aegis/audit.ndjson
 | ECS | Elastic Common Schema | HTTP |
 | Kafka | JSON | Kafka producer |
 
+Only the JSONL persist task and the Syslog forwarder run as live
+sink tasks today; the other formats are available to them (and to
+export tooling) but have no dedicated forwarder — `/api/cold-tier`
+reports those sinks as `unwired`.
+
+### Auth & Control-Plane Events (AU-1, 2026-07-04)
+
+Admin authentication leaves an `Access`-class trail: `login_success`,
+`login_failure` (reason bucketed — `invalid_credentials` /
+`locked_out` / `rate_limited` / `store_unavailable`; submitted
+credentials are never recorded), and `logout` (real revocations
+only). Repeated failures from one IP aggregate: first event
+immediately, then a roll-up carrying `fields.count` when the IP is
+next seen after the 30 s window — a credential-stuffing flood cannot
+melt the audit bus. The control-plane `reset_state` wipe emits an
+`Admin`-class `reset_state` event **before** the wipe runs, so the
+wipe cannot erase its own record.
+
+### Durability Model (honest version)
+
+- Events flow over a bounded in-process broadcast bus
+  (`audit.bus_capacity`, default 100 000). A consumer that falls
+  behind loses events *from its own view only*; those drops are
+  counted on `waf_audit_events_dropped_total{consumer}` and logged.
+  Delivery is **best-effort by design** — the data plane never
+  blocks on audit I/O.
+- The JSONL chain sink `flush`es + `fsync`s (`sync_data`) **per
+  batch** (F-CRITICAL-013), so the crash-loss window is bounded by
+  one batch: up to `max_batch` events (default 100) or
+  `flush_interval` (default 1 s), whichever fills first — plus
+  whatever was still in the broadcast buffer.
+- Per-sink delivery state (delivered / errors / last success) is
+  live at `GET /api/cold-tier`.
+
 ### Compliance Profiles (deferred)
 
 `cfg.compliance.modes` accepts five tag values:

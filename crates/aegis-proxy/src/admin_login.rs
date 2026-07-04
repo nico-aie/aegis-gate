@@ -114,7 +114,36 @@ pub(crate) async fn process_admin_login(
         services.session_idle_seconds,
     ).await;
 
+    // AU-1 — every real auth attempt leaves an Access-class trail.
+    // BadRequest is excluded: a garbage body carries no credentials,
+    // so there's nothing to audit (and nothing worth flooding over).
+    let ip = peer.ip().to_string();
     use aegis_control::api::login::LoginOutcome;
+    match &outcome {
+        LoginOutcome::Ok { .. } => {
+            services
+                .login_auditor
+                .record_success(&ip, &services.admin_identity.user);
+        }
+        LoginOutcome::Unauthorized { .. } => {
+            services
+                .login_auditor
+                .record_failure(&ip, None, "invalid_credentials");
+        }
+        LoginOutcome::RateLimited { locked_out, .. } => {
+            let reason = if *locked_out { "locked_out" } else { "rate_limited" };
+            services.login_auditor.record_failure(&ip, None, reason);
+        }
+        LoginOutcome::StoreUnavailable { .. } => {
+            // Credentials were RIGHT — the session store failed.
+            // High-value ops signal, distinct bucket.
+            services
+                .login_auditor
+                .record_failure(&ip, None, "store_unavailable");
+        }
+        LoginOutcome::BadRequest { .. } => {}
+    }
+
     match outcome {
         LoginOutcome::Ok {
             session_cookie,
@@ -134,6 +163,7 @@ pub(crate) async fn process_admin_login(
         LoginOutcome::RateLimited {
             retry_after_seconds,
             body,
+            ..
         } => Response::builder()
             .status(429)
             .header("content-type", "application/json; charset=utf-8")
@@ -155,6 +185,7 @@ pub(crate) async fn process_admin_login(
 
 pub(crate) async fn handle_admin_logout(
     req: hyper::Request<hyper::body::Incoming>,
+    peer: std::net::SocketAddr,
     services: &aegis_control::dashboard_services::DashboardServices,
 ) -> Response<Full<Bytes>> {
     let cookie_value = req
@@ -164,13 +195,14 @@ pub(crate) async fn handle_admin_logout(
         .filter_map(|h| h.to_str().ok())
         .find_map(|raw| extract_named_cookie(raw, "aegis_session"))
         .map(|s| s.to_string());
-    process_admin_logout(services, cookie_value.as_deref()).await
+    process_admin_logout(services, peer, cookie_value.as_deref()).await
 }
 
 /// Pure body of logout — same testability story as
 /// [`process_admin_login`].
 pub(crate) async fn process_admin_logout(
     services: &aegis_control::dashboard_services::DashboardServices,
+    peer: std::net::SocketAddr,
     session_cookie: Option<&str>,
 ) -> Response<Full<Bytes>> {
     let outcome = aegis_control::api::login::logout(
@@ -179,6 +211,13 @@ pub(crate) async fn process_admin_logout(
         &services.sessions,
     ).await;
     use aegis_control::api::login::LogoutOutcome;
+    // AU-1 — only a real revocation is audited; the idempotent
+    // no-cookie path changed nothing.
+    if matches!(outcome, LogoutOutcome::Ok { .. }) {
+        services
+            .login_auditor
+            .record_logout(&peer.ip().to_string());
+    }
     let (clear_session, clear_csrf) = match outcome {
         LogoutOutcome::Ok {
             clear_session_cookie,
@@ -196,4 +235,104 @@ pub(crate) async fn process_admin_logout(
         .header("set-cookie", clear_csrf)
         .body(Full::new(Bytes::new()))
         .unwrap()
+}
+
+#[cfg(test)]
+mod au1_wiring_tests {
+    // AU-1 (committee round-2 🟡3) — the login path must leave an
+    // audit trail. These drive the real process_admin_login /
+    // process_admin_logout and assert events land on the bus.
+    use std::sync::Arc;
+
+    use aegis_control::api::upstreams::PoolHealthSnapshot;
+    use aegis_control::dashboard_services::DashboardServices;
+    use aegis_core::audit::{AuditClass, AuditEvent};
+    use aegis_core::AuditBus;
+
+    fn spawn_with_bus() -> (
+        DashboardServices,
+        tokio::task::JoinHandle<()>,
+        tokio::sync::broadcast::Receiver<AuditEvent>,
+    ) {
+        let bus = AuditBus::new(64);
+        let rx = bus.subscribe();
+        let (services, drain) = DashboardServices::spawn(
+            bus,
+            Arc::new(|| PoolHealthSnapshot {
+                pools: Vec::new(),
+                ..Default::default()
+            }),
+            None,
+        );
+        (services, drain, rx)
+    }
+
+    fn drain_access(
+        rx: &mut tokio::sync::broadcast::Receiver<AuditEvent>,
+    ) -> Vec<AuditEvent> {
+        let mut out = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(ev.class, AuditClass::Access) {
+                out.push(ev);
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn failed_login_emits_access_event_without_secret_material() {
+        let (services, _drain, mut rx) = spawn_with_bus();
+        let body = br#"{"user":"admin","password":"secret-hunter2-pw"}"#;
+        let resp = super::process_admin_login(
+            &services,
+            "10.0.0.9:5555".parse().unwrap(),
+            "test-ua",
+            body,
+        )
+        .await;
+        assert_eq!(resp.status(), 401);
+        let evs = drain_access(&mut rx);
+        assert_eq!(evs.len(), 1, "failed login must leave exactly one Access event");
+        assert_eq!(evs[0].action.as_str(), "login_failure");
+        assert_eq!(evs[0].reason, "invalid_credentials");
+        assert_eq!(evs[0].client_ip, "10.0.0.9");
+        let wire = serde_json::to_string(&evs[0]).unwrap();
+        assert!(
+            !wire.contains("secret-hunter2-pw"),
+            "audit event must never carry the submitted password",
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_body_is_not_an_auth_attempt_and_emits_nothing() {
+        let (services, _drain, mut rx) = spawn_with_bus();
+        let resp = super::process_admin_login(
+            &services,
+            "10.0.0.9:5555".parse().unwrap(),
+            "test-ua",
+            b"not json",
+        )
+        .await;
+        assert_eq!(resp.status(), 400);
+        assert!(
+            drain_access(&mut rx).is_empty(),
+            "garbage bodies carry no credentials — no auth event",
+        );
+    }
+
+    #[tokio::test]
+    async fn cookieless_logout_emits_no_event() {
+        let (services, _drain, mut rx) = spawn_with_bus();
+        let resp = super::process_admin_logout(
+            &services,
+            "10.0.0.9:5555".parse().unwrap(),
+            None,
+        )
+        .await;
+        assert_eq!(resp.status(), 204);
+        assert!(
+            drain_access(&mut rx).is_empty(),
+            "idempotent no-session logout revoked nothing — no event",
+        );
+    }
 }

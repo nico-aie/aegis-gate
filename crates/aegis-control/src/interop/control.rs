@@ -271,6 +271,15 @@ pub struct ControlContext {
     /// re-poll immediately. Best-effort + non-load-bearing — a missed
     /// bump just falls back to the next poll interval.
     pub cluster_nudge: std::sync::OnceLock<Arc<dyn aegis_core::config_backend::ConfigWatch>>,
+    /// AU-1 (committee round-2 🟡3) — audit bus for the
+    /// `reset_state` trail. Installed via [`Self::set_audit_bus`]
+    /// at boot (same late-bind pattern as `cluster_state`). When
+    /// set, [`Self::reset_state_async`] emits an Admin-class
+    /// `reset_state` event **before** the wipe runs, so the wipe
+    /// can't erase evidence of itself. Both dispatch paths (admin
+    /// listener + data-plane loopback short-circuit) funnel through
+    /// here, so this single emit covers them.
+    pub audit_bus: std::sync::OnceLock<aegis_core::AuditBus>,
 }
 
 /// Type alias for a reset callback. Wrapped in `Arc<dyn Fn>` so
@@ -352,6 +361,14 @@ impl ControlContext {
     /// cleaner failures are swallowed-with-log, same as the sync
     /// chain: a backend hiccup must not turn a reset into a 500.
     pub async fn reset_state_async(&self) -> ResetResponse {
+        // AU-1 — trail FIRST, wipe second: the event is on the bus
+        // (and hash-chains through the jsonl sink) before any state
+        // clears, so the wipe cannot erase its own record. Source is
+        // the loopback control plane (the surface is loopback-only
+        // by contract).
+        if let Some(bus) = self.audit_bus.get() {
+            bus.emit(crate::api::login_audit::reset_state_event("127.0.0.1"));
+        }
         // Sync chain first (in-process trackers).
         let _ = self.reset_state();
         // Then async cleaners (backend wipe).
@@ -548,6 +565,13 @@ impl ControlContext {
         *self.flush_callback.lock().expect("flush_callback poisoned") = Some(cb);
     }
 
+    /// AU-1 — install the audit bus for the `reset_state` trail.
+    /// Late-bound at boot like [`Self::set_cluster_state`]; first
+    /// install wins.
+    pub fn set_audit_bus(&self, bus: aegis_core::AuditBus) {
+        let _ = self.audit_bus.set(bus);
+    }
+
     fn validate_and_apply(
         &self,
         req: &SetProfileRequest,
@@ -698,6 +722,7 @@ mod tests {
             secret: crate::interop::DEFAULT_CONTROL_SECRET.to_string(),
             cluster_state: std::sync::OnceLock::new(),
             cluster_nudge: std::sync::OnceLock::new(),
+            audit_bus: std::sync::OnceLock::new(),
         }
     }
 
@@ -780,6 +805,7 @@ mod tests {
             secret: crate::interop::DEFAULT_CONTROL_SECRET.to_string(),
             cluster_state: std::sync::OnceLock::new(),
             cluster_nudge: std::sync::OnceLock::new(),
+            audit_bus: std::sync::OnceLock::new(),
         }
     }
 
@@ -915,6 +941,46 @@ mod tests {
         assert!(r.ok);
         assert!(r.audit_log_preserved);
         assert_eq!(*log.lock().unwrap(), vec!["sync", "async"]);
+    }
+
+    #[tokio::test]
+    async fn reset_state_emits_admin_audit_event_before_the_wipe() {
+        // AU-1 (committee round-2 🟡3) — the destructive state wipe
+        // must leave a trail, and the trail must be on the bus
+        // BEFORE the wipe runs so the wipe can't erase its own
+        // record. The callback proves order by observing the event
+        // already present in its subscription when the wipe fires.
+        let c = ctx();
+        let bus = aegis_core::AuditBus::new(8);
+        let mut rx = bus.subscribe();
+        c.set_audit_bus(bus.clone());
+
+        let order_rx = std::sync::Mutex::new(bus.subscribe());
+        let event_seen_before_wipe = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = event_seen_before_wipe.clone();
+        c.register_reset_callback(Arc::new(move || {
+            let already_there = order_rx.lock().unwrap().try_recv().is_ok();
+            seen.store(already_there, Ordering::Relaxed);
+        }));
+
+        let r = c.reset_state_async().await;
+        assert!(r.ok);
+        let ev = rx.try_recv().expect("reset_state must emit an audit event");
+        assert!(matches!(ev.class, aegis_core::audit::AuditClass::Admin));
+        assert_eq!(ev.action.as_str(), "reset_state");
+        assert!(
+            event_seen_before_wipe.load(Ordering::Relaxed),
+            "the audit event must be emitted BEFORE the wipe callbacks run",
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_state_without_bus_still_succeeds() {
+        // Tests / minimal builds don't install a bus — reset must
+        // not panic or change behaviour.
+        let c = ctx();
+        let r = c.reset_state_async().await;
+        assert!(r.ok);
     }
 
     #[test]
