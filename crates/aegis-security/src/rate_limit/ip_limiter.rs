@@ -43,6 +43,21 @@ use serde::Serialize;
 // traffic arriving from a small set of source IPs. Operators who
 // want a strict per-IP cap set it explicitly via the `global-ip`
 // bucket / PUT /api/rate-limit.
+//
+// LT-P3 (2026-07-03) — DIVISION OF LABOR (why this default is safe to
+// leave loose). This limiter is intentionally NOT the per-IP volumetric
+// defense. Under a single-IP L7 flood the effective gate is the DDoS
+// detector (`crate::ddos::DdosDetector`), default **1000 req / 10 s per
+// (tier, ip)** = ~100 rps/IP, enabled by default and evaluated EARLY in
+// the data plane (blacklist → ddos → this ip_limiter → strike-block →
+// detectors). At 1000/10s the ddos gate fires ~167× sooner than this
+// 1_000_000/60s backstop — see the `ddos_gate_fires_far_sooner_than_
+// ip_limiter_backstop` characterization test. So: ddos.rs owns single-
+// source volumetric throttling; this limiter is a coarse last-resort
+// ceiling and a hook for operator-set strict per-IP caps. L4/L3 packet
+// floods are upstream (kernel / LB / anycast) — AC-P3-d. Lowering this
+// default would risk throttling the benchmark's own load generator
+// (few source IPs) without adding volumetric coverage ddos.rs lacks.
 const DEFAULT_LIMIT: u32 = 1_000_000;
 const DEFAULT_WINDOW: Duration = Duration::from_secs(60);
 const IDLE_SWEEP_INTERVAL: Duration = Duration::from_secs(60);

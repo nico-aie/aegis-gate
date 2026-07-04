@@ -60,6 +60,40 @@ per-request budgets** with token-bucket leaky-bucket semantics,
 DDoS handles **sustained burst → temporary block** with sliding-
 window auto-block.
 
+## L3/L4 volumetric floods — out of scope (handled upstream)
+
+**AC-P3-d (2026-07-04) — the stated boundary.** Everything in this
+document is **Layer 7**: it inspects HTTP requests that have already
+completed a TCP handshake and been parsed by hyper. Layer 3/4 volumetric
+floods — SYN floods, UDP/ICMP reflection, raw packet floods that never
+form a valid HTTP request — are **explicitly not** the WAF's job and are
+handled *upstream* of it:
+
+| Threat | Handled by | Not by |
+|---|---|---|
+| SYN flood, raw packet flood, UDP/ICMP reflection (L3/L4) | Kernel (`syncookies`, conntrack), the load balancer, and/or anycast + upstream scrubbing (Cloudflare/GCP/AWS Shield) | — |
+| Connection exhaustion aimed at the WAF process | **This tier** — the accept-loop connection cap (`proxy.max_connections`; `conn_limit` semaphore, `try_acquire_owned` **rejects before admit** at `accept.rs`) + the Gradient2 adaptive load-shedder (sheds under CPU/run-queue pressure, never sheds Critical tier) | — |
+| L7 request flood from one source (HTTP flood, Slowloris/RUDY) | **This tier** — the per-`(tier, ip)` burst gate + auto-block (above) | — |
+
+So "DDoS aimed at the WAF" splits cleanly: **the network/LB tier absorbs
+packet-level volume; the WAF absorbs request-level and connection-level
+volume.** Deploy the WAF *behind* a load balancer / scrubbing layer that
+terminates or filters L3/L4 — do not expect the L7 proxy to survive a
+raw packet flood on its own. This pairs with the per-IP gate
+division-of-labor in [`rate-limiting.md`](./rate-limiting.md) (the
+`ddos.rs` per-IP flood window is the effective L7 volumetric gate; the
+`ip_limiter` default is a loose backstop).
+
+### Runbook — is this an L4 or L7 flood?
+
+- Traffic never reaching the WAF's access log / metrics, NIC/conntrack
+  saturated, `ss -s` showing huge SYN-RECV → **L3/L4**. Mitigate at the
+  LB / kernel / upstream scrubber; the WAF can't see it.
+- WAF access log full of HTTP requests from few IPs, `ddos.rs`
+  auto-blocks firing (`403` + `rule_id: ddos`), `conn_limit` rejections
+  climbing → **L7** — working as designed; tune `per_ip_limit` /
+  `max_connections` if needed.
+
 ## Detection strategies
 
 ### Per-IP burst gate

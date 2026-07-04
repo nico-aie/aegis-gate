@@ -12,6 +12,7 @@
 //! |---|---|---|
 //! | `behavior_no_ua` | 15 | Request has no `User-Agent` header, or it's empty / whitespace-only |
 //! | `behavior_missing_referer` | 20 | Mutation method (POST / PUT / PATCH / DELETE) without a `Referer` header — CSRF-shaped traffic |
+//! | `behavior_cross_origin_referer` | 20 | Mutation with a PRESENT `Referer` whose host is neither same-origin (vs `Host`) nor allowlisted — CSRF-shaped. **Opt-in, default-OFF** (`detectors.referer_origin`, AC-P2-e) |
 //! | `behavior_zero_depth` | 15 | First request from a peer with NO `Cookie` AND NO `Referer` — fresh stateless touch typical of crawlers/scanners |
 //!
 //! All three signals stack. A no-UA + no-referer crawler hitting
@@ -65,6 +66,10 @@ struct LastSeen {
 pub struct BehaviorSignalsDetector {
     state: Mutex<HashMap<IpAddr, LastSeen>>,
     max_tracked: usize,
+    /// AC-P2-e (2026-07-03) — Referer origin validation. Default
+    /// disabled; boot-time config (restart-to-change, like
+    /// `open_redirect.allowed_domains`).
+    referer_origin: aegis_core::config::RefererOriginConfig,
 }
 
 impl BehaviorSignalsDetector {
@@ -78,6 +83,21 @@ impl BehaviorSignalsDetector {
         Self {
             state: Mutex::new(HashMap::new()),
             max_tracked,
+            referer_origin: aegis_core::config::RefererOriginConfig::default(),
+        }
+    }
+
+    /// AC-P2-e — construct with Referer-origin validation config
+    /// (opt-in). Threaded from `cfg.detectors.referer_origin` at boot
+    /// in `default_detectors_with`.
+    pub fn with_referer_origin(
+        max_tracked: usize,
+        referer_origin: aegis_core::config::RefererOriginConfig,
+    ) -> Self {
+        Self {
+            state: Mutex::new(HashMap::new()),
+            max_tracked,
+            referer_origin,
         }
     }
 
@@ -91,6 +111,55 @@ impl BehaviorSignalsDetector {
     /// `reset_state` path so benchmark phases start clean.
     pub fn clear(&self) {
         self.state.lock().unwrap().clear();
+    }
+}
+
+impl BehaviorSignalsDetector {
+    /// AC-P2-e — `true` if `host` is on the Referer-origin allowlist
+    /// (literal, or `*.example.com` glob matching subdomains only —
+    /// same shape as `open_redirect.allowed_domains`).
+    fn origin_allowlisted(&self, host: &str) -> bool {
+        let h = host.to_ascii_lowercase();
+        self.referer_origin.allowed_origins.iter().any(|entry| {
+            let e = entry.trim().to_ascii_lowercase();
+            match e.strip_prefix("*.") {
+                Some(suffix) => h.ends_with(&format!(".{suffix}")),
+                None => h == e,
+            }
+        })
+    }
+}
+
+/// Extract the host from a `Referer` URL value (`scheme://host[:port]/…`
+/// or scheme-relative `//host/…`). Returns `None` when no host can be
+/// isolated (relative Referer, malformed value). Port is stripped so the
+/// comparison is host-only.
+fn referer_host(referer: &str) -> Option<&str> {
+    let after_scheme = referer
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .or_else(|| referer.strip_prefix("//"))?;
+    // Authority ends at the first '/', '?', or '#'.
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    let host = host_without_port(authority);
+    // Drop userinfo (`user@host`) if present.
+    let host = host.rsplit('@').next().unwrap_or(host);
+    (!host.is_empty()).then_some(host)
+}
+
+/// Strip a trailing `:port` from a `host[:port]` authority. IPv6 literals
+/// (`[::1]:8443`) keep their bracketed address.
+fn host_without_port(authority: &str) -> &str {
+    if let Some(end) = authority.strip_prefix('[').and_then(|_| authority.find(']')) {
+        // `[ipv6]` or `[ipv6]:port` → keep through the closing bracket.
+        return &authority[..=end];
+    }
+    match authority.rsplit_once(':') {
+        Some((host, _port)) => host,
+        None => authority,
     }
 }
 
@@ -168,6 +237,38 @@ impl Detector for BehaviorSignalsDetector {
                 tag: "behavior_missing_referer".into(),
                 field: "referer".into(),
             });
+        }
+
+        // ---- signal: cross-origin Referer on mutation (AC-P2-e) -----------
+        // Opt-in upgrade to the presence check above: a PRESENT Referer
+        // whose host is neither same-origin (vs the request `Host`) nor
+        // allowlisted is CSRF-shaped. Default-OFF (see RefererOriginConfig)
+        // → zero cost until an operator opts in with an allowlist.
+        if self.referer_origin.enabled && is_mutation && referer_present {
+            let referer_host = req
+                .headers
+                .get(http::header::REFERER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(referer_host);
+            let self_host = req
+                .headers
+                .get(http::header::HOST)
+                .and_then(|v| v.to_str().ok())
+                .map(host_without_port);
+            // Only score when we can read the Referer host. A same-origin
+            // match (or a missing/garbage Host we can't compare against)
+            // is treated as pass — this is a corroborating signal, not a
+            // hard gate, so it must not fire on ambiguous input.
+            if let Some(rhost) = referer_host {
+                let same_origin = self_host.is_some_and(|sh| sh.eq_ignore_ascii_case(rhost));
+                if !same_origin && !self.origin_allowlisted(rhost) {
+                    signals.push(Signal {
+                        score: 20,
+                        tag: "behavior_cross_origin_referer".into(),
+                        field: "referer".into(),
+                    });
+                }
+            }
         }
 
         // ---- signal: zero-depth session -----------------------------------
@@ -268,6 +369,138 @@ mod tests {
         );
         let signals = d.inspect(&view(&m, &u, &h, &b, p));
         assert!(signals.is_empty(), "unexpected signals: {signals:?}");
+    }
+
+    // ===== AC-P2-e (2026-07-03) — Referer origin validation =====
+    //
+    // Upgrade the presence-only `behavior_missing_referer` gate: when a
+    // Referer IS present on a mutation but its host is neither same-origin
+    // (vs the request `Host`) nor allowlisted, emit
+    // `behavior_cross_origin_referer`. Opt-in + default-OFF (stricter than
+    // presence, can FP on legit cross-origin flows). Scoped to mutation
+    // methods, since detectors have no route/tier context.
+
+    fn referer_cfg(enabled: bool, allowed: &[&str]) -> aegis_core::config::RefererOriginConfig {
+        aegis_core::config::RefererOriginConfig {
+            enabled,
+            allowed_origins: allowed.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn cross_origin_referer_on_mutation_scores_when_enabled() {
+        let d = BehaviorSignalsDetector::with_referer_origin(100, referer_cfg(true, &[]));
+        let (m, u, h, b, p) = parts(
+            http::Method::POST,
+            "/api/transfer",
+            "203.0.113.20",
+            &[
+                ("user-agent", "Mozilla/5.0"),
+                ("cookie", "sess=abc"),
+                ("host", "app.example.com"),
+                ("referer", "https://evil.example.net/attack"),
+            ],
+        );
+        let signals = d.inspect(&view(&m, &u, &h, &b, p));
+        assert!(
+            signals.iter().any(|s| s.tag == "behavior_cross_origin_referer"),
+            "cross-origin Referer on a mutation must score when enabled: {signals:?}",
+        );
+    }
+
+    #[test]
+    fn same_origin_referer_passes() {
+        let d = BehaviorSignalsDetector::with_referer_origin(100, referer_cfg(true, &[]));
+        let (m, u, h, b, p) = parts(
+            http::Method::POST,
+            "/api/transfer",
+            "203.0.113.21",
+            &[
+                ("user-agent", "Mozilla/5.0"),
+                ("cookie", "sess=abc"),
+                ("host", "app.example.com"),
+                ("referer", "https://app.example.com/form"),
+            ],
+        );
+        let signals = d.inspect(&view(&m, &u, &h, &b, p));
+        assert!(
+            !signals.iter().any(|s| s.tag == "behavior_cross_origin_referer"),
+            "same-origin Referer must NOT score: {signals:?}",
+        );
+    }
+
+    #[test]
+    fn allowlisted_cross_origin_referer_passes() {
+        let d = BehaviorSignalsDetector::with_referer_origin(
+            100,
+            referer_cfg(true, &["trusted.example.net", "*.partner.com"]),
+        );
+        for referer in [
+            "https://trusted.example.net/sso",
+            "https://checkout.partner.com/pay",
+        ] {
+            let (m, u, h, b, p) = parts(
+                http::Method::POST,
+                "/api/transfer",
+                "203.0.113.22",
+                &[
+                    ("user-agent", "Mozilla/5.0"),
+                    ("cookie", "sess=abc"),
+                    ("host", "app.example.com"),
+                    ("referer", referer),
+                ],
+            );
+            let signals = d.inspect(&view(&m, &u, &h, &b, p));
+            assert!(
+                !signals.iter().any(|s| s.tag == "behavior_cross_origin_referer"),
+                "allowlisted origin {referer} must pass: {signals:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn cross_origin_disabled_by_default_emits_no_signal() {
+        // Default constructor → referer-origin OFF → even a cross-origin
+        // Referer must not produce the new signal (zero cost when off).
+        let d = BehaviorSignalsDetector::new();
+        let (m, u, h, b, p) = parts(
+            http::Method::POST,
+            "/api/transfer",
+            "203.0.113.23",
+            &[
+                ("user-agent", "Mozilla/5.0"),
+                ("cookie", "sess=abc"),
+                ("host", "app.example.com"),
+                ("referer", "https://evil.example.net/attack"),
+            ],
+        );
+        let signals = d.inspect(&view(&m, &u, &h, &b, p));
+        assert!(
+            !signals.iter().any(|s| s.tag == "behavior_cross_origin_referer"),
+            "referer-origin is default-OFF: {signals:?}",
+        );
+    }
+
+    #[test]
+    fn absent_referer_still_only_missing_referer_not_cross_origin() {
+        // A mutation with NO Referer keeps firing behavior_missing_referer
+        // (unchanged) and must NOT fire the cross-origin signal.
+        let d = BehaviorSignalsDetector::with_referer_origin(100, referer_cfg(true, &[]));
+        let (m, u, h, b, p) = parts(
+            http::Method::POST,
+            "/api/transfer",
+            "203.0.113.24",
+            &[("user-agent", "Mozilla/5.0"), ("cookie", "sess=abc"), ("host", "app.example.com")],
+        );
+        let signals = d.inspect(&view(&m, &u, &h, &b, p));
+        assert!(
+            signals.iter().any(|s| s.tag == "behavior_missing_referer"),
+            "absent Referer still fires missing_referer: {signals:?}",
+        );
+        assert!(
+            !signals.iter().any(|s| s.tag == "behavior_cross_origin_referer"),
+            "absent Referer must not fire cross_origin: {signals:?}",
+        );
     }
 
     #[test]

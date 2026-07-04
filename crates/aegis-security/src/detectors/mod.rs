@@ -4,6 +4,7 @@ pub mod brute_force;
 pub mod canary;
 pub mod command_injection;
 pub mod cookie_injection;
+pub mod enumeration;
 pub mod header_injection;
 pub mod jwt_inspection;
 pub mod mask;
@@ -757,8 +758,13 @@ pub fn default_detectors_with_canary(
         // missing-Referer on mutations / zero-depth first-touch).
         // Stateful per-IP; default OFF as of 2026-05-19 because the
         // 50 ms burst threshold trips on single-IP smoke tests.
+        // AC-P2-e (2026-07-03) — thread the opt-in Referer-origin config
+        // (default-OFF); only active when this detector is enabled.
         v.push(Box::new(
-            behavior_signals::BehaviorSignalsDetector::new(),
+            behavior_signals::BehaviorSignalsDetector::with_referer_origin(
+                100_000,
+                cfg.referer_origin.clone(),
+            ),
         ));
     }
     if cfg.velocity.enabled {
@@ -768,6 +774,11 @@ pub fn default_detectors_with_canary(
         v.push(Box::new(
             velocity_sequence::VelocitySequenceDetector::new(),
         ));
+    }
+    if cfg.enumeration.enabled {
+        // AC-P2-d (2026-07-04) — endpoint-enumeration detector. Stateful
+        // per-IP (bounded); default OFF, only in the chain when opted in.
+        v.push(Box::new(enumeration::EnumerationDetector::new()));
     }
     v
 }

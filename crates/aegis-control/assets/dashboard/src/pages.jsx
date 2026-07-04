@@ -8162,9 +8162,10 @@ function ResponseFilterCard() {
   async function flip(rung) {
     if (busy || !wired) return;
     const patch = {
-      scrub_stack_traces: !!data.scrub_stack_traces,
-      mask_internal_ips:  !!data.mask_internal_ips,
-      redact_dlp:         !!data.redact_dlp,
+      scrub_stack_traces:     !!data.scrub_stack_traces,
+      mask_internal_ips:      !!data.mask_internal_ips,
+      redact_dlp:             !!data.redact_dlp,
+      strip_response_headers: !!data.strip_response_headers,
     };
     patch[rung] = !patch[rung];
     setBusy(rung);
@@ -8199,6 +8200,11 @@ function ResponseFilterCard() {
       key: 'redact_dlp',
       label: 'Redact DLP payloads',
       desc: 'Credit cards (Luhn), SSN, IBAN, email, AWS/GitHub/Stripe/Slack tokens',
+    },
+    {
+      key: 'strip_response_headers',
+      label: 'Strip leak headers',
+      desc: 'Server, X-Powered-By, X-AspNet-Version, X-Debug*/X-Internal*/X-Trace* → removed',
     },
   ];
 

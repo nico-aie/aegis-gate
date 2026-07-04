@@ -925,6 +925,14 @@ pub(crate) async fn admin_accept_loop(
                         ) -> Option<String> {
                             self.0.country(peer)
                         }
+                        // AC-P2-c (2026-07-03) — forward ASN so `kind: asn`
+                        // access-list entries resolve against the same reader.
+                        fn asn_of(
+                            &self,
+                            peer: std::net::IpAddr,
+                        ) -> Option<u32> {
+                            self.0.asn(peer)
+                        }
                     }
                     let adapter: Arc<dyn aegis_control::api::blacklist::AccessListCountryLookup> =
                         Arc::new(GeoIpToAccessListAdapter(reader_arc));

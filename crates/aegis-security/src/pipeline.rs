@@ -55,6 +55,14 @@ pub struct ResponseFilterConfig {
     pub scrub_stack_traces: bool,
     pub mask_internal_ips: bool,
     pub redact_dlp: bool,
+    /// AC-P1-a (2026-07-03) — strip version-banner / debug / internal
+    /// headers (`response_filter::should_strip_header` set) from
+    /// proxied responses. Fourth rung, header-side peer of the three
+    /// body rungs above; same safe-by-default posture. Strip-only:
+    /// security-header *injection* (CSP/HSTS) stays opt-in and
+    /// unwired here — forcing those onto arbitrary upstreams breaks
+    /// apps.
+    pub strip_response_headers: bool,
 }
 
 impl Default for ResponseFilterConfig {
@@ -63,6 +71,7 @@ impl Default for ResponseFilterConfig {
             scrub_stack_traces: true,
             mask_internal_ips: true,
             redact_dlp: true,
+            strip_response_headers: true,
         }
     }
 }
@@ -257,6 +266,25 @@ impl SecurityPipeline for Pipeline {
         }
         OutboundAction::Rewrite(bytes::Bytes::from(working.into_owned()))
     }
+
+    /// AC-P1-a — strip the leak-header set in place. O(header count)
+    /// key comparisons; the common clean-response path allocates
+    /// nothing (the removal Vec stays empty). Collect-then-remove
+    /// because `HeaderMap` has no retain and removal invalidates
+    /// iteration.
+    fn on_response_headers(&self, headers: &mut http::HeaderMap) {
+        if !self.filter.load().strip_response_headers {
+            return;
+        }
+        let to_remove: Vec<http::HeaderName> = headers
+            .keys()
+            .filter(|k| crate::response_filter::should_strip_header(k.as_str()))
+            .cloned()
+            .collect();
+        for name in to_remove {
+            headers.remove(&name);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -333,6 +361,57 @@ mod tests {
         let req = make_view(&m, &u, &h, &b);
         let (tier, _) = classify_tier(None, &req);
         assert_eq!(tier, Tier::Low);
+    }
+
+    /// AC-P1-a (2026-07-03) — response-header strip wire-up. The
+    /// leak-header predicate (`response_filter::should_strip_header`)
+    /// shipped 2026-05-18 with only test callers; these three pin the
+    /// Pipeline-level hook the data plane now calls on every proxied
+    /// response (buffered AND streaming — headers are available on
+    /// both paths even when the body can't be re-read).
+    #[test]
+    fn on_response_headers_strips_leak_headers_by_default() {
+        let pipe = Pipeline::new(Arc::new(crate::rules::RuleSet::new()));
+        let mut headers = http::HeaderMap::new();
+        headers.insert("server", "nginx/1.27.0".parse().unwrap());
+        headers.insert("x-powered-by", "PHP/8.1".parse().unwrap());
+        headers.insert("x-aspnet-version", "4.0.30319".parse().unwrap());
+        headers.insert("x-debug-user", "root".parse().unwrap());
+        headers.insert("x-internal-latency", "12ms".parse().unwrap());
+        headers.insert("content-type", "text/html".parse().unwrap());
+        headers.insert("content-length", "42".parse().unwrap());
+        pipe.on_response_headers(&mut headers);
+        assert!(headers.get("server").is_none(), "Server banner must be stripped");
+        assert!(headers.get("x-powered-by").is_none());
+        assert!(headers.get("x-aspnet-version").is_none());
+        assert!(headers.get("x-debug-user").is_none(), "X-Debug* prefix family must be stripped");
+        assert!(headers.get("x-internal-latency").is_none(), "X-Internal* prefix family must be stripped");
+        // Pass-through headers are untouched.
+        assert_eq!(headers.get("content-type").unwrap(), "text/html");
+        assert_eq!(headers.get("content-length").unwrap(), "42");
+    }
+
+    #[test]
+    fn on_response_headers_disabled_leaves_headers_intact() {
+        let cfg = ResponseFilterConfig {
+            strip_response_headers: false,
+            ..ResponseFilterConfig::default()
+        };
+        let pipe = Pipeline::with_filter(Arc::new(crate::rules::RuleSet::new()), cfg);
+        let mut headers = http::HeaderMap::new();
+        headers.insert("server", "nginx/1.27.0".parse().unwrap());
+        headers.insert("x-powered-by", "PHP/8.1".parse().unwrap());
+        pipe.on_response_headers(&mut headers);
+        assert_eq!(headers.get("server").unwrap(), "nginx/1.27.0");
+        assert_eq!(headers.get("x-powered-by").unwrap(), "PHP/8.1");
+    }
+
+    /// Default-ON is the safe posture (leak scrub is contract-shaped,
+    /// same rationale as the three body rungs). A config that omits
+    /// the field behaves exactly like today's body-scrub defaults.
+    #[test]
+    fn strip_response_headers_defaults_on() {
+        assert!(ResponseFilterConfig::default().strip_response_headers);
     }
 
     #[test]

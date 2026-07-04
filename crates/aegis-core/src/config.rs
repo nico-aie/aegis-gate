@@ -1278,6 +1278,49 @@ pub fn is_unsafe_trusted_proxy(net: &ipnet::IpNet) -> bool {
     net.prefix_len() == 0
 }
 
+/// LT-P7 (2026-07-03) — a soft **advisory** (not a rejection) for a
+/// `trusted_proxies` entry that trusts a BROAD private or loopback
+/// range for `X-Forwarded-For`. Unlike [`is_unsafe_trusted_proxy`]
+/// (which rejects the internet-wide default route at boot), these
+/// entries stay **accepted** — the single-host front-WAF sidecar
+/// (`127.0.0.1/32`) is a legitimate, common pattern. But trusting an
+/// entire `10.0.0.0/8` / `127.0.0.0/8` means *any* host in that range
+/// can assert the client IP and bypass rate-limit / blocklist / risk /
+/// GeoIP, so the operator should usually list the load balancer's
+/// narrow CIDR instead. Returns `Some(message)` to warn at boot; a
+/// single host route (`/32`, `/128`) or a public CIDR is silent.
+pub fn trusted_proxy_advisory(net: &ipnet::IpNet) -> Option<String> {
+    // Host routes (a specific proxy) are the intended shape — never advise.
+    if net.prefix_len() == net.max_prefix_len() {
+        return None;
+    }
+    if !is_private_or_loopback_net(net) {
+        return None;
+    }
+    Some(format!(
+        "proxy.trusted_proxies: '{net}' trusts a broad private/loopback range \
+         for X-Forwarded-For — any host inside it can spoof the client IP. \
+         Prefer the load balancer's narrow CIDR (or a /32 host route). \
+         Accepted, but review if this is not a same-host PROXY-protocol front.",
+    ))
+}
+
+/// Whether a CIDR's network address is loopback or a private / non-
+/// globally-routable range (RFC 1918, link-local, IPv6 loopback, ULA
+/// `fc00::/7`). Used by [`trusted_proxy_advisory`]; deliberately based
+/// on the network base address so a range like `10.0.0.0/8` classifies.
+fn is_private_or_loopback_net(net: &ipnet::IpNet) -> bool {
+    match net.network() {
+        std::net::IpAddr::V4(a) => {
+            a.is_loopback() || a.is_private() || a.is_link_local()
+        }
+        std::net::IpAddr::V6(a) => {
+            // Loopback (::1) or ULA fc00::/7 (first 7 bits == 1111110).
+            a.is_loopback() || (a.segments()[0] & 0xfe00) == 0xfc00
+        }
+    }
+}
+
 #[cfg(test)]
 mod trusted_proxy_guard_tests {
     use super::is_unsafe_trusted_proxy;
@@ -1299,6 +1342,34 @@ mod trusted_proxy_guard_tests {
             assert!(
                 !is_unsafe_trusted_proxy(&c.parse().unwrap()),
                 "{c} must be allowed",
+            );
+        }
+    }
+
+    // LT-P7 (2026-07-03) — a soft ADVISORY (boot warn, not reject) for
+    // trusting a BROAD private/loopback RANGE for X-Forwarded-For. These
+    // stay accepted (the single-host sidecar pattern is legit and common),
+    // but trusting the whole `10.0.0.0/8` / `127.0.0.0/8` lets any host in
+    // that range spoof the client IP — worth surfacing at boot. A single
+    // host route (`/32`, `/128`) is the legit sidecar and stays silent.
+    #[test]
+    fn advises_on_broad_private_or_loopback_ranges() {
+        for c in ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"] {
+            assert!(
+                super::trusted_proxy_advisory(&c.parse().unwrap()).is_some(),
+                "{c} (broad private/loopback range) must produce an advisory",
+            );
+        }
+    }
+
+    #[test]
+    fn no_advisory_for_host_routes_or_public_cidrs() {
+        // Single-host private/loopback (the sidecar) + narrow/public LB CIDRs
+        // are silent — no noise on legitimate configs.
+        for c in ["127.0.0.1/32", "::1/128", "192.168.1.5/32", "203.0.113.7/32", "198.51.100.0/24"] {
+            assert!(
+                super::trusted_proxy_advisory(&c.parse().unwrap()).is_none(),
+                "{c} must NOT produce an advisory",
             );
         }
     }
@@ -4928,6 +4999,31 @@ pub struct DetectorsConfig {
     /// on once you have real-IP traffic to score.
     #[serde(default = "default_detector_toggle_off")]
     pub behavior_signals: DetectorToggle,
+    /// AC-P2-a (2026-07-03) — the full behavioral analyzer
+    /// (`aegis_security::behavior::BehavioralAnalyzer`): per-session
+    /// request-rate, path-diversity, timing-jitter (CV), and no-cookie
+    /// signals. **Default OFF** — richer + heavier than `behavior_signals`
+    /// and the timing signal previously tripped on single-IP benchmark
+    /// load, so it only runs when an operator opts in on real-IP traffic.
+    /// The error-ratio signal is fed by the response-outcome channel
+    /// (AC-P3-b): the data plane calls `observe_outcome` with the upstream
+    /// status of each forwarded request, so repeated upstream 401/403 raise
+    /// `behavior_high_errors`.
+    #[serde(default = "default_detector_toggle_off")]
+    pub behavior_analyzer: DetectorToggle,
+    /// AC-P2-d (2026-07-04) — endpoint-enumeration / directory-scan
+    /// detector: one source hitting many DISTINCT paths in a window
+    /// (bounded per-IP + fleet). **Default OFF** — a legit asset-heavy
+    /// SPA can hit a naive distinct-path threshold, so it needs tuning
+    /// against the benchmark FP corpus before it ships on.
+    #[serde(default = "default_detector_toggle_off")]
+    pub enumeration: DetectorToggle,
+    /// AC-P2-e (2026-07-03) — Referer origin validation, a sub-feature of
+    /// the `behavior_signals` detector. **Default OFF**; only active when
+    /// `behavior_signals` is also enabled. Restart-to-change (boot-time
+    /// detector config, like `open_redirect.allowed_domains`).
+    #[serde(default)]
+    pub referer_origin: RefererOriginConfig,
     /// 2026-05-19 — Phase F cross-endpoint velocity engine.
     /// Detects login→deposit / login→withdrawal sequences tighter
     /// than 5 s. **Default ON** — zero cost when the upstream has
@@ -5084,6 +5180,9 @@ impl Default for DetectorsConfig {
             jwt_inspection: JwtInspectionConfig::default(),
             cookie_injection: default_detector_toggle_off(),
             behavior_signals: default_detector_toggle_off(),
+            behavior_analyzer: default_detector_toggle_off(),
+            enumeration: default_detector_toggle_off(),
+            referer_origin: RefererOriginConfig::default(),
             velocity: default_detector_toggle(),
             canary: default_detector_toggle_off(),
             persistence: None,
@@ -5309,6 +5408,47 @@ impl Default for OpenRedirectConfig {
     }
 }
 
+/// AC-P2-e (2026-07-03) — Referer origin validation config, a sub-feature
+/// of the `behavior_signals` detector. When `enabled`, a mutation request
+/// (POST / PUT / PATCH / DELETE) whose **present** `Referer` host is
+/// neither same-origin (vs the request `Host`) nor in `allowed_origins`
+/// scores `behavior_cross_origin_referer`. Presence-only checking (the
+/// absent-Referer case) stays the existing `behavior_missing_referer`.
+///
+/// **Default OFF** — stricter than presence and can false-positive on
+/// legitimate cross-origin flows (OAuth redirects, payment callbacks,
+/// embedded third-party forms), so it must be opted into with an
+/// allowlist. Only active when `behavior_signals` is also enabled (it is
+/// that detector's Referer logic). Each `allowed_origins` entry is a
+/// literal host (`checkout.partner.com`) or a `*.partner.com` glob —
+/// same shape as `open_redirect.allowed_domains`. YAML:
+///
+/// ```yaml
+/// detectors:
+///   behavior_signals: { enabled: true }
+///   referer_origin:
+///     enabled: true
+///     allowed_origins:
+///       - "checkout.partner.com"
+///       - "*.partner.com"
+/// ```
+#[derive(Clone, Debug, Deserialize)]
+pub struct RefererOriginConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+}
+
+impl Default for RefererOriginConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allowed_origins: Vec::new(),
+        }
+    }
+}
+
 /// 2026-06-12 (JWT report) — config for the JWT attack-shape detector.
 ///
 /// `enabled` mirrors the standard `DetectorToggle.enabled` knob
@@ -5387,6 +5527,12 @@ pub struct ResponseFilterConfig {
     pub mask_internal_ips: bool,
     #[serde(default = "default_true")]
     pub redact_dlp: bool,
+    /// AC-P1-a (2026-07-03) — strip `Server` / `X-Powered-By` /
+    /// `X-Debug*` / `X-Internal*` etc. from proxied responses.
+    /// Defaults on like the body rungs; a config that omits the
+    /// field keeps the safe posture.
+    #[serde(default = "default_true")]
+    pub strip_response_headers: bool,
 }
 
 impl Default for ResponseFilterConfig {
@@ -5395,6 +5541,7 @@ impl Default for ResponseFilterConfig {
             scrub_stack_traces: true,
             mask_internal_ips: true,
             redact_dlp: true,
+            strip_response_headers: true,
         }
     }
 }
@@ -6341,6 +6488,58 @@ redis:
         assert!(cfg.xss.enabled);
         assert!(cfg.path_traversal.enabled);
         assert!(cfg.ssrf.enabled);
+    }
+
+    // AC-P2-a (2026-07-03) — behavior_analyzer defaults OFF + parses.
+    #[test]
+    fn behavior_analyzer_defaults_off() {
+        assert!(!DetectorsConfig::default().behavior_analyzer.enabled);
+        let cfg: DetectorsConfig =
+            serde_yaml::from_str("behavior_analyzer: { enabled: true }").unwrap();
+        assert!(cfg.behavior_analyzer.enabled);
+        // Omitting the block keeps it off.
+        let bare: DetectorsConfig = serde_yaml::from_str("sqli: { enabled: true }").unwrap();
+        assert!(!bare.behavior_analyzer.enabled);
+    }
+
+    // AC-P2-d (2026-07-04) — enumeration detector defaults OFF + parses.
+    #[test]
+    fn enumeration_defaults_off() {
+        assert!(!DetectorsConfig::default().enumeration.enabled);
+        let cfg: DetectorsConfig =
+            serde_yaml::from_str("enumeration: { enabled: true }").unwrap();
+        assert!(cfg.enumeration.enabled);
+    }
+
+    // AC-P2-e (2026-07-03) — referer_origin default-OFF + YAML wire shape.
+    #[test]
+    fn referer_origin_defaults_off() {
+        let cfg = DetectorsConfig::default();
+        assert!(!cfg.referer_origin.enabled);
+        assert!(cfg.referer_origin.allowed_origins.is_empty());
+    }
+
+    #[test]
+    fn referer_origin_parses_from_yaml() {
+        let cfg: DetectorsConfig = serde_yaml::from_str(
+            r#"
+behavior_signals: { enabled: true }
+referer_origin:
+  enabled: true
+  allowed_origins:
+    - "checkout.partner.com"
+    - "*.partner.com"
+"#,
+        )
+        .unwrap();
+        assert!(cfg.referer_origin.enabled);
+        assert_eq!(
+            cfg.referer_origin.allowed_origins,
+            vec!["checkout.partner.com".to_string(), "*.partner.com".to_string()],
+        );
+        // Omitting the block keeps it off (serde default).
+        let bare: DetectorsConfig = serde_yaml::from_str("sqli: { enabled: true }").unwrap();
+        assert!(!bare.referer_origin.enabled);
     }
 
     #[test]

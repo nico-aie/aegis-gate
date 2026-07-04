@@ -281,11 +281,33 @@ async fn watch_loop(
     )
     .map_err(|e| aegis_core::WafError::Config(format!("watcher init: {e}")))?;
 
+    // Watch the PARENT DIRECTORY, not the file itself, and filter events by
+    // file name. Two reasons this is more robust than `watch(&file)`:
+    //   1. An atomic-rename config deploy (write temp + rename over) replaces
+    //      the file's inode; a file-level watch is left watching the gone
+    //      inode and silently misses every later change. A dir watch survives
+    //      the swap (it sees the Create of the renamed-in file).
+    //   2. macOS FSEvents is directory-granular — watching a single file for
+    //      in-place truncate is flaky/laggy, while a dir watch is reliable.
+    // Filter by file name (not full-path equality) so the macOS tmpdir
+    // symlink (`/var/folders/…` → `/private/var/folders/…`, which notify
+    // canonicalizes) doesn't cause a false mismatch.
+    let watch_dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let file_name = path.file_name().map(|n| n.to_os_string());
+
     watcher
-        .watch(&path, RecursiveMode::NonRecursive)
+        .watch(&watch_dir, RecursiveMode::NonRecursive)
         .map_err(|e| aegis_core::WafError::Config(format!("watcher start: {e}")))?;
 
-    tracing::info!("config watcher (publisher) started on {}", path.display());
+    tracing::info!(
+        "config watcher (publisher) started on {} (watching dir {})",
+        path.display(),
+        watch_dir.display(),
+    );
 
     // Keep watcher alive for the duration of this task.
     let _watcher = watcher;
@@ -300,8 +322,24 @@ async fn watch_loop(
         };
 
         // Only react to content modifications.
-        if !matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+        if !matches!(
+            event.kind,
+            EventKind::Modify(_) | EventKind::Create(_)
+        ) {
             continue;
+        }
+
+        // Dir watch fires for every file in the directory — keep only events
+        // that touch OUR config file (by name, to dodge the symlink-canonical
+        // path mismatch on macOS).
+        if let Some(fname) = &file_name {
+            if !event
+                .paths
+                .iter()
+                .any(|p| p.file_name() == Some(fname.as_os_str()))
+            {
+                continue;
+            }
         }
 
         // Small debounce — editors may trigger multiple events.
@@ -444,16 +482,22 @@ state:
 
         let handle = spawn_config_watcher(config_path.clone(), store.clone(), bus, None);
 
-        // Give the watcher time to register.
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Give the watcher time to fully ARM before we mutate — macOS
+        // FSEvents can drop a change that lands in the first moments after a
+        // watch starts, so 200ms was a borderline cold-start race. 600ms is
+        // still fast (the event itself then fires in ~1 poll) and removes the
+        // intermittent first-run miss.
+        tokio::time::sleep(Duration::from_millis(600)).await;
 
-        // Mutate the file (change the bind address).
+        // Mutate the file via an ATOMIC RENAME (write temp + rename over) —
+        // this is how real config deploys land, and what the dir watcher
+        // reliably catches on both inotify and macOS FSEvents. (An in-place
+        // `File::create` truncate is flaky under FSEvents, which is what made
+        // this test intermittently time out.)
         let updated = minimal_yaml().replace("127.0.0.1:3000", "127.0.0.1:8888");
-        {
-            let mut f = std::fs::File::create(&config_path).unwrap();
-            f.write_all(updated.as_bytes()).unwrap();
-            f.sync_all().unwrap();
-        }
+        let tmp = dir.path().join("waf.yaml.tmp");
+        std::fs::write(&tmp, updated.as_bytes()).unwrap();
+        std::fs::rename(&tmp, &config_path).unwrap();
 
         // Poll for the debounced publish rather than a single fixed sleep —
         // the notify event + 100ms debounce can lag under parallel test load,

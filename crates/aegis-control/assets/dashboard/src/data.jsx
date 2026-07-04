@@ -1416,7 +1416,7 @@ async function aiReloadPost() {
 function useResponseFilterApi() {
   return useApi('/api/response-filter', {
     intervalMs: 15000,
-    fallback: { scrub_stack_traces: true, mask_internal_ips: true, redact_dlp: true, wired: false },
+    fallback: { scrub_stack_traces: true, mask_internal_ips: true, redact_dlp: true, strip_response_headers: true, wired: false },
   });
 }
 async function responseFilterPut(patch) {
@@ -1426,9 +1426,13 @@ async function responseFilterPut(patch) {
     headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
     credentials: 'same-origin',
     body: JSON.stringify({
-      scrub_stack_traces: !!patch.scrub_stack_traces,
-      mask_internal_ips:  !!patch.mask_internal_ips,
-      redact_dlp:         !!patch.redact_dlp,
+      scrub_stack_traces:     !!patch.scrub_stack_traces,
+      mask_internal_ips:      !!patch.mask_internal_ips,
+      redact_dlp:             !!patch.redact_dlp,
+      // AC-P1-a — always send the 4th rung: omitting it would let the
+      // serde default (true) silently re-enable header stripping on
+      // every body-rung flip.
+      strip_response_headers: !!patch.strip_response_headers,
     }),
   });
   const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));

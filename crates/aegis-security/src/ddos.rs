@@ -881,6 +881,51 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
 
+    /// LT-P3 (2026-07-03) — division-of-labor characterization. Under a
+    /// single-IP L7 flood the **ddos gate is the effective per-IP
+    /// volumetric limiter** (default 1000 req / 10 s window), firing
+    /// ~167× sooner than the `ip_limiter` backstop (default
+    /// 1_000_000 / 60 s, deliberately loose so it can't throttle
+    /// bench load-gen arriving from a few IPs). This pins the answer to
+    /// the audit's "which gate fires first?" so the loose ip_limiter
+    /// default can't be mistaken for an un-throttled volumetric path.
+    #[test]
+    fn ddos_gate_fires_far_sooner_than_ip_limiter_backstop() {
+        use crate::rate_limit::{IpRateLimitConfig, IpRateLimiter};
+
+        let now = Instant::now();
+        let ddos = DdosDetector::new(DdosConfig::default()); // 1000 / 10s
+        let ip_lim = IpRateLimiter::new(IpRateLimitConfig::default()); // 1_000_000 / 60s
+        let ip: IpAddr = "203.0.113.9".parse().unwrap();
+
+        // First 1000 requests in-window: BOTH gates allow.
+        for i in 1..=1000u32 {
+            assert!(
+                matches!(ddos.check_local(ip, None, now), LocalDdosDecision::Allowed),
+                "ddos must allow request {i} (under the 1000/10s limit)",
+            );
+            assert!(
+                ip_lim.consume_at(ip, now).allowed,
+                "ip_limiter must allow request {i}",
+            );
+        }
+
+        // The 1001st tips the ddos gate over — it is the gate that fires.
+        assert!(
+            matches!(
+                ddos.check_local(ip, None, now),
+                LocalDdosDecision::NewlyBlocked { .. },
+            ),
+            "ddos gate must block the 1001st request",
+        );
+        // ...while the ip_limiter backstop is still wide open (1001 << 1M).
+        assert!(
+            ip_lim.consume_at(ip, now).allowed,
+            "ip_limiter backstop must stay open long past the ddos block — \
+             it is a backstop, not the volumetric gate",
+        );
+    }
+
     struct MockState {
         windows: Mutex<HashMap<String, (u64, Instant)>>,
         blocked: Mutex<HashMap<String, ()>>,

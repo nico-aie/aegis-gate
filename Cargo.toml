@@ -200,3 +200,16 @@ h3-quinn = "0.0.10"
 # / `dns-over-https` etc. — the WAF talks to its local stub
 # resolver, which already does the DoT/DoH dance if configured.
 hickory-resolver = { version = "0.26", default-features = false, features = ["tokio", "system-config"] }
+
+# LT-P1 (PLAN-ltester-perf-and-hardening-2026-07-03) — release-profile
+# tuning for the latency-sensitive data plane. Cargo defaults leave
+# perf on the table (`lto=false`, `codegen-units=16`); thin-LTO +
+# single codegen unit buys cross-crate inlining on the hot path.
+# `panic = "abort"` is deliberately ABSENT until LT-P4's hot-path
+# panic/expect triage lands — 182 non-test `panic!` + 495 `.expect(`
+# workspace-wide would turn a single unwind into a process kill.
+# Before/after p99 + throughput recorded in the LT-P1 PR.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

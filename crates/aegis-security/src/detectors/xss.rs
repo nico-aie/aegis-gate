@@ -97,19 +97,22 @@ impl Detector for XssDetector {
     fn inspect(&self, req: &RequestView<'_>) -> Vec<Signal> {
         let mut signals = Vec::new();
 
-        // GAP-012 (Run-6, 2026-05-09) — three-stage decode chain:
-        // raw → URL-decoded → HTML-entity-decoded. The named-entity
-        // bypass (`&lt;script&gt;`) doesn't match the existing
-        // `&#NN;` numeric-entity pattern; entity-decoding the value
-        // before pattern match closes that gap.
+        // GAP-012 (Run-6) + AC-P1-d (2026-07-03) — the URI now runs the
+        // central `normalize_for_detection` pipeline (raw → repeated
+        // URL-decode → HTML-entity → unicode-escape → hex-blob), the
+        // same superset sqli uses. This closes the double-URL-encoded
+        // (`%253Cscript`) evasion the old single-pass `url_decode`
+        // missed while still covering the named/numeric-entity bypass.
         let raw_uri = req.uri.to_string();
-        let url_decoded_uri = super::url_decode(&raw_uri);
-        let entity_decoded_uri = super::html_entity_decode(&url_decoded_uri);
-        check_xss(&url_decoded_uri, "uri", &mut signals);
-        if entity_decoded_uri != url_decoded_uri {
-            check_xss(&entity_decoded_uri, "uri", &mut signals);
+        let uri_before = signals.len();
+        for variant in super::normalize_for_detection(&raw_uri) {
+            check_xss(&variant, "uri", &mut signals);
+            if signals.len() > uri_before {
+                break;
+            }
         }
-        check_css(&url_decoded_uri, "uri", &mut signals);
+        // CSS check keeps the single URL-decode form (behavior-preserving).
+        check_css(&super::url_decode(&raw_uri), "uri", &mut signals);
 
         let body = std::str::from_utf8(req.body.peek(8192)).unwrap_or("");
         // S-B (2026-06-18 round-2) — skip bot-management sensor beacons
@@ -117,13 +120,30 @@ impl Detector for XssDetector {
         // blob coincidentally matches tag/handler/`javascript:` shapes and
         // drove the xss benign blocks. Mirrors the cmdi/sqli body gate.
         if !body.is_empty() && !super::form_body_is_opaque_beacon(req.headers, body) {
-            let url_decoded_body = super::url_decode(body);
-            let entity_decoded_body = super::html_entity_decode(&url_decoded_body);
-            check_xss(&url_decoded_body, "body", &mut signals);
-            if entity_decoded_body != url_decoded_body {
-                check_xss(&entity_decoded_body, "body", &mut signals);
+            // AC-P1-d — parity with sqli's body posture: structured-text
+            // bodies the origin will parse (`body_is_scannable`: JSON /
+            // form / XML / text) get the full multi-variant decode so
+            // `{"x":"<script>"}` and double-URL-encoded forms
+            // are caught. Untyped / opaque bodies keep the legacy narrow
+            // scan — the heavier decode there is unjustified cost and an
+            // FP surface, exactly why sqli gates the same way.
+            let body_before = signals.len();
+            if super::body_is_scannable(req.headers) {
+                for variant in super::normalize_for_detection(body) {
+                    check_xss(&variant, "body", &mut signals);
+                    if signals.len() > body_before {
+                        break;
+                    }
+                }
+            } else {
+                let url_decoded_body = super::url_decode(body);
+                let entity_decoded_body = super::html_entity_decode(&url_decoded_body);
+                check_xss(&url_decoded_body, "body", &mut signals);
+                if entity_decoded_body != url_decoded_body {
+                    check_xss(&entity_decoded_body, "body", &mut signals);
+                }
             }
-            check_css(&url_decoded_body, "body", &mut signals);
+            check_css(&super::url_decode(body), "body", &mut signals);
         }
 
         // 2026-05-22 — `cookie` removed from the XSS scan set. Cookies
@@ -522,6 +542,105 @@ mod tests {
             .cycle()
             .take(320)
             .collect()
+    }
+
+    // ===== AC-P1-d (2026-07-03) — decode parity with sqli =====
+    //
+    // The XSS pipeline decoded url(single-pass)+entity only, so two
+    // evasion classes slipped (red-team vector 07): unicode-escaped
+    // JSON payloads (`<script>` — frameworks decode these
+    // transparently before rendering) and double-URL-encoded forms
+    // (`%253Cscript`). Structured-text bodies and the URI now run the
+    // central `normalize_for_detection` pipeline (same as sqli).
+    // S6 stays honored: these decode-then-match tests are the inverse
+    // of the removed `\u00XX` literal PATTERN — a bare escape still
+    // never fires (see the accented-name negatives below).
+
+    // Payloads below deliberately use `<iframe>` (no bare `alert(` /
+    // `document.` substring) so they can ONLY fire after the decode
+    // pass — isolating the new capability from the raw-pattern set.
+    // A JSON serializer emits `<` as the 6-byte escape backslash-u-003c.
+    // Build it from a backslash char so the source carries no literal
+    // escape sequence a tool might normalize away.
+    fn uesc(cp: &str) -> String {
+        let bs = '\\';
+        format!("{bs}u{cp}")
+    }
+
+    #[test]
+    fn json_body_unicode_escaped_iframe_fires() {
+        // `<iframe src=x>` — the JS/JSON source form a
+        // framework decodes before rendering. Raw it matches nothing
+        // (no literal `<`); the unicode-decode pass reveals it.
+        let body = format!(
+            "{{\"x\":\"{}iframe src=x{}\"}}",
+            uesc("003c"),
+            uesc("003e"),
+        );
+        assert!(
+            !body_with_ct("application/json", &body).is_empty(),
+            "unicode-escaped <iframe> in JSON body must fire",
+        );
+    }
+
+    #[test]
+    fn form_body_double_url_encoded_iframe_fires() {
+        // %253C → %3C → <  (two decode passes needed)
+        let body = "q=%253Ciframe%2520src%253Dx%253E";
+        assert!(
+            !body_with_ct("application/x-www-form-urlencoded", body).is_empty(),
+            "double-URL-encoded <iframe> in form body must fire",
+        );
+    }
+
+    // Double-URL-encoded payload in the QUERY — the data-plane hands
+    // the detector the raw wire form, so the surplus encode layer is
+    // still present and only the repeated-decode pass unwraps it.
+    positive!(xss_double_url_encoded_uri,
+        "/?q=%253Ciframe%2520src%253Dx%253E");
+
+    // S6 regression guards on the NEW pipeline: accented JSON content
+    // decodes to plain text and must stay clean under a scannable
+    // content-type (the original S6 corpus posts carried none).
+    #[test]
+    fn json_accented_name_with_ct_still_clean() {
+        let body = r#"{"email":"a@b.co","display_name":"María José"}"#;
+        assert!(
+            body_with_ct("application/json", body).is_empty(),
+            "accented display-name must stay clean after unicode decode",
+        );
+    }
+
+    #[test]
+    fn json_escaped_benign_richtext_still_clean() {
+        // Serializer-escaped harmless markup (`<b>bold</b>`) — no
+        // sink tag / handler / JS shape after decoding.
+        let body = r#"{"html":"<b>bold</b>"}"#;
+        assert!(
+            body_with_ct("application/json", body).is_empty(),
+            "escaped benign markup must stay clean",
+        );
+    }
+
+    // Untyped bodies keep the legacy narrow pipeline: the heavier
+    // multi-variant decode is gated on `body_is_scannable` (structured
+    // text the origin will parse), mirroring the sqli posture. A
+    // content-type-less body with a unicode-escaped payload therefore
+    // stays un-decoded — injection there is an app-layer concern.
+    #[test]
+    fn untyped_body_unicode_escape_not_decoded() {
+        // Same escaped payload as the JSON test, but `css_body` sends
+        // NO content-type → not `body_is_scannable` → the heavy decode
+        // pipeline is skipped, so the escaped form stays inert.
+        let body = format!(
+            "{{\"x\":\"{}iframe src=x{}\"}}",
+            uesc("003c"),
+            uesc("003e"),
+        );
+        assert!(
+            css_body(&body).is_empty(),
+            "untyped body must not get the heavy decode pipeline",
+        );
     }
 
     #[test]

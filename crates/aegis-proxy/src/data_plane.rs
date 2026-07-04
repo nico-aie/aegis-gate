@@ -132,6 +132,21 @@ pub(crate) async fn handle_data_request(
         tls_fingerprint,
     ).await;
     tracing::Span::current().record("action", tag.action.as_str());
+    // AC-P3-b (2026-07-04) — response-outcome channel. Feed the upstream
+    // outcome of a FORWARDED request back into the behavioral analyzer so
+    // the error-ratio signal (inert inbound) reflects prior failures — e.g.
+    // repeated upstream 401/403 on credential stuffing. Gated on
+    // `Action::Allow` so the WAF's OWN blocks/challenges (403/429) never
+    // inflate the client error ratio. Only client errors (4xx: auth
+    // 401/403, enumeration 404, bad-request 400) count as "the client
+    // misbehaving"; upstream 5xx outages are the server's fault, not a
+    // client signal, so they're excluded. No-op when the analyzer is
+    // disabled (the `None` fast path).
+    if let Some(ba) = &upstream_ctx.behavior_analyzer {
+        if matches!(tag.action, aegis_control::interop::headers::Action::Allow) {
+            ba.observe_outcome(&peer.ip().to_string(), resp.status().is_client_error());
+        }
+    }
     (resp, tag)
 }
 
@@ -675,7 +690,7 @@ pub(crate) async fn handle_data_request_inner(
                         log_only_intent = Some(DecisionTag::block("ddos"));
                         // fall through to detectors + upstream
                     } else {
-                        // Enforce — 503. `blocked_response` emits the single
+                        // Enforce — 403. `blocked_response` emits the single
                         // `block` audit event for this request (the standalone
                         // `ddos_blocked` emit above was suppressed via
                         // `hard_enforce`). Carry the DDoS spike signal into
@@ -1087,7 +1102,8 @@ pub(crate) async fn handle_data_request_inner(
     let rule_allow = match (upstream_ctx.active_ruleset.get(), resolved_route.as_ref()) {
         (Some(rs), Some(rc)) => {
             let snap = rs.snapshot();
-            let decision = aegis_security::rules::evaluate(&snap, &view, rc);
+            let decision =
+                aegis_security::rules::evaluate_with_ctx(&snap, &view, rc, &eval_ctx_for(upstream_ctx));
             matches!(decision.action, aegis_core::decision::Action::Allow)
                 && decision.rule_id.as_deref().is_some_and(|id| {
                     snap.iter().any(|r| {
@@ -1195,6 +1211,19 @@ pub(crate) async fn handle_data_request_inner(
                 .observe(&fp.ja4, peer_ip)
             {
                 signals.push(rotation_signal);
+            }
+        }
+        // AC-P2-a (2026-07-03) — behavioral analyzer, opt-in
+        // (`detectors.behavior_analyzer`, default-OFF → `None` here, no
+        // work). Keyed per-source (peer IP); `is_error` is inbound-only
+        // false until the response-outcome channel lands (AC-P3-b), so the
+        // error-ratio signal stays inert. Rate / path-diversity / timing-
+        // jitter / no-cookie signals fold into the per-request signal set
+        // exactly like the device-rotation signal above.
+        if let Some(ba) = &upstream_ctx.behavior_analyzer {
+            let has_cookie = parts.headers.contains_key(http::header::COOKIE);
+            for sig in ba.observe(&peer_ip.to_string(), parts.uri.path(), false, has_cookie) {
+                signals.push(sig);
             }
         }
     }
@@ -1450,9 +1479,21 @@ pub(crate) async fn handle_data_request_inner(
     // genuinely clean request: a detection that just recorded a malicious
     // score (even one under the per-request threshold) must NOT claw it
     // back here. Same condition as the old clean-path branch.
-    if detected_under_threshold.is_none() && log_only_intent.is_none() {
-        risk.record_clean_with_key(build_risk_key(peer_ip, &parts.headers, tls_fingerprint));
-    }
+    // LT-P5 (2026-07-03) — capture the post-decay score. `record_clean`
+    // ages the bucket for elapsed-since-last-seen (trust recovery) and
+    // returns the new state; we stamp it on the genuinely-clean allow tag
+    // below so a residual, still-decaying score surfaces on
+    // `X-WAF-Risk-Score`. The benchmarker validates decay by watching that
+    // header decrease over a quiet window of allowed requests — without
+    // this, the plain Allow path stamped 0 and the curve was invisible.
+    let clean_allow_score = if detected_under_threshold.is_none() && log_only_intent.is_none() {
+        Some(
+            risk.record_clean_with_key(build_risk_key(peer_ip, &parts.headers, tls_fingerprint))
+                .score,
+        )
+    } else {
+        None
+    };
     // Per-tier cumulative thresholds, falling back to the global values
     // when the matched tier has no override (Option B).
     let global = risk.thresholds();
@@ -1826,7 +1867,7 @@ pub(crate) async fn handle_data_request_inner(
                 // its outcome onto a status code; we infer the
                 // contract action from that (allow on 2xx/3xx,
                 // block / circuit_breaker / timeout otherwise).
-                forward_allow_to_upstream(
+                let (resp, tag) = forward_allow_to_upstream(
                     parts,
                     body_bytes,
                     upstream_ctx,
@@ -1837,7 +1878,15 @@ pub(crate) async fn handle_data_request_inner(
                     peer_ip,
                     bus,
                 )
-                .await
+                .await;
+                // LT-P5 — surface residual (decaying) cumulative risk on the
+                // clean allow response. Only when > 0: a brand-new / fully-
+                // recovered source keeps stamping 0, unchanged.
+                let tag = match clean_allow_score {
+                    Some(s) if s > 0 => tag.with_risk_score(s),
+                    _ => tag,
+                };
+                (resp, tag)
             }
         }
     };
@@ -2067,8 +2116,12 @@ pub(crate) async fn forward_allow_to_upstream(
                 tls: None,
                 body: &body_peek,
             };
-            let decision =
-                aegis_security::rules::evaluate(&snapshot, &view, &route_ctx);
+            let decision = aegis_security::rules::evaluate_with_ctx(
+                &snapshot,
+                &view,
+                &route_ctx,
+                &eval_ctx_for(ctx),
+            );
             if let aegis_core::decision::Action::Block { status } = decision.action {
                 let rule_id = decision.rule_id.clone().unwrap_or_else(|| "rule".into());
                 tracing::Span::current().record("outcome", "rule_block");
@@ -2982,12 +3035,19 @@ pub(crate) async fn forward_allow_to_upstream(
                 // duration + bytes histograms, streamed counter). The
                 // metric guard rides the body and records on drop (stream
                 // end / client disconnect). No-op when metrics aren't wired.
-                let resp = match ctx.stream_metrics.as_ref() {
+                let mut resp = match ctx.stream_metrics.as_ref() {
                     Some(m) => resp.map(|body| {
                         crate::upstream::streaming::meter(body, m.clone())
                     }),
                     None => resp,
                 };
+                // AC-P1-a (2026-07-03) — the streaming bypass skips the
+                // body-side response filter (body can't be re-read) but
+                // headers are still writable: strip the leak set
+                // (`Server`, `X-Powered-By`, `X-Debug*`, …) here too so
+                // a streamed response doesn't become the banner-leak
+                // loophole.
+                ctx.pipeline.on_response_headers(resp.headers_mut());
                 return (
                     resp,
                     DecisionTag::allow()
@@ -3012,6 +3072,13 @@ pub(crate) async fn forward_allow_to_upstream(
             // path; `Pipeline::on_body_frame` is only used for
             // outbound response scrubbing.
             let (mut parts_out, body) = resp.into_parts();
+            // AC-P1-a (2026-07-03) — strip leak headers (`Server`,
+            // `X-Powered-By`, `X-Debug*`, `X-Internal*`, …) at the same
+            // pipeline stage as the body scrub below. Runs BEFORE the
+            // response cache store so cached entries are stored (and
+            // later served) already-clean. O(header count), no
+            // allocation when nothing matches.
+            ctx.pipeline.on_response_headers(&mut parts_out.headers);
             // `Full<Bytes>::Error` is `Infallible` — the collect
             // can't fail, but the trait still hands back a Result.
             let body_bytes = {
@@ -4402,6 +4469,20 @@ fn emit_challenge_audit(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// AC-P2-c (2026-07-03) — build the rules-engine [`EvalContext`] for a
+/// request, threading the GeoIP reader so `Country`/`Asn` rule
+/// conditions resolve (pre-fix both data-plane `evaluate()` call sites
+/// used the empty-context shim, which always evaluated geo conditions
+/// false). `rate_limit` stays `None` — unchanged from the old empty
+/// context. When no geoip reader is wired (no feature / no MMDB), geo
+/// conditions safely stay false.
+fn eval_ctx_for(ctx: &crate::proxy::ProxyContext) -> aegis_security::rules::EvalContext {
+    match ctx.geoip.get() {
+        Some(g) => aegis_security::rules::EvalContext::empty().with_geoip(g.clone()),
+        None => aegis_security::rules::EvalContext::empty(),
+    }
+}
+
 fn blocked_response(
     peer: std::net::SocketAddr,
     reason: &str,
@@ -5989,6 +6070,32 @@ mod log_only_enforce_tests {
 
     /// Mock upstream that 200s everything, so a *forwarded* request is
     /// distinguishable from a 403 block by status code.
+    /// AC-P3-b — an upstream that always replies with a fixed status code
+    /// (e.g. 401 to simulate the app rejecting bad credentials), so the
+    /// response-outcome channel can be exercised.
+    async fn spawn_upstream_status(code: u16) -> std::net::SocketAddr {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((s, _)) = l.accept().await {
+                tokio::spawn(async move {
+                    let svc = service_fn(move |_r: hyper::Request<hyper::body::Incoming>| async move {
+                        Ok::<_, Infallible>(
+                            hyper::Response::builder()
+                                .status(code)
+                                .body(crate::body::full(Bytes::from("x")))
+                                .unwrap(),
+                        )
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(s), svc)
+                        .await;
+                });
+            }
+        });
+        addr
+    }
+
     async fn spawn_upstream() -> std::net::SocketAddr {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
@@ -6646,6 +6753,15 @@ rate_limit:
     // the tier threshold; assert it's BLOCKED without a rule and ALLOWED with a
     // matching `then: allow` rule for the peer IP.
     async fn build_attack_waf(rule_yaml: Option<&str>) -> std::net::SocketAddr {
+        build_attack_waf_geo(rule_yaml, None).await
+    }
+
+    /// AC-P2-c — variant that also installs a GeoIP stub on `ctx.geoip`,
+    /// so a `Country`/`Asn` rule condition can resolve the loopback peer.
+    async fn build_attack_waf_geo(
+        rule_yaml: Option<&str>,
+        geoip: Option<std::sync::Arc<dyn aegis_security::geoip::GeoIpLookup>>,
+    ) -> std::net::SocketAddr {
         let backend = spawn_upstream().await;
         let yaml = format!(
             r#"
@@ -6664,6 +6780,9 @@ state: {{ backend: in_memory }}
         let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
         let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
         ctx.interop_modes.set(Arc::new(ModeStore::new(Mode::Enforce))).ok();
+        if let Some(g) = geoip {
+            ctx.geoip.set(g).ok();
+        }
         if let Some(rule_yaml) = rule_yaml {
             let rules: Vec<aegis_security::rules::ast::Rule> =
                 serde_yaml::from_str(rule_yaml).unwrap();
@@ -6735,6 +6854,264 @@ state: {{ backend: in_memory }}
     // A non-matching block rule (scopes to /admin; the attack hits /static/...).
     const BLOCK_ADMIN_RULE: &str =
         "- id: block-admin\n  priority: 100\n  when:\n    path_matches:\n      contains: \"/admin\"\n  then:\n    block:\n      status: 403\n  scope: global\n";
+
+    // AC-P2-c (2026-07-03) — a rules-engine `country` condition must
+    // resolve the peer's country via the geoip reader threaded into the
+    // data-plane `evaluate()` call (pre-fix both sites used the
+    // empty-context shim, so Country/Asn always evaluated false).
+    const GEO_BLOCK_CN_RULE: &str =
+        "- id: geo-block\n  priority: 100\n  when:\n    country: [\"CN\"]\n  then:\n    block:\n      status: 451\n  scope: global\n";
+
+    #[tokio::test]
+    async fn country_rule_blocks_via_data_plane_geoip() {
+        // Stub geoip resolves the loopback test peer to CN.
+        let geo: std::sync::Arc<dyn aegis_security::geoip::GeoIpLookup> = std::sync::Arc::new(
+            aegis_security::geoip::StaticGeoIp::new().with_country("127.0.0.1", "CN"),
+        );
+        let waf = build_attack_waf_geo(Some(GEO_BLOCK_CN_RULE), Some(geo)).await;
+        assert_eq!(
+            get_status(waf, "/").await,
+            451,
+            "a country rule must fire once the data plane threads geoip into evaluate()",
+        );
+    }
+
+    #[tokio::test]
+    async fn country_rule_does_not_block_when_no_geoip_wired() {
+        // Same rule, NO geoip reader → Country evaluates false → forwarded.
+        let waf = build_attack_waf_geo(Some(GEO_BLOCK_CN_RULE), None).await;
+        assert_ne!(
+            get_status(waf, "/").await,
+            451,
+            "no geoip reader → country condition stays false, request forwarded",
+        );
+    }
+
+    // AC-P2-a (2026-07-03) — the BehavioralAnalyzer must be wired into the
+    // data plane behind a default-OFF toggle. When enabled, a stateless
+    // no-cookie source accumulates `behavior_no_cookie` (fires after >5
+    // requests) → risk climbs. When disabled, the analyzer is never
+    // constructed and the same traffic stays at risk 0 (zero cost).
+    async fn run_behavior_probe(analyzer_enabled: bool) -> Option<u32> {
+        let backend = spawn_upstream().await;
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: pool }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend}" }}] }}
+state: {{ backend: in_memory }}
+detectors:
+  behavior_analyzer: {{ enabled: {analyzer_enabled} }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
+        ctx.interop_modes.set(Arc::new(ModeStore::new(Mode::Enforce))).ok();
+
+        let metrics = aegis_control::metrics::MetricsRegistry::init();
+        let args = Arc::new(Args {
+            detectors: aegis_security::detectors::default_detectors(),
+            mask: aegis_security::detectors::SharedDetectorMask::from_config(&cfg.detectors),
+            risk: aegis_security::risk::RiskTracker::new(&cfg.risk),
+            ip_rl: aegis_security::rate_limit::IpRateLimiter::new(
+                crate::config_source::reload::derive_ip_rate_cfg(&cfg),
+            ),
+            load_gauge: aegis_core::LoadGauge::new(cfg.load_mode.clone()),
+            verbosity: aegis_core::SharedVerbosity::from_config(&cfg.logging),
+            rsh: aegis_control::metrics::request_duration::RequestStageHistogram::register(&metrics)
+                .unwrap(),
+            rlh: aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&metrics)
+                .unwrap(),
+            ra: aegis_control::metrics::route_activity::RouteActivityWindow::new(),
+            dlh: aegis_control::metrics::detector_latency::DetectorLatencyHistogram::register(&metrics)
+                .unwrap(),
+            dhm: aegis_control::metrics::detector_hits::DetectorHitMetrics::register(&metrics)
+                .unwrap(),
+            bus: AuditBus::new(64),
+            ctx: ctx.clone(),
+        });
+        let seen: Arc<std::sync::Mutex<Option<Option<u32>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let args_l = args.clone();
+        let seen_l = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, peer)) = waf.accept().await {
+                let args_c = args_l.clone();
+                let seen_c = seen_l.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                        let a = args_c.clone();
+                        let seen = seen_c.clone();
+                        async move {
+                            let (resp, tag) = super::handle_data_request(
+                                req, peer, None, &a.detectors, &a.mask, &a.risk, &a.ip_rl,
+                                &a.load_gauge, &a.verbosity, &a.rsh, &a.rlh, &a.ra, &a.dlh,
+                                &a.bus, &a.ctx, &a.dhm, &ClientIdentity::Anonymous, None,
+                            )
+                            .await;
+                            *seen.lock().unwrap() = Some(tag.risk_score);
+                            Ok::<_, Infallible>(resp)
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // 6 clean no-cookie GETs from the same loopback peer → the 6th
+        // trips behavior_no_cookie (total_count > 5) when the analyzer is on.
+        let mut last = None;
+        for _ in 0..6 {
+            let _ = get_status(waf_addr, "/").await;
+            last = *seen.lock().unwrap();
+        }
+        last.flatten()
+    }
+
+    // AC-P3-b (2026-07-04) — the response-outcome channel. `observe_outcome`
+    // is fed the upstream status of a FORWARDED request, so repeated
+    // upstream client errors (401/403 on bad creds) raise the error-ratio
+    // and eventually fire `behavior_high_errors`. Requests carry a Cookie
+    // so the no-cookie signal doesn't confound the score.
+    async fn run_error_outcome_probe(analyzer_enabled: bool, upstream_status: u16) -> Option<u32> {
+        let backend = spawn_upstream_status(upstream_status).await;
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: pool }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend}" }}] }}
+state: {{ backend: in_memory }}
+detectors:
+  behavior_analyzer: {{ enabled: {analyzer_enabled} }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
+        ctx.interop_modes.set(Arc::new(ModeStore::new(Mode::Enforce))).ok();
+
+        let metrics = aegis_control::metrics::MetricsRegistry::init();
+        let args = Arc::new(Args {
+            detectors: aegis_security::detectors::default_detectors(),
+            mask: aegis_security::detectors::SharedDetectorMask::from_config(&cfg.detectors),
+            risk: aegis_security::risk::RiskTracker::new(&cfg.risk),
+            ip_rl: aegis_security::rate_limit::IpRateLimiter::new(
+                crate::config_source::reload::derive_ip_rate_cfg(&cfg),
+            ),
+            load_gauge: aegis_core::LoadGauge::new(cfg.load_mode.clone()),
+            verbosity: aegis_core::SharedVerbosity::from_config(&cfg.logging),
+            rsh: aegis_control::metrics::request_duration::RequestStageHistogram::register(&metrics)
+                .unwrap(),
+            rlh: aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&metrics)
+                .unwrap(),
+            ra: aegis_control::metrics::route_activity::RouteActivityWindow::new(),
+            dlh: aegis_control::metrics::detector_latency::DetectorLatencyHistogram::register(&metrics)
+                .unwrap(),
+            dhm: aegis_control::metrics::detector_hits::DetectorHitMetrics::register(&metrics)
+                .unwrap(),
+            bus: AuditBus::new(64),
+            ctx: ctx.clone(),
+        });
+        let seen: Arc<std::sync::Mutex<Option<Option<u32>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let args_l = args.clone();
+        let seen_l = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, peer)) = waf.accept().await {
+                let args_c = args_l.clone();
+                let seen_c = seen_l.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                        let a = args_c.clone();
+                        let seen = seen_c.clone();
+                        async move {
+                            let (resp, tag) = super::handle_data_request(
+                                req, peer, None, &a.detectors, &a.mask, &a.risk, &a.ip_rl,
+                                &a.load_gauge, &a.verbosity, &a.rsh, &a.rlh, &a.ra, &a.dlh,
+                                &a.bus, &a.ctx, &a.dhm, &ClientIdentity::Anonymous, None,
+                            )
+                            .await;
+                            *seen.lock().unwrap() = Some(tag.risk_score);
+                            Ok::<_, Infallible>(resp)
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // 12 cookie'd GETs from the same peer. When every upstream reply is
+        // a client error, the outcome channel drives error_ratio > 0.5 and
+        // total > 10 → behavior_high_errors (score 20) on the last request.
+        let mut last = None;
+        for _ in 0..12 {
+            let mut s = tokio::net::TcpStream::connect(waf_addr).await.unwrap();
+            let req = "GET / HTTP/1.1\r\nHost: any\r\nCookie: sess=abc\r\nConnection: close\r\n\r\n";
+            s.write_all(req.as_bytes()).await.unwrap();
+            let mut buf = Vec::new();
+            let _ = s.read_to_end(&mut buf).await;
+            last = *seen.lock().unwrap();
+        }
+        last.flatten()
+    }
+
+    #[tokio::test]
+    async fn error_outcome_channel_raises_high_errors_signal() {
+        // Every upstream reply is 401 → the outcome channel must feed the
+        // error ratio → behavior_high_errors (20) rides the last request.
+        let score = run_error_outcome_probe(true, 401).await;
+        assert!(
+            score.unwrap_or(0) >= 20,
+            "repeated upstream client errors must raise behavior_high_errors, got {score:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn success_outcomes_do_not_raise_high_errors() {
+        // Same traffic but every upstream reply is 200 → no error signal.
+        let score = run_error_outcome_probe(true, 200).await;
+        assert!(
+            score.unwrap_or(0) < 20,
+            "successful upstream outcomes must not trigger the error signal, got {score:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn behavior_analyzer_wired_accumulates_risk_when_enabled() {
+        let score = run_behavior_probe(true).await;
+        assert!(
+            score.is_some_and(|s| s > 0),
+            "enabled analyzer must contribute behavior risk on a stateless source, got {score:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn behavior_analyzer_silent_when_disabled() {
+        let score = run_behavior_probe(false).await;
+        assert!(
+            score.unwrap_or(0) == 0,
+            "disabled analyzer must add no risk (zero cost), got {score:?}",
+        );
+    }
 
     #[tokio::test]
     async fn detector_block_fires_without_an_allow_rule() {
@@ -7067,6 +7444,113 @@ state: {{ backend: in_memory }}
         assert_eq!(
             status_off, 200,
             "challenges off → band score must pass through as allow (forwarded), got {status_off}"
+        );
+    }
+
+    /// LT-P5 (2026-07-03) — the cumulative (decaying) risk score must be
+    /// surfaced on GENUINELY-CLEAN allowed responses, not just on
+    /// challenge/block bands or under-threshold detections. The
+    /// benchmarker validates decay by watching `X-WAF-Risk-Score`
+    /// decrease over a quiet window of allowed requests; if the plain
+    /// `RiskLevel::Allow` path stamps `0`, that curve is invisible.
+    ///
+    /// An IP pre-seeded to an Allow-band score (below `challenge_at`)
+    /// must have that residual score on the allow `DecisionTag`. The
+    /// tag drives `X-WAF-Risk-Score` (`headers::DecisionTag::stamp`), so
+    /// asserting the tag is asserting the header the client sees.
+    #[tokio::test]
+    async fn clean_allow_surfaces_residual_cumulative_risk_score() {
+        let backend = spawn_upstream().await;
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: pool }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend}" }}] }}
+state: {{ backend: in_memory }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
+        ctx.interop_modes.set(Arc::new(ModeStore::new(Mode::Enforce))).ok();
+
+        let metrics = aegis_control::metrics::MetricsRegistry::init();
+        let risk = aegis_security::risk::RiskTracker::new(&cfg.risk);
+        // Score 20 ∈ [0, challenge_at 30) → the request is ALLOWED, and
+        // the residual accumulated risk should ride the allow response.
+        risk.record_malicious("127.0.0.1".parse().unwrap(), 20);
+
+        let args = Arc::new(Args {
+            detectors: aegis_security::detectors::default_detectors(),
+            mask: aegis_security::detectors::SharedDetectorMask::from_config(&cfg.detectors),
+            risk,
+            ip_rl: aegis_security::rate_limit::IpRateLimiter::new(
+                crate::config_source::reload::derive_ip_rate_cfg(&cfg),
+            ),
+            load_gauge: aegis_core::LoadGauge::new(cfg.load_mode.clone()),
+            verbosity: aegis_core::SharedVerbosity::from_config(&cfg.logging),
+            rsh: aegis_control::metrics::request_duration::RequestStageHistogram::register(&metrics)
+                .unwrap(),
+            rlh: aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&metrics)
+                .unwrap(),
+            ra: aegis_control::metrics::route_activity::RouteActivityWindow::new(),
+            dlh: aegis_control::metrics::detector_latency::DetectorLatencyHistogram::register(
+                &metrics,
+            )
+            .unwrap(),
+            dhm: aegis_control::metrics::detector_hits::DetectorHitMetrics::register(&metrics)
+                .unwrap(),
+            bus: AuditBus::new(64),
+            ctx: ctx.clone(),
+        });
+
+        // Capture the allow tag's risk_score out of the per-request closure.
+        let seen: Arc<std::sync::Mutex<Option<Option<u32>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let args_l = args.clone();
+        let seen_l = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, peer)) = waf.accept().await {
+                let args_c = args_l.clone();
+                let seen_c = seen_l.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                        let a = args_c.clone();
+                        let seen = seen_c.clone();
+                        async move {
+                            let (resp, tag) = super::handle_data_request(
+                                req, peer, None,
+                                &a.detectors, &a.mask, &a.risk, &a.ip_rl, &a.load_gauge,
+                                &a.verbosity, &a.rsh, &a.rlh, &a.ra, &a.dlh, &a.bus, &a.ctx,
+                                &a.dhm, &ClientIdentity::Anonymous, None,
+                            )
+                            .await;
+                            *seen.lock().unwrap() = Some(tag.risk_score);
+                            Ok::<_, Infallible>(resp)
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (status, _body) = get_response(waf_addr, "/").await;
+        assert_eq!(status, 200, "Allow-band score must forward as allow");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            Some(Some(20)),
+            "clean allowed response must surface the residual cumulative risk score, not 0/None",
         );
     }
 

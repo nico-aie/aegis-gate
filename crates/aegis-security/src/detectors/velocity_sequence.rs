@@ -15,6 +15,8 @@
 //! | `login → withdrawal` | 5 s | 70 | ATO cashout — even faster + higher value than deposit |
 //! | `otp → deposit` | 5 s | 50 | Same shape after OTP step (most ATOs go through 2FA) |
 //! | `otp → withdrawal` | 5 s | 60 | Same shape, cashout |
+//! | `deposit → withdrawal` | 5 s | 70 | Rapid in-out laundering (AC-P1-b, 2026-07-03) |
+//! | `limit_change → withdrawal` | 5 s | 70 | Raise the cap, drain the account (AC-P1-b) |
 //!
 //! The ruleset is hardcoded for v1 — operator-tunable config lands
 //! when `aegis_core::config::VelocitySequenceConfig` is wired (a
@@ -45,6 +47,7 @@
 //! | `deposit`, `topup`, `recharge` | `Deposit` |
 //! | `withdraw`, `cashout`, `payout` | `Withdrawal` |
 //! | `transfer`, `send-money` | `Withdrawal` (treated as cash movement) |
+//! | `limit` (after the cash tags) | `LimitChange` (AC-P1-b) |
 //! | (anything else) | `Other` (not stored — keeps the ring buffer focused) |
 //!
 //! Only "interesting" tags go into the ring buffer; the `Other`
@@ -65,6 +68,12 @@ enum EndpointTag {
     Otp,
     Deposit,
     Withdrawal,
+    /// AC-P1-b (2026-07-03) — account-limit mutation routes
+    /// (`/api/account/limits`, `/settings/limit`, …). Only ever a
+    /// `prev` in the rule table: raising a cap right before a
+    /// withdrawal is the fraud shape; the limit change alone is
+    /// benign.
+    LimitChange,
 }
 
 impl EndpointTag {
@@ -82,6 +91,15 @@ impl EndpointTag {
         if p.contains("deposit") || p.contains("topup") || p.contains("recharge") {
             return Some(Self::Deposit);
         }
+        // AC-P1-b — checked AFTER withdraw/deposit so a route like
+        // `/settings/withdrawal-limit` keeps the higher-signal
+        // Withdrawal tag. "limit" alone is deliberately generous
+        // (matches `/limits`, `/profile-limit`); a false LimitChange
+        // tag costs one ring-buffer slot and can only score if a
+        // withdrawal follows within the window.
+        if p.contains("limit") {
+            return Some(Self::LimitChange);
+        }
         if p.contains("otp") || p.contains("2fa") || p.contains("verify") {
             return Some(Self::Otp);
         }
@@ -97,6 +115,7 @@ impl EndpointTag {
             Self::Otp => "otp",
             Self::Deposit => "deposit",
             Self::Withdrawal => "withdrawal",
+            Self::LimitChange => "limit_change",
         }
     }
 }
@@ -133,6 +152,21 @@ const RULES: &[SequenceRule] = &[
         next: EndpointTag::Withdrawal,
         window: Duration::from_secs(5),
         score: 60,
+    },
+    // AC-P1-b (2026-07-03) — fraud shapes with no auth step in the
+    // window. Withdrawal target → block-class 70, matching
+    // login→withdrawal above.
+    SequenceRule {
+        prev: EndpointTag::Deposit,
+        next: EndpointTag::Withdrawal,
+        window: Duration::from_secs(5),
+        score: 70,
+    },
+    SequenceRule {
+        prev: EndpointTag::LimitChange,
+        next: EndpointTag::Withdrawal,
+        window: Duration::from_secs(5),
+        score: 70,
     },
 ];
 
@@ -362,6 +396,87 @@ mod tests {
         let (m, u, h, b, p) = parts(http::Method::POST, "/deposit", "203.0.113.7");
         let signals = d.inspect(&view(&m, &u, &h, &b, p));
         assert!(signals.iter().any(|s| s.tag == "velocity_otp_to_deposit"));
+    }
+
+    /// AC-P1-b (2026-07-03) — fraud-shape table extension. The
+    /// original table only chained FROM login/otp; `deposit →
+    /// withdrawal` (rapid in-out laundering) and `limit-change →
+    /// withdrawal` (raise the cap, drain the account) are classic
+    /// ATO monetisation shapes with no auth step in the window.
+    #[test]
+    fn classify_tags_limit_change_routes() {
+        assert_eq!(
+            EndpointTag::classify("/api/account/limits"),
+            Some(EndpointTag::LimitChange),
+        );
+        assert_eq!(
+            EndpointTag::classify("/settings/limit"),
+            Some(EndpointTag::LimitChange),
+        );
+        // Order pin: a route containing BOTH "withdraw" and "limit"
+        // stays Withdrawal — the withdraw/cashout family is checked
+        // first and is the higher-signal tag.
+        assert_eq!(
+            EndpointTag::classify("/settings/withdrawal-limit"),
+            Some(EndpointTag::Withdrawal),
+        );
+    }
+
+    #[test]
+    fn deposit_to_withdrawal_within_window_fires() {
+        let d = VelocitySequenceDetector::new();
+        let (m, u, h, b, p) = parts(http::Method::POST, "/api/deposit", "203.0.113.20");
+        let _ = d.inspect(&view(&m, &u, &h, &b, p));
+        let (m, u, h, b, p) = parts(http::Method::POST, "/withdraw", "203.0.113.20");
+        let signals = d.inspect(&view(&m, &u, &h, &b, p));
+        assert!(
+            signals.iter().any(|s| s.tag == "velocity_deposit_to_withdrawal" && s.score == 70),
+            "expected deposit_to_withdrawal signal: {signals:?}",
+        );
+    }
+
+    #[test]
+    fn deposit_to_withdrawal_after_window_does_not_fire() {
+        let d = VelocitySequenceDetector::new();
+        let peer_ip: IpAddr = "203.0.113.21".parse().unwrap();
+        {
+            let mut state = d.state.lock().unwrap();
+            let h = state.entry(peer_ip).or_insert_with(History::new);
+            // Backdate the deposit 6 s ago — outside the 5 s window.
+            h.entries.push((
+                EndpointTag::Deposit,
+                Instant::now() - Duration::from_secs(6),
+            ));
+        }
+        let (m, u, h, b, p) = parts(http::Method::POST, "/withdraw", "203.0.113.21");
+        let signals = d.inspect(&view(&m, &u, &h, &b, p));
+        assert!(signals.is_empty(), "expected no signal beyond window: {signals:?}");
+    }
+
+    #[test]
+    fn limit_change_to_withdrawal_fires() {
+        let d = VelocitySequenceDetector::new();
+        let (m, u, h, b, p) = parts(http::Method::PUT, "/api/account/limits", "203.0.113.22");
+        let _ = d.inspect(&view(&m, &u, &h, &b, p));
+        let (m, u, h, b, p) = parts(http::Method::POST, "/withdraw", "203.0.113.22");
+        let signals = d.inspect(&view(&m, &u, &h, &b, p));
+        assert!(
+            signals.iter().any(|s| s.tag == "velocity_limit_change_to_withdrawal" && s.score == 70),
+            "expected limit_change_to_withdrawal signal: {signals:?}",
+        );
+    }
+
+    /// The reverse order (withdraw first, then a limit change) is a
+    /// benign shape — no rule targets LimitChange as `next`, so the
+    /// only cost of storing it is one ring-buffer slot.
+    #[test]
+    fn withdrawal_then_limit_change_does_not_fire() {
+        let d = VelocitySequenceDetector::new();
+        let (m, u, h, b, p) = parts(http::Method::POST, "/withdraw", "203.0.113.23");
+        let _ = d.inspect(&view(&m, &u, &h, &b, p));
+        let (m, u, h, b, p) = parts(http::Method::PUT, "/api/account/limits", "203.0.113.23");
+        let signals = d.inspect(&view(&m, &u, &h, &b, p));
+        assert!(signals.is_empty(), "reverse order fired: {signals:?}");
     }
 
     #[test]
