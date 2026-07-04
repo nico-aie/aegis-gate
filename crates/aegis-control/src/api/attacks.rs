@@ -18,7 +18,6 @@
 //!
 //! Spec: `docs/control-plane/enterprise/api.md` §"Attack analytics".
 
-#![allow(dead_code)]
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};

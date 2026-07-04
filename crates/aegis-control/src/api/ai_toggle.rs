@@ -16,7 +16,6 @@
 //! that don't wire the proxy can fake it without pulling the
 //! real detector.
 
-#![allow(dead_code)]
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

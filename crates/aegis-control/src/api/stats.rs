@@ -15,7 +15,6 @@
 //! - The JSON shape is documented in
 //!   `docs/control-plane/enterprise/api.md` §"Stats / Overview".
 
-#![allow(dead_code)]
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};

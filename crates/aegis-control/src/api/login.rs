@@ -15,7 +15,6 @@
 //! so the proxy's async wrapper can map it to a hyper `Response`
 //! without re-implementing the policy.
 
-#![allow(dead_code)]
 
 use std::sync::Arc;
 

@@ -7,7 +7,6 @@
 //! field; today the only configured auth is mTLS (data plane)
 //! or argon2 session cookies (admin plane).
 
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 

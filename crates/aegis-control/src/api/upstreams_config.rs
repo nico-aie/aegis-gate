@@ -22,7 +22,6 @@
 //! response (so the UI can pre-flight without a PUT round-trip)
 //! and lets the PUT handler import them when it lands.
 
-#![allow(dead_code)]
 
 use std::collections::BTreeMap;
 

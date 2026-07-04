@@ -6,7 +6,6 @@
 //! routes through `AuditedMutate` so every level change lands an
 //! admin chain entry.
 
-#![allow(dead_code)]
 
 use aegis_core::config::AuditSinkConfig;
 use aegis_core::{SharedVerbosity, VerbosityLevel};

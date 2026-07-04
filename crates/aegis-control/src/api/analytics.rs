@@ -18,7 +18,6 @@
 //! Prometheus's `/api/v1/query` returns so the page module is ready
 //! once the registry is plumbed.
 
-#![allow(dead_code)]
 
 use serde::Serialize;
 

@@ -217,7 +217,7 @@ fn redteam_header_content_type() {
 #[test]
 fn redteam_body_oversize() {
     let d = BodyAbuseDetector { max_body_bytes: 100, max_nesting_depth: 20 };
-    let (m, u, h, b) = make_view(http::Method::POST, "/api", b"x");
+    let (m, u, h, _b) = make_view(http::Method::POST, "/api", b"x");
     let bp = BodyPeek::new(b"x".to_vec(), Some(50_000_000), false);
     let r = RequestView {
         method: &m,

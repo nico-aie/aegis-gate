@@ -7,7 +7,6 @@
 //! store), the module returns the documented JSON shape with empty
 //! lists so the page renders cleanly.
 
-#![allow(dead_code)]
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};

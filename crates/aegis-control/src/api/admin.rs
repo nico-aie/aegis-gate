@@ -6,7 +6,6 @@
 //! in-memory state for break-glass + sessions until the etcd-backed
 //! cluster runtime lands.
 
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

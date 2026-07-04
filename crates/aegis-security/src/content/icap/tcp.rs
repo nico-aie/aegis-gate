@@ -235,7 +235,6 @@ impl IcapClient for IcapTcpClient {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU16, Ordering};
-    use tokio::io::AsyncWriteExt as _;
     use tokio::net::TcpListener;
 
     /// Spin up a one-shot TCP server on `127.0.0.1:0` that

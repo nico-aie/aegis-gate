@@ -15,7 +15,6 @@
 //! have different storage shapes; one trait per shape keeps the data
 //! plane's hot-path read symmetrical and the test fakes trivial.
 
-#![allow(dead_code)]
 
 use std::sync::atomic::{AtomicU32, Ordering};
 

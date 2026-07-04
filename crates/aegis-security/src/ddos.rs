@@ -905,7 +905,7 @@ mod tests {
                 "ddos must allow request {i} (under the 1000/10s limit)",
             );
             assert!(
-                ip_lim.consume_at(ip, now).allowed,
+                ip_lim.consume_at_with_key(aegis_core::risk::RiskKey::from_ip(ip), now).allowed,
                 "ip_limiter must allow request {i}",
             );
         }
@@ -920,7 +920,7 @@ mod tests {
         );
         // ...while the ip_limiter backstop is still wide open (1001 << 1M).
         assert!(
-            ip_lim.consume_at(ip, now).allowed,
+            ip_lim.consume_at_with_key(aegis_core::risk::RiskKey::from_ip(ip), now).allowed,
             "ip_limiter backstop must stay open long past the ddos block — \
              it is a backstop, not the volumetric gate",
         );

@@ -356,7 +356,6 @@ async fn watch_loop(
 mod tests {
     use super::*;
     use crate::state::in_memory::InMemoryBackend;
-    use std::io::Write;
 
     fn minimal_yaml() -> String {
         r#"
@@ -494,21 +493,34 @@ state:
         // reliably catches on both inotify and macOS FSEvents. (An in-place
         // `File::create` truncate is flaky under FSEvents, which is what made
         // this test intermittently time out.)
+        //
+        // LT-P8 (2026-07-04) — retry the MUTATION, not just the wait, and
+        // budget generously. Measured on the macOS dev box: FSEvents can
+        // drop events in the watcher's cold-start window (even past the
+        // 600ms arm sleep) AND its delivery latency can spike to several
+        // seconds on a loaded machine — one observed run dropped three
+        // renames spread over 6s. Once an event is dropped, no amount of
+        // post-waiting can see v2, so each attempt re-renames (the same
+        // contract: a file change → publish) against a watcher that is
+        // more certainly armed. First attempt wins in <1s typically; the
+        // 5×4s ceiling only pays on pathological runs.
         let updated = minimal_yaml().replace("127.0.0.1:3000", "127.0.0.1:8888");
-        let tmp = dir.path().join("waf.yaml.tmp");
-        std::fs::write(&tmp, updated.as_bytes()).unwrap();
-        std::fs::rename(&tmp, &config_path).unwrap();
-
-        // Poll for the debounced publish rather than a single fixed sleep —
-        // the notify event + 100ms debounce can lag under parallel test load,
-        // which makes a one-shot sleep flaky.
         let mut doc = None;
-        for _ in 0..50 {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            if let Some(d) = store.load().await.unwrap() {
-                if d.version == 2 {
-                    doc = Some(d);
-                    break;
+        'attempts: for _ in 0..5 {
+            let tmp = dir.path().join("waf.yaml.tmp");
+            std::fs::write(&tmp, updated.as_bytes()).unwrap();
+            std::fs::rename(&tmp, &config_path).unwrap();
+
+            // Poll for the debounced publish rather than a single fixed
+            // sleep — the notify event + 100ms debounce can lag under
+            // parallel test load.
+            for _ in 0..40 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                if let Some(d) = store.load().await.unwrap() {
+                    if d.version == 2 {
+                        doc = Some(d);
+                        break 'attempts;
+                    }
                 }
             }
         }
