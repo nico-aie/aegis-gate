@@ -35,15 +35,27 @@ pub fn apply_logging_put(
     }
 }
 
-/// One row of the cold-tier sink list. `delivery` is a placeholder
-/// today — the production version is wired by the sink runtime
-/// once it tracks per-sink last-success / lag.
+/// One row of the cold-tier sink list. PE-2 (committee round-2 🔴3):
+/// `delivery` + counters come from the live
+/// [`crate::audit::sinks::delivery::DeliveryRegistry`] the sink
+/// tasks record into — the old hardcoded `"unknown"` is gone.
+///
+/// `delivery` taxonomy:
+/// - `ok`      — last write succeeded
+/// - `error`   — last write failed (counters show scope)
+/// - `pending` — task running, nothing flushed yet
+/// - `unwired` — configured but no forwarder task exists in this
+///   build (Splunk/Kafka today) or the task failed to start
 #[derive(Clone, Debug, Serialize)]
 pub struct SinkEntry {
     pub id: &'static str,
     pub kind: &'static str,
     pub destination: String,
     pub delivery: &'static str,
+    pub delivered: u64,
+    pub errors: u64,
+    pub last_success: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_error: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -52,43 +64,68 @@ pub struct ColdTierResponse {
     pub fallback_buffer_bytes: u64,
 }
 
-/// Render `/api/cold-tier` from a `WafConfig.audit.sinks` slice.
-/// `delivery` is reported as `"unknown"` until the sink runtime
-/// publishes per-sink state — surfacing the operator's configured
-/// destinations with a known-stale flag is more useful than a
-/// permanent `not_supported` 404.
-pub fn render_cold_tier(sinks: &[AuditSinkConfig]) -> String {
+/// Render `/api/cold-tier` from a `WafConfig.audit.sinks` slice,
+/// joined against the delivery registry the sink tasks record into.
+pub fn render_cold_tier(
+    sinks: &[AuditSinkConfig],
+    registry: &crate::audit::sinks::delivery::DeliveryRegistry,
+) -> String {
+    use crate::audit::sinks::delivery::sink_key;
+    let stats = registry.snapshot();
     let entries: Vec<SinkEntry> = sinks
         .iter()
-        .map(|cfg| match cfg {
-            AuditSinkConfig::Jsonl { path, .. } => SinkEntry {
-                id: "jsonl",
-                kind: "file",
-                destination: path.display().to_string(),
-                delivery: "unknown",
-            },
-            AuditSinkConfig::Syslog { address, transport, .. } => SinkEntry {
-                id: "syslog",
-                kind: match transport {
-                    aegis_core::config::SyslogTransport::Udp => "udp",
-                    aegis_core::config::SyslogTransport::Tcp => "tcp",
-                    aegis_core::config::SyslogTransport::Tls => "tls",
+        .map(|cfg| {
+            let (id, kind, destination): (&'static str, &'static str, String) = match cfg {
+                AuditSinkConfig::Jsonl { path, .. } => {
+                    ("jsonl", "file", path.display().to_string())
+                }
+                AuditSinkConfig::Syslog { address, transport, .. } => (
+                    "syslog",
+                    match transport {
+                        aegis_core::config::SyslogTransport::Udp => "udp",
+                        aegis_core::config::SyslogTransport::Tcp => "tcp",
+                        aegis_core::config::SyslogTransport::Tls => "tls",
+                    },
+                    address.clone(),
+                ),
+                AuditSinkConfig::Splunk { endpoint, .. } => {
+                    ("splunk", "https", endpoint.clone())
+                }
+                AuditSinkConfig::Kafka { brokers, topic } => {
+                    ("kafka", "stream", format!("{} / {topic}", brokers.join(",")))
+                }
+            };
+            match stats.get(&sink_key(cfg)) {
+                None => SinkEntry {
+                    id,
+                    kind,
+                    destination,
+                    delivery: "unwired",
+                    delivered: 0,
+                    errors: 0,
+                    last_success: None,
+                    last_error: None,
                 },
-                destination: address.clone(),
-                delivery: "unknown",
-            },
-            AuditSinkConfig::Splunk { endpoint, .. } => SinkEntry {
-                id: "splunk",
-                kind: "https",
-                destination: endpoint.clone(),
-                delivery: "unknown",
-            },
-            AuditSinkConfig::Kafka { brokers, topic } => SinkEntry {
-                id: "kafka",
-                kind: "stream",
-                destination: format!("{} / {topic}", brokers.join(",")),
-                delivery: "unknown",
-            },
+                Some(s) => {
+                    let delivery = if s.delivered == 0 && s.errors == 0 {
+                        "pending"
+                    } else if s.errors > 0 && s.last_error_ms() >= s.last_success_ms() {
+                        "error"
+                    } else {
+                        "ok"
+                    };
+                    SinkEntry {
+                        id,
+                        kind,
+                        destination,
+                        delivery,
+                        delivered: s.delivered,
+                        errors: s.errors,
+                        last_success: s.last_success,
+                        last_error: s.last_error,
+                    }
+                }
+            }
         })
         .collect();
     let body = ColdTierResponse {
@@ -262,7 +299,8 @@ mod tests {
                 topic: "audit".into(),
             },
         ];
-        let body = render_cold_tier(&sinks);
+        let registry = crate::audit::sinks::delivery::DeliveryRegistry::new();
+        let body = render_cold_tier(&sinks, &registry);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         let arr = v["sinks"].as_array().unwrap();
         assert_eq!(arr.len(), 4);
@@ -281,7 +319,8 @@ mod tests {
 
     #[test]
     fn render_cold_tier_with_no_sinks_returns_empty_list() {
-        let body = render_cold_tier(&[]);
+        let registry = crate::audit::sinks::delivery::DeliveryRegistry::new();
+        let body = render_cold_tier(&[], &registry);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert!(v["sinks"].as_array().unwrap().is_empty());
         assert_eq!(v["fallback_buffer_bytes"].as_u64(), Some(0));

@@ -31,6 +31,14 @@ pub trait GeoIpLookup: Send + Sync {
     /// `None` if the IP is unknown, or if no ASN DB is
     /// configured.
     fn asn(&self, ip: IpAddr) -> Option<u32>;
+
+    /// PE-2 — how many indicators (search-tree nodes across the
+    /// loaded DBs) this lookup carries. `None` when the
+    /// implementation can't count — rendered as `null` on
+    /// `/api/geoip/status`, never a fake `0`.
+    fn indicator_count(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// In-memory lookup useful for tests and dev environments.

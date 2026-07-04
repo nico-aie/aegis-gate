@@ -246,14 +246,14 @@ impl IntegrationsResponse {
     /// Constructed from the live config on every read — these are
     /// pure config mirrors, no separate state.
     pub fn from_config(cfg: &aegis_core::config::WafConfig) -> Self {
-        // Optional fields not yet on AdminConfig — return None for
-        // now; future config additions populate them.
-        let _ = cfg;
         Self {
             grafana_url: None,
             alertmanager_url: None,
             gitops_repo: None,
-            prometheus_url: None,
+            // PE-2 — mirrors `admin.prometheus_url` (the analytics
+            // proxy backend). The other fields have no config source
+            // yet and stay None.
+            prometheus_url: cfg.admin.prometheus_url.clone(),
         }
     }
 }
