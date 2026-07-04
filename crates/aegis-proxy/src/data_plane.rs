@@ -167,7 +167,7 @@ pub(crate) async fn handle_data_request(
 /// forward-path allow sites stay one-liners. `with_rule_id` labels the tag
 /// without changing its `Allow` action.
 fn build_allow_tag(
-    attribution: Option<&'static str>,
+    attribution: Option<&str>,
 ) -> aegis_control::interop::headers::DecisionTag {
     let tag = aegis_control::interop::headers::DecisionTag::allow();
     match attribution {
@@ -1125,33 +1125,52 @@ pub(crate) async fn handle_data_request_inner(
     // decision is Allow AND it was produced by a rule whose action is Allow
     // (not the default pass-through, and not a non-terminal RaiseRisk/LogOnly
     // match that also leaves a rule_id).
-    let rule_allow = match (upstream_ctx.active_ruleset.get(), resolved_route.as_ref()) {
-        (Some(rs), Some(rc)) => {
-            let snap = rs.snapshot();
-            let decision =
-                aegis_security::rules::evaluate_with_ctx(&snap, &view, rc, &eval_ctx_for(upstream_ctx));
-            matches!(decision.action, aegis_core::decision::Action::Allow)
-                && decision.rule_id.as_deref().is_some_and(|id| {
-                    snap.iter().any(|r| {
-                        r.id == id
-                            && matches!(r.action, aegis_security::rules::ast::RuleAction::Allow)
+    // Capture the matched allow rule's id (not just a bool) so it can be
+    // attributed on the allow tag below, symmetric with the block-rule path.
+    let matched_allow_rule: Option<String> =
+        match (upstream_ctx.active_ruleset.get(), resolved_route.as_ref()) {
+            (Some(rs), Some(rc)) => {
+                let snap = rs.snapshot();
+                let decision = aegis_security::rules::evaluate_with_ctx(
+                    &snap,
+                    &view,
+                    rc,
+                    &eval_ctx_for(upstream_ctx),
+                );
+                if matches!(decision.action, aegis_core::decision::Action::Allow) {
+                    // Only an EXPLICIT `then: allow` rule (verified against the
+                    // ruleset), not the engine's default pass-through.
+                    decision.rule_id.filter(|id| {
+                        snap.iter().any(|r| {
+                            r.id == *id
+                                && matches!(
+                                    r.action,
+                                    aegis_security::rules::ast::RuleAction::Allow
+                                )
+                        })
                     })
-                })
-        }
-        _ => false,
-    };
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
     // Either a static whitelist entry or a matching operator `allow` rule
     // bypasses the detector chain.
-    let bypass_detectors = on_whitelist || rule_allow;
+    let bypass_detectors = on_whitelist || matched_allow_rule.is_some();
 
-    // Attribute a whitelist bypass on the eventual allow tag so
-    // `X-WAF-Rule-Id` (and the listener's allow-audit row) read
-    // `whitelist` instead of `none` — the operator can then see *why* a
-    // request was allowed, mirroring the blacklist BLOCK path which
-    // already stamps `blacklist`. Only the static whitelist is attributed
-    // here; operator `allow` rules already carry their own rule_id in the
-    // engine. `&'static str` so it's Copy across the forward-path sites.
-    let allow_rule_id: Option<&'static str> = on_whitelist.then_some("whitelist");
+    // Attribute the allow tag so `X-WAF-Rule-Id` (and the listener's
+    // allow-audit row) read *why* the request was allowed instead of
+    // `none` — symmetric with the blacklist/block-rule paths that already
+    // stamp their id. Whitelist takes precedence (checked first, the
+    // broader trust statement); otherwise the matched allow rule's id. A
+    // borrowed `&str` is threaded into the forward leaves (Copy across the
+    // per-site build calls); the owning `String` lives for the request.
+    let allow_rule_id: Option<String> = if on_whitelist {
+        Some("whitelist".to_string())
+    } else {
+        matched_allow_rule
+    };
 
     // Tier-1A — GraphQL query guard. Runs on the buffered body for `POST`s
     // to a configured GraphQL path BEFORE the detector chain, so an abusive
@@ -1622,7 +1641,7 @@ pub(crate) async fn handle_data_request_inner(
             request_start,
             peer_ip,
             bus,
-            allow_rule_id,
+            allow_rule_id.as_deref(),
         )
         .await;
         // Surface the accumulated risk on the allow response so the
@@ -1745,7 +1764,7 @@ pub(crate) async fn handle_data_request_inner(
                         request_start,
                         peer_ip,
                         bus,
-                        allow_rule_id,
+                        allow_rule_id.as_deref(),
                     )
                     .await
                 } else {
@@ -1889,7 +1908,7 @@ pub(crate) async fn handle_data_request_inner(
                         request_start,
                         peer_ip,
                         bus,
-                        allow_rule_id,
+                        allow_rule_id.as_deref(),
                     )
                     .await
                 } else if rc_mode == aegis_control::interop::headers::Mode::LogOnly {
@@ -1904,7 +1923,7 @@ pub(crate) async fn handle_data_request_inner(
                         request_start,
                         peer_ip,
                         bus,
-                        allow_rule_id,
+                        allow_rule_id.as_deref(),
                     )
                     .await
                 } else {
@@ -1927,7 +1946,7 @@ pub(crate) async fn handle_data_request_inner(
                     request_start,
                     peer_ip,
                     bus,
-                    allow_rule_id,
+                    allow_rule_id.as_deref(),
                 )
                 .await;
                 // LT-P5 — surface residual (decaying) cumulative risk on the
@@ -2033,11 +2052,14 @@ pub(crate) async fn forward_allow_to_upstream(
     // into the spawned bridge task so the close event lands
     // even after this handler has returned.
     bus: &AuditBus,
-    // Attribution for the allow tag: `Some("whitelist")` when the caller
-    // reached this leaf via a static-whitelist bypass, so `X-WAF-Rule-Id`
-    // (+ the allow-audit row) explain why the request was allowed. `None`
-    // for ordinary clean allows (stamps `none`, unchanged behavior).
-    allow_rule_id: Option<&'static str>,
+    // Attribution for the allow tag: `Some(id)` when the caller reached
+    // this leaf via a static-whitelist (`whitelist`) or matched allow-rule
+    // bypass, so `X-WAF-Rule-Id` (+ the allow-audit row) explain why the
+    // request was allowed. `None` for ordinary clean allows (stamps
+    // `none`, unchanged behavior). Borrowed — the owning `String` lives in
+    // the caller for the request's duration; `Option<&str>` is Copy so the
+    // per-site `build_allow_tag` calls below don't move it.
+    allow_rule_id: Option<&str>,
 ) -> (
     Response<crate::body::DataBody>,
     aegis_control::interop::headers::DecisionTag,
@@ -3300,9 +3322,9 @@ async fn forward_connect_tunnel(
     peer_ip: std::net::IpAddr,
     bus: &AuditBus,
     request_id: String,
-    // Same whitelist attribution as `forward_allow_to_upstream` — a
-    // whitelisted CONNECT tunnel's allow tag reads `whitelist`.
-    allow_rule_id: Option<&'static str>,
+    // Same allow attribution as `forward_allow_to_upstream` — a
+    // whitelisted / allow-rule CONNECT tunnel's allow tag reads its id.
+    allow_rule_id: Option<&str>,
 ) -> (
     Response<crate::body::DataBody>,
     aegis_control::interop::headers::DecisionTag,
@@ -7318,6 +7340,18 @@ detectors:
     // one request from the loopback peer and returns the resolved
     // `DecisionTag.rule_id` (what the listener stamps into X-WAF-Rule-Id).
     async fn run_whitelist_attribution_probe(seed_whitelist: bool) -> Option<String> {
+        run_allow_attribution_probe(seed_whitelist, None).await
+    }
+
+    /// Drives one request from the loopback peer and returns the resolved
+    /// `DecisionTag.rule_id` (what the listener stamps into X-WAF-Rule-Id
+    /// and the allow-audit row). Optionally seeds a static whitelist entry
+    /// and/or an operator ruleset, to exercise every allow-attribution
+    /// combination.
+    async fn run_allow_attribution_probe(
+        seed_whitelist: bool,
+        rule_yaml: Option<&str>,
+    ) -> Option<String> {
         let backend = spawn_upstream().await;
         let yaml = format!(
             r#"
@@ -7352,6 +7386,14 @@ state: {{ backend: in_memory }}
                     created_at: chrono::Utc::now(),
                 })
                 .expect("seed whitelist entry");
+        }
+
+        if let Some(rule_yaml) = rule_yaml {
+            let rules: Vec<aegis_security::rules::ast::Rule> =
+                serde_yaml::from_str(rule_yaml).unwrap();
+            ctx.active_ruleset
+                .set(std::sync::Arc::new(aegis_security::RuleSet::from_rules(rules)))
+                .ok();
         }
 
         let metrics = aegis_control::metrics::MetricsRegistry::init();
@@ -7430,6 +7472,33 @@ state: {{ backend: in_memory }}
         assert_eq!(
             rule_id, None,
             "a non-whitelisted clean allow must stay rule_id=None (stamps `none`)",
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_allow_rule_is_attributed_on_rule_id() {
+        // A `then: allow` rule that matches bypasses the detector chain (like
+        // the whitelist) — its allow must carry the operator's rule id so
+        // X-WAF-Rule-Id / the audit row show WHICH rule allowed it, symmetric
+        // with the already-attributed block-rule path.
+        let rule_id = run_allow_attribution_probe(false, Some(ALLOW_LOCAL_RULE)).await;
+        assert_eq!(
+            rule_id.as_deref(),
+            Some("allow-local"),
+            "a matching operator allow rule must attribute its id on the allow tag",
+        );
+    }
+
+    #[tokio::test]
+    async fn whitelist_wins_over_allow_rule_attribution() {
+        // Both apply: the static whitelist is checked first and is the broader
+        // trust statement, so it owns the attribution.
+        let rule_id = run_allow_attribution_probe(true, Some(ALLOW_LOCAL_RULE)).await;
+        assert_eq!(
+            rule_id.as_deref(),
+            Some("whitelist"),
+            "whitelist precedence: a whitelisted source that also matches an \
+             allow rule attributes `whitelist`, not the rule id",
         );
     }
 
