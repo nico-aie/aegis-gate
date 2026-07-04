@@ -1923,7 +1923,10 @@ state: { backend: in_memory }
     fn spawn_services() -> (DashboardServices, tokio::task::JoinHandle<()>) {
         DashboardServices::spawn(
             AuditBus::new(8),
-            Arc::new(|| PoolHealthSnapshot { pools: Vec::new(), ..Default::default() }),
+            Arc::new(|| PoolHealthSnapshot {
+                pools: Vec::new(),
+                ..Default::default()
+            }),
             None,
         )
     }
