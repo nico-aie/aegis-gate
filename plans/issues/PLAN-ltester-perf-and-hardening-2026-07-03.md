@@ -28,7 +28,7 @@ codegen-units = 1
 panic = "abort"       # smaller/faster — CONFIRM no test/prod path relies on unwinding
 strip = "debuginfo"
 ```
-- **`panic = "abort"` caveat:** the workspace has 182 non-test `panic!` + 495 `.expect(` (LT-P4). With `abort`, any of those on the request path takes down the process instead of unwinding one task. **Do LT-P4's hot-path triage first, or ship LT-P1 without `panic="abort"` initially** and add it after triage. Also confirm no integration test depends on catching unwind.
+- **`panic = "abort"` — DO NOT ADD (rejected 2026-07-04, see LT-P1b below).** It defeats the WAF's per-connection tokio unwind isolation, turning any handler panic into a whole-process DoS. LT-P1 shipped (merged) deliberately without it; keep it that way.
 - **Verify:** `cargo build --release -p aegis-bin --features "redis alerts geoip"` clean; run `deploy/STAGING-BENCHMARK.md` before/after and record p99 + throughput delta here. This is the single cheapest Performance win — it must be measured, not claimed.
 
 ## LT-P2 — per-detector `Vec<Regex>` → `RegexSet` single pass · **REJECTED (measured slower) 2026-07-03** · *(audit O-2 · Performance)*
@@ -53,11 +53,19 @@ strip = "debuginfo"
 - **Option B (safer if A regresses benchmark):** keep the high backstop but **prove + document** that `ddos.rs` (the per-`(tier,ip)` flood window, 1000 req/10s default) fully covers the volumetric case, and state the division of labor in a comment + runbook. Pairs with AC-P3-d (L4 posture doc).
 - **Verify:** confirm which gate fires first under a single-IP L7 flood in staging; document the answer either way.
 
-## LT-P4 — triage non-test `panic!` / `.expect(` on request paths · **M** · *(audit I-1 · Code Quality / graceful degradation; prereq for LT-P1 `panic=abort`)*
-182 `panic!` + 495 `.expect(` workspace-wide (majority in `#[cfg(test)]`). Hot files (`data_plane.rs`, `accept.rs`) are already `unwrap`-clean, but e.g. a poisoned-lock `expect` in the control plane (`reset_callbacks.lock().expect(...)`) aborts the thread if a callback panics under the lock. §5.8 mandates graceful degradation.
-- `rg 'panic!|\.expect\(' crates/*/src` filtered to non-test modules; triage each on a request-handling path → convert to `fail_open`/`fail_close` per route tier (the tier failure-mode machinery already exists, `data_plane.rs:715`).
-- **Gates LT-P1's `panic="abort"`** — finish the hot-path subset before enabling abort.
-- **Verify:** targeted tests that a poisoned lock / callback panic degrades per tier instead of aborting the process.
+## LT-P1b — `panic = "abort"` · **REJECTED (unsafe here) 2026-07-04** · *(Performance)*
+
+> **Outcome: rejected — `panic="abort"` defeats the WAF's per-connection unwind isolation and turns any handler panic into an adversarially-triggerable whole-process DoS.** The accept loops spawn a `tokio::spawn` task **per connection** (`accept.rs:205,586,816,1261,…`). Under the shipped `panic = unwind`, a panic in a request handler kills **only that connection's task** — the runtime + process survive and the WAF keeps serving everyone else. Under `panic="abort"` the same panic **aborts the whole process**: find one input that panics a handler and you kill the entire WAF. That's a direct availability regression and undercuts the §5.8 graceful-degradation posture.
+>
+> Supporting facts: the only `catch_unwind` in the tree is in **tests** (shed.rs, upstream/mod.rs) — production resilience is entirely tokio task-per-connection unwind isolation, not explicit catching. The §5.8 `fail_open`/`fail_close` machinery (`data_plane.rs:732+`) handles **backend errors** (Result-based), not panics, so it doesn't cover the abort case. `catch_unwind` and `panic="abort"` are fundamentally incompatible — you cannot have both graceful per-request degradation and abort.
+>
+> **Keep `panic = unwind`.** The marginal binary-size / perf gain is not worth converting every handler panic into a WAF-wide outage. (Same shape as the LT-P2 rejection — the perf intuition didn't survive contact with the codebase's availability model.) The shipped `[profile.release]` (LT-P1, merged) deliberately omits `panic="abort"` and should stay that way.
+
+## LT-P4 — triage non-test `panic!` / `.expect(` on request paths · **SKIPPED 2026-07-04 (purpose removed by LT-P1b rejection)** · *(audit I-1 · Code Quality)*
+
+> **Skipped.** LT-P4's entire justification was to be the gate for LT-P1b's `panic="abort"`. With LT-P1b rejected (above), that gate is moot. Under the retained `panic = unwind` build the request path already has the isolation LT-P4 was meant to provide: hot files (`data_plane.rs`, `accept.rs`) are `unwrap`-clean, the per-request mode read is **lock-free** (`ArcSwap`, `mode.rs:88`), and `reset_state` snapshots callbacks under the lock then runs them **unlocked** with a panic-free critical section (`control.rs:331-337`) — so the cited "poisoned-lock cascade" is largely theoretical, and poison-recovery is irrelevant under a build that never enables abort. A panicking request-handler or reset cleaner already degrades to a dropped connection / dead task, not a process abort. General panic-hygiene remains a nice-to-have but is low-value and not tracked here.
+>
+> *Original scope (for the record):* 182 `panic!` + 495 `.expect(` workspace-wide (majority `#[cfg(test)]`); triage request-path sites to `fail_open`/`fail_close`. Not pursued.
 
 ## LT-P5 — verify risk **decay** shows on allowed-response `X-WAF-Risk-Score` · **M** · *(audit I-3 / scorecard §3 · Intelligence)*
 Decay is configured (`decay_half_life`, default 5 min; `reconcile.rs`) but described as "monotonic in practice, decreased via separate `add_risk(_, -decay)`." Rules §5.5 requires score to **decrease on sustained normal behavior**, and the benchmarker validates accumulation *and* decay on **allowed** responses.
@@ -87,9 +95,9 @@ Default is safe (empty `trusted_proxies` → TCP peer wins). But if the judged c
 
 | Order | Item | Effort | Payoff | Bucket |
 |---|---|---|---|---|
-| 1 | LT-P1 release profile (minus `panic=abort`) | S | High | Performance |
-| 2 | LT-P4 hot-path panic/expect triage | M | Med | Code Quality → unlocks `panic=abort` |
-| 3 | LT-P1b add `panic="abort"` after LT-P4 | S | Low | Performance |
+| 1 | LT-P1 release profile (minus `panic=abort`) | S | High | Performance ✅ shipped |
+| 2 | ~~LT-P4 hot-path panic/expect triage~~ | — | — | **SKIPPED** (gate removed) |
+| 3 | ~~LT-P1b add `panic="abort"`~~ | — | — | **REJECTED** (abort defeats unwind isolation) |
 | 4 | LT-P2 `RegexSet` single-pass | M | Med | Performance |
 | 5 | LT-P5 decay-on-allow verify | M | High | Intelligence |
 | 6 | LT-P3 per-IP default / ddos doc | S | Med | Security/Perf |
@@ -97,7 +105,7 @@ Default is safe (empty `trusted_proxies` → TCP peer wins). But if the judged c
 | 8 | LT-P6 v2.6 CI gate | S | Med | Deployment |
 | 9 | LT-P8 hygiene + doc nits | M | Low | Code Quality |
 
-LT-P1 + LT-P2 are the direct Performance-bucket wins (15→~18). LT-P5 + LT-P7 protect points that are otherwise "held pending live verification." LT-P4 is both a hardening win and the gate for LT-P1's `panic=abort`.
+LT-P1 is the direct Performance-bucket win (LT-P2 rejected, measured slower). LT-P5 + LT-P7 protect points that are otherwise "held pending live verification." LT-P4/LT-P1b are rejected/skipped: `panic="abort"` is unsafe here (defeats per-connection unwind isolation → adversarial whole-process DoS), so its hot-path-triage gate has no purpose.
 
 ## Definition of done / archival
 
