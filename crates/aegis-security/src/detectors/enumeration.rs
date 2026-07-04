@@ -127,8 +127,46 @@ impl Detector for EnumerationDetector {
         "enumeration"
     }
 
-    fn inspect(&self, _req: &RequestView<'_>) -> Vec<Signal> {
-        // AC-P2-d stub — implemented in the GREEN step.
+    fn inspect(&self, req: &RequestView<'_>) -> Vec<Signal> {
+        let ip = req.peer.ip();
+        let hash = Self::hash_path(req.uri.path());
+        let now = Instant::now();
+
+        let mut state = self.state.lock().unwrap();
+
+        // Fleet cardinality bound: at the ceiling, evict an arbitrary entry
+        // before admitting a brand-new IP (mirrors behavior_signals).
+        if !state.contains_key(&ip) && state.len() >= self.max_tracked {
+            if let Some(k) = state.keys().next().copied() {
+                state.remove(&k);
+            }
+        }
+
+        let entry = state.entry(ip).or_insert_with(|| IpPaths {
+            hashes: HashSet::new(),
+            window_start: now,
+        });
+
+        // Fixed-window reset: a fresh window drops the prior path set.
+        if now.duration_since(entry.window_start) > WINDOW {
+            entry.hashes.clear();
+            entry.window_start = now;
+        }
+
+        // Per-IP cardinality bound: stop inserting at the cap. The distinct
+        // count is already past `threshold` by then, so detection is intact
+        // and memory can't grow with attacker-chosen paths.
+        if entry.hashes.len() < self.per_ip_cap {
+            entry.hashes.insert(hash);
+        }
+
+        if entry.hashes.len() as u32 > self.threshold {
+            return vec![Signal {
+                score: SCORE,
+                tag: "enumeration".into(),
+                field: format!("distinct_paths:{}", entry.hashes.len()),
+            }];
+        }
         Vec::new()
     }
 }
