@@ -1,4 +1,4 @@
-> 🇻🇳 Bản dịch tiếng Việt của [FEAT-placeholder-endpoints-cleanup-2026-07.md](../round-2-improvement/FEAT-placeholder-endpoints-cleanup-2026-07.md) — bản gốc tiếng Anh là source of truth.
+> 🇻🇳 Bản dịch tiếng Việt của [FEAT-placeholder-endpoints-cleanup-2026-07.md](../../issues/FEAT-placeholder-endpoints-cleanup-2026-07.md) — bản gốc tiếng Anh là source of truth.
 
 # FEAT — Placeholder endpoint (endpoint giữ chỗ, chưa có logic thật): hoàn thiện hoặc gỡ bỏ
 
