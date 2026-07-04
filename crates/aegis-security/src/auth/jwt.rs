@@ -13,7 +13,6 @@
 //! `plans/future/unwired-stubs-catalog.md` for the wiring
 //! sequence the next implementer should follow.
 
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 

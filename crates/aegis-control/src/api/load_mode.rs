@@ -6,7 +6,6 @@
 //! and routes through `AuditedMutate` so every pin / unpin lands
 //! an admin chain entry.
 
-#![allow(dead_code)]
 
 use aegis_core::{LoadGauge, LoadMode};
 use serde::Deserialize;

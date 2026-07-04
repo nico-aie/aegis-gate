@@ -1,3 +1,22 @@
+//! Risk **types** only — the composite [`RiskKey`] the whole risk
+//! system keys on, plus its constructors/encoding. If you came here
+//! looking for risk *behavior*, it lives elsewhere:
+//!
+//! - **Accumulation, decay, trust recovery, thresholds, strikes:**
+//!   `aegis-security/src/risk/tracker.rs` (`RiskTracker`) — the
+//!   in-process engine the data plane consults per request.
+//! - **Cross-node persistence + reconciliation:** the proxy's
+//!   `StateBackend` impls — `aegis-proxy/src/state/in_memory.rs` and
+//!   `state/reconcile.rs` (durable `control:waf:risk` hash, LWW
+//!   merge on rehydrate).
+//! - **Per-request detector scores vs cumulative IP risk:** two
+//!   different numbers — see `detectors/scores.rs` for the per-hit
+//!   values; the tracker folds max-per-request into the cumulative
+//!   score that `challenge_at`/`block_at` gate on.
+//!
+//! (LT-P8: this module doc exists because this thin type file is
+//! where people land first when hunting risk logic.)
+
 use std::net::IpAddr;
 
 /// 2026-06-24 — `Serialize`/`Deserialize` added for the interim Redis

@@ -26,7 +26,6 @@
 //!   record the dispatch task writes to and the GET endpoint
 //!   reads from.
 
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

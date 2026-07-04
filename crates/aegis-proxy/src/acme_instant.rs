@@ -25,11 +25,9 @@
 //! [`AcmeProvider`]: crate::acme::AcmeProvider
 //! [`ChallengeStore`]: crate::acme::ChallengeStore
 
-#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use instant_acme::{
@@ -41,9 +39,6 @@ use tokio::sync::{Mutex, OnceCell};
 use crate::acme::{
     AcmeConfig, AcmeError, AcmeProvider, Http01Challenge, IssuedCert, OrderState,
 };
-
-const POLL_INTERVAL: Duration = Duration::from_secs(2);
-const POLL_MAX_ATTEMPTS: u32 = 60; // 2 minutes ceiling
 
 /// Production [`AcmeProvider`] using `instant-acme`. Cheap to
 /// clone (`Arc`-shared internals).

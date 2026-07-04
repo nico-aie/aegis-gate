@@ -10,7 +10,6 @@
 //! Kept around as a roadmap shape — see
 //! `plans/future/unwired-stubs-catalog.md`.
 
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 

@@ -2172,7 +2172,7 @@ state:
         // Pre-seed counts.
         let ip: IpAddr = "203.0.113.42".parse().unwrap();
         for _ in 0..50 {
-            limiter.consume(ip);
+            limiter.consume_with_key(aegis_core::risk::RiskKey::from_ip(ip));
         }
         let tracked_before = limiter.tracked();
         assert_eq!(tracked_before, 1);

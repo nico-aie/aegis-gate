@@ -10,7 +10,6 @@
 //! [`std::sync::OnceLock`] so ETag computation runs exactly once per
 //! process — see `docs/control-plane/enterprise/assets.md`.
 
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -56,7 +55,6 @@ pub const ASSET_CACHE_LONG: &str = "public, max-age=3600, must-revalidate";
 const HTML: &str = "text/html; charset=utf-8";
 const JS: &str = "application/javascript; charset=utf-8";
 const CSS: &str = "text/css; charset=utf-8";
-const SVG: &str = "image/svg+xml";
 const JSON: &str = "application/json; charset=utf-8";
 
 /// Build a `(path, &'static bytes, content_type, cache_control)`

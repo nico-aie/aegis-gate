@@ -23,7 +23,6 @@
 //!   `services.route_writer` without `aegis-control` depending
 //!   on the proxy.
 
-#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 

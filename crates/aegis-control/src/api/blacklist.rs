@@ -6,7 +6,6 @@
 //! shape. This module hosts the storage + bulk-import logic; the
 //! whitelist module re-exports a typed alias.
 
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

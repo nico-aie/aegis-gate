@@ -16,7 +16,6 @@
 //!   for the Live Feed drawer; this endpoint just replays them in
 //!   order so the row stream stays gapless across reconnects.
 
-#![allow(dead_code)]
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};

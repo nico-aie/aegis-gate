@@ -27,7 +27,6 @@
 //! }
 //! ```
 
-#![allow(dead_code)]
 
 use std::sync::{Arc, Mutex};
 
@@ -65,35 +64,18 @@ pub struct RouteSummary {
     pub default: bool,
     /// PR2 — `false` when the route is admin-disabled (still in
     /// config, skipped from trie). The dashboard dims the row.
-    #[serde(default = "default_route_summary_enabled")]
     pub enabled: bool,
     /// `true` when the matched route prefix is stripped from the
     /// forwarded path. Mirrors [`aegis_core::config::RouteConfig::strip_prefix`]
     /// and is emitted so the console can round-trip an explicit
     /// `false` — without it the dashboard reads `undefined !== false`
-    /// and re-checks the box on every edit. Defaults to `true` on
-    /// deserialize to match `default_strip_prefix` for legacy clients.
-    #[serde(default = "default_strip_prefix_summary")]
+    /// and re-checks the box on every edit.
     pub strip_prefix: bool,
     /// MEDIUM-2 (2026-06-19) — per-route enforcement mode: `"enforce"`
     /// (default) or `"log_only"` (monitor). Emitted so the console can
     /// render the `monitor` badge and the editor checkbox can reflect
-    /// saved state. Defaults to `"enforce"` on deserialize for legacy
-    /// clients / routes saved before the field existed.
-    #[serde(default = "default_route_summary_mode")]
+    /// saved state.
     pub mode: String,
-}
-
-fn default_route_summary_enabled() -> bool {
-    true
-}
-
-fn default_strip_prefix_summary() -> bool {
-    true
-}
-
-fn default_route_summary_mode() -> String {
-    "enforce".to_string()
 }
 
 #[derive(Clone, Debug, Serialize)]

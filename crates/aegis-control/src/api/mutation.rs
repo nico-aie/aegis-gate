@@ -19,7 +19,6 @@
 //!
 //! [`AdminChangeEntry`]: crate::audit::AdminChangeEntry
 
-#![allow(dead_code)]
 
 use std::sync::{Arc, Mutex};
 

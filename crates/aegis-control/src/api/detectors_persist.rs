@@ -32,7 +32,6 @@
 //!   not data-plane-rate). Reads happen once at boot. Neither
 //!   touches the per-request hot path.
 
-#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 
