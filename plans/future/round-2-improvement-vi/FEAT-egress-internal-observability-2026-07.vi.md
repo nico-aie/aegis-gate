@@ -1,4 +1,4 @@
-> 🇻🇳 Bản dịch tiếng Việt của [FEAT-egress-internal-observability-2026-07.md](FEAT-egress-internal-observability-2026-07.md) — bản gốc tiếng Anh là source of truth.
+> 🇻🇳 Bản dịch tiếng Việt của [FEAT-egress-internal-observability-2026-07.md](../round-2-improvement/FEAT-egress-internal-observability-2026-07.md) — bản gốc tiếng Anh là source of truth.
 
 # FEAT — Khả năng quan sát egress (lưu lượng đi ra) & lưu lượng nội bộ (thiết kế trước)
 

@@ -1,4 +1,4 @@
-> 🇻🇳 Bản dịch tiếng Việt của [IMPROVE-detection-fp-tuning-2026-07.md](IMPROVE-detection-fp-tuning-2026-07.md) — bản gốc tiếng Anh là source of truth.
+> 🇻🇳 Bản dịch tiếng Việt của [IMPROVE-detection-fp-tuning-2026-07.md](../round-2-improvement/IMPROVE-detection-fp-tuning-2026-07.md) — bản gốc tiếng Anh là source of truth.
 
 # IMPROVE — Độ chính xác phát hiện: tinh chỉnh FP & tốt nghiệp lên default-ON
 

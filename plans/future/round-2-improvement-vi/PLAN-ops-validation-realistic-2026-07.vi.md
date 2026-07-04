@@ -1,4 +1,4 @@
-> 🇻🇳 Bản dịch tiếng Việt của [PLAN-ops-validation-realistic-2026-07.md](PLAN-ops-validation-realistic-2026-07.md) — bản gốc tiếng Anh là source of truth.
+> 🇻🇳 Bản dịch tiếng Việt của [PLAN-ops-validation-realistic-2026-07.md](../round-2-improvement/PLAN-ops-validation-realistic-2026-07.md) — bản gốc tiếng Anh là source of truth.
 
 # PLAN — Kiểm chứng dưới điều kiện vận hành thực tế
 

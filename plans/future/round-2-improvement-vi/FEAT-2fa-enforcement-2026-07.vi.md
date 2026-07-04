@@ -1,4 +1,4 @@
-> 🇻🇳 Bản dịch tiếng Việt của [FEAT-2fa-enforcement-2026-07.md](FEAT-2fa-enforcement-2026-07.md) — bản gốc tiếng Anh là source of truth.
+> 🇻🇳 Bản dịch tiếng Việt của [FEAT-2fa-enforcement-2026-07.md](../round-2-improvement/FEAT-2fa-enforcement-2026-07.md) — bản gốc tiếng Anh là source of truth.
 
 # FEAT — Bắt buộc 2FA (xác thực hai yếu tố) cho mọi truy cập admin
 

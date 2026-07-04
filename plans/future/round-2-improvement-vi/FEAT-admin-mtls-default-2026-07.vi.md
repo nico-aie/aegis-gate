@@ -1,4 +1,4 @@
-> 🇻🇳 Bản dịch tiếng Việt của [FEAT-admin-mtls-default-2026-07.md](FEAT-admin-mtls-default-2026-07.md) — bản gốc tiếng Anh là source of truth.
+> 🇻🇳 Bản dịch tiếng Việt của [FEAT-admin-mtls-default-2026-07.md](../round-2-improvement/FEAT-admin-mtls-default-2026-07.md) — bản gốc tiếng Anh là source of truth.
 
 # FEAT — mTLS cho kênh admin: nối dây trước, rồi biến thành mặc định
 
