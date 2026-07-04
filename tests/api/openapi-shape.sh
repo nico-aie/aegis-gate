@@ -178,10 +178,9 @@ assert_get "GET /api/alerts" /api/alerts 200 \
   '.pending | type == "array"' \
   '.resolved| type == "array"'
 
-assert_get "GET /api/gitops/status" /api/gitops/status 200 \
-  '.signature_ok | type == "boolean"' \
-  '.drift | type == "boolean"' \
-  '.break_glass_active | type == "boolean"'
+# PE-1 (2026-07-04): /api/gitops/status removed — assert it stays gone.
+assert_get "GET /api/gitops/status (removed)" /api/gitops/status 404 \
+  '.error == "not found"'
 
 # --------------------------------------------------------------- #
 # Settings (read-only checks; mutations need CSRF)                #

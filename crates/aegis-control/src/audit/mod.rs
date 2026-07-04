@@ -2,7 +2,6 @@ pub mod chain;
 pub mod sinks;
 pub mod state_snapshot;
 pub mod verify;
-pub mod witness;
 
 use aegis_core::audit::{AuditClass, AuditEvent};
 use serde::{Deserialize, Serialize};

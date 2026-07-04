@@ -29,7 +29,7 @@ feature absent), the conditional `::placeholder()` fallbacks for `/api/slo|clust
 
 ## 2. Staging
 
-### PE-1 — removals (#1, #2, #4, #6) · **S**
+### PE-1 — removals (#1, #2, #4, #6) · **S** · ✅ shipped 2026-07-04 (`feat/pe1-placeholder-removals`)
 One PR. Endpoint + route registration + dashboard tile/panel per item, together (`[[project_dashboard_js_hook_safety]]`:
 rebuild binary to see JSX changes; run the acorn hooks guard). Note removals in the response doc
 for the committee ("removed unfinished surface" is an acceptable — and honest — resolution).

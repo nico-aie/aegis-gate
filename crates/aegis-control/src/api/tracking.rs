@@ -1,8 +1,8 @@
-//! `/api/slo`, `/api/cluster`, `/api/certs`, `/api/gitops/status`,
-//! `/api/alerts`, `/api/tracking/snapshot` (D-M5-T5.1..T5.7).
+//! `/api/slo`, `/api/cluster`, `/api/certs`, `/api/alerts`,
+//! `/api/tracking/snapshot` (D-M5-T5.1..T5.7).
 //!
 //! Tracking data layers — wrappers around the existing per-feature
-//! state in `aegis-control` (slo.rs, gitops.rs, etc.). Where the
+//! state in `aegis-control` (slo.rs, upstreams.rs, etc.). Where the
 //! data source isn't yet runtime-populated (cluster peers, cert
 //! store), the module returns the documented JSON shape with empty
 //! lists so the page renders cleanly.
@@ -244,38 +244,11 @@ pub struct CertInventoryEntry {
 // ---------- GitOps -----------------------------------------------------
 //
 // 2026-05-17 F-CRITICAL-005 (control audit): the `gitops` module was
-// deleted because `GitOpsLoader::sync` had zero production callers
-// and `set_gitops_loader` was never invoked at boot. The shell
-// response type stays so the `/api/gitops/status` endpoint can
-// surface a stable empty shape — operators get a predictable null
-// payload rather than a 404, which keeps the dashboard's JSON
-// parser happy. The `from_loader` constructor is gone (no loader
-// to build from); `placeholder()` is now the only constructor.
-
-#[derive(Clone, Debug, Serialize)]
-pub struct GitopsStatusResponse {
-    pub repo: Option<String>,
-    pub branch: Option<String>,
-    pub last_sync: Option<chrono::DateTime<chrono::Utc>>,
-    pub head_commit: Option<String>,
-    pub signature_ok: bool,
-    pub drift: bool,
-    pub break_glass_active: bool,
-}
-
-impl GitopsStatusResponse {
-    pub fn placeholder() -> Self {
-        Self {
-            repo: None,
-            branch: None,
-            last_sync: None,
-            head_commit: None,
-            signature_ok: true,
-            drift: false,
-            break_glass_active: false,
-        }
-    }
-}
+// deleted (`GitOpsLoader::sync` had zero production callers). The
+// shell `GitopsStatusResponse` survived as a placeholder so the
+// endpoint kept answering — until PE-1 (2026-07-04, committee
+// round-2 🔴3) removed the endpoint, the snapshot fold-in, and the
+// shell type: an auth-gated route must do real work or not exist.
 
 // ---------- Alerts -----------------------------------------------------
 
@@ -347,7 +320,6 @@ pub struct TrackingSnapshot {
     pub slo: SloResponse,
     pub cluster: ClusterResponse,
     pub certs: CertsResponse,
-    pub gitops: GitopsStatusResponse,
     pub alerts: AlertsResponse,
     pub upstream:
         crate::api::upstreams::UpstreamSummaryResponse,
@@ -373,11 +345,6 @@ pub struct TrackingHandler {
     /// through the existing `Arc<TrackingHandler>` shared with the
     /// admin listener.
     slo_engine: Arc<Mutex<Option<Arc<crate::slo::SloEngine>>>>,
-    // 2026-05-17 F-CRITICAL-005 (control audit): `gitops_loader`
-    // field removed — the `gitops` module is deleted. The
-    // `/api/gitops/status` endpoint now always returns
-    // `GitopsStatusResponse::placeholder()` (a stable empty
-    // shape) and the dashboard renders "GitOps not configured".
     /// CI-T4 — cert inventory provider.
     cert_provider: Arc<Mutex<Option<CertInventoryProvider>>>,
     /// CI-T4 — acknowledged alert IDs. Survives the process but
@@ -532,14 +499,6 @@ impl TrackingHandler {
         serde_json::to_string(&body).unwrap_or_else(|_| "{}".into())
     }
 
-    pub fn render_gitops(&self) -> String {
-        // 2026-05-17 F-CRITICAL-005: gitops module deleted; this
-        // endpoint always returns the empty placeholder so the
-        // dashboard's JSON parser stays happy.
-        let body = GitopsStatusResponse::placeholder();
-        serde_json::to_string(&body).unwrap_or_else(|_| "{}".into())
-    }
-
     pub fn render_alerts(&self) -> String {
         let body = match self.slo() {
             None => AlertsResponse::placeholder(),
@@ -590,8 +549,6 @@ impl TrackingHandler {
             None => CertsResponse::placeholder(),
             Some(p) => CertsResponse::from_inventory(p(), chrono::Utc::now()),
         };
-        // 2026-05-17 F-CRITICAL-005: gitops module deleted.
-        let gitops = GitopsStatusResponse::placeholder();
         let alerts = match self.slo() {
             None => AlertsResponse::placeholder(),
             Some(e) => {
@@ -607,7 +564,6 @@ impl TrackingHandler {
             slo,
             cluster: self.cluster_response(),
             certs,
-            gitops,
             alerts,
             upstream,
         };
@@ -617,18 +573,8 @@ impl TrackingHandler {
         body
     }
 
-    /// Cert renew action. Returns `(status, body)`. ACME-managed certs
-    /// kick off renewal (currently a placeholder); static/mTLS return
-    /// 405. v1 always returns 405 because no cert store is wired.
-    pub fn render_cert_renew(host: &str) -> (u16, String) {
-        let body = serde_json::json!({
-            "error": {
-                "code": "not_supported",
-                "message": format!("cert renewal for {host} is not supported in this build")
-            }
-        });
-        (405, body.to_string())
-    }
+    // PE-1 (2026-07-04): `render_cert_renew` deleted — it was
+    // registered on no route (dead code) and only ever answered 405.
 }
 
 #[cfg(test)]
@@ -779,21 +725,24 @@ mod tests {
     }
 
     #[test]
-    fn gitops_response_shape() {
-        let body = handler().render_gitops();
+    fn snapshot_contains_five_sections() {
+        let body = handler().render_snapshot();
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-        for k in ["repo", "branch", "last_sync", "head_commit", "signature_ok", "drift", "break_glass_active"] {
-            assert!(v.get(k).is_some(), "gitops response missing {k}");
+        for k in ["slo", "cluster", "certs", "alerts", "upstream"] {
+            assert!(v.get(k).is_some(), "snapshot missing {k}");
         }
     }
 
     #[test]
-    fn snapshot_contains_six_sections() {
+    fn snapshot_has_no_gitops_section() {
+        // PE-1 — the gitops module was deleted 2026-05-17; the
+        // snapshot must stop folding in its placeholder shape.
         let body = handler().render_snapshot();
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-        for k in ["slo", "cluster", "certs", "gitops", "alerts", "upstream"] {
-            assert!(v.get(k).is_some(), "snapshot missing {k}");
-        }
+        assert!(
+            v.get("gitops").is_none(),
+            "snapshot still carries the removed gitops placeholder",
+        );
     }
 
     #[test]
@@ -802,14 +751,6 @@ mod tests {
         let a = h.render_snapshot();
         let b = h.render_snapshot();
         assert_eq!(a, b);
-    }
-
-    #[test]
-    fn cert_renew_returns_not_supported() {
-        let (status, body) = TrackingHandler::render_cert_renew("example.com");
-        assert_eq!(status, 405);
-        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(v["error"]["code"].as_str(), Some("not_supported"));
     }
 
     // ---------- P5 cert inventory --------------------------------------
