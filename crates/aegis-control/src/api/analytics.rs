@@ -203,6 +203,146 @@ fn error_response(status: u16, code: &'static str, message: String) -> Analytics
 }
 
 #[cfg(test)]
+mod pe2_prometheus_proxy_tests {
+    // PE-2 (committee round-2 🔴3) — the Prometheus proxy call is
+    // real now: plan → substitute $step → fetch (proxy side) →
+    // parse the Prometheus wire shape → render. These tests pin the
+    // pure layers (plan/substitute/parse/render); the HTTP fetch
+    // itself is tested in aegis-proxy against a stub server.
+    use super::*;
+
+    #[test]
+    fn plan_query_rejects_unknown_expr_with_400() {
+        let err = plan_query("definitely-not-a-key", 0, 0).unwrap_err();
+        assert_eq!(err.status, 400);
+        let v: serde_json::Value = serde_json::from_str(&err.body).unwrap();
+        assert_eq!(v["error"]["code"].as_str(), Some("unknown_expr"));
+    }
+
+    #[test]
+    fn plan_query_detects_range_vs_instant() {
+        assert!(!plan_query("requests_rate", 0, 0).unwrap().is_range);
+        assert!(plan_query("requests_rate", 1_000, 2_000).unwrap().is_range);
+        // end < start is not a range — treated as instant.
+        assert!(!plan_query("requests_rate", 2_000, 1_000).unwrap().is_range);
+    }
+
+    #[test]
+    fn unconfigured_response_keeps_honest_503_codes() {
+        // F-CRITICAL-018 regression — never 200-with-zeros when no
+        // backend is wired.
+        let r = unconfigured_response(false);
+        assert_eq!(r.status, 503);
+        let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!(v["error"]["code"].as_str(), Some("analytics_not_implemented"));
+
+        let r = unconfigured_response(true);
+        assert_eq!(r.status, 503);
+        let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!(v["error"]["code"].as_str(), Some("no_history_backend"));
+    }
+
+    #[test]
+    fn substitute_step_replaces_placeholder_with_seconds() {
+        let q = substitute_step("sum(rate(waf_requests_total[$step]))", 60);
+        assert_eq!(q, "sum(rate(waf_requests_total[60s]))");
+        // No placeholder → unchanged.
+        assert_eq!(substitute_step("waf_bench_mode", 60), "waf_bench_mode");
+    }
+
+    #[test]
+    fn parse_instant_vector_takes_first_sample() {
+        let body = r#"{"status":"success","data":{"resultType":"vector",
+            "result":[{"metric":{},"value":[1751600000.0,"4.2"]}]}}"#;
+        match parse_prometheus_body(body, false).unwrap() {
+            AnalyticsResult::Scalar { value } => assert_eq!(value, Some(4.2)),
+            other => panic!("expected scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_instant_scalar_result_type() {
+        let body = r#"{"status":"success","data":{"resultType":"scalar",
+            "result":[1751600000.0,"7.5"]}}"#;
+        match parse_prometheus_body(body, false).unwrap() {
+            AnalyticsResult::Scalar { value } => assert_eq!(value, Some(7.5)),
+            other => panic!("expected scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_instant_empty_vector_is_null_value() {
+        // "No data yet" is a normal state, not an upstream error —
+        // surfaced as value: null, never a fake 0.0.
+        let body = r#"{"status":"success","data":{"resultType":"vector","result":[]}}"#;
+        match parse_prometheus_body(body, false).unwrap() {
+            AnalyticsResult::Scalar { value } => assert_eq!(value, None),
+            other => panic!("expected scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_range_matrix_maps_points() {
+        let body = r#"{"status":"success","data":{"resultType":"matrix",
+            "result":[{"metric":{},"values":[[1751600000.0,"1.5"],[1751600060.0,"2.5"]]}]}}"#;
+        match parse_prometheus_body(body, true).unwrap() {
+            AnalyticsResult::Matrix { points } => {
+                assert_eq!(points.len(), 2);
+                assert_eq!(points[0].value, 1.5);
+                assert_eq!(points[1].value, 2.5);
+                assert!(points[1].ts > points[0].ts);
+            }
+            other => panic!("expected matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_range_empty_matrix_is_empty_points() {
+        let body = r#"{"status":"success","data":{"resultType":"matrix","result":[]}}"#;
+        match parse_prometheus_body(body, true).unwrap() {
+            AnalyticsResult::Matrix { points } => assert!(points.is_empty()),
+            other => panic!("expected matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_surfaces_prometheus_error_status() {
+        let body = r#"{"status":"error","errorType":"bad_data","error":"parse error"}"#;
+        let err = parse_prometheus_body(body, false).unwrap_err();
+        assert!(err.contains("parse error"), "error detail lost: {err}");
+    }
+
+    #[test]
+    fn parse_rejects_garbage_body() {
+        assert!(parse_prometheus_body("not json", false).is_err());
+        assert!(parse_prometheus_body("{}", false).is_err());
+    }
+
+    #[test]
+    fn render_success_flattens_result() {
+        let r = render_success(
+            "requests_rate",
+            "sum(rate(waf_requests_total[$step]))",
+            AnalyticsResult::Scalar { value: Some(4.2) },
+        );
+        assert_eq!(r.status, 200);
+        let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!(v["expr"].as_str(), Some("requests_rate"));
+        assert_eq!(v["result_type"].as_str(), Some("scalar"));
+        assert_eq!(v["value"].as_f64(), Some(4.2));
+    }
+
+    #[test]
+    fn upstream_error_returns_502_envelope() {
+        let r = upstream_error("connect refused".into());
+        assert_eq!(r.status, 502);
+        let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!(v["error"]["code"].as_str(), Some("prometheus_unreachable"));
+        assert!(v["error"]["message"].as_str().unwrap().contains("connect refused"));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

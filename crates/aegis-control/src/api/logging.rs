@@ -99,6 +99,109 @@ pub fn render_cold_tier(sinks: &[AuditSinkConfig]) -> String {
 }
 
 #[cfg(test)]
+mod pe2_delivery_tests {
+    // PE-2 (committee round-2 🔴3) — `/api/cold-tier` reports real
+    // per-sink delivery state instead of the hardcoded
+    // `delivery: "unknown"`. Sink tasks record outcomes into a
+    // `DeliveryRegistry`; the renderer joins by `sink_key`.
+    use super::*;
+    use crate::audit::sinks::delivery::{sink_key, DeliveryRegistry};
+    use std::path::PathBuf;
+
+    fn jsonl_cfg() -> AuditSinkConfig {
+        AuditSinkConfig::Jsonl {
+            path: PathBuf::from("/var/log/aegis/audit.jsonl"),
+            retention_days: 30,
+            max_batch: 100,
+            flush_interval: std::time::Duration::from_secs(1),
+        }
+    }
+
+    fn kafka_cfg() -> AuditSinkConfig {
+        AuditSinkConfig::Kafka {
+            brokers: vec!["k1:9092".into()],
+            topic: "audit".into(),
+        }
+    }
+
+    #[test]
+    fn registry_records_success_and_error() {
+        let reg = DeliveryRegistry::new();
+        let h = reg.handle(sink_key(&jsonl_cfg()));
+        h.record_success(3);
+        h.record_success(2);
+        h.record_error();
+        let snap = reg.snapshot();
+        let s = snap.get(&sink_key(&jsonl_cfg())).expect("entry present");
+        assert_eq!(s.delivered, 5);
+        assert_eq!(s.errors, 1);
+        assert!(s.last_success.is_some());
+        assert!(s.last_error.is_some());
+    }
+
+    #[test]
+    fn sink_key_is_stable_per_destination() {
+        assert_eq!(sink_key(&jsonl_cfg()), sink_key(&jsonl_cfg()));
+        assert_ne!(sink_key(&jsonl_cfg()), sink_key(&kafka_cfg()));
+    }
+
+    #[test]
+    fn cold_tier_delivery_ok_when_success_recorded() {
+        let reg = DeliveryRegistry::new();
+        reg.handle(sink_key(&jsonl_cfg())).record_success(10);
+        let body = render_cold_tier(&[jsonl_cfg()], &reg);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let s = &v["sinks"][0];
+        assert_eq!(s["delivery"], "ok");
+        assert_eq!(s["delivered"].as_u64(), Some(10));
+        assert_eq!(s["errors"].as_u64(), Some(0));
+        assert!(s["last_success"].is_string(), "last_success timestamp missing");
+    }
+
+    #[test]
+    fn cold_tier_delivery_error_when_last_outcome_failed() {
+        let reg = DeliveryRegistry::new();
+        let h = reg.handle(sink_key(&jsonl_cfg()));
+        h.record_success(4);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        h.record_error();
+        let body = render_cold_tier(&[jsonl_cfg()], &reg);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["sinks"][0]["delivery"], "error");
+        assert_eq!(v["sinks"][0]["delivered"].as_u64(), Some(4));
+        assert_eq!(v["sinks"][0]["errors"].as_u64(), Some(1));
+    }
+
+    #[test]
+    fn cold_tier_delivery_pending_before_first_event() {
+        // Task spawned (handle registered) but nothing flushed yet.
+        let reg = DeliveryRegistry::new();
+        let _h = reg.handle(sink_key(&jsonl_cfg()));
+        let body = render_cold_tier(&[jsonl_cfg()], &reg);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["sinks"][0]["delivery"], "pending");
+        assert!(v["sinks"][0]["last_success"].is_null());
+    }
+
+    #[test]
+    fn cold_tier_delivery_unwired_when_no_task_registered() {
+        // Kafka/Splunk parse as config but have no forwarder task in
+        // this build — the honest label is "unwired", never "unknown".
+        let reg = DeliveryRegistry::new();
+        let body = render_cold_tier(&[kafka_cfg()], &reg);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["sinks"][0]["delivery"], "unwired");
+    }
+
+    #[test]
+    fn cold_tier_never_reports_unknown() {
+        let reg = DeliveryRegistry::new();
+        let body = render_cold_tier(&[jsonl_cfg(), kafka_cfg()], &reg);
+        assert!(!body.contains("\"unknown\""), "placeholder string resurfaced: {body}");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;

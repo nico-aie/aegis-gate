@@ -1959,6 +1959,225 @@ state: { backend: in_memory }
 }
 
 #[cfg(test)]
+mod pe2_completion_tests {
+    // PE-2 (committee round-2 🔴3) — the "complete" half of the
+    // placeholder sweep: geoip indicator_count is real (or null),
+    // and /api/analytics/query proxies to a live Prometheus.
+    use std::sync::Arc;
+
+    use super::{admin_router, handle_analytics_query};
+    use aegis_control::api::upstreams::PoolHealthSnapshot;
+    use aegis_control::dashboard_services::DashboardServices;
+    use aegis_core::AuditBus;
+
+    const MINIMAL_CFG: &str = r#"
+listeners:
+  data: [{ bind: "0.0.0.0:443" }]
+  admin: { bind: "127.0.0.1:9443" }
+routes:
+  - { id: catch-all, path: "/", upstream: api }
+upstreams:
+  api: { members: [{ addr: "127.0.0.1:3000" }] }
+state: { backend: in_memory }
+"#;
+
+    fn spawn_services() -> (DashboardServices, tokio::task::JoinHandle<()>) {
+        DashboardServices::spawn(
+            AuditBus::new(8),
+            Arc::new(|| PoolHealthSnapshot {
+                pools: Vec::new(),
+                ..Default::default()
+            }),
+            None,
+        )
+    }
+
+    fn cfg_with(extra: &str) -> aegis_core::config::WafConfig {
+        let yaml = format!("{MINIMAL_CFG}\n{extra}");
+        aegis_core::load_config_str(&yaml).expect("cfg parses")
+    }
+
+    fn route(
+        path: &str,
+        cfg: &aegis_core::config::WafConfig,
+        services: &DashboardServices,
+    ) -> hyper::Response<http_body_util::Full<bytes::Bytes>> {
+        let readiness = aegis_core::ReadinessSignal::default();
+        let startup = aegis_control::health::StartupProbe::default();
+        let metrics = aegis_control::metrics::MetricsRegistry::init();
+        let req = hyper::Request::builder().uri(path).body(()).unwrap();
+        admin_router(req, cfg, &readiness, &startup, &metrics, services)
+    }
+
+    async fn body_json(
+        resp: hyper::Response<http_body_util::Full<bytes::Bytes>>,
+    ) -> serde_json::Value {
+        use http_body_util::BodyExt;
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    // ---------------- geoip indicator_count ----------------
+
+    struct StubGeo(Option<u64>);
+    impl aegis_security::geoip::GeoIpLookup for StubGeo {
+        fn country(&self, _ip: std::net::IpAddr) -> Option<String> {
+            None
+        }
+        fn asn(&self, _ip: std::net::IpAddr) -> Option<u32> {
+            None
+        }
+        fn indicator_count(&self) -> Option<u64> {
+            self.0
+        }
+    }
+
+    #[tokio::test]
+    async fn geoip_status_indicator_count_null_without_lookup() {
+        let (services, _drain) = spawn_services();
+        let cfg = cfg_with("");
+        let resp = route("/api/geoip/status", &cfg, &services);
+        assert_eq!(resp.status(), 200);
+        let v = body_json(resp).await;
+        assert!(
+            v["indicator_count"].is_null(),
+            "no lookup wired — count must be null, not a fake 0 (got {})",
+            v["indicator_count"],
+        );
+    }
+
+    #[tokio::test]
+    async fn geoip_status_reports_indicator_count_from_lookup() {
+        let (services, _drain) = spawn_services();
+        services.attacks.set_geo_lookup(Arc::new(StubGeo(Some(42))));
+        let cfg = cfg_with("");
+        let resp = route("/api/geoip/status", &cfg, &services);
+        let v = body_json(resp).await;
+        assert_eq!(v["indicator_count"].as_u64(), Some(42));
+    }
+
+    // ---------------- analytics Prometheus proxy ----------------
+
+    /// One-shot stub Prometheus: accepts a single connection on
+    /// 127.0.0.1:0, records the request line, answers with `body`.
+    async fn stub_prometheus(
+        status: u16,
+        body: &'static str,
+    ) -> (String, tokio::sync::oneshot::Receiver<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let request_line = head.lines().next().unwrap_or("").to_string();
+                let _ = tx.send(request_line);
+                let resp = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len(),
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+        (format!("http://{addr}"), rx)
+    }
+
+    async fn analytics(
+        query: &str,
+        cfg: &aegis_core::config::WafConfig,
+    ) -> hyper::Response<http_body_util::Full<bytes::Bytes>> {
+        let req = hyper::Request::builder()
+            .uri(format!("/api/analytics/query?{query}"))
+            .body(())
+            .unwrap();
+        handle_analytics_query(req, cfg).await
+    }
+
+    #[tokio::test]
+    async fn analytics_query_stays_503_when_unconfigured() {
+        let cfg = cfg_with("");
+        let resp = analytics("expr=requests_rate", &cfg).await;
+        assert_eq!(resp.status(), 503);
+        let v = body_json(resp).await;
+        assert_eq!(v["error"]["code"].as_str(), Some("analytics_not_implemented"));
+    }
+
+    #[tokio::test]
+    async fn analytics_query_400_on_unknown_expr() {
+        let cfg = cfg_with("");
+        let resp = analytics("expr=nope", &cfg).await;
+        assert_eq!(resp.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn analytics_instant_query_proxies_to_prometheus() {
+        let (url, req_line) = stub_prometheus(
+            200,
+            r#"{"status":"success","data":{"resultType":"vector",
+                "result":[{"metric":{},"value":[1751600000.0,"4.2"]}]}}"#,
+        )
+        .await;
+        let cfg = cfg_with(&format!("admin:\n  prometheus_url: \"{url}\""));
+        let resp = analytics("expr=requests_rate", &cfg).await;
+        assert_eq!(resp.status(), 200);
+        let v = body_json(resp).await;
+        assert_eq!(v["result_type"].as_str(), Some("scalar"));
+        assert_eq!(v["value"].as_f64(), Some(4.2));
+        let line = req_line.await.unwrap();
+        assert!(
+            line.contains("/api/v1/query?"),
+            "instant queries hit /api/v1/query — got {line}",
+        );
+    }
+
+    #[tokio::test]
+    async fn analytics_range_query_hits_query_range_with_params() {
+        let (url, req_line) = stub_prometheus(
+            200,
+            r#"{"status":"success","data":{"resultType":"matrix",
+                "result":[{"metric":{},"values":[[1751600000.0,"1.0"]]}]}}"#,
+        )
+        .await;
+        let cfg = cfg_with(&format!("admin:\n  prometheus_url: \"{url}\""));
+        let resp = analytics("expr=requests_rate&start=1000&end=2000&step=60", &cfg).await;
+        assert_eq!(resp.status(), 200);
+        let v = body_json(resp).await;
+        assert_eq!(v["result_type"].as_str(), Some("matrix"));
+        assert_eq!(v["points"].as_array().unwrap().len(), 1);
+        let line = req_line.await.unwrap();
+        assert!(line.contains("/api/v1/query_range?"), "got {line}");
+        assert!(line.contains("start=1000") && line.contains("end=2000"), "got {line}");
+        // $step substituted into the promql, not left as a literal.
+        assert!(!line.contains("%24step"), "unsubstituted $step in {line}");
+    }
+
+    #[tokio::test]
+    async fn analytics_upstream_5xx_maps_to_502_envelope() {
+        let (url, _req_line) = stub_prometheus(500, r#"{"status":"error","error":"boom"}"#).await;
+        let cfg = cfg_with(&format!("admin:\n  prometheus_url: \"{url}\""));
+        let resp = analytics("expr=requests_rate", &cfg).await;
+        assert_eq!(resp.status(), 502);
+        let v = body_json(resp).await;
+        assert_eq!(v["error"]["code"].as_str(), Some("prometheus_unreachable"));
+    }
+
+    #[tokio::test]
+    async fn analytics_connect_failure_maps_to_502_envelope() {
+        // Nothing listens on this port (bind then drop).
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let cfg = cfg_with(&format!("admin:\n  prometheus_url: \"http://{addr}\""));
+        let resp = analytics("expr=requests_rate", &cfg).await;
+        assert_eq!(resp.status(), 502);
+    }
+}
+
+#[cfg(test)]
 mod percent_decode_tests {
     use super::percent_decode;
 

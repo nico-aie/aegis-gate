@@ -114,4 +114,12 @@ mod tests {
             Some("DE")
         );
     }
+
+    #[test]
+    fn indicator_count_defaults_to_none() {
+        // PE-2 — implementations that can't count loaded indicators
+        // report None (rendered as null on the wire), never a fake 0.
+        let g = StaticGeoIp::new().with_country("1.2.3.4", "US");
+        assert_eq!(g.indicator_count(), None);
+    }
 }
