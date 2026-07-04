@@ -25,12 +25,20 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use aegis_core::config::BruteForceCountScope;
 use aegis_core::pipeline::RequestView;
+use aegis_core::state::StateBackend;
 
 use super::{Detector, Signal};
+
+/// AC-P2-b — ceiling on the fleet-count cache (per-user + per-device keys
+/// combined). At the cap an arbitrary entry is evicted, mirroring the
+/// other bounded per-key maps in this crate.
+const FLEET_CACHE_CAP: usize = 4096;
 
 /// Brute-force detector. Stateful — owns three counter maps.
 pub struct BruteForceDetector {
@@ -56,6 +64,28 @@ pub struct BruteForceDetector {
     /// Per-device-fingerprint → same shape as user_state
     /// (distributed credential stuffing tracker).
     device_state: Mutex<HashMap<String, Vec<(IpAddr, Instant)>>>,
+    /// AC-P2-b (2026-07-04) — fleet aggregation of the per-user /
+    /// per-device distinct-IP axes. A campaign load-balanced across
+    /// nodes dilutes each node's local count below threshold; in
+    /// `count_scope: fleet` every node contributes its locally-NEW
+    /// distinct-IP observations to a shared windowed counter and reads
+    /// the fleet total back. All async I/O is fire-and-forget off the
+    /// request path (mirrors `ddos::tick_rps_fleet_at` fail-safe): a
+    /// backend error simply leaves the cache stale and the local count
+    /// governs. `OnceLock` because the chain is built before the state
+    /// backend exists; run.rs installs the handle once ready — and only
+    /// when cluster propagation is on (no silent "fleet == this node").
+    fleet_backend: OnceLock<Arc<dyn StateBackend>>,
+    /// Requested scope is `fleet` (hot-reloadable via
+    /// `apply_cfg_change_to_brute_force`).
+    fleet_scope: AtomicBool,
+    /// Log-once guard for "fleet requested but no shared backend".
+    fleet_warned: AtomicBool,
+    /// axis-key (`user:<canonical>` / `device:<fp>`) → (window bucket,
+    /// fleet count) written by the fire-and-forget task, read by
+    /// `inspect`. `Arc` so spawned tasks can own a handle. Bounded at
+    /// [`FLEET_CACHE_CAP`].
+    fleet_counts: Arc<Mutex<HashMap<String, (u64, u64)>>>,
 }
 
 impl Default for BruteForceDetector {
@@ -84,7 +114,43 @@ impl BruteForceDetector {
             state: Mutex::new(HashMap::new()),
             user_state: Mutex::new(HashMap::new()),
             device_state: Mutex::new(HashMap::new()),
+            fleet_backend: OnceLock::new(),
+            fleet_scope: AtomicBool::new(false),
+            fleet_warned: AtomicBool::new(false),
+            fleet_counts: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// AC-P2-b — set the requested count scope (boot + hot-reload via
+    /// `apply_cfg_change_to_brute_force`). `fleet` only takes effect once
+    /// a shared backend is installed; otherwise the detector logs once
+    /// and keeps counting per-node.
+    pub fn set_count_scope(&self, scope: BruteForceCountScope) {
+        self.fleet_scope
+            .store(scope == BruteForceCountScope::Fleet, Ordering::Relaxed);
+    }
+
+    /// AC-P2-b — install the shared state backend (boot-time, once the
+    /// backend exists AND cluster propagation is confirmed; the caller
+    /// owns that gate). Idempotent — later calls are ignored.
+    pub fn install_fleet_backend(&self, backend: Arc<dyn StateBackend>) {
+        let _ = self.fleet_backend.set(backend);
+    }
+
+    /// Reload observability — whether the requested scope is `fleet`
+    /// (the reload helper's test asserts the flip took).
+    pub fn count_scope_is_fleet(&self) -> bool {
+        self.fleet_scope.load(Ordering::Relaxed)
+    }
+
+    /// Test accessor — the cached fleet count for an axis-key (raw,
+    /// ignoring bucket freshness).
+    pub fn fleet_cached(&self, cache_key: &str) -> Option<u64> {
+        self.fleet_counts
+            .lock()
+            .unwrap()
+            .get(cache_key)
+            .map(|&(_, count)| count)
     }
 
     fn record_and_check(&self, peer_ip: IpAddr) -> bool {
@@ -109,11 +175,14 @@ impl BruteForceDetector {
 
     /// 2026-05-18 (QC Sprint 2.3 — F-CRITICAL-014, password-
     /// spraying axis): record that `peer_ip` attempted to auth
-    /// as `username` and return `true` when distinct-IP count for
-    /// this user crosses `user_threshold` within `window`.
-    fn record_user_and_check(&self, username: &str, peer_ip: IpAddr) -> bool {
+    /// as `username`. Returns `(fired, newly_distinct)`: `fired` when
+    /// the distinct-IP count for this user crosses `user_threshold`
+    /// within `window`; `newly_distinct` when this is the first time
+    /// THIS node saw `peer_ip` for this user in the window (the event
+    /// the fleet channel contributes upstream, AC-P2-b).
+    fn record_user_and_check(&self, username: &str, peer_ip: IpAddr) -> (bool, bool) {
         if username.is_empty() {
-            return false;
+            return (false, false);
         }
         let now = Instant::now();
         let cutoff = now.checked_sub(self.window).unwrap_or(now);
@@ -122,7 +191,8 @@ impl BruteForceDetector {
         entry.retain(|&(_, t)| t >= cutoff);
         // Skip duplicate IP records within the window — we count
         // DISTINCT IPs, not raw attempts.
-        if !entry.iter().any(|(ip, _)| *ip == peer_ip) {
+        let newly_distinct = !entry.iter().any(|(ip, _)| *ip == peer_ip);
+        if newly_distinct {
             entry.push((peer_ip, now));
         }
         let cap = (self.user_threshold * 2).max(20) as usize;
@@ -132,7 +202,7 @@ impl BruteForceDetector {
         }
         let distinct_ips: HashSet<IpAddr> =
             entry.iter().map(|(ip, _)| *ip).collect();
-        distinct_ips.len() as u32 > self.user_threshold
+        (distinct_ips.len() as u32 > self.user_threshold, newly_distinct)
     }
 
     /// 2026-05-18 (QC Sprint 2.3 — F-CRITICAL-014, distributed
@@ -140,16 +210,17 @@ impl BruteForceDetector {
     /// keyed by device fingerprint. Fires when one device sees
     /// auth attempts from >`device_threshold` distinct IPs in
     /// `window`.
-    fn record_device_and_check(&self, device_fp: &str, peer_ip: IpAddr) -> bool {
+    fn record_device_and_check(&self, device_fp: &str, peer_ip: IpAddr) -> (bool, bool) {
         if device_fp.is_empty() {
-            return false;
+            return (false, false);
         }
         let now = Instant::now();
         let cutoff = now.checked_sub(self.window).unwrap_or(now);
         let mut state = self.device_state.lock().expect("device state poisoned");
         let entry = state.entry(device_fp.to_string()).or_default();
         entry.retain(|&(_, t)| t >= cutoff);
-        if !entry.iter().any(|(ip, _)| *ip == peer_ip) {
+        let newly_distinct = !entry.iter().any(|(ip, _)| *ip == peer_ip);
+        if newly_distinct {
             entry.push((peer_ip, now));
         }
         let cap = (self.device_threshold * 2).max(20) as usize;
@@ -159,7 +230,122 @@ impl BruteForceDetector {
         }
         let distinct_ips: HashSet<IpAddr> =
             entry.iter().map(|(ip, _)| *ip).collect();
-        distinct_ips.len() as u32 > self.device_threshold
+        (distinct_ips.len() as u32 > self.device_threshold, newly_distinct)
+    }
+
+    /// AC-P2-b — the sync, request-path half of the fleet channel.
+    /// **Never blocks**: reads the cached fleet count and, on a locally-
+    /// new distinct IP, fire-and-forgets the shared-counter update
+    /// (mirrors `ddos::tick_rps_fleet_at` fail-safe: any backend error
+    /// only leaves the cache stale, so the local count governs).
+    ///
+    /// The cache is one event behind by construction — the spawned task
+    /// lands after `inspect` returns — so the fleet fire arrives on the
+    /// attacker's NEXT auth attempt. Known bounded overcount: one IP
+    /// load-balanced onto two nodes contributes twice (each node's local
+    /// dedup is node-scoped); acceptable for an additive-score signal.
+    fn fleet_check(
+        &self,
+        axis: &'static str,
+        key: &str,
+        newly_distinct: bool,
+        threshold: u32,
+    ) -> bool {
+        if !self.fleet_scope.load(Ordering::Relaxed) {
+            return false;
+        }
+        let Some(backend) = self.fleet_backend.get() else {
+            if !self.fleet_warned.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    "brute_force count_scope=fleet but no shared backend is \
+                     installed (cluster mode off?); counting per-node"
+                );
+            }
+            return false;
+        };
+        let window_secs = self.window.as_secs().max(1);
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let bucket = now_epoch / window_secs;
+        let cache_key = format!("{axis}:{key}");
+
+        if newly_distinct {
+            // Only locally-new distinct IPs touch the backend — repeat
+            // attempts are free, keeping backend chatter bounded by the
+            // number of distinct (node, IP, key) triples per window.
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let backend = backend.clone();
+                let cache = self.fleet_counts.clone();
+                let ck = cache_key.clone();
+                let ttl = Duration::from_secs(window_secs * 2);
+                handle.spawn(async move {
+                    if let Err(e) = fleet_record(backend, cache, ck, bucket, ttl).await {
+                        tracing::debug!(
+                            error = %e,
+                            "brute_force fleet count: backend error; per-node fallback",
+                        );
+                    }
+                });
+            }
+        }
+
+        let counts = self.fleet_counts.lock().unwrap();
+        match counts.get(&cache_key) {
+            // One bucket of slack: an entry cached just before roll-over
+            // (which already summed current + prior) stays usable.
+            Some(&(b, count)) if bucket.saturating_sub(b) <= 1 => count > threshold as u64,
+            _ => false,
+        }
+    }
+}
+
+/// AC-P2-b — fire-and-forget task body: contribute one locally-new
+/// distinct-IP observation to the shared windowed counter and cache the
+/// fleet total. The total sums the current AND prior window bucket so a
+/// roll-over mid-campaign doesn't zero the signal (same reason
+/// `ddos::fleet_current` reads the prior second). Errors propagate to
+/// the spawn wrapper, which logs and leaves the cache untouched.
+async fn fleet_record(
+    backend: Arc<dyn StateBackend>,
+    cache: Arc<Mutex<HashMap<String, (u64, u64)>>>,
+    cache_key: String,
+    bucket: u64,
+    ttl: Duration,
+) -> aegis_core::Result<()> {
+    let cur_key = format!("bf:fleet:{cache_key}:{bucket}");
+    let cur = backend.incrby(&cur_key, 1).await?;
+    // Best-effort TTL refresh; an expire failure must not lose the sample.
+    let _ = backend.expire(&cur_key, ttl).await;
+    let prior = backend
+        .get_counter(&format!("bf:fleet:{cache_key}:{}", bucket.saturating_sub(1)))
+        .await?;
+    let total = cur + prior;
+    let mut counts = cache.lock().unwrap();
+    // Bounded cache: evict an arbitrary entry at the cap (mirrors the
+    // other capped per-key maps in this crate).
+    if !counts.contains_key(&cache_key) && counts.len() >= FLEET_CACHE_CAP {
+        if let Some(k) = counts.keys().next().cloned() {
+            counts.remove(&k);
+        }
+    }
+    counts.insert(cache_key, (bucket, total));
+    Ok(())
+}
+
+/// AC-P2-b — the boot path keeps an `Arc<BruteForceDetector>` so the
+/// reload helper (`apply_cfg_change_to_brute_force`) and the late fleet-
+/// backend install can reach the SAME instance the chain runs; this
+/// delegating impl lets that shared handle sit in the
+/// `Vec<Box<dyn Detector>>` chain slot.
+impl Detector for Arc<BruteForceDetector> {
+    fn id(&self) -> &'static str {
+        (**self).id()
+    }
+
+    fn inspect(&self, req: &RequestView<'_>) -> Vec<Signal> {
+        (**self).inspect(req)
     }
 }
 
@@ -211,7 +397,12 @@ impl Detector for BruteForceDetector {
         let user_fired = match &username {
             Some(u) => {
                 let canonical = u.trim().to_ascii_lowercase();
-                self.record_user_and_check(&canonical, peer_ip)
+                let (fired_local, newly_distinct) =
+                    self.record_user_and_check(&canonical, peer_ip);
+                // AC-P2-b — in fleet scope the shared count can trip the
+                // axis while every node's local count sits under threshold.
+                fired_local
+                    || self.fleet_check("user", &canonical, newly_distinct, self.user_threshold)
             }
             None => false,
         };
@@ -227,7 +418,12 @@ impl Detector for BruteForceDetector {
             .map(|t| t.ja4.clone())
             .filter(|s| !s.is_empty());
         let device_fired = match &device_fp {
-            Some(fp) => self.record_device_and_check(fp, peer_ip),
+            Some(fp) => {
+                let (fired_local, newly_distinct) =
+                    self.record_device_and_check(fp, peer_ip);
+                fired_local
+                    || self.fleet_check("device", fp, newly_distinct, self.device_threshold)
+            }
             None => false,
         };
 
@@ -758,5 +954,254 @@ mod tests {
         let (m, u, h, _) = make_req(http::Method::POST, "/login");
         let view = view_with_body(&m, &u, &h, &body, "15.0.0.4:443");
         assert_eq!(extract_username(&view), None);
+    }
+
+    // ---- AC-P2-b (2026-07-04) — fleet-aggregate axes ----
+
+    use std::sync::atomic::AtomicU64;
+
+    /// Minimal shared-counter backend: a real `incrby`/`get_counter`
+    /// store so two detectors sharing it aggregate like two nodes on
+    /// one Redis. Counts backend calls (per-node scope must make NONE)
+    /// and can be flipped to error (fail-safe-to-local test).
+    struct FleetMock {
+        counters: Mutex<HashMap<String, u64>>,
+        fail: bool,
+        calls: AtomicU64,
+    }
+
+    impl FleetMock {
+        fn new() -> Self {
+            Self {
+                counters: Mutex::new(HashMap::new()),
+                fail: false,
+                calls: AtomicU64::new(0),
+            }
+        }
+        fn new_failing() -> Self {
+            Self { fail: true, ..Self::new() }
+        }
+        fn total(&self) -> u64 {
+            self.counters.lock().unwrap().values().sum()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl StateBackend for FleetMock {
+        async fn get(&self, _: &str) -> aegis_core::Result<Option<Vec<u8>>> { Ok(None) }
+        async fn set(&self, _: &str, _: &[u8], _: Duration) -> aegis_core::Result<()> { Ok(()) }
+        async fn del(&self, _: &str) -> aegis_core::Result<()> { Ok(()) }
+        async fn incr_window(&self, _: &str, w: Duration, _: u64) -> aegis_core::Result<aegis_core::SlidingWindowResult> {
+            Ok(aegis_core::SlidingWindowResult { count: 1, allowed: true, retry_after: Some(w) })
+        }
+        async fn token_bucket(&self, _: &str, _: u32, _: u32) -> aegis_core::Result<bool> { Ok(true) }
+        async fn get_risk(&self, _: &aegis_core::RiskKey) -> aegis_core::Result<u32> { Ok(0) }
+        async fn add_risk(&self, _: &aegis_core::RiskKey, _: i32, _: u32) -> aegis_core::Result<u32> { Ok(0) }
+        async fn auto_block(&self, _: IpAddr, _: Duration) -> aegis_core::Result<()> { Ok(()) }
+        async fn is_auto_blocked(&self, _: IpAddr) -> aegis_core::Result<bool> { Ok(false) }
+        async fn put_nonce(&self, _: &str, _: Duration) -> aegis_core::Result<bool> { Ok(true) }
+        async fn consume_nonce(&self, _: &str) -> aegis_core::Result<bool> { Ok(true) }
+        async fn incrby(&self, key: &str, delta: u64) -> aegis_core::Result<u64> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if self.fail {
+                return Err(aegis_core::WafError::State("incrby failed (test)".into()));
+            }
+            let mut m = self.counters.lock().unwrap();
+            let v = m.entry(key.to_string()).or_insert(0);
+            *v += delta;
+            Ok(*v)
+        }
+        async fn get_counter(&self, key: &str) -> aegis_core::Result<u64> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if self.fail {
+                return Err(aegis_core::WafError::State("get_counter failed (test)".into()));
+            }
+            Ok(*self.counters.lock().unwrap().get(key).unwrap_or(&0))
+        }
+    }
+
+    fn fleet_detector(backend: &Arc<FleetMock>) -> BruteForceDetector {
+        let mut d = BruteForceDetector::new(100, Duration::from_secs(60), 40);
+        d.user_threshold = 5;
+        d.set_count_scope(BruteForceCountScope::Fleet);
+        d.install_fleet_backend(backend.clone());
+        d
+    }
+
+    /// Poll (yielding to the current-thread runtime so fire-and-forget
+    /// tasks run) until `cond` holds — deterministic wait, panics with
+    /// `what` on timeout.
+    async fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
+        for _ in 0..500 {
+            if cond() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("timed out waiting for: {what}");
+    }
+
+    /// The load-balanced-campaign shape: 3 IPs hit node1, 3 hit node2 —
+    /// each node's local distinct-IP count (3) stays under threshold (5),
+    /// but the shared fleet counter reaches 6 and the user axis fires.
+    #[tokio::test]
+    async fn fleet_scope_aggregates_user_axis_across_two_nodes() {
+        let backend = Arc::new(FleetMock::new());
+        let node1 = fleet_detector(&backend);
+        let node2 = fleet_detector(&backend);
+        let body = BodyPeek::new(b"username=alice&password=x".to_vec(), None, false);
+        let (m, u, h, _) = make_req(http::Method::POST, "/login");
+
+        // node1: 3 distinct IPs — local count 3 ≤ 5, silent.
+        for octet in 1..=3 {
+            let s = node1.inspect(&view_with_body(&m, &u, &h, &body, &format!("21.0.0.{octet}:443")));
+            assert!(
+                !s.iter().any(|sig| sig.tag == "brute_force_user"),
+                "node1 local count must stay under threshold: {s:?}",
+            );
+        }
+        wait_until("node1's 3 fleet contributions to land", || backend.total() == 3).await;
+
+        // node2: 3 more distinct IPs — local count 3 ≤ 5, but the fleet
+        // total reaches 6. (The cache is written by fire-and-forget tasks,
+        // so the fire lands on the NEXT auth attempt, not mid-loop.)
+        for octet in 4..=6 {
+            let _ = node2.inspect(&view_with_body(&m, &u, &h, &body, &format!("21.0.0.{octet}:443")));
+        }
+        wait_until("node2's fleet cache to reach 6", || {
+            node2.fleet_cached("user:alice").unwrap_or(0) >= 6
+        })
+        .await;
+
+        // A repeat attempt (NOT a new distinct IP — no backend write) now
+        // sees the cached fleet count 6 > 5 → fires, though node2's local
+        // distinct count is still only 3.
+        let s = node2.inspect(&view_with_body(&m, &u, &h, &body, "21.0.0.4:443"));
+        assert!(
+            s.iter().any(|sig| sig.tag == "brute_force_user"),
+            "fleet count 6 must trip the user axis while local counts are 3+3: {s:?}",
+        );
+    }
+
+    /// Backend errors must fail safe to the per-node count — no panic,
+    /// no stall, and the local axis still fires at its own threshold.
+    #[tokio::test]
+    async fn fleet_backend_error_falls_back_to_per_node() {
+        let backend = Arc::new(FleetMock::new_failing());
+        let node = fleet_detector(&backend);
+        let body = BodyPeek::new(b"username=bob&password=x".to_vec(), None, false);
+        let (m, u, h, _) = make_req(http::Method::POST, "/login");
+
+        // 5 distinct IPs — under local threshold, errors swallowed.
+        for octet in 1..=5 {
+            let s = node.inspect(&view_with_body(&m, &u, &h, &body, &format!("22.0.0.{octet}:443")));
+            assert!(!s.iter().any(|sig| sig.tag == "brute_force_user"));
+        }
+        // Let the failing fire-and-forget tasks run — the cache must stay
+        // empty (fail-safe: local count governs).
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(node.fleet_cached("user:bob"), None, "errored fleet reads must not populate the cache");
+
+        // 6th distinct IP crosses the LOCAL threshold — detection intact.
+        let s = node.inspect(&view_with_body(&m, &u, &h, &body, "22.0.0.6:443"));
+        assert!(
+            s.iter().any(|sig| sig.tag == "brute_force_user"),
+            "local axis must still fire at its own threshold on backend failure: {s:?}",
+        );
+    }
+
+    /// `per_node` (the default) must be byte-identical to today: the
+    /// backend is installed but NEVER touched.
+    #[tokio::test]
+    async fn per_node_default_never_touches_backend() {
+        let backend = Arc::new(FleetMock::new());
+        let mut d = BruteForceDetector::new(100, Duration::from_secs(60), 40);
+        d.user_threshold = 2;
+        // Scope left at default (per_node); backend present but inert.
+        d.install_fleet_backend(backend.clone());
+        let body = BodyPeek::new(b"username=carol&password=x".to_vec(), None, false);
+        let (m, u, h, _) = make_req(http::Method::POST, "/login");
+
+        for octet in 1..=3 {
+            let _ = d.inspect(&view_with_body(&m, &u, &h, &body, &format!("23.0.0.{octet}:443")));
+        }
+        // Local axis fires exactly as before (3 distinct > 2)…
+        let s = d.inspect(&view_with_body(&m, &u, &h, &body, "23.0.0.3:443"));
+        assert!(s.iter().any(|sig| sig.tag == "brute_force_user"));
+        // …and the shared backend saw zero traffic.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            backend.calls.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "per_node scope must never touch the shared backend",
+        );
+    }
+
+    /// `fleet` requested but no shared backend installed (single-node /
+    /// non-cluster boot): logs once and runs per-node — never a silent
+    /// half-fleet, never a panic.
+    #[tokio::test]
+    async fn fleet_scope_without_backend_runs_per_node() {
+        let mut d = BruteForceDetector::new(100, Duration::from_secs(60), 40);
+        d.user_threshold = 2;
+        d.set_count_scope(BruteForceCountScope::Fleet);
+        // No install_fleet_backend — the cluster gate said no.
+        let body = BodyPeek::new(b"username=dave&password=x".to_vec(), None, false);
+        let (m, u, h, _) = make_req(http::Method::POST, "/login");
+        for octet in 1..=2 {
+            let s = d.inspect(&view_with_body(&m, &u, &h, &body, &format!("24.0.0.{octet}:443")));
+            assert!(!s.iter().any(|sig| sig.tag == "brute_force_user"));
+        }
+        let s = d.inspect(&view_with_body(&m, &u, &h, &body, "24.0.0.3:443"));
+        assert!(
+            s.iter().any(|sig| sig.tag == "brute_force_user"),
+            "local counting must be intact when fleet has no backend: {s:?}",
+        );
+    }
+
+    /// The per-device axis aggregates through the same fleet channel:
+    /// one JA4 fingerprint across 3+3 IPs on two nodes trips at 6.
+    #[tokio::test]
+    async fn fleet_scope_aggregates_device_axis_across_two_nodes() {
+        let backend = Arc::new(FleetMock::new());
+        let mk = || {
+            let mut d = BruteForceDetector::new(100, Duration::from_secs(60), 40);
+            d.device_threshold = 5;
+            d.set_count_scope(BruteForceCountScope::Fleet);
+            d.install_fleet_backend(backend.clone());
+            d
+        };
+        let node1 = mk();
+        let node2 = mk();
+        let fp = aegis_core::TlsFingerprint { ja3: String::new(), ja4: "t13d_stuffer_ja4".into() };
+        let body = BodyPeek::empty();
+        let (m, u, h, _) = make_req(http::Method::POST, "/login");
+        let mk_view = |peer: &str| RequestView {
+            method: &m,
+            uri: &u,
+            version: http::Version::HTTP_11,
+            headers: &h,
+            peer: peer.parse().unwrap(),
+            tls: Some(&fp),
+            body: &body,
+        };
+
+        for octet in 1..=3 {
+            let s = node1.inspect(&mk_view(&format!("25.0.0.{octet}:443")));
+            assert!(!s.iter().any(|sig| sig.tag == "brute_force_device"));
+        }
+        wait_until("node1's device contributions to land", || backend.total() == 3).await;
+        for octet in 4..=6 {
+            let _ = node2.inspect(&mk_view(&format!("25.0.0.{octet}:443")));
+        }
+        wait_until("node2's device fleet cache to reach 6", || {
+            node2.fleet_cached("device:t13d_stuffer_ja4").unwrap_or(0) >= 6
+        })
+        .await;
+        let s = node2.inspect(&mk_view("25.0.0.4:443"));
+        assert!(
+            s.iter().any(|sig| sig.tag == "brute_force_device"),
+            "fleet device count 6 must trip while local counts are 3+3: {s:?}",
+        );
     }
 }

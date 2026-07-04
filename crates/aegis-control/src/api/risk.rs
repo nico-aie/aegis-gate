@@ -13,7 +13,6 @@
 //! between the data plane (the producer) and the control plane
 //! (the consumer).
 
-#![allow(dead_code)]
 
 use std::net::IpAddr;
 

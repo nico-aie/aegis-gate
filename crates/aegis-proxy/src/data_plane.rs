@@ -147,6 +147,16 @@ pub(crate) async fn handle_data_request(
             ba.observe_outcome(&peer.ip().to_string(), resp.status().is_client_error());
         }
     }
+    // AC-P2-d (2026-07-04) — same hook, second consumer: feed origin 404s
+    // to the enumeration detector's outcome half. The `Action::Allow` gate
+    // matters doubly here — the WAF's own 403/429 blocks must never count
+    // as "the origin said not-found", or a blocked scanner would keep
+    // inflating its own 404 rate.
+    if let Some(en) = &upstream_ctx.enumeration {
+        if matches!(tag.action, aegis_control::interop::headers::Action::Allow) {
+            en.observe_outcome(peer.ip(), resp.status() == hyper::StatusCode::NOT_FOUND);
+        }
+    }
     (resp, tag)
 }
 
@@ -1223,6 +1233,17 @@ pub(crate) async fn handle_data_request_inner(
         if let Some(ba) = &upstream_ctx.behavior_analyzer {
             let has_cookie = parts.headers.contains_key(http::header::COOKIE);
             for sig in ba.observe(&peer_ip.to_string(), parts.uri.path(), false, has_cookie) {
+                signals.push(sig);
+            }
+        }
+        // AC-P2-d (2026-07-04) — enumeration detector, opt-in
+        // (`detectors.enumeration`, default-OFF → `None` here, no work).
+        // Inbound half only: records the distinct path and fires once BOTH
+        // the distinct-path and origin-404 counters cross threshold. The
+        // 404 side is fed by `observe_outcome` in the single-exit wrapper
+        // (the AC-P3-b response-outcome hook).
+        if let Some(en) = &upstream_ctx.enumeration {
+            for sig in en.observe_path(peer_ip, parts.uri.path()) {
                 signals.push(sig);
             }
         }
@@ -7110,6 +7131,128 @@ detectors:
         assert!(
             score.unwrap_or(0) == 0,
             "disabled analyzer must add no risk (zero cost), got {score:?}",
+        );
+    }
+
+    // AC-P2-d (2026-07-04) — the enumeration detector's 404-rate wiring.
+    // Off the chain, onto `ProxyContext.enumeration` (peer of
+    // `behavior_analyzer`): `observe_path` runs inbound, `observe_outcome`
+    // rides the AC-P3-b Allow-gated response hook. 46 distinct paths whose
+    // upstream outcome is `upstream_status`; returns the MAX per-request
+    // risk seen (the signal starts mid-run, then cumulative risk may block).
+    async fn run_enumeration_probe(enabled: bool, upstream_status: u16) -> u32 {
+        let backend = spawn_upstream_status(upstream_status).await;
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: pool }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend}" }}] }}
+state: {{ backend: in_memory }}
+detectors:
+  enumeration: {{ enabled: {enabled} }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
+        ctx.interop_modes.set(Arc::new(ModeStore::new(Mode::Enforce))).ok();
+
+        let metrics = aegis_control::metrics::MetricsRegistry::init();
+        let args = Arc::new(Args {
+            detectors: aegis_security::detectors::default_detectors(),
+            mask: aegis_security::detectors::SharedDetectorMask::from_config(&cfg.detectors),
+            risk: aegis_security::risk::RiskTracker::new(&cfg.risk),
+            ip_rl: aegis_security::rate_limit::IpRateLimiter::new(
+                crate::config_source::reload::derive_ip_rate_cfg(&cfg),
+            ),
+            load_gauge: aegis_core::LoadGauge::new(cfg.load_mode.clone()),
+            verbosity: aegis_core::SharedVerbosity::from_config(&cfg.logging),
+            rsh: aegis_control::metrics::request_duration::RequestStageHistogram::register(&metrics)
+                .unwrap(),
+            rlh: aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&metrics)
+                .unwrap(),
+            ra: aegis_control::metrics::route_activity::RouteActivityWindow::new(),
+            dlh: aegis_control::metrics::detector_latency::DetectorLatencyHistogram::register(&metrics)
+                .unwrap(),
+            dhm: aegis_control::metrics::detector_hits::DetectorHitMetrics::register(&metrics)
+                .unwrap(),
+            bus: AuditBus::new(64),
+            ctx: ctx.clone(),
+        });
+        let max_risk: Arc<std::sync::Mutex<u32>> = Arc::new(std::sync::Mutex::new(0));
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let args_l = args.clone();
+        let max_l = max_risk.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, peer)) = waf.accept().await {
+                let args_c = args_l.clone();
+                let max_c = max_l.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                        let a = args_c.clone();
+                        let max = max_c.clone();
+                        async move {
+                            let (resp, tag) = super::handle_data_request(
+                                req, peer, None, &a.detectors, &a.mask, &a.risk, &a.ip_rl,
+                                &a.load_gauge, &a.verbosity, &a.rsh, &a.rlh, &a.ra, &a.dlh,
+                                &a.bus, &a.ctx, &a.dhm, &ClientIdentity::Anonymous, None,
+                            )
+                            .await;
+                            if let Some(r) = tag.risk_score {
+                                let mut m = max.lock().unwrap();
+                                *m = (*m).max(r);
+                            }
+                            Ok::<_, Infallible>(resp)
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // 46 distinct paths (default threshold 40): both the distinct-path
+        // and (with a 404 upstream) the 404 counters cross mid-run.
+        for i in 0..46 {
+            let _ = get_status(waf_addr, &format!("/probe/{i}")).await;
+        }
+        let max = *max_risk.lock().unwrap();
+        max
+    }
+
+    #[tokio::test]
+    async fn enumeration_wired_scores_on_mostly_404_scan() {
+        let risk = run_enumeration_probe(true, 404).await;
+        assert!(
+            risk >= aegis_security::detectors::enumeration::SCORE,
+            "46 distinct all-404 paths must fire the wired enumeration signal, got {risk}",
+        );
+    }
+
+    #[tokio::test]
+    async fn enumeration_silent_when_paths_resolve_200() {
+        // Same scan shape but the origin serves real content — the 404
+        // gate must keep the crawler-FP case silent.
+        let risk = run_enumeration_probe(true, 200).await;
+        assert!(
+            risk < aegis_security::detectors::enumeration::SCORE,
+            "distinct 200-paths (crawler) must not fire enumeration, got {risk}",
+        );
+    }
+
+    #[tokio::test]
+    async fn enumeration_silent_when_disabled() {
+        let risk = run_enumeration_probe(false, 404).await;
+        assert_eq!(
+            risk, 0,
+            "disabled enumeration detector must add no risk (zero cost)",
         );
     }
 

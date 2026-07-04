@@ -19,7 +19,6 @@
 //! `validation` and lists the offending classes in the message —
 //! the dashboard renders those toggles disabled with a tooltip.
 
-#![allow(dead_code)]
 
 use aegis_core::config::ComplianceMode;
 use aegis_core::tier::Tier;

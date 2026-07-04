@@ -13,8 +13,6 @@
 //! `Full<Bytes>` → `DataBody` migration so it can be unit-tested in
 //! isolation with paused time.
 
-#![allow(dead_code)] // wired into the streaming forward path in a later phase
-
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};

@@ -6,7 +6,6 @@
 //! then the dashboard CRUD round-trips through this in-process
 //! store so the UI works end-to-end.
 
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

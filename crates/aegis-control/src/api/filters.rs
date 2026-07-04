@@ -12,7 +12,6 @@
 //! than 24h) and via a hard cap of 10 000 entries per category to
 //! bound memory under attack-style activity.
 
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

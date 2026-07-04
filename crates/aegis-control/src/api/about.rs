@@ -13,7 +13,6 @@
 //!
 //! Spec: `docs/control-plane/enterprise/api.md` §"Stats / Overview".
 
-#![allow(dead_code)]
 
 use std::sync::OnceLock;
 

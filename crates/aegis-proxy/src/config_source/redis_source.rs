@@ -125,6 +125,9 @@ pub struct ApplyTargets {
     pub canary_paths: Option<aegis_security::detectors::canary::CanaryPaths>,
     /// Bot-classifier gate toggle (shared `AtomicBool`).
     pub bots_enabled: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// AC-P2-b — the chain-resident brute-force detector, so a converged
+    /// `count_scope` change re-derives on every node.
+    pub brute_force: Option<Arc<aegis_security::detectors::brute_force::BruteForceDetector>>,
 }
 
 /// Spawn the shared-store config watcher. Exits when the last strong
@@ -459,6 +462,10 @@ async fn apply_and_swap(
         targets.canary_paths.as_ref(),
     );
     let _ = reload::apply_cfg_change_to_bots(new_cfg, targets.bots_enabled.as_ref());
+    // AC-P2-b — re-derive the brute-force count scope (fleet vs per-node)
+    // so a converged scope flip applies on every node, not just the one
+    // that handled the PUT.
+    let _ = reload::apply_cfg_change_to_brute_force(new_cfg, targets.brute_force.as_ref());
     // 2026-06-21 — reconcile the per-pool response (smart) cache from the
     // converged doc so a dashboard "Response cache" enable/add/change/remove
     // applies fleet-wide without a restart (was node-local-until-restart).
@@ -994,6 +1001,7 @@ mod tests {
             risk: None,
             canary_paths: None,
             bots_enabled: None,
+            brute_force: None,
         };
 
         let store_w = ConfigStore::new(backend.clone());

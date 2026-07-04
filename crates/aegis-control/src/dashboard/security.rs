@@ -6,7 +6,6 @@
 //! list. Spec lives in `docs/control-plane/enterprise/security.md`
 //! §"Headers (full set on dashboard responses)".
 
-#![allow(dead_code)]
 
 /// Content Security Policy spelled out as a single string so the
 /// header value is identical to the way operators paste it into

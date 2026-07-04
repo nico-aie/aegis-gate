@@ -14,7 +14,6 @@
 //! string remains accepted as a serde alias on the enum + a parse
 //! alias here so old YAML configs and API clients keep working.
 
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

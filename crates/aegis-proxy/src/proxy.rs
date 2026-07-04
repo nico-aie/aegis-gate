@@ -232,6 +232,13 @@ pub struct ProxyContext {
     /// plane's `observe()` call is skipped entirely (zero cost).
     pub behavior_analyzer:
         Option<Arc<aegis_security::behavior::BehavioralAnalyzer>>,
+    /// AC-P2-d (2026-07-04) — the enumeration detector, off the chain and
+    /// onto the context because its 404-rate half consumes the AC-P3-b
+    /// response-outcome hook (chain detectors never see upstream status).
+    /// Behind the default-OFF `detectors.enumeration` toggle; `Some` only
+    /// when enabled, so a disabled deployment pays nothing.
+    pub enumeration:
+        Option<Arc<aegis_security::detectors::enumeration::EnumerationDetector>>,
     /// 2026-05-21 — gate-style on/off for the bot classifier
     /// (`cfg.bots.enabled`). The listener reads this before
     /// classifying; `false` skips classification and leaves
@@ -354,6 +361,13 @@ impl ProxyContext {
             // window matches the `behavior_signals` bound.
             behavior_analyzer: cfg.detectors.behavior_analyzer.enabled.then(|| {
                 Arc::new(aegis_security::behavior::BehavioralAnalyzer::new(100_000, 60))
+            }),
+            // AC-P2-d — construct only when opted in; defaults carry the
+            // bounded caps (100k IPs / 128 path-hashes / threshold 40).
+            enumeration: cfg.detectors.enumeration.enabled.then(|| {
+                Arc::new(
+                    aegis_security::detectors::enumeration::EnumerationDetector::new(),
+                )
             }),
             bots_enabled: Arc::new(std::sync::atomic::AtomicBool::new(
                 cfg.bots.enabled,

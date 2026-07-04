@@ -6,7 +6,6 @@
 //! require external-auth callouts; mTLS + admin session auth
 //! cover the configured surfaces today.
 
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 

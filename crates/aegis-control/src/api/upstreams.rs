@@ -13,7 +13,6 @@
 //! Spec: `docs/control-plane/enterprise/api.md` §"Tracking page" and
 //! `docs/control-plane/enterprise/pages/overview.md` §"Upstream pools".
 
-#![allow(dead_code)]
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};

@@ -832,10 +832,12 @@ pub(crate) async fn admin_accept_loop(
         .stats_agg
         .spawn_persistence(lease_store.self_id().as_str().to_string());
 
-    // CI-T5 — seed `services.routes` from `cfg.routes` so
-    // /api/routes returns the live routing trie. Hot-reload
-    // re-invokes this through `cfg_swap` (TODO when route
-    // hot-reload lands; today routes are boot-time only).
+    // CI-T5 — seed `services.routes` from `cfg.routes` as the
+    // boot-time fallback for /api/routes. Route hot-reload HAS
+    // landed since this seam was written: the GET handler prefers
+    // `route_writer.current_routes()` (live, reload-aware,
+    // admin_get.rs) and only falls back to this static seed when
+    // no writer is wired.
     // PR1: priority is computed from the same routes the trie
     // sees, so dashboard ordering matches resolution.
     services

@@ -4946,8 +4946,12 @@ pub struct DetectorsConfig {
     pub body_abuse: DetectorToggle,
     #[serde(default = "default_detector_toggle")]
     pub recon: DetectorToggle,
-    #[serde(default = "default_detector_toggle")]
-    pub brute_force: DetectorToggle,
+    /// AC-P2-b (2026-07-04) — brute-force grew a `count_scope` knob
+    /// (fleet aggregation of the per-user / per-device distinct-IP axes),
+    /// so its toggle is a dedicated struct. `brute_force: { enabled: … }`
+    /// parses exactly as before; `count_scope` defaults to `per_node`.
+    #[serde(default)]
+    pub brute_force: BruteForceToggle,
     /// 2026-05-08 SEC-M002 — dedicated command-injection detector
     /// (`$()`, backticks, `${}`, `| cmd`, `; cmd`, etc.). Default
     /// enabled — closes a gap that AI was previously covering.
@@ -5172,7 +5176,7 @@ impl Default for DetectorsConfig {
             header_injection: default_detector_toggle(),
             body_abuse: default_detector_toggle(),
             recon: default_detector_toggle(),
-            brute_force: default_detector_toggle(),
+            brute_force: BruteForceToggle::default(),
             command_injection: default_detector_toggle(),
             template_injection: default_detector_toggle(),
             nosql_injection: default_detector_toggle(),
@@ -5195,6 +5199,41 @@ impl Default for DetectorsConfig {
 pub struct DetectorToggle {
     #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+/// AC-P2-b (2026-07-04) — scope of the brute-force per-user / per-device
+/// distinct-IP counts. Mirrors [`SpikeScope`] on the DDoS gate.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BruteForceCountScope {
+    /// Counts tracked in this node's memory only (today's behaviour).
+    #[default]
+    PerNode,
+    /// Counts aggregated across the fleet via the shared `StateBackend`.
+    /// **Cluster mode only** — requires Redis cluster propagation AND a
+    /// Redis state backend; without both the detector logs once and runs
+    /// per-node (no silent "fleet == this node" trap).
+    Fleet,
+}
+
+/// AC-P2-b — the brute-force detector's toggle, a [`DetectorToggle`]
+/// plus the count-scope knob. `brute_force: { enabled: … }` keeps
+/// parsing unchanged.
+#[derive(Clone, Debug, Deserialize)]
+pub struct BruteForceToggle {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub count_scope: BruteForceCountScope,
+}
+
+impl Default for BruteForceToggle {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            count_scope: BruteForceCountScope::default(),
+        }
+    }
 }
 
 /// 2026-05-09 — DDoS request-flow gate config.
@@ -8523,6 +8562,26 @@ tier_overrides:
         let default_yaml = "enabled: true\n";
         let cfg: DdosConfig = serde_yaml::from_str(default_yaml).unwrap();
         assert!(cfg.tier_overrides.is_empty());
+    }
+
+    /// AC-P2-b — `brute_force.count_scope` parses from YAML and defaults to
+    /// `per_node`; the pre-existing `{ enabled: … }` shape stays valid.
+    #[test]
+    fn brute_force_count_scope_parses_and_defaults_per_node() {
+        let fleet: DetectorsConfig =
+            serde_yaml::from_str("brute_force: { enabled: true, count_scope: fleet }").unwrap();
+        assert_eq!(fleet.brute_force.count_scope, BruteForceCountScope::Fleet);
+        assert!(fleet.brute_force.enabled);
+
+        // Legacy shape — toggle only — still parses, scope defaults per_node.
+        let legacy: DetectorsConfig =
+            serde_yaml::from_str("brute_force: { enabled: false }").unwrap();
+        assert!(!legacy.brute_force.enabled);
+        assert_eq!(legacy.brute_force.count_scope, BruteForceCountScope::PerNode);
+
+        let dflt = DetectorsConfig::default();
+        assert!(dflt.brute_force.enabled);
+        assert_eq!(dflt.brute_force.count_scope, BruteForceCountScope::PerNode);
     }
 
     /// Fleet RPS aggregation — `spike_scope` parses from YAML and defaults to

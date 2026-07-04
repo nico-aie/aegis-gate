@@ -10,7 +10,6 @@
 //! subscriber — one channel reader, two recipients, no extra
 //! hot-path cost on the data plane.
 
-#![allow(dead_code)]
 
 use std::sync::Arc;
 

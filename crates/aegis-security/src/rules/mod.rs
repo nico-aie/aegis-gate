@@ -125,7 +125,6 @@ impl Default for RuleSet {
 #[allow(deprecated)]  // test scaffolding uses NoopPipeline
 mod tests {
     use super::*;
-    use std::io::Write;
 
     fn valid_rules_yaml() -> &'static str {
         r#"

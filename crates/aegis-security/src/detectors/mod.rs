@@ -744,8 +744,19 @@ pub fn default_detectors_with(
 pub fn default_detectors_with_canary(
     cfg: &aegis_core::config::DetectorsConfig,
     canary_paths: &canary::CanaryPaths,
+    // AC-P2-b (2026-07-04) — when the boot path wants a handle to the
+    // chain's brute-force instance (fleet-backend install + count_scope
+    // hot-reload), it builds the `Arc` itself and passes it here; the
+    // shared handle replaces the default chain slot. `None` keeps the
+    // self-contained instance (tests / simulator).
+    brute_force: Option<std::sync::Arc<brute_force::BruteForceDetector>>,
 ) -> Vec<Box<dyn Detector>> {
     let mut v = default_detectors_with(cfg);
+    if let Some(shared) = brute_force {
+        if let Some(slot) = v.iter_mut().find(|d| d.id() == "brute_force") {
+            *slot = Box::new(shared);
+        }
+    }
     // Always register canary from the shared handle; the `Canary`
     // mask bit gates whether the dispatcher actually runs it, and
     // the path set is hot-swappable via the admin control plane.
@@ -775,11 +786,11 @@ pub fn default_detectors_with_canary(
             velocity_sequence::VelocitySequenceDetector::new(),
         ));
     }
-    if cfg.enumeration.enabled {
-        // AC-P2-d (2026-07-04) — endpoint-enumeration detector. Stateful
-        // per-IP (bounded); default OFF, only in the chain when opted in.
-        v.push(Box::new(enumeration::EnumerationDetector::new()));
-    }
+    // AC-P2-d (2026-07-04) — the enumeration detector is NOT chain-resident:
+    // its 404-rate half needs the upstream status, which only the AC-P3-b
+    // response-outcome hook sees. It lives on `ProxyContext.enumeration`
+    // (mirroring `behavior_analyzer`), constructed only when
+    // `cfg.enumeration.enabled`.
     v
 }
 
@@ -1148,7 +1159,7 @@ mod tests {
             ..aegis_core::config::DetectorsConfig::default()
         };
         let canary_paths = canary::CanaryPaths::new(&[]);
-        for d in default_detectors_with_canary(&cfg, &canary_paths) {
+        for d in default_detectors_with_canary(&cfg, &canary_paths, None) {
             assert!(
                 DetectorClass::from_id(d.id()).is_some(),
                 "detector '{}' has no matching DetectorClass — mask gating silently no-ops",

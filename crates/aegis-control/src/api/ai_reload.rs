@@ -12,7 +12,6 @@
 //! a concrete implementation that owns the hot-swappable model handle, so test
 //! bundles can fake it without an ONNX runtime.
 
-#![allow(dead_code)]
 
 use serde::Serialize;
 

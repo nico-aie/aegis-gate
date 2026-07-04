@@ -26,10 +26,8 @@
 //! prevents long-lived flooding sources from leaking memory
 //! after they back off.
 
-#![allow(dead_code)]
 
 use std::collections::VecDeque;
-use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -150,9 +148,8 @@ struct Inner {
     /// limiter map keys on `RiskKey` (composite) so two sessions
     /// on the same NAT'd IP get independent rate-limit buckets —
     /// same migration as `RiskTracker` did in commit 01c053c.
-    /// IP-only methods (`consume(ip)`, `reset(ip)`) keep working
-    /// by internally constructing `RiskKey::from_ip(ip)`. New
-    /// `*_with_key` methods take the full composite.
+    /// All entry points take the full composite `RiskKey`
+    /// (`*_with_key`); IP-only callers build `RiskKey::from_ip`.
     map: DashMap<aegis_core::risk::RiskKey, VecDeque<Instant>>,
     last_sweep: parking_lot::Mutex<Instant>,
 }
@@ -184,25 +181,12 @@ impl IpRateLimiter {
         **self.inner.cfg.load()
     }
 
-    /// Consume one slot for `ip`. Returns the post-state
-    /// decision the hot path acts on.
-    pub fn consume(&self, ip: IpAddr) -> RateDecision {
-        self.consume_at(ip, Instant::now())
-    }
-
-    /// Test seam — drives the clock from the caller so unit
-    /// tests can verify window-edge behaviour deterministically.
-    pub fn consume_at(&self, ip: IpAddr, now: Instant) -> RateDecision {
-        self.consume_at_with_key(
-            aegis_core::risk::RiskKey::from_ip(ip),
-            now,
-        )
-    }
-
     /// 2026-05-18 F-CRITICAL-002 (security audit, Phase E):
-    /// composite-key variant of [`consume`]. Caller builds the
-    /// full `RiskKey`; two sessions on the same NAT'd IP get
-    /// independent buckets.
+    /// composite-key consume. Caller builds the full `RiskKey`;
+    /// two sessions on the same NAT'd IP get independent buckets.
+    /// (LT-P8: the IP-only `consume`/`consume_at` wrappers are
+    /// gone — every caller had migrated to the `_with_key` forms;
+    /// build a key with `RiskKey::from_ip(ip)` where needed.)
     pub fn consume_with_key(
         &self,
         key: aegis_core::risk::RiskKey,
@@ -311,16 +295,9 @@ impl IpRateLimiter {
         self.inner.map.len()
     }
 
-    /// Reset all per-IP state. Used by `/api/risk/{ip}/reset`
-    /// when an operator wants to clear strikes — clearing the
-    /// rate-limit counters at the same time means the IP isn't
-    /// stuck with old timestamps right after the reset.
-    pub fn reset(&self, ip: IpAddr) {
-        self.reset_with_key(&aegis_core::risk::RiskKey::from_ip(ip));
-    }
-
-    /// Composite-key variant of [`reset`]. Drops exactly one
-    /// bucket without touching peers on the same IP.
+    /// Drop exactly one bucket without touching peers on the same
+    /// IP. (LT-P8: the IP-only `reset(ip)` wrapper is gone —
+    /// `/api/risk/{ip}/reset` resets raw axes via `_with_key`.)
     pub fn reset_with_key(&self, key: &aegis_core::risk::RiskKey) {
         self.inner.map.remove(key);
     }
@@ -336,6 +313,13 @@ impl IpRateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::IpAddr;
+
+    /// LT-P8 — the IP-only wrappers were deleted; tests build the
+    /// composite key explicitly.
+    fn ipkey(ip: IpAddr) -> aegis_core::risk::RiskKey {
+        aegis_core::risk::RiskKey::from_ip(ip)
+    }
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
@@ -353,7 +337,7 @@ mod tests {
     fn under_limit_returns_allowed() {
         let l = limiter(5, 60);
         for i in 1..=5 {
-            let d = l.consume(ip("10.0.0.1"));
+            let d = l.consume_with_key(ipkey(ip("10.0.0.1")));
             assert!(d.allowed);
             assert_eq!(d.count, i);
             assert_eq!(d.retry_after_seconds, 0);
@@ -364,10 +348,10 @@ mod tests {
     fn over_limit_denied_with_retry_after() {
         let l = limiter(3, 60);
         for _ in 0..3 {
-            let d = l.consume(ip("10.0.0.1"));
+            let d = l.consume_with_key(ipkey(ip("10.0.0.1")));
             assert!(d.allowed);
         }
-        let d = l.consume(ip("10.0.0.1"));
+        let d = l.consume_with_key(ipkey(ip("10.0.0.1")));
         assert!(!d.allowed);
         assert_eq!(d.count, 3);
         assert!(d.retry_after_seconds >= 1);
@@ -383,19 +367,19 @@ mod tests {
         // reopen.
         let l = limiter(2, 1);
         let now = Instant::now();
-        l.consume_at(ip("10.0.0.1"), now);
-        l.consume_at(ip("10.0.0.1"), now);
+        l.consume_at_with_key(ipkey(ip("10.0.0.1")), now);
+        l.consume_at_with_key(ipkey(ip("10.0.0.1")), now);
         // 100 denied attempts inside the window
         for _ in 0..100 {
-            let d = l.consume_at(
-                ip("10.0.0.1"),
+            let d = l.consume_at_with_key(
+                ipkey(ip("10.0.0.1")),
                 now + Duration::from_millis(500),
             );
             assert!(!d.allowed);
         }
         // After the window expires, the gate reopens.
-        let d = l.consume_at(
-            ip("10.0.0.1"),
+        let d = l.consume_at_with_key(
+            ipkey(ip("10.0.0.1")),
             now + Duration::from_secs(2),
         );
         assert!(d.allowed, "limiter must reopen after window elapses");
@@ -405,10 +389,10 @@ mod tests {
     fn different_ips_independent() {
         let l = limiter(3, 60);
         for _ in 0..3 {
-            l.consume(ip("10.0.0.1"));
+            l.consume_with_key(ipkey(ip("10.0.0.1")));
         }
         // Same instant, different IP — must still be allowed.
-        let d = l.consume(ip("10.0.0.2"));
+        let d = l.consume_with_key(ipkey(ip("10.0.0.2")));
         assert!(d.allowed);
     }
 
@@ -416,11 +400,11 @@ mod tests {
     fn window_recovers_for_single_ip() {
         let l = limiter(2, 1);
         let t0 = Instant::now();
-        l.consume_at(ip("10.0.0.1"), t0);
-        l.consume_at(ip("10.0.0.1"), t0);
+        l.consume_at_with_key(ipkey(ip("10.0.0.1")), t0);
+        l.consume_at_with_key(ipkey(ip("10.0.0.1")), t0);
         // Advance one full window.
         let t1 = t0 + Duration::from_secs(2);
-        let d = l.consume_at(ip("10.0.0.1"), t1);
+        let d = l.consume_at_with_key(ipkey(ip("10.0.0.1")), t1);
         assert!(d.allowed, "should reopen after window expires");
         assert_eq!(d.count, 1, "old entries pruned");
     }
@@ -428,11 +412,11 @@ mod tests {
     #[test]
     fn reset_clears_per_ip_state() {
         let l = limiter(1, 60);
-        l.consume(ip("10.0.0.1"));
-        let denied = l.consume(ip("10.0.0.1"));
+        l.consume_with_key(ipkey(ip("10.0.0.1")));
+        let denied = l.consume_with_key(ipkey(ip("10.0.0.1")));
         assert!(!denied.allowed);
-        l.reset(ip("10.0.0.1"));
-        let after = l.consume(ip("10.0.0.1"));
+        l.reset_with_key(&ipkey(ip("10.0.0.1")));
+        let after = l.consume_with_key(ipkey(ip("10.0.0.1")));
         assert!(after.allowed, "reset must clear the bucket");
     }
 
@@ -440,7 +424,7 @@ mod tests {
     fn tracked_count_grows_with_distinct_ips() {
         let l = limiter(100, 60);
         for i in 0..50u8 {
-            l.consume(ip(&format!("10.0.0.{i}")));
+            l.consume_with_key(ipkey(ip(&format!("10.0.0.{i}"))));
         }
         assert_eq!(l.tracked(), 50);
     }
@@ -517,10 +501,10 @@ mod tests {
         let l = limiter(5, 60);
         let mut last = None;
         for _ in 0..5 {
-            last = Some(l.consume(ip("10.0.0.1")));
+            last = Some(l.consume_with_key(ipkey(ip("10.0.0.1"))));
         }
         assert!(last.unwrap().allowed);
-        let next = l.consume(ip("10.0.0.1"));
+        let next = l.consume_with_key(ipkey(ip("10.0.0.1")));
         assert!(!next.allowed);
     }
 
@@ -533,10 +517,10 @@ mod tests {
         let l = limiter(3, 60);
         let now = Instant::now();
         for _ in 0..3 {
-            assert!(l.consume_at(ip("10.0.0.1"), now).allowed);
+            assert!(l.consume_at_with_key(ipkey(ip("10.0.0.1")), now).allowed);
         }
         // 4th would be denied at limit=3.
-        assert!(!l.consume_at(ip("10.0.0.1"), now).allowed);
+        assert!(!l.consume_at_with_key(ipkey(ip("10.0.0.1")), now).allowed);
 
         l.set_config(IpRateLimitConfig {
             limit: 10,
@@ -546,11 +530,11 @@ mod tests {
 
         // 4th-10th now allowed (count_before = 3, limit = 10).
         for i in 0..7 {
-            let d = l.consume_at(ip("10.0.0.1"), now);
+            let d = l.consume_at_with_key(ipkey(ip("10.0.0.1")), now);
             assert!(d.allowed, "request {} after raise should pass", i + 4);
         }
         // 11th denied at the new limit.
-        assert!(!l.consume_at(ip("10.0.0.1"), now).allowed);
+        assert!(!l.consume_at_with_key(ipkey(ip("10.0.0.1")), now).allowed);
     }
 
     #[test]
@@ -561,10 +545,10 @@ mod tests {
         let l = limiter(100, 60);
         let now = Instant::now();
         for _ in 0..50 {
-            l.consume_at(ip("203.0.113.1"), now);
+            l.consume_at_with_key(ipkey(ip("203.0.113.1")), now);
         }
         for _ in 0..30 {
-            l.consume_at(ip("203.0.113.2"), now);
+            l.consume_at_with_key(ipkey(ip("203.0.113.2")), now);
         }
         let tracked_before = l.tracked();
         assert_eq!(tracked_before, 2);
@@ -586,14 +570,14 @@ mod tests {
         let l = limiter(100, 60);
         let now = Instant::now();
         for _ in 0..50 {
-            l.consume_at(ip("10.0.0.99"), now);
+            l.consume_at_with_key(ipkey(ip("10.0.0.99")), now);
         }
         l.set_config(IpRateLimitConfig {
             limit: 30,
             window: Duration::from_secs(60),
             enabled: true,
         });
-        let d = l.consume_at(ip("10.0.0.99"), now);
+        let d = l.consume_at_with_key(ipkey(ip("10.0.0.99")), now);
         assert!(!d.allowed);
         assert_eq!(d.limit, 30);
     }
@@ -609,7 +593,7 @@ mod tests {
         let mut handles = vec![];
         for _ in 0..200 {
             let l = l.clone();
-            handles.push(thread::spawn(move || l.consume(ip("10.0.0.1"))));
+            handles.push(thread::spawn(move || l.consume_with_key(ipkey(ip("10.0.0.1")))));
         }
         let mut allowed = 0u32;
         let mut denied = 0u32;
@@ -663,9 +647,9 @@ mod tests {
         let composite = key("10.0.0.1", Some("fp-x"), Some("sess-x"));
 
         // Burn IP-only bucket.
-        l.consume(p);
-        l.consume(p);
-        assert!(!l.consume(p).allowed);
+        l.consume_with_key(ipkey(p));
+        l.consume_with_key(ipkey(p));
+        assert!(!l.consume_with_key(ipkey(p)).allowed);
 
         // Composite bucket is fresh — still allowed.
         assert!(l.consume_with_key(composite.clone()).allowed);
@@ -679,7 +663,7 @@ mod tests {
         let p = ip("10.0.0.5");
         let k1 = key("10.0.0.5", Some("fp1"), None);
         let k2 = key("10.0.0.5", Some("fp2"), None);
-        l.consume(p);
+        l.consume_with_key(ipkey(p));
         l.consume_with_key(k1.clone());
         l.consume_with_key(k2.clone());
         let before = l.tracked();

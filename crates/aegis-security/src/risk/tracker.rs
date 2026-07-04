@@ -26,7 +26,6 @@
 //! `DashMap` shard with a `StateBackend`-backed shim once cluster
 //! membership lands; the public surface stays put.
 
-#![allow(dead_code)]
 
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -39,8 +38,6 @@ use aegis_core::state::{StateBackend, CONTROL_RISK_KEY};
 use dashmap::{DashMap, DashSet};
 
 use super::RiskLevel;
-
-const DEFAULT_TRUST_PER_HOUR: u32 = 30;
 
 /// 2026-05-20 (memory-leak audit) — RiskTracker's `map` had no
 /// eviction, so under distinct-source-IP attack traffic it grew

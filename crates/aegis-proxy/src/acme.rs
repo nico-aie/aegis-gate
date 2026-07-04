@@ -22,10 +22,11 @@
 //!
 //! # Where the network impl lives
 //!
-//! Today, this module ships the state machine + a mock provider
-//! that is exercised end-to-end in tests. The concrete
-//! `instant-acme`-backed [`AcmeProvider`] impl is a single follow-up
-//! addition — search for `// TODO(P5-network)` markers below.
+//! This module ships the state machine + a mock provider that is
+//! exercised end-to-end in tests. The concrete `instant-acme`-backed
+//! [`AcmeProvider`] lives in `acme_instant.rs` and is wired at boot
+//! (`run.rs`) — the "P5-network follow-up" this doc once promised
+//! has shipped.
 //!
 //! Why split that way: the state machine is the high-leverage
 //! correctness surface (renewal scheduling, challenge cleanup,
@@ -33,7 +34,6 @@
 //! over `instant-acme`'s API, and adding it here would couple the
 //! tests to network availability.
 
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::path::PathBuf;
