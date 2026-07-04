@@ -126,4 +126,45 @@ mod tests {
         AuditEventMetrics::register(&reg).unwrap();
         assert!(AuditEventMetrics::register(&reg).is_err());
     }
+
+    // ---- AU-2 — waf_audit_events_dropped_total{consumer} ----
+
+    fn dropped_value(reg: &MetricsRegistry, consumer: &str) -> f64 {
+        reg.inner()
+            .gather()
+            .into_iter()
+            .find(|f| f.get_name() == "waf_audit_events_dropped_total")
+            .and_then(|f| {
+                f.get_metric()
+                    .iter()
+                    .find(|m| {
+                        m.get_label().iter().any(|l| {
+                            l.get_name() == "consumer" && l.get_value() == consumer
+                        })
+                    })
+                    .map(|m| m.get_counter().get_value())
+            })
+            .unwrap_or(0.0)
+    }
+
+    #[test]
+    fn drop_counter_records_by_consumer() {
+        let reg = MetricsRegistry::init();
+        let m = AuditDropMetrics::register(&reg).unwrap();
+        m.record("jsonl", 3);
+        m.record("jsonl", 2);
+        m.record("dashboard", 1);
+        assert_eq!(dropped_value(&reg, "jsonl"), 5.0);
+        assert_eq!(dropped_value(&reg, "dashboard"), 1.0);
+        assert_eq!(dropped_value(&reg, "syslog"), 0.0, "pre-allocated at 0");
+    }
+
+    #[test]
+    fn global_record_dropped_is_safe_without_installation() {
+        // Consumers (jsonl persist / syslog forward / dashboard
+        // drain) call the global helper unconditionally; before the
+        // proxy boot installs the metric it must be a no-op, never
+        // a panic.
+        record_dropped("jsonl", 7);
+    }
 }
