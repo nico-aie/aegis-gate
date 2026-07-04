@@ -1499,6 +1499,121 @@ mod tests {
         assert!(t.snapshot(ip("10.0.0.9")).is_some(), "active offender survives");
     }
 
+    // ---- AU-3A (2026-07-04, owner decision) — lifetime strike-blocks
+    // survive idle. A source that crossed `block_at` is permanently
+    // blocked; going quiet for IDLE_TTL must NOT un-block it.
+
+    #[test]
+    fn strike_blocked_slot_survives_idle_sweep() {
+        use aegis_core::risk::RiskKey;
+        let t = RiskTracker::new(&cfg()); // strikes enabled, block_at 5
+        let t0 = Instant::now();
+        let offender = RiskKey::from_ip(ip("10.3.0.1"));
+        for i in 0..5 {
+            t.record_malicious_at_with_key(
+                offender.clone(),
+                20,
+                t0 + Duration::from_secs(i),
+            );
+        }
+        assert!(t.is_strike_blocked(ip("10.3.0.1")), "5 strikes ≥ block_at");
+
+        // Offender goes quiet well past IDLE_TTL; another key's
+        // traffic triggers the sweep.
+        let later = t0 + IDLE_TTL + Duration::from_secs(300);
+        t.record_malicious_at_with_key(RiskKey::from_ip(ip("10.3.0.2")), 20, later);
+
+        assert!(
+            t.is_strike_blocked(ip("10.3.0.1")),
+            "a permanently strike-blocked source must not un-block by idling",
+        );
+    }
+
+    #[test]
+    fn under_threshold_strikes_are_still_evicted_when_idle() {
+        use aegis_core::risk::RiskKey;
+        let t = RiskTracker::new(&cfg());
+        let t0 = Instant::now();
+        // 2 strikes < block_at 5 — not blocked, normal TTL applies.
+        let key = RiskKey::from_ip(ip("10.3.1.1"));
+        t.record_malicious_at_with_key(key.clone(), 20, t0);
+        t.record_malicious_at_with_key(key, 20, t0 + Duration::from_secs(1));
+
+        let later = t0 + IDLE_TTL + Duration::from_secs(300);
+        t.record_malicious_at_with_key(RiskKey::from_ip(ip("10.3.1.2")), 20, later);
+        assert!(
+            t.snapshot(ip("10.3.1.1")).is_none(),
+            "under-threshold idle slots keep the trust-recovery posture (evicted)",
+        );
+    }
+
+    #[test]
+    fn strike_block_exemption_disabled_with_the_gate() {
+        use aegis_core::risk::RiskKey;
+        let mut c = RiskConfig::default();
+        c.trust_recovery = Some(TrustRecoveryConfig { per_hour: 30 });
+        c.strikes = Some(StrikeConfig { enabled: false, block_at: 5 });
+        let t = RiskTracker::new(&c);
+        let t0 = Instant::now();
+        let key = RiskKey::from_ip(ip("10.3.2.1"));
+        for i in 0..5 {
+            t.record_malicious_at_with_key(key.clone(), 20, t0 + Duration::from_secs(i));
+        }
+        let later = t0 + IDLE_TTL + Duration::from_secs(300);
+        t.record_malicious_at_with_key(RiskKey::from_ip(ip("10.3.2.2")), 20, later);
+        assert!(
+            t.snapshot(ip("10.3.2.1")).is_none(),
+            "gate off ⇒ no lifetime-block contract ⇒ plain TTL eviction",
+        );
+    }
+
+    #[test]
+    fn strike_block_exemption_falls_back_to_ttl_past_safety_cap() {
+        use aegis_core::risk::RiskKey;
+        let t = RiskTracker::new(&cfg());
+        let t0 = Instant::now();
+        // Drive more blocked offenders than the (test-sized) safety
+        // cap allows — a pathological blocked population must fall
+        // back to plain TTL so memory stays bounded.
+        for i in 0..(STRUCK_EXEMPT_CAP + 2) {
+            let key = RiskKey::from_ip(ip(&format!("10.3.3.{}", i + 1)));
+            for s in 0..5 {
+                t.record_malicious_at_with_key(key.clone(), 20, t0 + Duration::from_secs(s));
+            }
+        }
+        let later = t0 + IDLE_TTL + Duration::from_secs(300);
+        t.record_malicious_at_with_key(RiskKey::from_ip(ip("10.3.4.1")), 20, later);
+        assert!(
+            t.len() <= 2,
+            "past the safety cap, idle blocked slots are swept (got {})",
+            t.len(),
+        );
+    }
+
+    // ---- AU-3B — cardinality-cap saturation is observable, not silent.
+
+    #[test]
+    fn saturation_rejects_counter_increments_at_cap() {
+        use aegis_core::risk::RiskKey;
+        let t = RiskTracker::new(&cfg());
+        let t0 = Instant::now();
+        for i in 0..MAX_TRACKED_KEYS {
+            let key = RiskKey::from_ip(ip(&format!("10.4.0.{}", i + 1)));
+            t.record_malicious_at_with_key(key, 20, t0);
+        }
+        assert_eq!(t.saturation_rejects(), 0, "no rejects before the cap");
+        assert!(!t.is_saturated() || t.len() >= MAX_TRACKED_KEYS);
+
+        t.record_malicious_at_with_key(RiskKey::from_ip(ip("10.4.9.1")), 20, t0);
+        t.record_clean_at_with_key(RiskKey::from_ip(ip("10.4.9.2")), t0);
+        assert_eq!(
+            t.saturation_rejects(),
+            2,
+            "both at-cap untracked paths must count",
+        );
+        assert!(t.is_saturated());
+    }
+
     // PROXY-02 (LT-RUN-11) — a unique-key flood must not grow the map without
     // bound. Once at MAX_TRACKED_KEYS (4 in tests), new keys are not tracked,
     // but existing keys keep accumulating.
