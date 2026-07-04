@@ -24,18 +24,23 @@
 //! ## Signal
 //!
 //! Fires `enumeration` (score [`SCORE`]) once an IP's distinct-path count
-//! in the current window exceeds `threshold`. Fixed 60 s window (reset on
+//! **and** its origin-404 count in the current window both exceed
+//! `threshold` — "many distinct paths, mostly 404" is the enumeration
+//! shape. A legitimate crawler walking many *real* (200) pages never
+//! accumulates the 404 side and stays silent. Fixed 60 s window (reset on
 //! roll-over) — a coarse accumulation signal, not a single-hit block.
 //! **Default-OFF** (boot toggle `detectors.enumeration`) until tuned
-//! against the benchmark FP corpus, since a legitimate asset-heavy SPA
-//! can hit a naive distinct-path threshold.
+//! against the benchmark FP corpus.
 //!
-//! ## Response-status follow-on
+//! ## Wiring (AC-P2-d 404-rate refinement, 2026-07-04)
 //!
-//! This ships the inbound *proxy* signal — distinct request paths per IP.
-//! True 404-rate (only counting paths the origin 404s) needs the
-//! response-outcome channel (AC-P3-b, now landed) fed into a peer
-//! `observe_outcome`; that upgrade is a follow-on.
+//! Not a chain [`Detector`](super::Detector) — the outcome half needs the
+//! upstream status, which only the AC-P3-b response-outcome hook in the
+//! data plane's single-exit wrapper sees. So this lives on `ProxyContext`
+//! (mirroring `BehavioralAnalyzer`): [`Self::observe_path`] runs inbound
+//! next to `behavior_analyzer.observe(...)`, and [`Self::observe_outcome`]
+//! runs in the wrapper alongside `ba.observe_outcome(...)`, gated on
+//! `Action::Allow` so WAF-origin 403/429s never count as origin 404s.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -43,9 +48,7 @@ use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use aegis_core::pipeline::RequestView;
-
-use super::{Detector, Signal};
+use super::Signal;
 
 /// Score emitted on an enumeration hit — above the accumulation floor so
 /// it stacks toward a cumulative block, but not a single-hit blocker.
@@ -59,7 +62,10 @@ const WINDOW: Duration = Duration::from_secs(60);
 struct IpPaths {
     /// Path hashes seen this window, capped at `per_ip_cap`.
     hashes: HashSet<u64>,
-    /// Window anchor; the set resets when `WINDOW` elapses.
+    /// Origin 404 responses observed this window (AC-P2-d refinement).
+    /// A plain counter — no cardinality risk — reset with the window.
+    count_404: u32,
+    /// Window anchor; the state resets when `WINDOW` elapses.
     window_start: Instant,
 }
 
@@ -119,17 +125,13 @@ impl Default for EnumerationDetector {
     }
 }
 
-impl Detector for EnumerationDetector {
-    fn id(&self) -> &'static str {
-        // Not a `DetectorClass` (stateful/data-driven, like behavior_signals)
-        // → `mask.is_enabled_id` runs it unconditionally; it's only in the
-        // chain at all when the boot toggle enabled it.
-        "enumeration"
-    }
-
-    fn inspect(&self, req: &RequestView<'_>) -> Vec<Signal> {
-        let ip = req.peer.ip();
-        let hash = Self::hash_path(req.uri.path());
+impl EnumerationDetector {
+    /// Inbound half — record `path` for `ip` and return the enumeration
+    /// signal when BOTH the distinct-path count and the origin-404 count
+    /// for this window exceed `threshold`. Called from the data plane's
+    /// pre-forward signal block (peer of `behavior_analyzer.observe`).
+    pub fn observe_path(&self, ip: IpAddr, path: &str) -> Vec<Signal> {
+        let hash = Self::hash_path(path);
         let now = Instant::now();
 
         let mut state = self.state.lock().unwrap();
@@ -144,12 +146,14 @@ impl Detector for EnumerationDetector {
 
         let entry = state.entry(ip).or_insert_with(|| IpPaths {
             hashes: HashSet::new(),
+            count_404: 0,
             window_start: now,
         });
 
         // Fixed-window reset: a fresh window drops the prior path set.
         if now.duration_since(entry.window_start) > WINDOW {
             entry.hashes.clear();
+            entry.count_404 = 0;
             entry.window_start = now;
         }
 
@@ -160,65 +164,114 @@ impl Detector for EnumerationDetector {
             entry.hashes.insert(hash);
         }
 
-        if entry.hashes.len() as u32 > self.threshold {
+        // The refined gate: many distinct paths AND mostly-404 outcomes.
+        // Distinct-only would FP on a legit crawler walking real (200)
+        // pages; the 404 side only accumulates when the origin keeps
+        // answering "no such endpoint" — the enumeration shape.
+        if entry.hashes.len() as u32 > self.threshold && entry.count_404 > self.threshold {
             return vec![Signal {
                 score: SCORE,
                 tag: "enumeration".into(),
-                field: format!("distinct_paths:{}", entry.hashes.len()),
+                field: format!(
+                    "distinct_paths:{},404s:{}",
+                    entry.hashes.len(),
+                    entry.count_404,
+                ),
             }];
         }
         Vec::new()
+    }
+
+    /// Outcome half — bump the per-IP 404 counter when the origin answered
+    /// 404. Fed from the AC-P3-b response-outcome hook (Allow-gated, so
+    /// WAF-origin blocks never land here). Only updates an IP that
+    /// `observe_path` already admitted — an outcome can't grow the map.
+    pub fn observe_outcome(&self, ip: IpAddr, is_404: bool) {
+        if !is_404 {
+            return;
+        }
+        let mut state = self.state.lock().unwrap();
+        if let Some(entry) = state.get_mut(&ip) {
+            // A stale-window entry gets its reset on the next observe_path;
+            // don't credit an old window's 404 into the new one.
+            if Instant::now().duration_since(entry.window_start) <= WINDOW {
+                entry.count_404 = entry.count_404.saturating_add(1);
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aegis_core::pipeline::BodyPeek;
 
-    fn parts(path: &str, ip: &str) -> (http::Method, http::Uri, http::HeaderMap, BodyPeek, std::net::SocketAddr) {
-        (
-            http::Method::GET,
-            path.parse().unwrap(),
-            http::HeaderMap::new(),
-            BodyPeek::empty(),
-            std::net::SocketAddr::new(ip.parse().unwrap(), 0),
-        )
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
     }
 
-    fn view<'a>(
-        m: &'a http::Method,
-        u: &'a http::Uri,
-        h: &'a http::HeaderMap,
-        b: &'a BodyPeek,
-        p: std::net::SocketAddr,
-    ) -> RequestView<'a> {
-        RequestView { method: m, uri: u, version: http::Version::HTTP_11, headers: h, peer: p, tls: None, body: b }
-    }
-
-    fn drive(d: &EnumerationDetector, ip: &str, paths: impl Iterator<Item = String>) -> Vec<Signal> {
+    /// Drive `paths` through the inbound half; when `outcome_404` is
+    /// `Some(is_404)` each request also gets that origin outcome fed back
+    /// (mirroring the data plane's Allow-gated response hook).
+    fn drive(
+        d: &EnumerationDetector,
+        src: &str,
+        paths: impl Iterator<Item = String>,
+        outcome_404: Option<bool>,
+    ) -> Vec<Signal> {
+        let src = ip(src);
         let mut last = Vec::new();
         for path in paths {
-            let (m, u, h, b, p) = parts(&path, ip);
-            last = d.inspect(&view(&m, &u, &h, &b, p));
+            last = d.observe_path(src, &path);
+            if let Some(is_404) = outcome_404 {
+                d.observe_outcome(src, is_404);
+            }
         }
         last
     }
 
     #[test]
-    fn enumeration_across_many_distinct_paths_scores() {
+    fn enumeration_across_many_404_paths_scores() {
+        // AC-P2-d refinement: 50 distinct paths that the origin all 404s
+        // is the enumeration shape — scores.
         let d = EnumerationDetector::with_caps(1000, 128, 40);
-        let sig = drive(&d, "203.0.113.10", (0..50).map(|i| format!("/scan/path-{i}")));
+        let sig = drive(
+            &d,
+            "203.0.113.10",
+            (0..50).map(|i| format!("/scan/path-{i}")),
+            Some(true),
+        );
         assert!(
             sig.iter().any(|s| s.tag == "enumeration" && s.score == SCORE),
-            "50 distinct paths from one IP must score enumeration: {sig:?}",
+            "50 distinct all-404 paths from one IP must score enumeration: {sig:?}",
+        );
+    }
+
+    #[test]
+    fn crawler_across_many_200_paths_does_not_score() {
+        // The FP this refinement kills: a legit crawler hitting many
+        // distinct REAL pages (origin 200s) must stay silent.
+        let d = EnumerationDetector::with_caps(1000, 128, 40);
+        let sig = drive(
+            &d,
+            "203.0.113.14",
+            (0..50).map(|i| format!("/article/{i}")),
+            Some(false),
+        );
+        assert!(
+            !sig.iter().any(|s| s.tag == "enumeration"),
+            "50 distinct paths that all 200 (real content) must not score: {sig:?}",
         );
     }
 
     #[test]
     fn legit_browsing_stays_under_threshold() {
         let d = EnumerationDetector::with_caps(1000, 128, 40);
-        let sig = drive(&d, "203.0.113.11", (0..10).map(|i| format!("/page/{i}")));
+        let sig = drive(
+            &d,
+            "203.0.113.11",
+            (0..10).map(|i| format!("/page/{i}")),
+            Some(true),
+        );
         assert!(
             !sig.iter().any(|s| s.tag == "enumeration"),
             "10 distinct paths (normal browsing) must not score: {sig:?}",
@@ -227,9 +280,15 @@ mod tests {
 
     #[test]
     fn repeated_same_path_is_not_enumeration() {
-        // Hammering ONE path is a rate/flood concern, not enumeration.
+        // Hammering ONE path — even one that 404s every time — is a
+        // rate/flood concern, not enumeration (distinct count stays 1).
         let d = EnumerationDetector::with_caps(1000, 128, 40);
-        let sig = drive(&d, "203.0.113.12", (0..200).map(|_| "/api/login".to_string()));
+        let sig = drive(
+            &d,
+            "203.0.113.12",
+            (0..200).map(|_| "/api/login".to_string()),
+            Some(true),
+        );
         assert!(
             !sig.iter().any(|s| s.tag == "enumeration"),
             "same path repeated is not enumeration: {sig:?}",
@@ -241,15 +300,20 @@ mod tests {
         // 10k unique paths from one IP must NOT grow the per-IP set past
         // the cap — the cardinality-trap guard.
         let d = EnumerationDetector::with_caps(1000, 64, 40);
-        let _ = drive(&d, "203.0.113.13", (0..10_000).map(|i| format!("/u/{i}")));
+        let _ = drive(
+            &d,
+            "203.0.113.13",
+            (0..10_000).map(|i| format!("/u/{i}")),
+            Some(true),
+        );
         assert!(
             d.peak_per_ip_paths() <= 64,
             "per-IP hash set must stay within the cap under a unique-path flood, got {}",
             d.peak_per_ip_paths(),
         );
-        // ...and it still fires (count reached the cap, well past threshold).
-        let (m, u, h, b, p) = parts("/u/final", "203.0.113.13");
-        let sig = d.inspect(&view(&m, &u, &h, &b, p));
+        // ...and it still fires (count reached the cap, well past threshold,
+        // and the 404 side accumulated alongside).
+        let sig = d.observe_path(ip("203.0.113.13"), "/u/final");
         assert!(sig.iter().any(|s| s.tag == "enumeration"));
     }
 
@@ -258,9 +322,17 @@ mod tests {
         // Cap tracked IPs at 3; a flood of distinct IPs must not grow past it.
         let d = EnumerationDetector::with_caps(3, 128, 40);
         for octet in 1..=50u8 {
-            let (m, u, h, b, p) = parts("/x", &format!("203.0.113.{octet}"));
-            let _ = d.inspect(&view(&m, &u, &h, &b, p));
+            let _ = d.observe_path(ip(&format!("203.0.113.{octet}")), "/x");
         }
         assert!(d.tracked_ips() <= 3, "tracked IPs must stay within the cap, got {}", d.tracked_ips());
+    }
+
+    #[test]
+    fn outcome_for_untracked_ip_does_not_grow_map() {
+        // The outcome hook can race a reset/eviction; a 404 outcome for an
+        // IP `observe_path` never admitted must not create an entry.
+        let d = EnumerationDetector::with_caps(1000, 128, 40);
+        d.observe_outcome(ip("203.0.113.99"), true);
+        assert_eq!(d.tracked_ips(), 0, "outcomes must never admit new IPs");
     }
 }

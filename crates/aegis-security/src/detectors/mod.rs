@@ -775,11 +775,11 @@ pub fn default_detectors_with_canary(
             velocity_sequence::VelocitySequenceDetector::new(),
         ));
     }
-    if cfg.enumeration.enabled {
-        // AC-P2-d (2026-07-04) — endpoint-enumeration detector. Stateful
-        // per-IP (bounded); default OFF, only in the chain when opted in.
-        v.push(Box::new(enumeration::EnumerationDetector::new()));
-    }
+    // AC-P2-d (2026-07-04) — the enumeration detector is NOT chain-resident:
+    // its 404-rate half needs the upstream status, which only the AC-P3-b
+    // response-outcome hook sees. It lives on `ProxyContext.enumeration`
+    // (mirroring `behavior_analyzer`), constructed only when
+    // `cfg.enumeration.enabled`.
     v
 }
 

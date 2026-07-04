@@ -1639,6 +1639,16 @@ pub async fn run(
             .register_reset_callback(std::sync::Arc::new(move || {
                 device_tracker_for_reset.clear();
             }));
+        // AC-P2-d — enumeration detector per-IP path/404 counters are
+        // §2.4 "temporary client metadata": clear on reset_state so a
+        // bench phase boundary doesn't inherit the prior phase's scan
+        // history. Only registered when the detector is enabled.
+        if let Some(enumeration) = upstream_ctx.enumeration.clone() {
+            rt.control
+                .register_reset_callback(std::sync::Arc::new(move || {
+                    enumeration.clear();
+                }));
+        }
         // SC-1 — wire `POST /__waf_control/flush_cache` to actually evict the
         // data-plane response cache (all pools), and fan the purge out to the
         // rest of the fleet over Redis pub/sub (control-plane Redis, not the
