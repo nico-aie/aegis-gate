@@ -40,6 +40,15 @@ use aegis_core::AuditBus;
 /// Default aggregation window for repeated failures per IP.
 pub const DEFAULT_FAILURE_WINDOW: Duration = Duration::from_secs(30);
 
+/// Cap on tracked failure windows — the login surface is pre-auth,
+/// so a botnet rotating source IPs must not grow this map without
+/// bound. At the cap, closed windows are swept (their roll-ups
+/// emitted); if every slot is still live, new IPs get their
+/// immediate event but no suppression tracking (rotation defeats
+/// per-IP aggregation anyway — each new IP's first event is
+/// emitted regardless).
+pub const MAX_TRACKED_FAILURE_IPS: usize = 10_000;
+
 struct FailureWindow {
     started: Instant,
     /// Failures suppressed since the immediate first event.
@@ -110,10 +119,36 @@ impl LoginAuditor {
                 }
             }
             None => {
-                map.insert(
-                    ip.to_string(),
-                    FailureWindow { started: Instant::now(), suppressed: 0, reason },
-                );
+                if map.len() >= MAX_TRACKED_FAILURE_IPS {
+                    // Sweep closed windows first (emitting their
+                    // roll-ups — counts are never silently lost).
+                    let closed: Vec<String> = map
+                        .iter()
+                        .filter(|(_, w)| w.started.elapsed() >= self.window)
+                        .map(|(k, _)| k.clone())
+                        .collect();
+                    for key in closed {
+                        if let Some(w) = map.remove(&key) {
+                            if w.suppressed > 0 {
+                                self.bus.emit(event(
+                                    "login_failure",
+                                    w.reason,
+                                    &key,
+                                    None,
+                                    Some(w.suppressed),
+                                ));
+                            }
+                        }
+                    }
+                }
+                if map.len() < MAX_TRACKED_FAILURE_IPS {
+                    map.insert(
+                        ip.to_string(),
+                        FailureWindow { started: Instant::now(), suppressed: 0, reason },
+                    );
+                }
+                // At a still-full cap the IP goes untracked: its
+                // immediate event below still fires.
             }
         }
         self.bus.emit(event("login_failure", reason, ip, user, None));
@@ -299,6 +334,49 @@ mod tests {
         assert_eq!(evs[0].action.as_str(), "login_failure");
         assert_eq!(evs[0].fields["count"].as_u64(), Some(2));
         assert_eq!(evs[1].action.as_str(), "login_success");
+    }
+
+    #[tokio::test]
+    async fn tracked_ip_cap_bounds_memory_and_flushes_swept_rollups() {
+        // Botnet rotation: the map must never exceed the cap, and a
+        // swept closed window with suppressed failures must emit its
+        // roll-up rather than losing the count. Big bus so the
+        // 10k-event flood doesn't lap the subscriber.
+        let bus = AuditBus::new(32_768);
+        let mut rx = bus.subscribe();
+        let a = LoginAuditor::with_window(bus, Duration::from_millis(10));
+        // Build 3 suppressed failures on one IP, let its window close.
+        for _ in 0..4 {
+            a.record_failure("10.0.0.1", None, "invalid_credentials");
+        }
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        drain(&mut rx);
+        // Flood distinct IPs well past the cap. (Cap is 10k — drive
+        // enough to prove boundedness without a slow test.)
+        for i in 0..(MAX_TRACKED_FAILURE_IPS + 50) {
+            a.record_failure(&format!("10.1.{}.{}", i / 256, i % 256), None, "invalid_credentials");
+        }
+        let tracked = a.failures.lock().unwrap().len();
+        assert!(
+            tracked <= MAX_TRACKED_FAILURE_IPS,
+            "tracked windows must stay capped, got {tracked}",
+        );
+        // The swept 10.0.0.1 roll-up (count=3) is somewhere in the
+        // drained stream — the count was not silently lost.
+        let mut evs = Vec::new();
+        loop {
+            use tokio::sync::broadcast::error::TryRecvError;
+            match rx.try_recv() {
+                Ok(ev) => evs.push(ev),
+                Err(TryRecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            }
+        }
+        assert!(
+            evs.iter().any(|e| e.client_ip == "10.0.0.1"
+                && e.fields["count"].as_u64() == Some(3)),
+            "sweep must flush the suppressed roll-up",
+        );
     }
 
     #[tokio::test]

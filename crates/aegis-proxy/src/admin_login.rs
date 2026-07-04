@@ -130,14 +130,8 @@ pub(crate) async fn process_admin_login(
                 .login_auditor
                 .record_failure(&ip, None, "invalid_credentials");
         }
-        LoginOutcome::RateLimited { body, .. } => {
-            // The envelope distinguishes locked_out from rate_limited;
-            // the outcome enum doesn't — read our own reason field.
-            let reason = if body.contains("\"locked_out\"") {
-                "locked_out"
-            } else {
-                "rate_limited"
-            };
+        LoginOutcome::RateLimited { locked_out, .. } => {
+            let reason = if *locked_out { "locked_out" } else { "rate_limited" };
             services.login_auditor.record_failure(&ip, None, reason);
         }
         LoginOutcome::StoreUnavailable { .. } => {
@@ -169,6 +163,7 @@ pub(crate) async fn process_admin_login(
         LoginOutcome::RateLimited {
             retry_after_seconds,
             body,
+            ..
         } => Response::builder()
             .status(429)
             .header("content-type", "application/json; charset=utf-8")
@@ -201,6 +196,45 @@ pub(crate) async fn handle_admin_logout(
         .find_map(|raw| extract_named_cookie(raw, "aegis_session"))
         .map(|s| s.to_string());
     process_admin_logout(services, peer, cookie_value.as_deref()).await
+}
+
+/// Pure body of logout — same testability story as
+/// [`process_admin_login`].
+pub(crate) async fn process_admin_logout(
+    services: &aegis_control::dashboard_services::DashboardServices,
+    peer: std::net::SocketAddr,
+    session_cookie: Option<&str>,
+) -> Response<Full<Bytes>> {
+    let outcome = aegis_control::api::login::logout(
+        session_cookie,
+        &services.auth_sessions,
+        &services.sessions,
+    ).await;
+    use aegis_control::api::login::LogoutOutcome;
+    // AU-1 — only a real revocation is audited; the idempotent
+    // no-cookie path changed nothing.
+    if matches!(outcome, LogoutOutcome::Ok { .. }) {
+        services
+            .login_auditor
+            .record_logout(&peer.ip().to_string());
+    }
+    let (clear_session, clear_csrf) = match outcome {
+        LogoutOutcome::Ok {
+            clear_session_cookie,
+            clear_csrf_cookie,
+        }
+        | LogoutOutcome::NoSession {
+            clear_session_cookie,
+            clear_csrf_cookie,
+        } => (clear_session_cookie, clear_csrf_cookie),
+    };
+    Response::builder()
+        .status(204)
+        .header("cache-control", "no-store")
+        .header("set-cookie", clear_session)
+        .header("set-cookie", clear_csrf)
+        .body(Full::new(Bytes::new()))
+        .unwrap()
 }
 
 #[cfg(test)]
@@ -301,43 +335,4 @@ mod au1_wiring_tests {
             "idempotent no-session logout revoked nothing — no event",
         );
     }
-}
-
-/// Pure body of logout — same testability story as
-/// [`process_admin_login`].
-pub(crate) async fn process_admin_logout(
-    services: &aegis_control::dashboard_services::DashboardServices,
-    peer: std::net::SocketAddr,
-    session_cookie: Option<&str>,
-) -> Response<Full<Bytes>> {
-    let outcome = aegis_control::api::login::logout(
-        session_cookie,
-        &services.auth_sessions,
-        &services.sessions,
-    ).await;
-    use aegis_control::api::login::LogoutOutcome;
-    // AU-1 — only a real revocation is audited; the idempotent
-    // no-cookie path changed nothing.
-    if matches!(outcome, LogoutOutcome::Ok { .. }) {
-        services
-            .login_auditor
-            .record_logout(&peer.ip().to_string());
-    }
-    let (clear_session, clear_csrf) = match outcome {
-        LogoutOutcome::Ok {
-            clear_session_cookie,
-            clear_csrf_cookie,
-        }
-        | LogoutOutcome::NoSession {
-            clear_session_cookie,
-            clear_csrf_cookie,
-        } => (clear_session_cookie, clear_csrf_cookie),
-    };
-    Response::builder()
-        .status(204)
-        .header("cache-control", "no-store")
-        .header("set-cookie", clear_session)
-        .header("set-cookie", clear_csrf)
-        .body(Full::new(Bytes::new()))
-        .unwrap()
 }
