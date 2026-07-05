@@ -8781,9 +8781,53 @@ canary_paths:
         assert_eq!(cfg.canary_paths[0], "/wp-admin");
         assert_eq!(cfg.canary_paths[2], "/phpmyadmin/*");
 
-        // Default (no canary_paths key) is an empty vec, not an error.
-        let cfg: RiskConfig = serde_yaml::from_str("{}").unwrap();
+        // RC-1 (2026-07-05): an explicit empty list is the operator's
+        // opt-out — it must stay empty, not be re-seeded with the
+        // curated defaults.
+        let cfg: RiskConfig = serde_yaml::from_str("canary_paths: []").unwrap();
         assert!(cfg.canary_paths.is_empty());
+    }
+
+    /// RC-1 (2026-07-05, FEAT-recon-canary-hardening) — the canary
+    /// tripwire ships armed: an absent `canary_paths` key seeds the
+    /// curated never-legit defaults, and `detectors.canary` defaults
+    /// ON. Defeats distributed low-and-slow recon (one path per
+    /// fresh IP) where per-key accumulation never trips.
+    #[test]
+    fn rc1_canary_defaults_curated_and_enabled() {
+        let expected: &[&str] = &[
+            "/.git/config",
+            "/.git/HEAD",
+            "/.env",
+            "/.aws/credentials",
+            "/.git-credentials",
+            "/id_rsa",
+            "/wp-config.php",
+            "/terraform.tfstate",
+            "/actuator/heapdump",
+            "/actuator/env",
+            "/.ssh/id_rsa",
+            "/server.key",
+        ];
+
+        // Absent key → curated defaults (serde default fn).
+        let cfg: RiskConfig = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(cfg.canary_paths, expected);
+
+        // `RiskConfig::default()` agrees with the serde default —
+        // the two paths must never drift apart.
+        assert_eq!(RiskConfig::default().canary_paths, expected);
+
+        // The detector toggle defaults ON (paired flip — a curated
+        // default list with the toggle off would be a silent no-op).
+        let d: DetectorsConfig = serde_yaml::from_str("{}").unwrap();
+        assert!(d.canary.enabled, "detectors.canary must default ON with the curated list");
+        assert!(DetectorsConfig::default().canary.enabled);
+
+        // Explicit off still respected.
+        let d: DetectorsConfig =
+            serde_yaml::from_str("canary: { enabled: false }").unwrap();
+        assert!(!d.canary.enabled);
     }
 }
 

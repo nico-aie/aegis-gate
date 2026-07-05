@@ -321,6 +321,49 @@ mod tests {
         assert_eq!(detector.inspect(&view(&m, &u, &h, &b)).len(), 1);
     }
 
+    /// RC-1 (2026-07-05) — every curated default canary path fires
+    /// as a single max-confidence signal. Score 100 ≥ every tier's
+    /// block threshold, so one probe from a fresh IP blocks — the
+    /// distributed-recon counter this list exists for.
+    #[test]
+    fn rc1_default_curated_paths_single_hit_max_confidence() {
+        let defaults = aegis_core::config::RiskConfig::default().canary_paths;
+        assert!(!defaults.is_empty(), "RC-1 ships a curated default list");
+        let d = CanaryDetector::new(&defaults);
+        for path in &defaults {
+            let (m, u, h, b) = req(path);
+            let signals = d.inspect(&view(&m, &u, &h, &b));
+            assert_eq!(signals.len(), 1, "curated path {path} must fire");
+            assert_eq!(signals[0].tag, "canary");
+            assert_eq!(signals[0].score, 100, "curated path {path} must be max confidence");
+        }
+    }
+
+    /// RC-1 (2026-07-05) — look-alike paths with legitimate callers
+    /// must NOT fire. Canary is a hard single-hit block; a false
+    /// entry here is an outage, so the negative space is load-bearing.
+    #[test]
+    fn rc1_default_curated_lookalikes_do_not_fire() {
+        let d = CanaryDetector::new(&aegis_core::config::RiskConfig::default().canary_paths);
+        for legit in [
+            "/actuator/health",  // monitoring — the classic near-miss
+            "/actuator/info",
+            "/actuator",         // bare index scores recon 25, never canary
+            "/environment",      // exact-match: `/.env` must not prefix-hit
+            "/id_rsa.pub",       // public half is not the secret
+            "/server.key.pem",   // exact-match: `/server.key` must not prefix-hit
+            "/git/config",       // no dot — different path entirely
+            "/",
+            "/api/users",
+        ] {
+            let (m, u, h, b) = req(legit);
+            assert!(
+                d.inspect(&view(&m, &u, &h, &b)).is_empty(),
+                "legit look-alike {legit} must not trip the canary",
+            );
+        }
+    }
+
     #[test]
     fn raw_reads_back_normalized_entries() {
         let paths = CanaryPaths::new(&vec![
