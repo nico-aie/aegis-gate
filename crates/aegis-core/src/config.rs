@@ -2204,6 +2204,144 @@ mod admin_csrf_secret_tests {
     }
 }
 
+#[cfg(test)]
+mod admin_accounts_tests {
+    // TOTP-1 (TF-4) — multi-admin `accounts:` block.
+    // plans/issues/FEAT-totp-google-authenticator-2026-07.md: legacy
+    // top-level password_hash_ref/totp_secret_b32 stay as a single-admin
+    // shorthand (synthesized to one `admin` account at load); setting BOTH
+    // the legacy fields and `accounts` is ambiguous and must be rejected.
+    use super::*;
+
+    fn parse(yaml: &str) -> DashboardAuthConfig {
+        serde_yaml::from_str(yaml).expect("dashboard_auth yaml must parse")
+    }
+
+    #[test]
+    fn accounts_block_parses_with_per_account_totp() {
+        let cfg = parse(
+            r#"
+csrf_secret_ref: "test-csrf-secret-do-not-use-in-production-32b"
+accounts:
+  - username: alice
+    password_hash_ref: "$argon2id$alice-hash"
+  - username: bob
+    password_hash_ref: "$argon2id$bob-hash"
+    totp_secret_b32: "JBSWY3DPEHPK3PXP"
+    totp_enabled: true
+"#,
+        );
+        assert_eq!(cfg.accounts.len(), 2);
+        assert_eq!(cfg.accounts[0].username, "alice");
+        assert!(!cfg.accounts[0].totp_enabled);
+        assert!(cfg.accounts[1].totp_enabled);
+        assert_eq!(cfg.accounts[1].totp_secret_b32, "JBSWY3DPEHPK3PXP");
+        assert!(validate_admin_accounts(&cfg).is_ok());
+    }
+
+    #[test]
+    fn legacy_fields_synthesize_a_single_admin_account() {
+        let cfg = parse(
+            r#"
+password_hash_ref: "$argon2id$legacy-hash"
+csrf_secret_ref: "test-csrf-secret-do-not-use-in-production-32b"
+totp_enabled: true
+totp_secret_b32: "JBSWY3DPEHPK3PXP"
+"#,
+        );
+        let eff = cfg.effective_accounts();
+        assert_eq!(eff.len(), 1, "legacy shorthand → exactly one account");
+        assert_eq!(eff[0].username, "admin");
+        assert_eq!(eff[0].password_hash_ref, "$argon2id$legacy-hash");
+        assert!(eff[0].totp_enabled);
+        assert_eq!(eff[0].totp_secret_b32, "JBSWY3DPEHPK3PXP");
+    }
+
+    #[test]
+    fn accounts_win_when_only_accounts_are_set() {
+        let cfg = parse(
+            r#"
+csrf_secret_ref: "test-csrf-secret-do-not-use-in-production-32b"
+accounts:
+  - username: alice
+    password_hash_ref: "$argon2id$alice-hash"
+"#,
+        );
+        let eff = cfg.effective_accounts();
+        assert_eq!(eff.len(), 1);
+        assert_eq!(eff[0].username, "alice");
+    }
+
+    #[test]
+    fn rejects_legacy_and_accounts_both_set() {
+        let cfg = parse(
+            r#"
+password_hash_ref: "$argon2id$legacy-hash"
+csrf_secret_ref: "test-csrf-secret-do-not-use-in-production-32b"
+accounts:
+  - username: alice
+    password_hash_ref: "$argon2id$alice-hash"
+"#,
+        );
+        assert!(
+            validate_admin_accounts(&cfg).is_err(),
+            "legacy password_hash_ref + accounts is ambiguous — must be rejected",
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_usernames() {
+        let cfg = parse(
+            r#"
+csrf_secret_ref: "test-csrf-secret-do-not-use-in-production-32b"
+accounts:
+  - username: alice
+    password_hash_ref: "$argon2id$a"
+  - username: alice
+    password_hash_ref: "$argon2id$b"
+"#,
+        );
+        assert!(validate_admin_accounts(&cfg).is_err());
+    }
+
+    #[test]
+    fn rejects_empty_username() {
+        let cfg = parse(
+            r#"
+csrf_secret_ref: "test-csrf-secret-do-not-use-in-production-32b"
+accounts:
+  - username: ""
+    password_hash_ref: "$argon2id$a"
+"#,
+        );
+        assert!(validate_admin_accounts(&cfg).is_err());
+    }
+
+    #[test]
+    fn empty_config_has_no_effective_accounts() {
+        // No legacy hash, no accounts ⇒ login disabled (existing
+        // empty-password behaviour is preserved).
+        let cfg = DashboardAuthConfig::default();
+        assert!(cfg.effective_accounts().is_empty());
+        assert!(validate_admin_accounts(&cfg).is_ok());
+    }
+
+    #[test]
+    fn csrf_validation_fires_when_accounts_enable_login() {
+        // CTL-02 must keep holding on the accounts path: any account
+        // with a password hash means login is reachable, so an empty
+        // csrf secret is still a boot error.
+        let cfg = parse(
+            r#"
+accounts:
+  - username: alice
+    password_hash_ref: "$argon2id$alice-hash"
+"#,
+        );
+        assert!(validate_admin_csrf_secret(&cfg).is_err());
+    }
+}
+
 /// STATE-02 (LT-RUN-11) — does a Redis URL describe a plaintext, credential-less
 /// connection to a NON-loopback host? That is the dangerous shape (the incident
 /// vector). Returns `false` for: `rediss://` (TLS), any URL with userinfo

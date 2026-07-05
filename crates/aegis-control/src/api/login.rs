@@ -805,4 +805,155 @@ mod tests {
         let outcome = authenticate(&body, &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800).await;
         assert!(matches!(outcome, LoginOutcome::Unauthorized { .. }));
     }
+
+    // ---- TOTP-1 (TF-4) — multiple admin accounts ------------------------
+    //
+    // plans/issues/FEAT-totp-google-authenticator-2026-07.md — each admin
+    // authenticates against its OWN password + TOTP state; unknown users
+    // keep the dummy_verify no-leak property; lockout counters partition
+    // per (ip, user) so locking alice never locks bob.
+
+    fn two_account_directory() -> AdminDirectory {
+        AdminDirectory::new(vec![
+            Arc::new(AdminIdentity {
+                user: "alice".into(),
+                password_hash: hash_password("alice-pw-1234").unwrap(),
+                ..AdminIdentity::default()
+            }),
+            Arc::new(AdminIdentity {
+                user: "bob".into(),
+                password_hash: hash_password("bob-pw-5678").unwrap(),
+                totp_secret_b32: TEST_TOTP_SECRET_B32.into(),
+                totp_enabled: true,
+                ..AdminIdentity::default()
+            }),
+        ])
+    }
+
+    fn login_body(user: &str, password: &str) -> String {
+        serde_json::json!({"user": user, "password": password}).to_string()
+    }
+
+    #[tokio::test]
+    async fn each_account_logs_in_with_own_password() {
+        let (_, rl, ss, ds) = fixtures();
+        let dir = two_account_directory();
+        let outcome = authenticate(
+            &login_body("alice", "alice-pw-1234"),
+            &dir, &rl, &ss, &ds, "127.0.0.1", "ua", 1800,
+        ).await;
+        assert!(matches!(outcome, LoginOutcome::Ok { .. }), "alice: {outcome:?}");
+
+        // bob has TOTP enrolled — password + current code required.
+        let code = current_totp_code(TEST_TOTP_SECRET_B32);
+        let body = serde_json::json!({
+            "user": "bob", "password": "bob-pw-5678", "totp_code": code,
+        }).to_string();
+        let outcome = authenticate(&body, &dir, &rl, &ss, &ds, "127.0.0.1", "ua", 1800).await;
+        assert!(matches!(outcome, LoginOutcome::Ok { .. }), "bob: {outcome:?}");
+    }
+
+    #[tokio::test]
+    async fn cross_account_password_is_rejected() {
+        let (_, rl, ss, ds) = fixtures();
+        let dir = two_account_directory();
+        // alice's password against bob's account must never admit.
+        let outcome = authenticate(
+            &login_body("bob", "alice-pw-1234"),
+            &dir, &rl, &ss, &ds, "127.0.0.1", "ua", 1800,
+        ).await;
+        assert!(matches!(outcome, LoginOutcome::Unauthorized { .. }));
+    }
+
+    #[tokio::test]
+    async fn per_account_totp_only_where_enrolled() {
+        let (_, rl, ss, ds) = fixtures();
+        let dir = two_account_directory();
+        // bob (enrolled) without a code → rejected.
+        let outcome = authenticate(
+            &login_body("bob", "bob-pw-5678"),
+            &dir, &rl, &ss, &ds, "127.0.0.1", "ua", 1800,
+        ).await;
+        assert!(
+            matches!(outcome, LoginOutcome::Unauthorized { .. }),
+            "bob without TOTP code must reject: {outcome:?}",
+        );
+        // alice (not enrolled) logs in without any code.
+        let outcome = authenticate(
+            &login_body("alice", "alice-pw-1234"),
+            &dir, &rl, &ss, &ds, "10.0.0.2", "ua", 1800,
+        ).await;
+        assert!(matches!(outcome, LoginOutcome::Ok { .. }));
+    }
+
+    #[tokio::test]
+    async fn unknown_user_in_directory_does_not_leak_existence() {
+        let (_, rl, ss, ds) = fixtures();
+        let dir = two_account_directory();
+        let outcome = authenticate(
+            &login_body("ghost", "whatever-pw"),
+            &dir, &rl, &ss, &ds, "127.0.0.1", "ua", 1800,
+        ).await;
+        match outcome {
+            LoginOutcome::Unauthorized { body } => {
+                let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+                assert_eq!(v["reason"], "invalid_credentials");
+            }
+            other => panic!("expected Unauthorized, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn lockout_on_one_account_does_not_lock_the_other() {
+        let (_, rl, ss, ds) = fixtures();
+        let dir = two_account_directory();
+        // Default lockout_threshold = 10; spread across IPs so the
+        // per-IP limiter doesn't fire first (mirrors
+        // login_lockout_after_user_threshold above).
+        for i in 0..10 {
+            let ip = format!("10.1.0.{i}");
+            let _ = authenticate(
+                &login_body("alice", "wrong-pw"),
+                &dir, &rl, &ss, &ds, &ip, "ua", 1800,
+            ).await;
+        }
+        let alice_next = authenticate(
+            &login_body("alice", "alice-pw-1234"),
+            &dir, &rl, &ss, &ds, "10.1.0.99", "ua", 1800,
+        ).await;
+        assert!(
+            matches!(alice_next, LoginOutcome::RateLimited { locked_out: true, .. }),
+            "alice must be locked out: {alice_next:?}",
+        );
+        // bob is untouched.
+        let code = current_totp_code(TEST_TOTP_SECRET_B32);
+        let body = serde_json::json!({
+            "user": "bob", "password": "bob-pw-5678", "totp_code": code,
+        }).to_string();
+        let bob = authenticate(&body, &dir, &rl, &ss, &ds, "10.1.0.100", "ua", 1800).await;
+        assert!(
+            matches!(bob, LoginOutcome::Ok { .. }),
+            "lockout on alice must not lock bob: {bob:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn session_record_carries_the_authenticated_username() {
+        let (_, rl, ss, ds) = fixtures();
+        let dir = two_account_directory();
+        let outcome = authenticate(
+            &login_body("alice", "alice-pw-1234"),
+            &dir, &rl, &ss, &ds, "127.0.0.1", "ua", 1800,
+        ).await;
+        let session_value = match outcome {
+            LoginOutcome::Ok { session_cookie, .. } => session_cookie
+                .strip_prefix("aegis_session=")
+                .and_then(|rest| rest.split(';').next())
+                .unwrap()
+                .to_string(),
+            other => panic!("expected Ok, got {other:?}"),
+        };
+        let record = ss.validate(&session_value).await.expect("session must validate");
+        assert_eq!(record.user, "alice", "audit identity must be per-account");
+    }
 }
