@@ -353,6 +353,23 @@ mod login_page_contract_tests {
     }
 
     #[test]
+    fn missing_code_401_hints_at_the_second_factor() {
+        // TOTP-9 (owner report 2026-07-05): the server deliberately
+        // answers a missing TOTP code with the same invalid_credentials
+        // envelope as a wrong password (F-CRITICAL-003 anti-oracle), so
+        // a legit operator who just forgot the code reads "user or
+        // password incorrect" and starts resetting passwords. The FE
+        // knows locally whether the code field was left empty — on a
+        // 401 WITHOUT a submitted code it must hint that enrolled
+        // accounts need the authenticator code. Client-side text only;
+        // the server envelope stays uniform.
+        assert!(
+            LOGIN_JS.contains("also enter the authenticator code"),
+            "login.js must hint at the missing second factor on code-less 401s",
+        );
+    }
+
+    #[test]
     fn login_page_presents_2fa_as_mandatory() {
         // TOTP-8 (owner ask 2026-07-05): 2FA is not optional — the login
         // page must say so. `require_totp` defaults to true, so copy
