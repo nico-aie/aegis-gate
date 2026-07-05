@@ -5,6 +5,11 @@
 //! path matches one of those entries gets a high-severity signal
 //! (score 100) — single-hit-to-block at the §3 §5 risk thresholds.
 //!
+//! RC-1 (2026-07-05, FEAT-recon-canary-hardening): ships **armed by
+//! default** — `risk.canary_paths` seeds a curated never-legit set
+//! (see `default_canary_paths` in aegis-core `config.rs`) and the
+//! `detectors.canary` toggle defaults ON. `canary_paths: []` disarms.
+//!
 //! ## Why this lives outside `DetectorClass`
 //!
 //! `DetectorClass` is a closed-set bitfield with stable bit

@@ -61,6 +61,17 @@ route). Canary is a hard block — a wrong entry is an outage.
 path (`canary.rs:97-135`) — `%2egit` / `//`-prefixed variants slip through; acceptable for a
 tripwire (recon scoring + RC-4 back it up). Linear scan, cap 256 — keep the list curated.
 
+**Review follow-ups (rust-reviewer 2026-07-05, warning-level):**
+- [ ] **Owner call — `/actuator/env` stays or goes:** reviewer flags Spring Boot Admin /
+      config-refresh tooling that polls `/actuator/env` *through the WAF edge* as a plausible legit
+      caller → permanent self-block of the org's own monitoring. Mitigated by the REFERENCE.md
+      upgrade note + `canary_paths: []` opt-out + mask-persistence honoring pre-upgrade toggles;
+      Nico decides keep vs drop before merge.
+- [ ] Optional regression test: config-plane round-trip of the opt-out — seed `ConfigStore` with
+      (a) a doc lacking `canary_paths` and (b) `canary_paths: []`, assert (a) re-seeds curated and
+      (b) stays empty through `activate`/`canonicalize_active_doc`. Reviewer hand-traced this safe
+      (text-level YAML merges never materialize the struct) but no test pins it.
+
 ### RC-5a — populate top-level `ip` in admin audit events (V9) · **S**
 
 **Rescued item:** the source plan folded this into the audit plan's AU-1, but the fold-in never

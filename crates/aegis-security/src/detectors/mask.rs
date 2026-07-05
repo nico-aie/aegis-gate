@@ -250,7 +250,8 @@ impl DetectorMask {
         // 2026-05-19 — Phase F detectors promoted to togglable mask
         // bits. Defaults applied via DetectorsConfig::default in
         // aegis-core (behavior_signals=false, velocity=true,
-        // canary=false). `Ai` is seeded in aegis-proxy::run from
+        // canary=true since RC-1 2026-07-05). `Ai` is seeded in
+        // aegis-proxy::run from
         // `cfg.ai.enabled` because the AI config lives in a sibling
         // struct (cfg.ai), not in DetectorsConfig.
         if cfg.behavior_signals.enabled {
