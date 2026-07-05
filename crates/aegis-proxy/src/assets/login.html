@@ -132,8 +132,12 @@
       <label for="login-totp">Authenticator code</label>
       <input id="login-totp" name="totp_code" inputmode="numeric" pattern="[0-9]*"
              maxlength="8" autocomplete="one-time-code"
-             placeholder="6-digit code (if enrolled)">
-      <p class="hint">Leave empty if you haven't set up an authenticator yet.</p>
+             placeholder="6-digit code">
+      <p class="hint">
+        Two-factor authentication is required for every account.
+        First sign-in? Submit without a code — you'll be taken to
+        authenticator setup before anything else unlocks.
+      </p>
       <button type="submit" id="login-submit">Sign in</button>
       <div class="error" id="login-error" role="alert" aria-live="polite"></div>
     </form>
