@@ -1,6 +1,8 @@
 # IMPROVE — Recon detection hardening + canary-path seeding
 
-> **Type:** IMPROVE (from l-tester `CURRENT-STATE-FINDINGS.md`) · **Status:** ☐ Not started — planned 2026-07-04 · **Owner: Nico (2026-07-05)**
+> **Type:** IMPROVE (from l-tester `CURRENT-STATE-FINDINGS.md`) · **Status:** ➡️ Broken out to
+> [plans/issues/FEAT-recon-canary-hardening-2026-07.md](../../issues/FEAT-recon-canary-hardening-2026-07.md)
+> 2026-07-05 (implementation + TDD tracking there; this doc remains the §1 verification record) · **Owner: Nico (2026-07-05)**
 > **Track ID prefix:** `RC-<1–5>` · **Sibling:** [IMPROVE-detection-fp-tuning-2026-07.md](IMPROVE-detection-fp-tuning-2026-07.md).
 > **Shared corpus:** RC-2/RC-3 gate against the committed baseline from
 > [PLAN-fp-baseline-measurement-2026-07.md](PLAN-fp-baseline-measurement-2026-07.md) (S-Tester owns
@@ -110,9 +112,10 @@ Add to `RECON_PATHS` (`recon.rs`), each with a unit test on the **raw** form:
   observed real traffic and this touches shared plumbing.
 
 ### RC-5 — the small true fixes + documentation · **S**
-- **V9:** populate top-level `ip` in admin audit events with the actor's client IP — folds into
-  [FEAT-audit-coverage-gaps-2026-07.md](../../issues/archived/FEAT-audit-coverage-gaps-2026-07.md) AU-1 (do it there, not
-  twice); cross-referenced here so it isn't lost.
+- **V9:** populate top-level `ip` in admin audit events with the actor's client IP.
+  ~~Folds into [FEAT-audit-coverage-gaps-2026-07.md](../../issues/archived/FEAT-audit-coverage-gaps-2026-07.md) AU-1~~ —
+  **the fold-in never happened** (audit plan archived COMPLETE without it; `audit/mod.rs:32` still
+  `String::new()`, verified 2026-07-05). Now owned as **RC-5a** in the issues doc.
 - **V7/V8:** working-as-designed — **document**, don't "fix". Add a short note to the detection docs
   explaining the two-score model and the dev-XFF-collapse ([[feedback_dev_xff_single_ip_gates]],
   [[feedback_two_score_model]]) so the next report doesn't re-misdiagnose. Optional observability:

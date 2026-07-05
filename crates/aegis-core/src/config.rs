@@ -4720,6 +4720,11 @@ pub struct RiskConfig {
     /// `/admin/foo/bar`). Schema only — consumer wiring lands in
     /// Phase F (`aegis-security/src/canary/`).
     ///
+    /// RC-1 (2026-07-05, FEAT-recon-canary-hardening): an absent key
+    /// now seeds [`default_canary_paths`] — a curated never-legit set
+    /// that single-hit-blocks distributed low-and-slow recon. Set an
+    /// explicit `canary_paths: []` to opt out.
+    ///
     /// YAML shape:
     /// ```yaml
     /// risk:
@@ -4728,8 +4733,35 @@ pub struct RiskConfig {
     ///     - "/.env"
     ///     - "/phpmyadmin/*"
     /// ```
-    #[serde(default)]
+    #[serde(default = "default_canary_paths")]
     pub canary_paths: Vec<String>,
+}
+
+/// RC-1 (2026-07-05) — curated default honeypot paths. Every entry is
+/// a secret/credential/RCE-exposure route with **zero legitimate
+/// callers**; one hit scores 100 → blocks at every tier, including
+/// from a fresh IP (the distributed-recon case per-key accumulation
+/// can't catch). Canary matches raw + case-sensitive + exact, so the
+/// blast radius of each entry is its literal string. Never add a path
+/// with real traffic (`/actuator/health`, app routes) — a wrong entry
+/// here is an outage, not a false positive.
+fn default_canary_paths() -> Vec<String> {
+    [
+        "/.git/config",
+        "/.git/HEAD",
+        "/.env",
+        "/.aws/credentials",
+        "/.git-credentials",
+        "/id_rsa",
+        "/wp-config.php",
+        "/terraform.tfstate",
+        "/actuator/heapdump",
+        "/actuator/env",
+        "/.ssh/id_rsa",
+        "/server.key",
+    ]
+    .map(String::from)
+    .to_vec()
 }
 
 fn default_risk_decay() -> Duration {
@@ -4744,7 +4776,7 @@ impl Default for RiskConfig {
             thresholds: RiskThresholds::default(),
             trust_recovery: None,
             strikes: None,
-            canary_paths: Vec::new(),
+            canary_paths: default_canary_paths(),
         }
     }
 }
@@ -5049,10 +5081,12 @@ pub struct DetectorsConfig {
     pub velocity: DetectorToggle,
     /// 2026-05-19 — Phase F canary recon tripwire. Fires on
     /// hits against operator-supplied honeypot paths
-    /// (`cfg.risk.canary_paths`). **Default OFF**; also gated by
-    /// `canary_paths` being non-empty so flipping this on alone
-    /// is a no-op until you also populate the path list.
-    #[serde(default = "default_detector_toggle_off")]
+    /// (`cfg.risk.canary_paths`). **Default ON since RC-1
+    /// (2026-07-05)** — ships armed with the curated
+    /// `default_canary_paths` set. Still gated by `canary_paths`
+    /// being non-empty, so `canary_paths: []` fully disarms it
+    /// even with the toggle on.
+    #[serde(default = "default_detector_toggle")]
     pub canary: DetectorToggle,
     /// DURABLE-T2 — optional file-backed persistence for the live
     /// detector mask. When set, the proxy writes the mask state to
@@ -5171,8 +5205,9 @@ fn default_detector_toggle() -> DetectorToggle {
 }
 
 /// 2026-05-19 — opt-in default for detectors that are too noisy or
-/// too narrowly scoped to ship on by default (`behavior_signals`,
-/// `canary`). Operators turn them on explicitly per-deployment.
+/// too narrowly scoped to ship on by default (`behavior_signals`;
+/// `canary` graduated to default-ON in RC-1, 2026-07-05). Operators
+/// turn the rest on explicitly per-deployment.
 fn default_detector_toggle_off() -> DetectorToggle {
     DetectorToggle {
         enabled: false,
@@ -5201,7 +5236,7 @@ impl Default for DetectorsConfig {
             enumeration: default_detector_toggle_off(),
             referer_origin: RefererOriginConfig::default(),
             velocity: default_detector_toggle(),
-            canary: default_detector_toggle_off(),
+            canary: default_detector_toggle(),
             persistence: None,
             per_tier: HashMap::new(),
         }
@@ -8781,9 +8816,53 @@ canary_paths:
         assert_eq!(cfg.canary_paths[0], "/wp-admin");
         assert_eq!(cfg.canary_paths[2], "/phpmyadmin/*");
 
-        // Default (no canary_paths key) is an empty vec, not an error.
-        let cfg: RiskConfig = serde_yaml::from_str("{}").unwrap();
+        // RC-1 (2026-07-05): an explicit empty list is the operator's
+        // opt-out — it must stay empty, not be re-seeded with the
+        // curated defaults.
+        let cfg: RiskConfig = serde_yaml::from_str("canary_paths: []").unwrap();
         assert!(cfg.canary_paths.is_empty());
+    }
+
+    /// RC-1 (2026-07-05, FEAT-recon-canary-hardening) — the canary
+    /// tripwire ships armed: an absent `canary_paths` key seeds the
+    /// curated never-legit defaults, and `detectors.canary` defaults
+    /// ON. Defeats distributed low-and-slow recon (one path per
+    /// fresh IP) where per-key accumulation never trips.
+    #[test]
+    fn rc1_canary_defaults_curated_and_enabled() {
+        let expected: &[&str] = &[
+            "/.git/config",
+            "/.git/HEAD",
+            "/.env",
+            "/.aws/credentials",
+            "/.git-credentials",
+            "/id_rsa",
+            "/wp-config.php",
+            "/terraform.tfstate",
+            "/actuator/heapdump",
+            "/actuator/env",
+            "/.ssh/id_rsa",
+            "/server.key",
+        ];
+
+        // Absent key → curated defaults (serde default fn).
+        let cfg: RiskConfig = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(cfg.canary_paths, expected);
+
+        // `RiskConfig::default()` agrees with the serde default —
+        // the two paths must never drift apart.
+        assert_eq!(RiskConfig::default().canary_paths, expected);
+
+        // The detector toggle defaults ON (paired flip — a curated
+        // default list with the toggle off would be a silent no-op).
+        let d: DetectorsConfig = serde_yaml::from_str("{}").unwrap();
+        assert!(d.canary.enabled, "detectors.canary must default ON with the curated list");
+        assert!(DetectorsConfig::default().canary.enabled);
+
+        // Explicit off still respected.
+        let d: DetectorsConfig =
+            serde_yaml::from_str("canary: { enabled: false }").unwrap();
+        assert!(!d.canary.enabled);
     }
 }
 

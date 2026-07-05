@@ -250,7 +250,8 @@ impl DetectorMask {
         // 2026-05-19 — Phase F detectors promoted to togglable mask
         // bits. Defaults applied via DetectorsConfig::default in
         // aegis-core (behavior_signals=false, velocity=true,
-        // canary=false). `Ai` is seeded in aegis-proxy::run from
+        // canary=true since RC-1 2026-07-05). `Ai` is seeded in
+        // aegis-proxy::run from
         // `cfg.ai.enabled` because the AI config lives in a sibling
         // struct (cfg.ai), not in DetectorsConfig.
         if cfg.behavior_signals.enabled {
@@ -704,7 +705,9 @@ mod tests {
         // the Phase F detectors landed with non-uniform defaults:
         //  - behavior_signals: OFF (high FP on single-IP smoke tests)
         //  - velocity: ON (zero cost when upstream lacks matching routes)
-        //  - canary: OFF (inert without cfg.risk.canary_paths anyway)
+        //  - canary: ON since RC-1 (2026-07-05) — ships armed with the
+        //    curated `risk.canary_paths` defaults (was OFF while the
+        //    default list was empty)
         // AI is also OFF in from_config — its bit is seeded later in
         // aegis-proxy::run from cfg.ai.enabled (sibling config block).
         let cfg = DetectorsConfig::default();
@@ -728,7 +731,7 @@ mod tests {
         }
         assert!(mask.is_enabled(DetectorClass::Velocity), "velocity is ON by default");
         assert!(!mask.is_enabled(DetectorClass::BehaviorSignals), "behavior_signals is OFF by default");
-        assert!(!mask.is_enabled(DetectorClass::Canary), "canary is OFF by default");
+        assert!(mask.is_enabled(DetectorClass::Canary), "canary is ON by default since RC-1");
         assert!(!mask.is_enabled(DetectorClass::Ai), "AI bit seeded by aegis-proxy::run, not from_config");
     }
 
