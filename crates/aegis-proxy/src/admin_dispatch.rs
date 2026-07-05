@@ -135,6 +135,11 @@ pub(crate) async fn handle_admin_request(
     // the upstream middleware; the acting admin is the injected `x-aegis-actor`.
     // Equal-privilege v1 (any admin manages accounts); the last-admin / no-self
     // guards live in `aegis_control::api::admin_accounts`.
+    // AM-P2d — self-service: rotate your own password (verifies the current
+    // one; keeps this session, revokes your others).
+    if method == hyper::Method::POST && path == "/api/admin/self/password" {
+        return crate::admin_accounts::handle_self_password(req, peer, services).await;
+    }
     if path == "/api/admin/accounts" {
         if method == hyper::Method::GET {
             return crate::admin_accounts::handle_accounts_list(services).await;

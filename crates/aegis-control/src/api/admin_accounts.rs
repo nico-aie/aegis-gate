@@ -248,6 +248,52 @@ pub async fn delete_account(
     Ok(())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum SelfPwError {
+    Unavailable,
+    NotFound,
+    WeakPassword,
+    SameAsCurrent,
+    CurrentIncorrect,
+    Store(String),
+}
+
+/// AM-P2d — self-service password change. Unlike the admin reset, this
+/// verifies the CURRENT password (so a hijacked session can't rotate the
+/// password without knowing the old one) and keeps the caller's own session
+/// (`keep_session_id`) while revoking their others.
+pub async fn change_own_password(
+    directory: &AdminDirectory,
+    sessions: &AuthSessionStore,
+    actor: &str,
+    current: &str,
+    new: &str,
+    keep_session_id: Option<&str>,
+) -> Result<(), SelfPwError> {
+    let Some(store) = directory.account_store() else {
+        return Err(SelfPwError::Unavailable);
+    };
+    if new.len() < MIN_PASSWORD_LEN {
+        return Err(SelfPwError::WeakPassword);
+    }
+    if current == new {
+        return Err(SelfPwError::SameAsCurrent);
+    }
+    let Some(identity) = directory.resolve(actor).await else {
+        return Err(SelfPwError::NotFound);
+    };
+    if !crate::admin_auth::password::verify_password(&identity.password_hash, current) {
+        return Err(SelfPwError::CurrentIncorrect);
+    }
+    let hash = hash_password(new).map_err(|e| SelfPwError::Store(e.to_string()))?;
+    store
+        .upsert(actor, &hash)
+        .await
+        .map_err(|e| SelfPwError::Store(e.to_string()))?;
+    sessions.revoke_user(actor, keep_session_id).await;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,6 +426,34 @@ mod tests {
             delete_account(&dir, &tstore, &sess, "alice", "root").await,
             Err(MutateError::LastAdmin)
         );
+    }
+
+    #[tokio::test]
+    async fn change_own_password_verifies_current_and_rejects_reuse() {
+        let (dir, _s) = dir_with(&["admin"]);
+        create_account(&dir, "alice", "alice-old-pw-123").await.unwrap();
+        let sess = sessions();
+        // Wrong current password → rejected.
+        assert_eq!(
+            change_own_password(&dir, &sess, "alice", "wrong", "alice-new-pw-456", None).await,
+            Err(SelfPwError::CurrentIncorrect)
+        );
+        // New == current → rejected.
+        assert_eq!(
+            change_own_password(&dir, &sess, "alice", "alice-old-pw-123", "alice-old-pw-123", None).await,
+            Err(SelfPwError::SameAsCurrent)
+        );
+        // Too short → rejected.
+        assert_eq!(
+            change_own_password(&dir, &sess, "alice", "alice-old-pw-123", "short", None).await,
+            Err(SelfPwError::WeakPassword)
+        );
+        // Correct current + valid new → ok, and the new password now verifies.
+        assert!(change_own_password(&dir, &sess, "alice", "alice-old-pw-123", "alice-new-pw-456", None)
+            .await
+            .is_ok());
+        let id = dir.resolve("alice").await.unwrap();
+        assert!(crate::admin_auth::password::verify_password(&id.password_hash, "alice-new-pw-456"));
     }
 
     #[tokio::test]

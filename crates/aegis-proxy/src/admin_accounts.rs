@@ -16,12 +16,12 @@ use http_body_util::{BodyExt, Full};
 use hyper::Response;
 
 use aegis_control::api::admin_accounts::{
-    create_account, delete_account, list_accounts, reset_password, reset_totp, CreateError,
-    MutateError,
+    change_own_password, create_account, delete_account, list_accounts, reset_password, reset_totp,
+    CreateError, MutateError, SelfPwError,
 };
 use aegis_control::dashboard_services::DashboardServices;
 
-use crate::responses::{json_body_response, json_response};
+use crate::responses::{extract_named_cookie, json_body_response, json_response};
 
 fn actor_from(req: &hyper::Request<hyper::body::Incoming>) -> String {
     req.headers()
@@ -180,6 +180,70 @@ pub(crate) async fn handle_account_delete(
     .await;
     mutate_response(services, outcome, "admin_account_deleted", &actor, target, peer,
         "account deleted — its 2FA factor and sessions were purged")
+}
+
+/// `POST /api/admin/self/password {current_password, new_password}` — the
+/// acting admin rotates their OWN password. Verifies the current password
+/// (an admin reset does not) and keeps this session while revoking the rest.
+pub(crate) async fn handle_self_password(
+    req: hyper::Request<hyper::body::Incoming>,
+    peer: std::net::SocketAddr,
+    services: &DashboardServices,
+) -> Response<Full<Bytes>> {
+    #[derive(serde::Deserialize)]
+    struct Body {
+        current_password: String,
+        new_password: String,
+    }
+    let actor = actor_from(&req);
+    // Keep THIS session alive across the change: the session record's id is
+    // the pre-HMAC prefix of the `aegis_session` cookie value.
+    let keep = req
+        .headers()
+        .get_all(hyper::header::COOKIE)
+        .iter()
+        .filter_map(|h| h.to_str().ok())
+        .find_map(|raw| extract_named_cookie(raw, "aegis_session"))
+        .map(|c| c.split('.').next().unwrap_or(c).to_string());
+
+    let Some(body) = read_json::<Body>(req).await else {
+        return bad_request("invalid_json", "expected {\"current_password\":..., \"new_password\":...}");
+    };
+    match change_own_password(
+        &services.admin_directory,
+        &services.auth_sessions,
+        &actor,
+        &body.current_password,
+        &body.new_password,
+        keep.as_deref(),
+    )
+    .await
+    {
+        Ok(()) => {
+            emit_account_audit(services, "admin_self_password_changed", &actor, &actor, &peer.ip().to_string());
+            json_body_response(
+                200,
+                serde_json::json!({
+                    "ok": true,
+                    "message": "password changed — your other sessions were signed out",
+                })
+                .to_string(),
+                "private, no-store",
+            )
+        }
+        Err(SelfPwError::CurrentIncorrect) => {
+            json_response(403, &err("current_incorrect", "current password is incorrect"))
+        }
+        Err(SelfPwError::SameAsCurrent) => {
+            bad_request("same_password", "new password must differ from the current one")
+        }
+        Err(SelfPwError::WeakPassword) => {
+            bad_request("weak_password", "password must be at least 12 characters")
+        }
+        Err(SelfPwError::NotFound) => json_response(404, &err("not_found", "account not found")),
+        Err(SelfPwError::Unavailable) => unavailable(),
+        Err(SelfPwError::Store(e)) => store_error(&e),
+    }
 }
 
 /// Shared mapping of a `MutateError` outcome → HTTP response + audit on success.

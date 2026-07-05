@@ -1059,6 +1059,13 @@ async function accountResetTotp(username) {
 async function accountDelete(username) {
   return csrfMutate(`/api/admin/accounts/${encodeURIComponent(username)}`, { method: 'DELETE' });
 }
+// AM-P2d — self-service: rotate your own password (verifies the current one).
+async function selfChangePassword(currentPassword, newPassword) {
+  return csrfMutate('/api/admin/self/password', {
+    method: 'POST',
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
+}
 
 // CQF-T1 — admin logout. POSTs /admin/logout with the CSRF
 // header. The handler responds 204 + Set-Cookie clearing
@@ -2040,6 +2047,7 @@ Object.assign(window, {
   // CQF-T2 — Blacklist + Whitelist add/delete
   accessListAdd, accessListDelete,
   useAccountsApi, accountCreate, accountResetPassword, accountResetTotp, accountDelete,
+  selfChangePassword,
   // CQF-T3 — Detector mask read + audit-mutated PUT
   useDetectorsApi, detectorsPut,
   // 2026-05-09 — Traffic Gates needs a generic CSRF-aware PUT

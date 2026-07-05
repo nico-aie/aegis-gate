@@ -8093,6 +8093,7 @@ function PageSettings() {
           read-only today; mutation surfaces (terminate, toggle,
           update) ship in a follow-up once the audit-mutated
           handlers are wired. */}
+      <SettingsAccountCard />
       <SettingsSessionsCard />
       <SettingsBreakGlassCard />
       <SettingsIntegrationsCard />
@@ -8238,6 +8239,74 @@ function ResponseFilterCard() {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// AM-P2d — self-service "My Account" card: rotate your own password. Verifies
+// the current password server-side (unlike an admin reset) and signs out your
+// other sessions on success. To re-enroll a new authenticator, sign out and
+// use the login page's 2FA setup; a lost device is recovered by another admin
+// via Admin Accounts → Reset 2FA.
+function SettingsAccountCard() {
+  const [cur, setCur] = useStateP('');
+  const [next, setNext] = useStateP('');
+  const [confirm, setConfirm] = useStateP('');
+  const [busy, setBusy] = useStateP(false);
+  const [notice, setNotice] = useStateP(null); // { ok, text }
+
+  const newOk = next.length >= 12;
+  const matchOk = next === confirm;
+  const canSubmit = cur.length > 0 && newOk && matchOk && next !== cur && !busy;
+
+  async function submit(e) {
+    e.preventDefault();
+    setBusy(true); setNotice(null);
+    const res = await window.selfChangePassword(cur, next);
+    setBusy(false);
+    if (res.status >= 200 && res.status < 300) {
+      setNotice({ ok: true, text: res.message || 'Password changed.' });
+      setCur(''); setNext(''); setConfirm('');
+    } else {
+      setNotice({ ok: false, text: res.message || res.reason || `Change failed (HTTP ${res.status})` });
+    }
+  }
+
+  return (
+    <div className="card" style={{ padding: 12, marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <window.I.Shield />
+        <strong style={{ fontSize: 13 }}>My Account</strong>
+        <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>· change your password</span>
+      </div>
+      {notice && (
+        <div style={{ padding: '6px 10px', marginBottom: 8, fontSize: 12, borderLeft: `3px solid var(--${notice.ok ? 'ok' : 'danger'})` }}>
+          {notice.text}
+        </div>
+      )}
+      <form onSubmit={submit} style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--ink-dim)' }}>
+          Current password
+          <input type="password" value={cur} autoComplete="current-password"
+            onChange={e => setCur(e.target.value)} style={{ padding: '6px 8px' }} />
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--ink-dim)' }}>
+          New password
+          <input type="password" value={next} autoComplete="new-password" placeholder="≥ 12 characters"
+            onChange={e => setNext(e.target.value)} style={{ padding: '6px 8px' }} />
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--ink-dim)' }}>
+          Confirm new
+          <input type="password" value={confirm} autoComplete="new-password"
+            onChange={e => setConfirm(e.target.value)} style={{ padding: '6px 8px' }} />
+        </label>
+        <button type="submit" className="btn primary" disabled={!canSubmit}>Change password</button>
+        <span style={{ fontSize: 11, color: 'var(--warn)' }}>
+          {next && !newOk ? 'New password must be ≥ 12 characters'
+            : confirm && !matchOk ? 'Passwords don’t match'
+            : next && next === cur ? 'New password must differ from current' : ''}
+        </span>
+      </form>
     </div>
   );
 }
