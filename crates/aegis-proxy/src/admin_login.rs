@@ -353,19 +353,52 @@ mod login_page_contract_tests {
     }
 
     #[test]
-    fn missing_code_401_hints_at_the_second_factor() {
-        // TOTP-9 (owner report 2026-07-05): the server deliberately
-        // answers a missing TOTP code with the same invalid_credentials
-        // envelope as a wrong password (F-CRITICAL-003 anti-oracle), so
-        // a legit operator who just forgot the code reads "user or
-        // password incorrect" and starts resetting passwords. The FE
-        // knows locally whether the code field was left empty — on a
-        // 401 WITHOUT a submitted code it must hint that enrolled
-        // accounts need the authenticator code. Client-side text only;
-        // the server envelope stays uniform.
+    fn codeless_401_opens_the_otp_step() {
+        // TOTP-10 (owner ask 2026-07-05, supersedes the TOTP-9 hint):
+        // two-step login. The operator submits username+password only;
+        // a 401 on that CODE-LESS attempt optimistically opens the OTP
+        // dialog (the server envelope is uniform by design — the FE
+        // can't and mustn't know whether the password or the code was
+        // the problem; a wrong password simply fails again inside the
+        // dialog, which offers a way back). A 401 WITH a code stays an
+        // in-dialog error, never a loop.
         assert!(
-            LOGIN_JS.contains("also enter the authenticator code"),
-            "login.js must hint at the missing second factor on code-less 401s",
+            LOGIN_JS.contains("openOtpStep"),
+            "login.js must open the OTP step on a code-less 401",
+        );
+        assert!(
+            LOGIN_JS.contains("otp-modal"),
+            "login.js must drive the #otp-modal dialog",
+        );
+    }
+
+    #[test]
+    fn login_html_has_the_otp_step_dialog() {
+        // TOTP-10 — the OTP entry lives in a dialog shown AFTER the
+        // password step, not as an always-visible third field.
+        for id in ["otp-modal", "otp-code", "otp-submit", "otp-error", "otp-back"] {
+            assert!(
+                LOGIN_HTML.contains(&format!("id=\"{id}\"")),
+                "login.html must have #{id} for the two-step OTP dialog",
+            );
+        }
+    }
+
+    #[test]
+    fn enrollment_surface_has_steps_and_copy_affordance() {
+        // TOTP-10 — enrollment polish: numbered steps guide the scan →
+        // verify flow, and the manual-entry key gets a copy button.
+        assert!(
+            LOGIN_HTML.contains("id=\"enroll-steps\""),
+            "enrollment card must carry the numbered step guide",
+        );
+        assert!(
+            LOGIN_HTML.contains("id=\"enroll-copy\""),
+            "manual-entry key must have a copy button",
+        );
+        assert!(
+            LOGIN_JS.contains("enroll-copy"),
+            "login.js must wire the copy button",
         );
     }
 
