@@ -261,6 +261,29 @@ pub(crate) async fn process_admin_logout(
 }
 
 #[cfg(test)]
+mod login_alias_tests {
+    // TOTP-7 — `GET /login` (a path operators guess constantly) must
+    // bounce to the real login page instead of 404ing. Crucially it is
+    // an OPEN endpoint: pre-fix, /login required auth, so the gate
+    // redirected to /admin/login?next=%2Flogin and the operator landed
+    // right back on the 404 after signing in.
+
+    #[test]
+    fn login_alias_redirects_to_admin_login() {
+        let resp = super::handle_login_alias();
+        assert_eq!(resp.status(), hyper::StatusCode::SEE_OTHER);
+        assert_eq!(
+            resp.headers()
+                .get(hyper::header::LOCATION)
+                .and_then(|h| h.to_str().ok()),
+            Some("/admin/login"),
+            "alias must land on the real login page with the DEFAULT next \
+             (never next=/login — that recreates the 404 loop)",
+        );
+    }
+}
+
+#[cfg(test)]
 mod login_page_contract_tests {
     // TOTP-5 — the shipped login page must speak the SAME protocol the
     // backend serves, or the flow silently breaks in the browser (the

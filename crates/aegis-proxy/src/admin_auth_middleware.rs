@@ -528,6 +528,18 @@ mod tests {
     }
 
     #[test]
+    fn login_alias_is_open() {
+        // TOTP-7 — `GET /login` is a convenience alias that 303s to
+        // /admin/login. It must be OPEN: if it required auth, the gate
+        // would redirect to /admin/login?next=%2Flogin and the operator
+        // would land back on /login → JSON 404 after signing in.
+        let p = remote_peer();
+        assert!(is_open_endpoint(&Method::GET, "/login", &p));
+        // Only the GET alias — no POST surface at the alias path.
+        assert!(!is_open_endpoint(&Method::POST, "/login", &p));
+    }
+
+    #[test]
     fn dashboard_assets_are_open() {
         let p = remote_peer();
         assert!(is_open_endpoint(&Method::GET, "/dashboard", &p));
