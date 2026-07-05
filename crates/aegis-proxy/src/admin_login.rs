@@ -65,6 +65,20 @@ pub(crate) fn handle_admin_login_js() -> Response<Full<Bytes>> {
     .unwrap()
 }
 
+/// TOTP-7 — `GET /login` convenience alias. Operators guess this path
+/// constantly; pre-fix it 404'd — worse, because it required auth, an
+/// unauthenticated visit bounced to `/admin/login?next=%2Flogin` and the
+/// operator landed straight back on the 404 after signing in. 303 to the
+/// bare login page (default `next` = dashboard) so the chain resolves.
+pub(crate) fn handle_login_alias() -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(hyper::StatusCode::SEE_OTHER)
+        .header(hyper::header::LOCATION, "/admin/login")
+        .header(hyper::header::CACHE_CONTROL, "no-store")
+        .body(Full::new(Bytes::new()))
+        .unwrap()
+}
+
 pub(crate) async fn handle_admin_login(
     req: hyper::Request<hyper::body::Incoming>,
     peer: std::net::SocketAddr,

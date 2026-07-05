@@ -83,6 +83,10 @@ pub(crate) async fn handle_admin_request(
     if method == hyper::Method::GET && path == "/admin/login" {
         return crate::admin_login::handle_admin_login_page();
     }
+    // TOTP-7 — `/login` guess-path alias → the real login page.
+    if method == hyper::Method::GET && path == "/login" {
+        return crate::admin_login::handle_login_alias();
+    }
     if method == hyper::Method::GET && path == "/admin/login.js" {
         return crate::admin_login::handle_admin_login_js();
     }

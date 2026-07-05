@@ -353,9 +353,13 @@ fn is_open_endpoint(method: &Method, path: &str, peer: &SocketAddr) -> bool {
         // which crash-loops liveness and pins startup un-ready. Health
         // probes expose no sensitive data (see `health.rs`), so the
         // whole namespace is open + future-proofed for new probes.
+        // `/login` — TOTP-7 convenience alias (303 → /admin/login). Open
+        // for the same reason the login page is: gating it would send
+        // the operator through /admin/login?next=%2Flogin and back to a
+        // 404 after signing in.
         return matches!(
             path,
-            "/readyz" | "/metrics" | "/admin/login" | "/admin/login.js"
+            "/readyz" | "/metrics" | "/login" | "/admin/login" | "/admin/login.js"
         ) || path == "/healthz"
             || path.starts_with("/healthz/")
             || path.starts_with("/dashboard")
