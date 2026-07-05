@@ -34,7 +34,12 @@
 
 use super::Signal;
 use crate::dlp::{self, DlpMatch};
+use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+
+const DEFAULT_MAX_TRACKED: usize = 100_000;
 
 /// Score per secret marker — high signal (a credential in a response body is
 /// almost never legitimate).
@@ -67,6 +72,10 @@ pub struct SensitiveDataDetector {
     pan_density: usize,
     /// Monotonic response counter driving the 1-in-N sampler.
     counter: AtomicU64,
+    /// Per-IP risk delta awaiting the outcome hook to fold into the
+    /// `RiskTracker` (the body-scan site doesn't hold `risk`). Bounded.
+    pending: Mutex<HashMap<IpAddr, u32>>,
+    max_tracked: usize,
 }
 
 impl SensitiveDataDetector {
@@ -80,6 +89,8 @@ impl SensitiveDataDetector {
             sample_rate: sample_rate.max(1),
             pan_density,
             counter: AtomicU64::new(0),
+            pending: Mutex::new(HashMap::new()),
+            max_tracked: DEFAULT_MAX_TRACKED,
         }
     }
 
@@ -94,9 +105,75 @@ impl SensitiveDataDetector {
         body: &[u8],
         always_scan: bool,
     ) -> Vec<Signal> {
-        // RED stub — real detection lands in the GREEN step.
-        let _ = (content_type, body, always_scan);
-        Vec::new()
+        // Content-type gate first (cheap) — reject before the sampler so a
+        // non-scannable body doesn't consume sample budget.
+        if !content_type.is_some_and(is_scannable_ct) {
+            return Vec::new();
+        }
+        if !self.should_scan(always_scan) {
+            return Vec::new();
+        }
+        // Bound the read, decode lossily once, run the single dlp scan.
+        let window = &body[..body.len().min(self.max_scan_bytes)];
+        let text = String::from_utf8_lossy(window);
+        let (secrets, pan_count) = v1_matches(dlp::scan(&text));
+
+        let mut signals = Vec::new();
+        for m in secrets {
+            // `dlp::scan` captures the KEY only for `env_secret` and the
+            // marker token for the rest — never the full secret value — so
+            // the audit `field` stays safe to log.
+            signals.push(Signal {
+                score: SECRET_SCORE,
+                tag: "egress_sensitive".into(),
+                field: format!("kind:{}", m.pattern_name),
+            });
+        }
+        if pan_count >= self.pan_density {
+            signals.push(Signal {
+                score: PAN_SCORE,
+                tag: "egress_sensitive".into(),
+                field: format!("kind:pan_density,count:{pan_count}"),
+            });
+        }
+        signals
+    }
+
+    /// Response-side wrapper used at the data plane: [`observe`](Self::observe)
+    /// then, on any hit, accumulate the summed score into the per-IP pending
+    /// map for the outcome hook to fold into risk. Returns the signals so the
+    /// caller emits one Detection audit row per hit.
+    pub fn observe_and_record(
+        &self,
+        ip: IpAddr,
+        content_type: Option<&str>,
+        body: &[u8],
+        always_scan: bool,
+    ) -> Vec<Signal> {
+        let signals = self.observe(content_type, body, always_scan);
+        if signals.is_empty() {
+            return signals;
+        }
+        let delta: u32 = signals.iter().map(|s| s.score).sum();
+        let mut map = self.pending.lock().unwrap();
+        if !map.contains_key(&ip) && map.len() >= self.max_tracked {
+            if let Some(k) = map.keys().next().copied() {
+                map.remove(&k);
+            }
+        }
+        let e = map.entry(ip).or_insert(0);
+        *e = e.saturating_add(delta);
+        signals
+    }
+
+    /// Take and clear the pending risk delta for `ip` (0 when none).
+    pub fn drain_risk_delta(&self, ip: IpAddr) -> u32 {
+        self.pending.lock().unwrap().remove(&ip).unwrap_or(0)
+    }
+
+    /// Drop all pending state (wired into the `reset_state` path).
+    pub fn clear(&self) {
+        self.pending.lock().unwrap().clear();
     }
 
     /// 1-in-`sample_rate` sampler; `always` bypasses it. Every call advances
@@ -243,6 +320,26 @@ mod tests {
         let mut body = vec![b' '; 64];
         body.extend_from_slice(b"AKIAIOSFODNN7EXAMPLE");
         assert!(d.observe(Some("text/plain"), &body, false).is_empty());
+    }
+
+    #[test]
+    fn observe_and_record_bridges_risk_delta() {
+        let d = detector();
+        let ip: IpAddr = "203.0.113.20".parse().unwrap();
+        let body = br#"{"k":"AKIAIOSFODNN7EXAMPLE"}"#;
+        let sigs = d.observe_and_record(ip, Some(JSON), body, true);
+        assert!(!sigs.is_empty());
+        let delta = d.drain_risk_delta(ip);
+        assert_eq!(delta, sigs.iter().map(|s| s.score).sum::<u32>());
+        assert_eq!(d.drain_risk_delta(ip), 0, "drain is one-shot");
+    }
+
+    #[test]
+    fn observe_and_record_clean_body_records_nothing() {
+        let d = detector();
+        let ip: IpAddr = "203.0.113.21".parse().unwrap();
+        assert!(d.observe_and_record(ip, Some(JSON), br#"{"ok":true}"#, true).is_empty());
+        assert_eq!(d.drain_risk_delta(ip), 0);
     }
 
     #[test]
