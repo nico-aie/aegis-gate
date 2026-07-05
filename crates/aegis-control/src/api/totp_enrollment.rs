@@ -100,6 +100,57 @@ pub async fn confirm(
     }
 }
 
+/// AM-0a — verdict for whether an enroll request may proceed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnrollGate {
+    /// No active factor yet — first-time enrollment, no proof required.
+    FirstTime,
+    /// An active factor exists and the caller proved possession of it.
+    StepUpOk,
+    /// An active factor exists and the caller did NOT prove possession —
+    /// deny; replacing 2FA requires a current code.
+    StepUpRequired,
+}
+
+/// AM-0a (review HIGH) — gate re-enrollment. Overwriting an already-active
+/// factor requires proving possession of the CURRENT one (a valid live
+/// code), so a hijacked fully-verified session can't silently swap an
+/// operator's authenticator and lock them out. First-time enrollment (no
+/// active factor) needs no proof — there's nothing to prove yet. Pure so
+/// it's unit-testable without the hyper handler; `now` is unix seconds.
+///
+/// Note: an admin resetting *another* account's 2FA (AM-P2b
+/// `/totp/reset`) is a distinct, authorised recovery action and does not
+/// go through this self-service gate.
+pub async fn enroll_gate(
+    store: &TotpEnrollmentStore,
+    user: &str,
+    provided_code: Option<&str>,
+    now: u64,
+) -> EnrollGate {
+    match store.active(user).await {
+        Some(active) if active.enabled => {
+            let proven = provided_code
+                .filter(|c| !c.is_empty())
+                .and_then(|code| {
+                    base32::decode(
+                        base32::Alphabet::Rfc4648 { padding: false },
+                        &active.secret_b32,
+                    )
+                    .filter(|s| !s.is_empty())
+                    .map(|secret| totp::verify(&secret, code, now, &totp::TotpConfig::default()))
+                })
+                .unwrap_or(false);
+            if proven {
+                EnrollGate::StepUpOk
+            } else {
+                EnrollGate::StepUpRequired
+            }
+        }
+        _ => EnrollGate::FirstTime,
+    }
+}
+
 /// TOTP-4 — terminal QR for CLI parity (`waf admin enroll-totp` /
 /// `create-account --with-totp`): headless setups scan straight off
 /// the terminal, matching the web flow. Unicode half-block rendering
@@ -126,4 +177,64 @@ fn render_qr_svg(data: &str) -> aegis_core::Result<String> {
         .min_dimensions(240, 240)
         .quiet_zone(true)
         .build())
+}
+
+#[cfg(test)]
+mod enroll_gate_tests {
+    // AM-0a — re-enrollment step-up. Overwriting an active factor requires a
+    // valid CURRENT code; first-time enrollment does not.
+    use super::*;
+    use crate::admin_auth::totp;
+
+    fn code_now(secret_b32: &str, now: u64) -> String {
+        let secret =
+            base32::decode(base32::Alphabet::Rfc4648 { padding: false }, secret_b32).unwrap();
+        totp::generate(&secret, now, &totp::TotpConfig::default())
+    }
+
+    async fn store_with_active(user: &str) -> (TotpEnrollmentStore, String) {
+        let store = TotpEnrollmentStore::in_memory();
+        let secret = totp::generate_secret_b32();
+        store.begin_enrollment(user, &secret).await.unwrap();
+        assert!(store.activate(user).await.unwrap());
+        (store, secret)
+    }
+
+    #[tokio::test]
+    async fn first_time_enrollment_needs_no_proof() {
+        let store = TotpEnrollmentStore::in_memory();
+        assert_eq!(
+            enroll_gate(&store, "alice", None, 1_000_000).await,
+            EnrollGate::FirstTime,
+        );
+    }
+
+    #[tokio::test]
+    async fn reenroll_without_code_is_denied() {
+        let (store, _secret) = store_with_active("alice").await;
+        assert_eq!(
+            enroll_gate(&store, "alice", None, 1_000_000).await,
+            EnrollGate::StepUpRequired,
+        );
+    }
+
+    #[tokio::test]
+    async fn reenroll_with_wrong_code_is_denied() {
+        let (store, _secret) = store_with_active("alice").await;
+        assert_eq!(
+            enroll_gate(&store, "alice", Some("000000"), 1_000_000).await,
+            EnrollGate::StepUpRequired,
+        );
+    }
+
+    #[tokio::test]
+    async fn reenroll_with_current_code_is_allowed() {
+        let (store, secret) = store_with_active("alice").await;
+        let now = 1_000_000;
+        let code = code_now(&secret, now);
+        assert_eq!(
+            enroll_gate(&store, "alice", Some(&code), now).await,
+            EnrollGate::StepUpOk,
+        );
+    }
 }

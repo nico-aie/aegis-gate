@@ -2178,6 +2178,23 @@ pub(crate) fn validate_admin_csrf_secret(auth: &DashboardAuthConfig) -> crate::R
 /// ambiguous legacy+accounts combination (which identity set is live?),
 /// empty usernames, and duplicate usernames (the login lookup would only
 /// ever resolve the first, silently orphaning the second).
+/// AM-0d — admin usernames must be safe identifiers. The username lands in
+/// an HTTP header (`x-aegis-actor`, injected by the trusted edge), a Redis
+/// hash field (`control:waf:admin:*`), and audit rows. A value carrying
+/// CR/LF or other non-header-safe bytes silently no-ops
+/// `HeaderValue::from_str` at the injection site, so `actor_from` falls back
+/// to the literal `"admin"` — misrouting that operator's TOTP enroll/confirm
+/// (and audit attribution) to the wrong account. Restrict to
+/// `[A-Za-z0-9_.-]`, 1–64 chars, and fail closed at boot. Reused by the
+/// runtime account-create API (AM-P2b) so the two paths can't diverge.
+pub fn is_valid_admin_username(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
 pub(crate) fn validate_admin_accounts(auth: &DashboardAuthConfig) -> crate::Result<()> {
     if auth.accounts.is_empty() {
         return Ok(());
@@ -2196,11 +2213,18 @@ pub(crate) fn validate_admin_accounts(auth: &DashboardAuthConfig) -> crate::Resu
     }
     let mut seen = std::collections::HashSet::new();
     for account in &auth.accounts {
-        let name = account.username.trim();
-        if name.is_empty() {
+        let name = account.username.as_str();
+        if name.trim().is_empty() {
             return Err(crate::error::WafError::Config(
                 "admin.dashboard_auth.accounts entry has an empty username".into(),
             ));
+        }
+        // AM-0d — reject non-header-safe / non-identifier usernames at boot.
+        if !is_valid_admin_username(name) {
+            return Err(crate::error::WafError::Config(format!(
+                "admin.dashboard_auth.accounts username `{name}` is invalid — \
+                 use 1–64 characters of [A-Za-z0-9_.-]",
+            )));
         }
         if !seen.insert(name) {
             return Err(crate::error::WafError::Config(format!(
@@ -2361,6 +2385,59 @@ accounts:
 "#,
         );
         assert!(validate_admin_accounts(&cfg).is_err());
+    }
+
+    #[test]
+    fn rejects_non_identifier_usernames() {
+        // AM-0d — CR/LF and other non-header-safe usernames silently no-op
+        // the `x-aegis-actor` header injection → actor falls back to "admin"
+        // → misrouted TOTP enroll/confirm. Reject them at boot instead.
+        let too_long = "x".repeat(65);
+        for bad in [
+            "ali ce",       // space
+            "alice\n",      // LF (the header-injection footgun)
+            "a\rb",         // CR
+            "admin!",       // punctuation
+            "user@host",    // @
+            "na\u{00ef}ve", // non-ASCII
+            too_long.as_str(),
+        ] {
+            let cfg = DashboardAuthConfig {
+                accounts: vec![AdminAccountConfig {
+                    username: bad.to_string(),
+                    password_hash_ref: "$argon2id$a".into(),
+                    totp_secret_b32: String::new(),
+                    totp_enabled: false,
+                }],
+                csrf_secret_ref: "test-csrf-secret-do-not-use-in-production-32b".into(),
+                ..DashboardAuthConfig::default()
+            };
+            assert!(
+                validate_admin_accounts(&cfg).is_err(),
+                "username {bad:?} must be rejected",
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_identifier_usernames() {
+        let max_len = "x".repeat(64);
+        for ok in ["alice", "bob_1", "svc.deploy", "a-b", "ADMIN", max_len.as_str()] {
+            let cfg = DashboardAuthConfig {
+                accounts: vec![AdminAccountConfig {
+                    username: ok.to_string(),
+                    password_hash_ref: "$argon2id$a".into(),
+                    totp_secret_b32: String::new(),
+                    totp_enabled: false,
+                }],
+                csrf_secret_ref: "test-csrf-secret-do-not-use-in-production-32b".into(),
+                ..DashboardAuthConfig::default()
+            };
+            assert!(
+                validate_admin_accounts(&cfg).is_ok(),
+                "username {ok:?} must be accepted",
+            );
+        }
     }
 
     #[test]

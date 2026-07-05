@@ -310,6 +310,17 @@ mod login_page_contract_tests {
     const LOGIN_HTML: &str = include_str!("assets/login.html");
 
     #[test]
+    fn safe_next_url_rejects_backslash_open_redirect() {
+        // AM-0b — `?next=/\evil.com` normalises to a protocol-relative
+        // cross-origin redirect in browsers, slipping a naive `//` check.
+        // The same-origin guard must reject any backslash.
+        assert!(
+            LOGIN_JS.contains("indexOf('\\\\')") || LOGIN_JS.contains("includes('\\\\')"),
+            "safeNextUrl must reject backslashes to close the open-redirect bypass",
+        );
+    }
+
+    #[test]
     fn login_form_carries_a_totp_code_field() {
         // Enrolled accounts must be able to submit their app code from
         // the login page (LoginRequest.totp_code).

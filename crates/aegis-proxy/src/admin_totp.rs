@@ -47,6 +47,28 @@ fn actor_from(req: &hyper::Request<hyper::body::Incoming>) -> String {
         .to_string()
 }
 
+/// AM-0a — read an optional `{code}` from the enroll request body. First-time
+/// enrollment sends no body; a re-enroll sends the current app code so the
+/// step-up gate can verify it. Tolerant of an empty / missing / malformed
+/// body (→ `None`), which the gate treats as "no proof supplied".
+async fn read_optional_code(req: hyper::Request<hyper::body::Incoming>) -> Option<String> {
+    use http_body_util::BodyExt;
+
+    #[derive(serde::Deserialize)]
+    struct CodeBody {
+        code: Option<String>,
+    }
+
+    let bytes = req.into_body().collect().await.ok()?.to_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+    serde_json::from_slice::<CodeBody>(&bytes)
+        .ok()
+        .and_then(|b| b.code)
+        .filter(|c| !c.is_empty())
+}
+
 /// AU-1-shaped Admin audit event for the enrollment lifecycle. Never
 /// carries the secret or the code — only who/when/what stage.
 fn emit_totp_audit(
@@ -88,8 +110,37 @@ pub(crate) async fn handle_totp_enroll(
     cfg: &aegis_core::config::WafConfig,
     services: &aegis_control::dashboard_services::DashboardServices,
 ) -> Response<Full<Bytes>> {
+    use aegis_control::api::totp_enrollment::{enroll_gate, EnrollGate};
+
     let user = actor_from(&req);
     let issuer = issuer_label(cfg.admin.environment.as_deref());
+
+    // AM-0a (review HIGH) — re-enrollment step-up. Replacing an account's
+    // already-active factor requires proving possession of the CURRENT one,
+    // so a hijacked fully-verified session can't silently swap the operator's
+    // authenticator and lock them out. First-time enrollment (no active
+    // factor) sends no body and is unaffected. The optional `{code}` in the
+    // body is the current live app code for the re-enroll case.
+    let provided_code = read_optional_code(req).await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if let EnrollGate::StepUpRequired =
+        enroll_gate(&services.totp_store, &user, provided_code.as_deref(), now).await
+    {
+        emit_totp_audit(services, "totp_reenroll_denied", &user, &peer.ip().to_string());
+        return json_response(
+            403,
+            &serde_json::json!({
+                "ok": false,
+                "reason": "step_up_required",
+                "message": "this account already has 2FA — include a current \
+                            authenticator code to replace it",
+            }),
+        );
+    }
+
     match enroll(&services.totp_store, &user, &issuer).await {
         Ok(resp) => {
             emit_totp_audit(services, "totp_enroll_started", &user, &peer.ip().to_string());
