@@ -367,6 +367,12 @@ mod tests {
             "/actuator/health",  // monitoring — the classic near-miss
             "/actuator/info",
             "/actuator",         // bare index scores recon 25, never canary
+            "/actuator/env",     // 2026-07-05 owner call: dropped from the
+                                 // canary set (Spring Boot Admin polls it
+                                 // legitimately) — recon still scores it,
+                                 // but it must NOT hard-block as a canary.
+                                 // (`/actuator/heapdump` DOES stay a canary
+                                 // — verified in rc1_default_curated_paths.)
             "/environment",      // exact-match: `/.env` must not prefix-hit
             "/id_rsa.pub",       // public half is not the secret
             "/server.key.pem",   // exact-match: `/server.key` must not prefix-hit
