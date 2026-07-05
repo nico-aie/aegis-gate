@@ -340,7 +340,7 @@ impl Detector for ReconDetector {
             for re in RECON_PATHS.iter() {
                 if re.is_match(path_q) {
                     signals.push(Signal {
-                        score: super::scores::recon::PATH,
+                        score: crate::detectors::scores::recon::PATH,
                         tag: "recon_path".into(),
                         field: "uri".into(),
                     });
@@ -712,6 +712,60 @@ mod tests {
     path_positive!(go_pprof_heap,          "/debug/pprof/heap");
     path_positive!(env_in_subdir,          "/app/.env");
     path_positive!(wp_admin_panel_probe,   "/wp-admin/");
+
+    // ── RC-2 (2026-07-05) — tiered recon scoring ───────────────────────
+    // The secret-exposure subset scores recon::SENSITIVE (50); generic
+    // probes stay recon::PATH (25). Tag is unchanged ("recon_path") — only
+    // the score differs, so it composes with the existing accumulation and
+    // per-request gate with no threshold change. 50 stays below block_at
+    // (70): still two hits to cumulative-block; single-hit is at most a
+    // challenge. Corpus re-validation + any ≥70 escalation deferred to
+    // Wave B (owner-gated).
+    macro_rules! path_score {
+        ($name:ident, $input:expr, $expected:expr) => {
+            #[test]
+            fn $name() {
+                let d = ReconDetector;
+                let (m, u, h, b) = view_with_path($input);
+                let req = make_view(&m, &u, &h, &b);
+                let s = d.inspect(&req);
+                let sig = s
+                    .iter()
+                    .find(|s| s.tag == "recon_path")
+                    .unwrap_or_else(|| panic!("expected recon_path for {}", $input));
+                assert_eq!(
+                    sig.score, $expected,
+                    "wrong recon tier for {}: got {}, want {}",
+                    $input, sig.score, $expected
+                );
+            }
+        };
+    }
+
+    // Sensitive tier (secret exposure) → 50.
+    path_score!(rc2_aws_creds_sensitive,   "/.aws/credentials",            crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rc2_git_creds_sensitive,   "/.git-credentials",           crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rc2_npmrc_sensitive,       "/.npmrc",                     crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rc2_secrets_json_sensitive,"/secrets.json",               crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rc2_id_rsa_sensitive,      "/id_rsa",                     crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rc2_pem_sensitive,         "/server.pem",                 crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rc2_key_sensitive,         "/tls.key",                    crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rc2_ssh_sensitive,         "/.ssh/id_rsa",                crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rc2_terraform_sensitive,   "/.terraform/terraform.tfstate", crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rc2_wp_config_sensitive,   "/wp-config.php",              crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rc2_wp_config_txt_sensitive,"/wp-config.txt",             crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rc2_db_yaml_sensitive,     "/config/database.yaml",       crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rc2_actuator_heapdump_sensitive, "/actuator/heapdump",    crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rc2_actuator_env_sensitive,      "/actuator/env",         crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rc2_actuator_configprops_sensitive, "/actuator/configprops", crate::detectors::scores::recon::SENSITIVE);
+
+    // Generic probe tier → 25 (tier separation must hold).
+    path_score!(rc2_wp_admin_generic,      "/wp-admin/",                  crate::detectors::scores::recon::PATH);
+    path_score!(rc2_swagger_generic,       "/swagger-ui.html",            crate::detectors::scores::recon::PATH);
+    path_score!(rc2_phpinfo_generic,       "/phpinfo.php",                crate::detectors::scores::recon::PATH);
+    path_score!(rc2_actuator_loggers_generic, "/actuator/loggers",       crate::detectors::scores::recon::PATH);
+    path_score!(rc2_actuator_bare_generic,    "/actuator",               crate::detectors::scores::recon::PATH);
+    path_score!(rc2_config_yaml_generic,   "/config.yaml",               crate::detectors::scores::recon::PATH);
 
     // UA-based positive tests.
     macro_rules! ua_positive {
