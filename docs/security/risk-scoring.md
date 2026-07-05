@@ -238,6 +238,45 @@ one session and the IP risk goes `70 → 100` (`70 + 70`, capped).
   it as `risk-challenge · recon_path`, or `· cumulative` when this request
   itself scored 0 and was actioned purely on the IP's accumulated history.
 
+### Testing note — two behaviours that look like bugs but are by design
+
+Two properties of the model above regularly get filed as false-positive or
+missed-detection bugs by black-box test harnesses. Both are **working as
+designed**; document them here so the next report doesn't re-diagnose them.
+
+**(1) "The detector didn't block, so it's not detecting" (the two-score
+split).** A single probing request whose summed detector score is below the
+route tier's `risk_threshold` is **forwarded as `allow`** — but it *was*
+detected. The fired detectors are stamped in **both** `X-WAF-Rule-Id` and the
+audit `rule_id` on that allowed request, and they feed the source's cumulative
+IP risk (`max(signal)` per request). A harness that only checks the HTTP status
+of each individual request will see `200` and conclude "not detected"; the
+detection is in the labels and in the accumulating IP score, not in a per-request
+block. Enough such requests cross `challenge_at` / `block_at` and the
+**cumulative** gate then blocks — with `rule_id = risk-score` / `risk-challenge`,
+not the original detector tag. Read the `rule_id` / `fields.detectors`, not just
+the status code, to see per-path detection ability. (Aggregate dashboards that
+count only `block` actions understate this; the per-request labels are the
+source of truth.)
+
+**(2) "A clean request got challenged/blocked in dev" (the single-IP XFF
+collapse).** `cfg.proxy.trusted_proxies` is **empty by default** — the
+F-HIGH-002-safe posture — which means `x-forwarded-for` is ignored and the
+**TCP peer IP always wins** as the risk-bucket `ip` axis
+(`data_plane.rs` → `resolve_client_ip`). In a local/dev setup every request
+originates from `127.0.0.1`, so **all traffic shares one RiskKey bucket**. Run
+an attack suite against a dev instance and the loopback bucket accumulates risk;
+subsequent *benign* requests from the same loopback then get challenged or
+access-gate-blocked on the **cumulative** gate — not because the new request was
+malicious, but because it shares the poisoned bucket. This does not happen in
+production, where clients have distinct peer IPs (or a *trusted* L7/SNAT LB is
+listed in `trusted_proxies` so `resolve_client_ip` walks XFF back to the real
+client). To test cleanly against dev: send a realistic distinct `User-Agent`,
+space requests so decay applies, and reset the poisoned bucket between runs with
+`PUT /api/risk/{ip}/reset` (or the surgical `POST /api/risk/reset_key`). See
+[ip-reputation.md § Proxy-protocol / L4 real client IP](./ip-reputation.md#proxy-protocol-l4-real-client-ip)
+for the production XFF/PROXY-protocol resolution.
+
 ## Worked example: AI detector chain
 
 When `cfg.ai.enabled: true` and the binary is built `--features ai`,
