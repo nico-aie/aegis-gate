@@ -1,6 +1,6 @@
 # FEAT — Admin account management UI (runtime multi-admin CRUD)
 
-> **Type:** FEAT (enterprise-identity / foundation track) · **Status:** ☐ Not started — planned 2026-07-05 · **Branch:** `feat/admin-account-mgmt-ui` (off `feat/2fa`, per stage)
+> **Type:** FEAT (enterprise-identity / foundation track) · **Status:** ☑ Implemented 2026-07-05 (AM-0 + AM-P2a–d shipped on `feat/admin-account-mgmt-ui`; `cargo test --workspace` green) — pending live browser smoke + review · **Branch:** `feat/admin-account-mgmt-ui` (off `feat/2fa`, per stage)
 > **Track ID prefix:** `AM-P2<a–d>` (realises §4.2 **P2 — multi-user account store** of the design doc)
 > **Design docs:** [`../future/round-2-improvement/basic-admin-user-model-mvp.md`](../future/round-2-improvement/basic-admin-user-model-mvp.md) (the branch's conceptual spec — equal-`Admin`, no RBAC, per-account TOTP + recovery codes) · [`../future/admin-accounts-rbac-sso.md`](../future/admin-accounts-rbac-sso.md) §4.2 (P2 — multi-user store) + §4-cross-cutting ("Users & Access" page). This FEAT is the concrete runtime-CRUD + UI implementation of that MVP model.
 > **Builds on:** `feat/2fa` (PR #167) — multi-admin data model, per-account TOTP, `SessionRecord.user`, `TotpEnrollmentStore`.
@@ -94,13 +94,18 @@ All under the session + CSRF + write-scope gate (`admin_auth_middleware.rs:148-2
 
 ## 7. Acceptance
 
-- [ ] AM-0a–e review hardening merged (step-up, open-redirect, CLI echo, charset, recovery framing).
-- [ ] AM-P2a: `AdminAccountStore` + async overlay `resolve` + `revoke_user`; overlay/tombstone/round-trip tests green.
-- [ ] AM-P2b: 5 account endpoints live + gated + audited; last-admin guard; list leaks no secrets.
-- [ ] AM-P2c: Access page — list/create/delete/reset-password/reset-2FA/revoke-sessions; hooks-guard green; both themes.
-- [ ] AM-P2d: self-service Account panel + docs.
-- [ ] Contract guardrails untouched; `cargo test --workspace` green; `build.sh` hooks-guard green.
+- [x] AM-0a–e review hardening merged (step-up, open-redirect, CLI echo, charset, recovery framing).
+- [x] AM-P2a: `AdminAccountStore` + async overlay `resolve` + `revoke_user`; overlay/tombstone/round-trip tests green.
+- [x] AM-P2b: account endpoints live + gated + audited; last-admin guard; list leaks no secrets.
+- [x] AM-P2c: Admin Accounts page — list/create/delete/reset-password/reset-2FA; hooks-guard green.
+- [x] AM-P2d: self-service change-password (Settings → My Account) + docs. _(session-list/revoke UI + in-dashboard TOTP re-enroll UI deferred — API/step-up exist; noted below.)_
+- [x] Contract guardrails untouched; `cargo test --workspace` green; `build.sh` hooks-guard green.
+- [ ] Live browser smoke (fresh account → first-login enrollment → dashboard; create/reset/delete from the page; self password change). Not yet run.
 - [ ] Archive this FEAT file + tick §4.2 P2 in the design doc on completion.
+
+### Deferred within P2d (separable, not blocking)
+- Session-list + per-session revoke **UI** (the `revoke_user` API + `GET /api/admin/sessions` exist; the Settings sessions card is still read-only).
+- In-dashboard TOTP **re-enroll** UI for your own account (the step-up-gated `POST /api/admin/totp/enroll` already supports it — AM-0a — but the QR flow currently lives only on the login page).
 
 ## 8. Out of scope
 
