@@ -88,6 +88,12 @@ that wins when present (enrollment without YAML edits).
   secret confirms + next login requires it; unconfirmed secret rejected at login; pending
   expires; works via in-memory fallback (standalone).
 
+### TOTP-4 — CLI parity (reuse existing `waf admin`) · **S**
+- `waf admin create-account --username <u>`: prompts password (reuses `hash_password`), prints
+  ready-to-paste YAML `accounts:` fragment (+ optional `--with-totp` inline enrollment reusing
+  the same secret-gen helper → prints `otpauth://` URI + ASCII QR).
+- `waf admin enroll-totp` gains `--qr` ASCII QR output so headless setup matches the web flow.
+
 ### TOTP-5 — login-page FE: TOTP field + in-browser QR enrollment · **S** · (added 2026-07-05)
 Backend flow was complete but `login.js` still spoke the old password-only protocol —
 a 200 blind-redirected to the dashboard (which 403s for enrollment-only sessions) and the
@@ -99,12 +105,6 @@ form had no way to submit an app code.
   `POST /api/admin/totp/confirm {code}` → redirect to `?next=`.
 - Contract-guard tests pin the shipped assets to the backend protocol (field names +
   endpoint paths) so the FE/backend drift class can't silently recur.
-
-### TOTP-4 — CLI parity (reuse existing `waf admin`) · **S**
-- `waf admin create-account --username <u>`: prompts password (reuses `hash_password`), prints
-  ready-to-paste YAML `accounts:` fragment (+ optional `--with-totp` inline enrollment reusing
-  the same secret-gen helper → prints `otpauth://` URI + ASCII QR).
-- `waf admin enroll-totp` gains `--qr` ASCII QR output so headless setup matches the web flow.
 
 ## Out of scope (tracked elsewhere — say so, don't duplicate)
 - Recovery-code **login** consumption + `waf admin disable-totp` → TF-2 (`FEAT-2fa-enforcement` §TF-2, AA-P1b owns wiring).
