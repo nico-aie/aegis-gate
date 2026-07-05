@@ -506,6 +506,10 @@ admin:
         password_hash_ref: '$argon2id$v=19$m=19456,t=2,p=1$DfRgVNq6Cb+eN3BEMmExAQ$69SVZBNpMFjN4evfN8g+U5jnmP56Gwx3AGaZFr32ZzY'
       - username: "liud"
         password_hash_ref: '$argon2id$v=19$m=19456,t=2,p=1$Ov/TRnp+SGWOLqRmBHsEtg$WfUQd3992PP8QWXw81pTC95vSTFmdUkXnZz2Dm/8h1o'
+      - username: "shu"
+        password_hash_ref: '$argon2id$v=19$m=19456,t=2,p=1$E2Ce3J4PTgGvSTagfgVHsg$lkwxMjVV2VVhFd1KHCT+lWt5LkmLawjqmAQ4tJQxke8'
+      - username: "btc"
+        password_hash_ref: '$argon2id$v=19$m=19456,t=2,p=1$8hsSTNQjQ/W01b/soxYvng$0rJ6uIl7Y8F/HJiIk0CW3moqNanhBAz5MFIv/PkjJa0'
     csrf_secret_ref:   "test-csrf-secret-do-not-use-in-production-32b"
     # Dev-only — enable the in-console WAF-identity / backend-CA / trust-bundle
     # upload controls on the Zero Trust page. Default false (GitOps-managed
