@@ -267,6 +267,10 @@ admin:
       - "127.0.0.1/32"
       - "::1/128"
     totp_enabled: false
+    # TOTP-2 (TF-1) — enforced (also the default): a password alone never
+    # grants admin access. First login lands in the TOTP-enrollment-only
+    # surface; scan the QR with Google Authenticator and confirm a code.
+    require_totp: true
     login_rate_limit:
       per_ip:
         limit: 5

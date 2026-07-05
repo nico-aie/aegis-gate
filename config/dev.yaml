@@ -511,6 +511,10 @@ admin:
       - "127.0.0.1/32"
       - "::1/128"
     totp_enabled: false
+    # TOTP-2 (TF-1) — EXPLICIT dev/CI opt-out from the enforced-by-default
+    # 2FA policy. Without this line a password-only login only reaches the
+    # TOTP-enrollment surface. Never ship false to production.
+    require_totp: false
     login_rate_limit:
       per_ip:
         limit: 100              # loose so the API smoke can run repeatedly

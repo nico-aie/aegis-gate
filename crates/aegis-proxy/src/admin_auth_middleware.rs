@@ -166,7 +166,28 @@ pub async fn admit(
         return Admit::Authenticated(id);
     }
 
-    if let Some(id) = try_session_auth(req, cfg, auth_sessions).await {
+    if let Some((id, totp_verified)) = try_session_auth(req, cfg, auth_sessions).await {
+        // TOTP-2 (TF-1) — enrollment-only sessions. A login that passed
+        // the password check but has no enrolled second factor (under
+        // `require_totp`) carries `totp_verified=false`; it may reach
+        // ONLY the TOTP enroll/confirm endpoints until a code from the
+        // authenticator app confirms enrollment. Everything else on the
+        // admin surface is denied — this is what makes "password alone
+        // never grants admin access" hold.
+        if !totp_verified && !is_enrollment_allowed(method, path) {
+            tracing::warn!(
+                actor = %id.actor,
+                method = %method,
+                path = %path,
+                "admin: enrollment-only session attempted a non-enrollment endpoint",
+            );
+            return Admit::Denied(deny_response(
+                StatusCode::FORBIDDEN,
+                "totp_enrollment_required",
+                "this session requires TOTP enrollment — \
+                 POST /api/admin/totp/enroll then /api/admin/totp/confirm",
+            ));
+        }
         // Step 7 — CSRF on state-changing methods.
         // Browser-initiated reporting endpoints (CSP `report-uri`) are
         // exempt: the browser sends these automatically and never adds the
@@ -347,6 +368,16 @@ fn is_csrf_exempt(path: &str) -> bool {
     matches!(path, "/api/csp/report")
 }
 
+/// TOTP-2 (TF-1) — the ONLY endpoints an enrollment-only session
+/// (`totp_verified=false`) may reach. Login/logout/health/static assets
+/// are open endpoints and never consult this. Kept as a tight literal
+/// match — new admin surfaces must NOT leak into the pre-enrollment
+/// state by default.
+fn is_enrollment_allowed(method: &Method, path: &str) -> bool {
+    *method == Method::POST
+        && matches!(path, "/api/admin/totp/enroll" | "/api/admin/totp/confirm")
+}
+
 fn requires_write_scope(method: &Method) -> bool {
     matches!(
         *method,
@@ -379,21 +410,28 @@ fn try_bearer_auth(
     None
 }
 
+/// Validate the session cookie. Returns the identity plus the record's
+/// `totp_verified` flag so `admit` can hold enrollment-only sessions to
+/// the TOTP surface (TOTP-2).
 async fn try_session_auth(
     req: &Request<hyper::body::Incoming>,
     _cfg: &WafConfig,
     sessions: &Arc<AuthSessionStore>,
-) -> Option<Identity> {
+) -> Option<(Identity, bool)> {
     let cookie = extract_cookie(req, "aegis_session")?;
     let record = sessions.validate(cookie).await?;
     // TOTP-1 (TF-4) — the session record carries the account it was
     // issued to (multi-admin model); the audit chain's `actor` is that
     // username. Pre-multi-account records serde-default to `admin`.
-    Some(Identity {
-        actor: record.user,
-        scopes: Scopes::FULL,
-        is_service_account: false,
-    })
+    let totp_verified = record.totp_verified;
+    Some((
+        Identity {
+            actor: record.user,
+            scopes: Scopes::FULL,
+            is_service_account: false,
+        },
+        totp_verified,
+    ))
 }
 
 /// Extract a named cookie value from the Cookie header. RFC 6265

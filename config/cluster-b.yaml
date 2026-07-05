@@ -41,6 +41,10 @@ admin:
       - "127.0.0.1/32"
       - "::1/128"
     totp_enabled: false
+    # TOTP-2 (TF-1) — EXPLICIT dev/CI opt-out from the enforced-by-default
+    # 2FA policy. Without this line a password-only login only reaches the
+    # TOTP-enrollment surface. Never ship false to production.
+    require_totp: false
 
 # 2026-05-30 — see cluster-a.yaml for the same block + rationale.
 ai:

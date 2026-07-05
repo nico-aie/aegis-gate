@@ -493,11 +493,20 @@ pub(crate) async fn admin_accept_loop(
                 "admin auth: csrf_secret is short (<16 chars) — use a random ≥32-char value.",
             );
         }
-        if auth.password_hash_ref.trim().is_empty() {
+        if auth.password_hash_ref.trim().is_empty() && auth.accounts.is_empty() {
             tracing::warn!(
                 "admin auth: no admin password configured \
-                 (cfg.admin.dashboard_auth.password_hash empty) — dashboard login \
-                 is DISABLED; operators cannot sign in.",
+                 (cfg.admin.dashboard_auth.password_hash empty, no accounts) — \
+                 dashboard login is DISABLED; operators cannot sign in.",
+            );
+        }
+        // TOTP-2 (TF-1) — enforcement is the default; an explicit opt-out
+        // is a dev/CI convenience and must be loud in a real deploy.
+        if !auth.require_totp {
+            tracing::warn!(
+                "admin auth: require_totp is DISABLED (explicit opt-out) — a \
+                 password alone grants admin access. Keep this false only for \
+                 dev/CI; production deployments should enforce TOTP.",
             );
         }
     }

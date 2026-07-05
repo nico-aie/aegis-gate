@@ -6372,6 +6372,18 @@ pub struct DashboardAuthConfig {
     /// ambiguous configs must not guess.
     #[serde(default)]
     pub accounts: Vec<AdminAccountConfig>,
+    /// TOTP-2 (TF-1, 2026-07-05) — **default `true`**: a password alone
+    /// never grants admin access. An account without an enrolled factor
+    /// gets an enrollment-only session (TOTP enroll/confirm surface,
+    /// nothing else) until it confirms a code from its authenticator
+    /// app. Global policy — applies to every account. Dev/CI/bench opt
+    /// out with an explicit `require_totp: false` (boot warns).
+    #[serde(default = "default_require_totp")]
+    pub require_totp: bool,
+}
+
+fn default_require_totp() -> bool {
+    true
 }
 
 /// One named admin account (TOTP-1 / TF-4). All accounts are
@@ -6447,6 +6459,7 @@ impl Default for DashboardAuthConfig {
             allow_ca_upload: false,
             max_request_body_bytes: default_admin_max_body_bytes(),
             accounts: Vec::new(),
+            require_totp: default_require_totp(),
         }
     }
 }

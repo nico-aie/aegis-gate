@@ -125,6 +125,11 @@ pub(crate) async fn process_admin_login(
             // not a hard-coded single-admin name.
             services.login_auditor.record_success(&ip, user);
         }
+        LoginOutcome::EnrollmentRequired { user, .. } => {
+            // TOTP-2 — password right, no factor enrolled: distinct
+            // audit bucket (not a full login_success).
+            services.login_auditor.record_enrollment_required(&ip, user);
+        }
         LoginOutcome::Unauthorized { .. } => {
             services
                 .login_auditor
@@ -146,6 +151,23 @@ pub(crate) async fn process_admin_login(
 
     match outcome {
         LoginOutcome::Ok {
+            session_cookie,
+            csrf_cookie,
+            body,
+            ..
+        } => Response::builder()
+            .status(200)
+            .header("content-type", "application/json; charset=utf-8")
+            .header("cache-control", "no-store")
+            .header("set-cookie", session_cookie)
+            .header("set-cookie", csrf_cookie)
+            .body(Full::new(Bytes::from(body)))
+            .unwrap(),
+        // TOTP-2 — 200 with both cookies: the client IS authenticated
+        // enough to reach the enrollment surface, and the body's
+        // `enrollment_required: true` tells the login page to route to
+        // the TOTP setup flow instead of the dashboard.
+        LoginOutcome::EnrollmentRequired {
             session_cookie,
             csrf_cookie,
             body,

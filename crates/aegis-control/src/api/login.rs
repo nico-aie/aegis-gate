@@ -65,6 +65,18 @@ pub enum LoginOutcome {
         csrf_cookie: String,
         body: String,
     },
+    /// TOTP-2 (TF-1) — password verified but `require_totp` is on and
+    /// the account has no enrolled factor. The session issued here is
+    /// NOT `totp_verified`; the admin middleware restricts it to the
+    /// TOTP enroll/confirm surface until a code from the authenticator
+    /// app confirms enrollment. Proxy emits 200 + both cookies with the
+    /// `enrollment_required` body so the login page can route to setup.
+    EnrollmentRequired {
+        user: String,
+        session_cookie: String,
+        csrf_cookie: String,
+        body: String,
+    },
     /// Wrong credentials, missing user, or any other "I don't
     /// trust you" path. Body is the documented error envelope.
     Unauthorized { body: String },
@@ -141,17 +153,37 @@ pub struct AdminIdentity {
 #[derive(Clone, Debug, Default)]
 pub struct AdminDirectory {
     accounts: Vec<std::sync::Arc<AdminIdentity>>,
+    /// TOTP-2 (TF-1) — global enforcement policy: when `true` a correct
+    /// password on an un-enrolled account yields an enrollment-only
+    /// session, never a full one. `new()`/`single()`/`default()` leave
+    /// it `false` (test/legacy shorthand); production boots read the
+    /// config default (`true`) via [`AdminDirectory::from_config`].
+    require_totp: bool,
 }
 
 impl AdminDirectory {
     pub fn new(accounts: Vec<std::sync::Arc<AdminIdentity>>) -> Self {
-        Self { accounts }
+        Self { accounts, require_totp: false }
     }
 
     /// Wrap one identity — the single-admin shorthand (tests + legacy
     /// boot paths).
     pub fn single(identity: AdminIdentity) -> Self {
-        Self { accounts: vec![std::sync::Arc::new(identity)] }
+        Self {
+            accounts: vec![std::sync::Arc::new(identity)],
+            require_totp: false,
+        }
+    }
+
+    /// Set the TF-1 enforcement policy (builder-style, used by tests
+    /// and `from_config`).
+    pub fn with_require_totp(mut self, require_totp: bool) -> Self {
+        self.require_totp = require_totp;
+        self
+    }
+
+    pub fn require_totp(&self) -> bool {
+        self.require_totp
     }
 
     /// Build from the YAML account set (legacy fields already folded in
@@ -172,7 +204,10 @@ impl AdminDirectory {
                 })
             })
             .collect();
-        Self { accounts }
+        Self {
+            accounts,
+            require_totp: auth.require_totp,
+        }
     }
 
     /// Resolve a submitted username. Scans the WHOLE set with a
@@ -296,6 +331,45 @@ pub async fn authenticate(
         };
     }
 
+    // 2a. TOTP-2 (TF-1) — enforcement. Password verified, but the policy
+    //     says a password alone never grants admin access and this
+    //     account has no enrolled factor: issue an ENROLLMENT-ONLY
+    //     session (totp_verified=false — the middleware restricts it to
+    //     POST /api/admin/totp/enroll|confirm) instead of a full one.
+    //     Counts as a rate-limit success: the password WAS right, and a
+    //     legitimate first login must not accrue failure strikes.
+    if directory.require_totp() && !admin.totp_enabled {
+        rate_limiter.record_success(ip, &req.user);
+        let (session_cookie, csrf_cookie) = match issue_session(
+            sessions,
+            dashboard_sessions,
+            &admin.user,
+            ip,
+            user_agent,
+            session_idle_seconds,
+            false,
+        )
+        .await
+        {
+            Ok(pair) => pair,
+            Err(outcome) => return outcome,
+        };
+        let body = serde_json::json!({
+            "ok": true,
+            "enrollment_required": true,
+            "user": admin.user,
+            "message": "TOTP enrollment required: POST /api/admin/totp/enroll, scan the QR \
+                        with an authenticator app (Google Authenticator, Authy, …), then \
+                        POST /api/admin/totp/confirm with a generated code",
+        });
+        return LoginOutcome::EnrollmentRequired {
+            user: admin.user.clone(),
+            session_cookie,
+            csrf_cookie,
+            body: body.to_string(),
+        };
+    }
+
     // 2b. F-CRITICAL-003 (2026-05-17 s-tester audit) — when TOTP is
     //     enabled, verify the second factor. Same `Unauthorized`
     //     envelope as wrong password on any failure path (missing
@@ -359,27 +433,70 @@ pub async fn authenticate(
         }
     }
 
-    // 3. Success — issue session + CSRF cookies.
+    // 3. Success — issue session + CSRF cookies. The session is bound to
+    //    the resolved account (TOTP-1) and marked fully verified: the
+    //    auth policy is satisfied (TOTP checked above when enabled; no
+    //    second factor demanded otherwise).
     rate_limiter.record_success(ip, &req.user);
-    // R-1 (2026-06-19): if the session record can't be persisted (read-only /
-    // down shared backend), FAIL the login with 503 rather than handing back a
-    // cookie for a session that was never stored — that produced the silent
-    // 200→401 admin lockout during the Redis hijack.
-    // Session is bound to the resolved account (TOTP-1) and records that
-    // this login satisfied the second factor when one was configured.
+    let (session_cookie, csrf_cookie) = match issue_session(
+        sessions,
+        dashboard_sessions,
+        &admin.user,
+        ip,
+        user_agent,
+        session_idle_seconds,
+        true,
+    )
+    .await
+    {
+        Ok(pair) => pair,
+        Err(outcome) => return outcome,
+    };
+
+    let body = LoginResponse {
+        ok: true,
+        user: req.user.clone(),
+        session_idle_seconds,
+    };
+    LoginOutcome::Ok {
+        user: admin.user.clone(),
+        session_cookie,
+        csrf_cookie,
+        body: serde_json::to_string(&body).unwrap_or_else(|_| "{}".into()),
+    }
+}
+
+/// Issue a session + CSRF cookie pair for `user` and mirror the record
+/// into the dashboard sessions view. Shared by the full-login and the
+/// TOTP-2 enrollment-required paths — the ONLY difference between them
+/// is the `totp_verified` flag on the record.
+///
+/// R-1 (2026-06-19): a failed session-store write (read-only / down
+/// shared backend) returns the 503 `StoreUnavailable` outcome rather
+/// than handing back a cookie for a session that was never stored (the
+/// silent 200→401 lockout from the Redis-hijack incident).
+async fn issue_session(
+    sessions: &AuthSessionStore,
+    dashboard_sessions: &DashboardSessionStore,
+    user: &str,
+    ip: &str,
+    user_agent: &str,
+    session_idle_seconds: u64,
+    totp_verified: bool,
+) -> Result<(String, String), LoginOutcome> {
     let (session_id, signed_session_value) = match sessions
-        .create_for_user(&admin.user, ip, user_agent, admin.totp_enabled)
+        .create_for_user(user, ip, user_agent, totp_verified)
         .await
     {
         Ok(pair) => pair,
         Err(e) => {
             tracing::error!(error = %e, ip, "admin login: session store write failed — returning 503");
-            return LoginOutcome::StoreUnavailable {
+            return Err(LoginOutcome::StoreUnavailable {
                 body: error_body(
                     "session_store_unavailable",
                     "session could not be persisted; please retry",
                 ),
-            };
+            });
         }
     };
     let session_cookie = format_cookie(
@@ -401,18 +518,7 @@ pub async fn authenticate(
         current: true,
     });
     dashboard_sessions.mark_current(&session_id);
-
-    let body = LoginResponse {
-        ok: true,
-        user: req.user.clone(),
-        session_idle_seconds,
-    };
-    LoginOutcome::Ok {
-        user: admin.user.clone(),
-        session_cookie,
-        csrf_cookie,
-        body: serde_json::to_string(&body).unwrap_or_else(|_| "{}".into()),
-    }
+    Ok((session_cookie, csrf_cookie))
 }
 
 /// Process a `POST /admin/logout`. Reads the session cookie,
