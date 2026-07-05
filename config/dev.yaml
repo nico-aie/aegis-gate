@@ -502,6 +502,8 @@ admin:
     # multi-account block (setting both is rejected at validation).
     # `admin` keeps the old dev password (aegis-test-1234).
     accounts:
+      - username: "test_deploy"
+        password_hash_ref: "$argon2id$v=19$m=19456,t=2,p=1$kGElctF9TJ+sX+QqiNW56g$H7DjH2NbtOzQ/DlsFEzIf/IrU/A9gLPdidvFq3LZuDQ"
       - username: "admin"
         password_hash_ref: '$argon2id$v=19$m=19456,t=2,p=1$DfRgVNq6Cb+eN3BEMmExAQ$69SVZBNpMFjN4evfN8g+U5jnmP56Gwx3AGaZFr32ZzY'
       - username: "liud"
