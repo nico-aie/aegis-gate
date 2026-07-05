@@ -696,6 +696,34 @@ fn cmd_admin_enroll_totp(args: &[String]) -> i32 {
     0
 }
 
+#[cfg(test)]
+mod create_account_tests {
+    // TOTP-4 — `waf admin create-account` prints a ready-to-paste
+    // `accounts:` fragment (multi-admin model, TOTP-1). RED-first for
+    // the fragment builder; the interactive prompt stays untested glue.
+    use super::account_yaml_fragment;
+
+    #[test]
+    fn fragment_contains_username_hash_and_no_totp_by_default() {
+        let frag = account_yaml_fragment("alice", "$argon2id$test-hash", None);
+        assert!(frag.contains("- username: \"alice\""));
+        assert!(frag.contains("password_hash_ref: \"$argon2id$test-hash\""));
+        assert!(
+            !frag.contains("totp_secret_b32"),
+            "no TOTP block unless --with-totp: {frag}",
+        );
+    }
+
+    #[test]
+    fn fragment_with_totp_carries_secret_and_enabled_flag() {
+        let frag =
+            account_yaml_fragment("bob", "$argon2id$test-hash", Some("JBSWY3DPEHPK3PXP"));
+        assert!(frag.contains("- username: \"bob\""));
+        assert!(frag.contains("totp_secret_b32: \"JBSWY3DPEHPK3PXP\""));
+        assert!(frag.contains("totp_enabled: true"));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // waf admin service-account
 // ---------------------------------------------------------------------------

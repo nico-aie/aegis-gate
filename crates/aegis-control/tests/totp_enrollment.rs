@@ -206,6 +206,20 @@ async fn pending_enrollment_expires() {
     );
 }
 
+#[test]
+fn ascii_qr_renders_for_headless_cli_parity() {
+    // TOTP-4 — `waf admin enroll-totp` prints an ASCII QR so a headless
+    // setup can scan straight off the terminal, matching the web flow.
+    let uri = totp::provisioning_uri("JBSWY3DPEHPK3PXP", "Aegis", "alice");
+    let art = aegis_control::api::totp_enrollment::render_qr_ascii(&uri)
+        .expect("ascii QR must render");
+    assert!(art.lines().count() > 10, "QR art must be multi-line");
+    assert!(
+        art.chars().any(|c| c == '█' || c == '▀' || c == '▄' || c == '#'),
+        "QR art must contain block/module characters",
+    );
+}
+
 #[tokio::test]
 async fn overlay_wins_over_yaml_totp_state_after_enrollment() {
     // An account bootstrapped WITHOUT TOTP in YAML gains it at runtime;
