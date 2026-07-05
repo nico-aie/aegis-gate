@@ -69,6 +69,30 @@ QA Run-6 found three additional probe shapes that the danger-subpath patterns ab
 
 **Why the file-shape pattern is narrow:** `/index.php` and `/app.php` are common production entry points and **must not** flag. The pattern allowlists only the four canonical debug-file names (`phpinfo`, `info`, `test`, `i`) — operators with debug files outside that allowlist won't be caught, but those four cover the QA Run-6 corpus and the OWASP-recommended probe set.
 
+#### Missing signature families (added 2026-07-05, RC-3)
+
+Wave A of `FEAT-recon-canary-hardening` closed genuinely-missing families from the 263-path recon
+corpus. All score `recon::PATH = 25` unless noted (the secret ones fold into the SENSITIVE tier
+above), all tight-anchored with look-alike negative tests:
+
+| Family | Signatures | Notes |
+|---|---|---|
+| Secrets | `/id_rsa`, `/.npmrc`, `/.git-credentials`, `secrets?.{json,txt,ya?ml,env,config}` | SENSITIVE tier (50); anchored so `/id_rsa_setup_guide.html`, `/secrets-rotation-guide.html` do NOT fire |
+| `.env` / backup gaps | `word.env` (`config.env`, `aws.env`), `/wp-config.txt`, `.backup` suffix, backup-word-anchored archives (`www.tar.gz`, `site.zip`, `db.gz`) | `*.environment` and legit downloadable archives (`/downloads/report.zip`, `/assets/app.js.gz`) do NOT fire |
+| Exchange / ProxyShell | `/autodiscover/autodiscover.json`, `/owa/auth/logon.aspx`, `/Core/Skin/Login.aspx` | the legit `autodiscover.xml` (hit by every Outlook client) is deliberately excluded |
+| WordPress | `/wp-json/{gravitysmtp,wp/v2/settings}`, `/wlwmanifest.xml`, `/xmlrpc.php` | bare `/wp-json/` and legit REST collections (`/wp-json/wp/v2/posts`) do NOT fire |
+| Misc | `/Jenkinsfile`, jenkins-anchored `config.xml`, `/.terraform/` | bare `/config.xml` (too generic) does NOT fire; `.terraform/` is SENSITIVE |
+
+#### Encoding / traversal evasion (added 2026-07-05, RC-4)
+
+The recon patterns match the **raw** request path. The [canary detector](../risk-scoring.md#canary-honeypots)
+additionally matches a **normalized** copy (`aegis_core::normalize::normalize_path`: percent-decode
++ `//`-collapse + `.`/`..` resolution), so encoding/traversal evasions of a honeypot entry —
+`/%2egit/config`, `//.git/config`, `/x/../.git/config` — still trip it. This is canary-only for now
+(the single-hit-block tripwire is the high-value target); the raw form stays the contract for every
+other detector. Cost is a single scan (`Cow::Borrowed`, no allocation) when the path is already
+canonical — the common benign case.
+
 #### Why bare `/metrics` stays unflagged (deliberate trade-off)
 
 QA Run-6 reported bare `/metrics` as a missed probe; this is **deliberately not flagged**. The Prometheus scrape endpoint is hosted legitimately on essentially every modern operator-monitored service. Flagging it bare would FP on every legit Prometheus scrape and break the monitoring infrastructure operators are paid to keep running. Operators who genuinely don't host Prometheus and want `/metrics` flagged for their environment can:
@@ -79,11 +103,33 @@ QA Run-6 reported bare `/metrics` as a missed probe; this is **deliberately not 
 
 The trade-off is documented here so future QA runs don't re-flag the same gap.
 
-**Score:** existing recon score (25 for path, 30 for UA). Recon is info disclosure, not exec — the detector's job is signal accumulation across multiple probes, not one-shot block. A determined scanner hitting `/actuator/env` once doesn't deserve a block; the third recon probe in a row should (`risk.thresholds.challenge_at = 40` lifts to challenge after a couple of hits, `block_at = 80` blocks once enough recon stacks up).
+**Score (two tiers since RC-2, 2026-07-05):**
 
-**Field tag:** `recon_path` (for path hits) — same as Docker REST and the original recon-path corpus.
+- **`recon::PATH = 25`** — generic / ambiguous probes (`/wp-admin`, `/phpinfo.php`, the swagger
+  surface, the bare `/actuator` index). Info disclosure, not exec: the detector's job here is
+  signal accumulation across multiple probes, not a one-shot block. A determined scanner hitting a
+  generic probe once doesn't deserve a block; enough of them stack up via the cumulative per-IP
+  risk model (`challenge_at = 40`, `block_at = 80`).
+- **`recon::SENSITIVE = 50`** — the secret-exposure subset (`RECON_SENSITIVE_PATHS`), checked
+  first: credential files (`.aws/credentials`, `.git-credentials`, `.npmrc`, `secrets?.{json,txt,
+  ya?ml,env,config}`, `secrets|settings|credentials|database|parameters.ya?ml`), private-key /
+  keystore material (`.pem/.key/.p12/.pfx/.jks/.keystore`, `.ssh/`, `/id_rsa`), `.terraform/`, the
+  Spring actuator secret/RCE subset (`heapdump`, `threaddump`, `env`, `configprops`, `jolokia`,
+  `shutdown`, `dump`), and `wp-config.php`/`.txt`. Higher confidence → double weight, but still
+  **below `block_at` (70)**: a single hit is at most a challenge; two hits cumulative-block. Any
+  escalation to a single-hit-block score (≥ 70) is gated on the FP-baseline corpus + owner sign-off.
+- **Scanner UA:** `recon::TOOL = 50` (`sqlmap`, `nikto`, `nmap`, …).
 
-These are treated as **canary routes** — a request to any of them sets risk to 100 immediately (see [risk scoring](../risk-scoring.md)).
+**Field tag:** `recon_path` for path hits (both tiers — only the score differs), `recon_tool` for UA.
+
+**Not the same as the canary detector.** Recon paths *score* (25 / 50) and accumulate; they do
+**not** hard-block. The [canary detector](../risk-scoring.md#canary-honeypots) is a **separate**,
+operator-curated honeypot list (`risk.canary_paths`, default 11 entries since RC-1) whose single
+hit scores **100** — an instant block at every tier. Some paths appear in both (e.g.
+`/wp-config.php`, `/.aws/credentials`): the canary hard-blocks them, and recon independently scores
+them. `/actuator/env` is a deliberate example of the difference — recon scores it sensitive (50)
+but it was **dropped from the canary set** (2026-07-05) because Spring Boot Admin polls it
+legitimately through the edge, so it must not hard-block.
 
 ### High path diversity
 
@@ -109,13 +155,17 @@ Requests targeting specific software versions (e.g., `/phpmyadmin/index.php?toke
 
 Reconnaissance is rarely blocking-worthy on its own (a legitimate user might occasionally type `/admin` by mistake). The risk increments are moderate:
 
-- Scanner UA: +30
-- Canary path hit: set risk to 100 (immediate block)
+- Generic probe path (`recon_path`): +25
+- Secret-exposure path (`recon_path`, SENSITIVE tier): +50
+- Scanner UA (`recon_tool`): +50
 - Method probing: +10 per suspicious method
 - High error rate: +20 (via behavioral analysis)
 - robots.txt harvest: +25
 
-When multiple signals combine, the risk score quickly pushes the client into block territory.
+A **canary** hit (the separate operator-curated honeypot list) sets risk to 100 for an immediate
+block — that is the canary detector, not recon; see [risk scoring](../risk-scoring.md#canary-honeypots).
+When multiple recon signals combine, the cumulative per-IP score quickly pushes the client into
+challenge then block territory.
 
 ## Configuration
 
