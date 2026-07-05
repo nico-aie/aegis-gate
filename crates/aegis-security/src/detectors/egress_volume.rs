@@ -84,8 +84,49 @@ impl EgressVolumeTracker {
     /// current `client_risk` is at/above the gate — fired at most once per
     /// window. `bytes == 0` (streaming / unknown size) only touches the map.
     pub fn observe(&self, ip: IpAddr, bytes: u64, client_risk: u32) -> Option<Signal> {
-        // RED stub — real accounting lands in the GREEN step.
-        let _ = (ip, bytes, client_risk);
+        let now = Instant::now();
+        let mut state = self.state.lock().unwrap();
+
+        // Fleet cardinality bound: evict an arbitrary entry before admitting
+        // a brand-new IP (mirrors enumeration / behavior_signals).
+        if !state.contains_key(&ip) && state.len() >= self.max_tracked {
+            if let Some(k) = state.keys().next().copied() {
+                state.remove(&k);
+            }
+        }
+
+        let entry = state.entry(ip).or_insert_with(|| IpVolume {
+            bytes: 0,
+            window_start: now,
+            fired: false,
+        });
+
+        // Fixed-window reset: a fresh window drops the prior volume + fire flag.
+        if now.duration_since(entry.window_start) > WINDOW {
+            entry.bytes = 0;
+            entry.window_start = now;
+            entry.fired = false;
+        }
+
+        entry.bytes = entry.bytes.saturating_add(bytes);
+
+        // Fire once per window, only when BOTH the volume threshold is crossed
+        // AND the client is already risk-elevated (the FP guard). A clean
+        // client's large download accumulates `bytes` but never scores.
+        if !entry.fired
+            && entry.bytes > self.threshold_bytes
+            && client_risk >= self.risk_gate
+        {
+            entry.fired = true;
+            return Some(Signal {
+                score: SCORE,
+                tag: "egress_volume".into(),
+                field: format!(
+                    "window_bytes:{},client_risk:{}",
+                    entry.bytes, client_risk,
+                ),
+            });
+        }
         None
     }
 
