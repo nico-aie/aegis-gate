@@ -31,6 +31,14 @@ pub trait GeoIpLookup: Send + Sync {
     /// `None` if the IP is unknown, or if no ASN DB is
     /// configured.
     fn asn(&self, ip: IpAddr) -> Option<u32>;
+
+    /// PE-2 — how many indicators (search-tree nodes across the
+    /// loaded DBs) this lookup carries. `None` when the
+    /// implementation can't count — rendered as `null` on
+    /// `/api/geoip/status`, never a fake `0`.
+    fn indicator_count(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// In-memory lookup useful for tests and dev environments.
@@ -113,5 +121,13 @@ mod tests {
             g.country("2001:db8::1".parse().unwrap()).as_deref(),
             Some("DE")
         );
+    }
+
+    #[test]
+    fn indicator_count_defaults_to_none() {
+        // PE-2 — implementations that can't count loaded indicators
+        // report None (rendered as null on the wire), never a fake 0.
+        let g = StaticGeoIp::new().with_country("1.2.3.4", "US");
+        assert_eq!(g.indicator_count(), None);
     }
 }

@@ -24,7 +24,7 @@ use crate::admin_auth::session::SessionStore as AuthSessionStore;
 use crate::api::{
     admin::{BreakGlass, SessionStore},
     attacks::{AttacksAggregator, AttacksHandler},
-    audit::{AuditHandler, AuditRing, WitnessHandler, WitnessState},
+    audit::{AuditHandler, AuditRing},
     blacklist::AccessListStore,
     filters::{FilterCatalogue, FiltersHandler},
     login::AdminIdentity,
@@ -57,8 +57,6 @@ pub struct DashboardServices {
     pub upstreams: Arc<UpstreamHandler>,
     pub audit_ring: Arc<AuditRing>,
     pub audit: Arc<AuditHandler>,
-    pub witness_state: Arc<WitnessState>,
-    pub witness: Arc<WitnessHandler>,
     pub filter_catalogue: Arc<FilterCatalogue>,
     pub filters: Arc<FiltersHandler>,
     pub rules: Arc<RuleStore>,
@@ -103,6 +101,9 @@ pub struct DashboardServices {
     /// proxy reads `cfg.admin.dashboard_auth.password_hash_ref`
     /// and builds this once at boot.
     pub admin_identity: Arc<AdminIdentity>,
+    /// AU-1 — auth audit emitter (login_success / login_failure /
+    /// logout events with per-IP flood aggregation).
+    pub login_auditor: Arc<crate::api::login_audit::LoginAuditor>,
     /// Idle TTL the login handler stamps on the session cookie.
     pub session_idle_seconds: u64,
     pub environment: Option<String>,
@@ -505,7 +506,6 @@ impl DashboardServices {
         let stats_agg = Arc::new(StatsAggregator::with_backend(durable_backend.clone()));
         let attacks_agg = Arc::new(AttacksAggregator::new());
         let audit_ring = Arc::new(AuditRing::new());
-        let witness_state = Arc::new(WitnessState::new());
         let filter_catalogue = Arc::new(FilterCatalogue::new());
         // `rules` is now supplied by the caller (see the param doc) so
         // the config-plane watcher and the data plane share one store.
@@ -551,7 +551,6 @@ impl DashboardServices {
         let attacks = Arc::new(AttacksHandler::new(Arc::clone(&attacks_agg)));
 
         let audit_handler = Arc::new(AuditHandler::new(Arc::clone(&audit_ring)));
-        let witness_handler = Arc::new(WitnessHandler::new(Arc::clone(&witness_state)));
         let filters_handler = Arc::new(FiltersHandler::new(Arc::clone(&filter_catalogue)));
 
         // Subscribe SYNCHRONOUSLY before spawning so events emitted
@@ -603,6 +602,10 @@ impl DashboardServices {
                         &ev,
                     ),
                     Err(RecvError::Lagged(n)) => {
+                        crate::metrics::audit_events::record_dropped(
+                            crate::metrics::audit_events::consumer_label::DASHBOARD,
+                            n,
+                        );
                         tracing::warn!(
                             dropped = n,
                             "dashboard drain: audit bus lagged; events dropped from broadcast"
@@ -622,8 +625,6 @@ impl DashboardServices {
                 upstreams,
                 audit_ring,
                 audit: audit_handler,
-                witness_state,
-                witness: witness_handler,
                 filter_catalogue,
                 filters: filters_handler,
                 rules,
@@ -649,6 +650,9 @@ impl DashboardServices {
                 auth_sessions,
                 login_rate_limiter,
                 admin_identity,
+                login_auditor: Arc::new(crate::api::login_audit::LoginAuditor::new(
+                    bus_handle.clone(),
+                )),
                 session_idle_seconds,
                 environment,
                 bus: bus_handle,

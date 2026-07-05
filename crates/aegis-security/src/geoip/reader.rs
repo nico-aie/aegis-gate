@@ -182,6 +182,19 @@ impl GeoIpLookup for MaxMindReader {
         let entry: geoip2::Asn = reader.lookup(ip).ok()?;
         entry.autonomous_system_number
     }
+
+    /// PE-2 — sum of search-tree node counts across the loaded DBs
+    /// (the mmdb metadata's `node_count`). `None` when neither DB
+    /// is loaded, so `/api/geoip/status` renders `null` instead of
+    /// the old hardcoded `0`.
+    fn indicator_count(&self) -> Option<u64> {
+        let country = self.country.load_full().map(|r| u64::from(r.metadata.node_count));
+        let asn = self.asn.load_full().map(|r| u64::from(r.metadata.node_count));
+        match (country, asn) {
+            (None, None) => None,
+            (c, a) => Some(c.unwrap_or(0) + a.unwrap_or(0)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -197,6 +210,8 @@ mod tests {
         assert!(!r.has_asn());
         assert!(r.country_path().is_none());
         assert!(r.asn_path().is_none());
+        // PE-2 — no DB loaded → no count, never a fake 0.
+        assert_eq!(r.indicator_count(), None);
     }
 
     #[test]

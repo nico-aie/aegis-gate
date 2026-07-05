@@ -1,4 +1,5 @@
 pub mod cef;
+pub mod delivery;
 pub mod ecs;
 pub mod jsonl;
 pub mod kafka;

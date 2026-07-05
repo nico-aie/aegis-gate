@@ -266,7 +266,7 @@ function TabGlossary() {
     ['Mode',
       'Global enforce / log-only switch (Settings page). Log-only emits all detections to audit + metrics but never blocks — used for burn-in of new rules.'],
     ['Hash-chained',
-      'Each audit entry carries the SHA-256 of the previous entry. Tampering detectable: re-hash the chain and compare to the witness sign-off.'],
+      'Each audit entry carries the SHA-256 of the previous entry. Tampering detectable: re-hash the chain offline with `waf audit verify`.'],
     ['Specificity-based resolution',
       'Routes are evaluated by specificity, not YAML order: most-specific host first (exact > wildcard > default), then longest path prefix, then explicit method filters. Add/edit order does not affect resolution; the routes table is sorted by effective priority desc.'],
     ['Fallback route (`default: true`)',

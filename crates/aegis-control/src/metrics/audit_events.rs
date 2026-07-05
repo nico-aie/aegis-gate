@@ -41,6 +41,69 @@ pub fn class_to_label(class: AuditClass) -> &'static str {
     }
 }
 
+/// AU-2 — known audit-bus consumers for the drop counter.
+pub mod consumer_label {
+    pub const DASHBOARD: &str = "dashboard";
+    pub const JSONL: &str = "jsonl";
+    pub const SYSLOG: &str = "syslog";
+    pub const METRICS: &str = "metrics";
+
+    pub const ALL: [&str; 4] = [DASHBOARD, JSONL, SYSLOG, METRICS];
+}
+
+/// AU-2 — `waf_audit_events_dropped_total{consumer}`: events lost to
+/// broadcast lag, per consumer task. The bus is a bounded broadcast
+/// channel — a slow subscriber sees `RecvError::Lagged(n)` and loses
+/// `n` events *from its own view only*. Pre-fix those drops were
+/// logged and forgotten; now they're countable and alertable.
+///
+/// Emit-side note (documented, not counted): `broadcast::send` only
+/// fails when zero subscribers exist — a boot/shutdown window
+/// artifact, not a steady-state loss path.
+#[derive(Clone)]
+pub struct AuditDropMetrics {
+    dropped_total: CounterVec,
+}
+
+static GLOBAL_DROPS: std::sync::OnceLock<AuditDropMetrics> = std::sync::OnceLock::new();
+
+impl AuditDropMetrics {
+    pub fn register(reg: &MetricsRegistry) -> prometheus::Result<Self> {
+        let cv = reg.register_counter_vec(
+            "waf_audit_events_dropped_total",
+            "Audit events dropped from a consumer's view of the bus (broadcast lag), by consumer task.",
+            &["consumer"],
+        )?;
+        for v in consumer_label::ALL {
+            cv.with_label_values(&[v]);
+        }
+        Ok(Self { dropped_total: cv })
+    }
+
+    pub fn record(&self, consumer: &str, n: u64) {
+        self.dropped_total
+            .with_label_values(&[consumer])
+            .inc_by(n as f64);
+    }
+
+    /// Make this instance the process-wide sink for
+    /// [`record_dropped`]. First installation wins (boot calls it
+    /// once); repeat calls are ignored.
+    pub fn install_global(self) {
+        let _ = GLOBAL_DROPS.set(self);
+    }
+}
+
+/// Record `n` dropped events for `consumer` on the process-wide
+/// metric. No-op until the proxy boot installs the metric — consumer
+/// tasks (jsonl persist, syslog forward, dashboard drain) call this
+/// unconditionally from their `Lagged` branches.
+pub fn record_dropped(consumer: &str, n: u64) {
+    if let Some(m) = GLOBAL_DROPS.get() {
+        m.record(consumer, n);
+    }
+}
+
 #[derive(Clone)]
 pub struct AuditEventMetrics {
     events_total: CounterVec,
@@ -125,5 +188,46 @@ mod tests {
         let reg = MetricsRegistry::init();
         AuditEventMetrics::register(&reg).unwrap();
         assert!(AuditEventMetrics::register(&reg).is_err());
+    }
+
+    // ---- AU-2 — waf_audit_events_dropped_total{consumer} ----
+
+    fn dropped_value(reg: &MetricsRegistry, consumer: &str) -> f64 {
+        reg.inner()
+            .gather()
+            .into_iter()
+            .find(|f| f.get_name() == "waf_audit_events_dropped_total")
+            .and_then(|f| {
+                f.get_metric()
+                    .iter()
+                    .find(|m| {
+                        m.get_label().iter().any(|l| {
+                            l.get_name() == "consumer" && l.get_value() == consumer
+                        })
+                    })
+                    .map(|m| m.get_counter().get_value())
+            })
+            .unwrap_or(0.0)
+    }
+
+    #[test]
+    fn drop_counter_records_by_consumer() {
+        let reg = MetricsRegistry::init();
+        let m = AuditDropMetrics::register(&reg).unwrap();
+        m.record("jsonl", 3);
+        m.record("jsonl", 2);
+        m.record("dashboard", 1);
+        assert_eq!(dropped_value(&reg, "jsonl"), 5.0);
+        assert_eq!(dropped_value(&reg, "dashboard"), 1.0);
+        assert_eq!(dropped_value(&reg, "syslog"), 0.0, "pre-allocated at 0");
+    }
+
+    #[test]
+    fn global_record_dropped_is_safe_without_installation() {
+        // Consumers (jsonl persist / syslog forward / dashboard
+        // drain) call the global helper unconditionally; before the
+        // proxy boot installs the metric it must be a no-op, never
+        // a panic.
+        record_dropped("jsonl", 7);
     }
 }

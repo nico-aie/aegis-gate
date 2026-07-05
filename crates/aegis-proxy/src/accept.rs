@@ -755,6 +755,10 @@ pub(crate) async fn admin_accept_loop(
     // here (not at build_interop_runtime time) because services
     // doesn't exist yet when the runtime is constructed.
     if let Some(rt) = interop.as_ref() {
+        // AU-1 — give the control plane the audit bus so
+        // `reset_state` leaves an Admin-class trail BEFORE it wipes.
+        rt.control.set_audit_bus(services.bus.clone());
+
         let agg_for_reset = services.attacks_agg.clone();
         rt.control.register_reset_callback(std::sync::Arc::new(move || {
             agg_for_reset.reset();

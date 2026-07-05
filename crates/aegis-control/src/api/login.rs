@@ -66,9 +66,12 @@ pub enum LoginOutcome {
     Unauthorized { body: String },
     /// Per-IP or per-user rate limiter or lockout fired. Body
     /// carries the retry-after seconds; proxy emits 429 +
-    /// `Retry-After` header.
+    /// `Retry-After` header. `locked_out` distinguishes the lockout
+    /// path as a typed value (AU-1: the audit bucket must not be
+    /// re-parsed out of our own response body).
     RateLimited {
         retry_after_seconds: u64,
+        locked_out: bool,
         body: String,
     },
     /// Body wasn't parseable. Proxy emits 400.
@@ -173,6 +176,7 @@ pub async fn authenticate(
         RateOutcome::LockedOut { remaining } => {
             return LoginOutcome::RateLimited {
                 retry_after_seconds: remaining.as_secs(),
+                locked_out: true,
                 body: error_body(
                     "locked_out",
                     "account temporarily locked after repeated failures",
@@ -182,6 +186,7 @@ pub async fn authenticate(
         RateOutcome::RateLimited { retry_after } => {
             return LoginOutcome::RateLimited {
                 retry_after_seconds: retry_after.as_secs(),
+                locked_out: false,
                 body: error_body("rate_limited", "too many login attempts"),
             };
         }
@@ -583,9 +588,11 @@ mod tests {
         match next {
             LoginOutcome::RateLimited {
                 retry_after_seconds,
+                locked_out,
                 body,
             } => {
                 assert!(retry_after_seconds > 0);
+                assert!(!locked_out, "per-IP limit is not a lockout");
                 let v: serde_json::Value = serde_json::from_str(&body).unwrap();
                 assert_eq!(v["reason"], "rate_limited");
             }

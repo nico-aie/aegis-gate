@@ -36,7 +36,7 @@ Client → [Data Plane] → [Security Pipeline] → Upstream
 
 - **Data Plane** (`aegis-proxy`): TLS termination, routing, upstream pools, load balancing, caching, retries
 - **Security Pipeline** (`aegis-security`): rule engine, OWASP detectors, risk scoring, DLP, API security
-- **Control Plane** (`aegis-control`): 11-page enterprise SPA dashboard, 27 read-only `/api/*` endpoints, authentication, audit chain, SIEM sinks, compliance, GitOps, SLO alerts
+- **Control Plane** (`aegis-control`): 11-page enterprise SPA dashboard, 24 read-only `/api/*` endpoints, authentication, audit chain, SIEM sinks, SLO alerts
 
 All three are compiled into a single `waf` binary via `aegis-bin`.
 
@@ -222,9 +222,9 @@ design spec) served as a vanilla-JS SPA on the admin listener.
 | Configuration | Tier Config | Four canonical tiers (`critical`/`high`/`medium`/`low`) with pipelines + thresholds |
 | Configuration | Blacklist / Whitelist | IP / CIDR / ASN entry list + bulk import (read-only v1) |
 | Configuration | Settings | Account info, integrations, danger-zone (break-glass status) |
-| Tracking | Tracking | SLO burn, upstreams, cluster peers, certs, GitOps sync, alerts |
+| Tracking | Tracking | SLO burn, upstreams, cluster peers, certs, alerts |
 
-**API surface** (27 read-only endpoints, all under `/api/*` —
+**API surface** (24 read-only endpoints, all under `/api/*` —
 detailed shapes in
 [`docs/control-plane/enterprise/api.md`](../control-plane/enterprise/api.md)):
 
@@ -232,14 +232,17 @@ detailed shapes in
 /api/about               /api/stats              /api/stats/timeseries
 /api/upstreams           /api/upstreams/summary  /api/attacks/distribution
 /api/attacks/top         /api/attacks/by-detector /api/threat-intel/hits
-/api/bots/mix            /api/audit/since        /api/audit/witness
-/api/filters             /api/analytics/query    /api/rules
-/api/rules/top           /api/tiers              /api/blacklist
-/api/whitelist           /api/admin/sessions     /api/admin/break-glass
-/api/integrations        /api/slo                /api/cluster
-/api/certs               /api/gitops/status      /api/alerts
-/api/tracking/snapshot
+/api/bots/mix            /api/audit/since        /api/filters
+/api/analytics/query     /api/rules              /api/rules/top
+/api/tiers               /api/blacklist          /api/whitelist
+/api/admin/sessions      /api/admin/break-glass  /api/integrations
+/api/slo                 /api/cluster            /api/certs
+/api/alerts              /api/tracking/snapshot
 ```
+
+> Removed 2026-07-04 (PE-1): `/api/audit/witness`,
+> `/api/gitops/status`, `/api/threat-intel/feeds` — placeholder
+> endpoints that never served real data.
 
 **Real-time surfaces**:
 - `/dashboard/sse` — Server-Sent Events stream consumed by Live
@@ -494,6 +497,40 @@ waf audit verify --from /var/log/aegis/audit.ndjson
 | ECS | Elastic Common Schema | HTTP |
 | Kafka | JSON | Kafka producer |
 
+Only the JSONL persist task and the Syslog forwarder run as live
+sink tasks today; the other formats are available to them (and to
+export tooling) but have no dedicated forwarder — `/api/cold-tier`
+reports those sinks as `unwired`.
+
+### Auth & Control-Plane Events (AU-1, 2026-07-04)
+
+Admin authentication leaves an `Access`-class trail: `login_success`,
+`login_failure` (reason bucketed — `invalid_credentials` /
+`locked_out` / `rate_limited` / `store_unavailable`; submitted
+credentials are never recorded), and `logout` (real revocations
+only). Repeated failures from one IP aggregate: first event
+immediately, then a roll-up carrying `fields.count` when the IP is
+next seen after the 30 s window — a credential-stuffing flood cannot
+melt the audit bus. The control-plane `reset_state` wipe emits an
+`Admin`-class `reset_state` event **before** the wipe runs, so the
+wipe cannot erase its own record.
+
+### Durability Model (honest version)
+
+- Events flow over a bounded in-process broadcast bus
+  (`audit.bus_capacity`, default 100 000). A consumer that falls
+  behind loses events *from its own view only*; those drops are
+  counted on `waf_audit_events_dropped_total{consumer}` and logged.
+  Delivery is **best-effort by design** — the data plane never
+  blocks on audit I/O.
+- The JSONL chain sink `flush`es + `fsync`s (`sync_data`) **per
+  batch** (F-CRITICAL-013), so the crash-loss window is bounded by
+  one batch: up to `max_batch` events (default 100) or
+  `flush_interval` (default 1 s), whichever fills first — plus
+  whatever was still in the broadcast buffer.
+- Per-sink delivery state (delivered / errors / last success) is
+  live at `GET /api/cold-tier`.
+
 ### Compliance Profiles (deferred)
 
 `cfg.compliance.modes` accepts five tag values:
@@ -574,30 +611,14 @@ access_log:
 
 ## 8. GitOps
 
-### How It Works
-
-1. Aegis polls a configured Git repository
-2. New commits are verified (GPG/SSH signature against `allowed_signers`)
-3. Config is dry-run validated
-4. If valid, atomically swapped via `ConfigBroadcast`
-
-### Break-Glass
-
-Direct API config edits auto-create a branch + PR. The dashboard shows a banner until the PR is merged, maintaining GitOps as the source of truth.
-
-### Config
-
-```yaml
-gitops:
-  repo_url: "https://git.corp.com/infra/waf-config"
-  branch: main
-  poll_interval_secs: 60
-  config_path: waf.yaml
-  require_signed_commits: true
-  allowed_signers:
-    - "ops@corp.com"
-    - "sre@corp.com"
-```
+**Not shipped.** The gitops module was removed 2026-05-17
+(F-CRITICAL-005: it had zero production callers), and the placeholder
+`/api/gitops/status` endpoint plus its dashboard card were removed
+2026-07-04 (PE-1). There is no `gitops:` config section — configure
+the WAF via the dashboard/API (audit-chained) or by deploying
+`waf.yaml` through your own pipeline (atomic-rename hot-reload is
+supported and drilled). Re-introduction is tracked as a Round-3 §5.9
+bonus candidate.
 
 ---
 

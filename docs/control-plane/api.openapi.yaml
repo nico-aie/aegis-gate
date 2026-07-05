@@ -878,20 +878,7 @@ components:
               name: { type: string }
               last_status: { type: string, enum: [delivered, failed, pending] }
 
-    GitopsStatusResponse:
-      type: object
-      required: [signature_ok, drift, break_glass_active]
-      properties:
-        repo: { type: string, nullable: true }
-        branch: { type: string, nullable: true }
-        last_sync:
-          type: string
-          format: date-time
-          nullable: true
-        head_commit: { type: string, nullable: true }
-        signature_ok: { type: boolean }
-        drift: { type: boolean }
-        break_glass_active: { type: boolean }
+    # GitopsStatusResponse removed 2026-07-04 (PE-1) with /api/gitops/status.
 
     ConfigVersionResponse:
       type: object
@@ -2129,16 +2116,8 @@ paths:
                     properties:
                       alert_id: { type: string }
 
-  /api/gitops/status:
-    get:
-      tags: [Tracking]
-      summary: GitOps loader state (CI-T4)
-      responses:
-        '200':
-          description: OK. Fields nullable when GitOps isn't configured.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/GitopsStatusResponse' }
+  # /api/gitops/status removed 2026-07-04 (PE-1) — the gitops module
+  # was deleted 2026-05-17 and the endpoint only served a placeholder.
 
   # ----------------------------------------------------------------- Settings
   /api/mode:

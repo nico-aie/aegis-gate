@@ -2651,10 +2651,6 @@ function SecOpsPostureCard() {
   const topApi = window.useApi
     ? window.useApi('/api/attacks/top?window=3600&limit=1', { intervalMs: 10000, fallback: null })
     : { data: null };
-  const witness = window.useApi
-    ? window.useApi('/api/audit/witness', { intervalMs: 15000, fallback: null })
-    : { data: null };
-
   const blocksTotal = stats.data?.blocks_total ?? 0;
   const blockRate = stats.data?.block_rate_pct;
   const requestRate = stats.data?.request_rate;
@@ -2665,9 +2661,10 @@ function SecOpsPostureCard() {
     ? incidents.data.incidents.filter(i => i.status === 'acknowledged').length
     : 0;
   const topAttacker = (topApi.data?.attackers || [])[0];
-  const witnessLag = witness.data?.lag_seconds;
-  const witnessFresh = typeof witnessLag === 'number' && witnessLag < 60;
 
+  // PE-1 (2026-07-04): the "audit fresh / no witness yet" chip was
+  // removed with the /api/audit/witness placeholder endpoint — it
+  // could never report anything but "no witness yet".
   const chips = [
     {
       label: typeof requestRate === 'number'
@@ -2708,16 +2705,6 @@ function SecOpsPostureCard() {
           title: 'No ranked attackers in the last hour',
           href: '#/top-attackers',
         },
-    {
-      label: witness.data?.last_signature_ts
-        ? (witnessFresh ? 'audit fresh' : `audit lag ${witnessLag}s`)
-        : 'no witness yet',
-      tone: witnessFresh ? 'ok' : 'neutral',
-      title: witness.data?.last_signature_ts
-        ? `Last chain witness · ${witnessLag}s ago`
-        : 'No audit chain witness recorded yet',
-      href: '#/audit',
-    },
   ];
 
   return (
@@ -9429,9 +9416,10 @@ function SloObjectivesCard() {
 }
 
 function PageTracking() {
-  // Live API hooks. SLO / certs / alerts / gitops still return
-  // placeholder shapes server-side (CI-T4 will replace those);
-  // cluster + upstreams are real today.
+  // Live API hooks. SLO / certs / alerts are engine-backed when the
+  // proxy wires them (placeholder shape otherwise); cluster +
+  // upstreams are real today. PE-1 (2026-07-04): the GitOps card is
+  // gone with the /api/gitops/status placeholder endpoint.
   const cluster = window.useClusterApi();
   const upstreamsApi = window.useUpstreamsApi();
   const slo = window.useSloApi();
@@ -9443,7 +9431,6 @@ function PageTracking() {
   // reflected here. /api/alerts reads a separate legacy store
   // (tracking.ack_store) that the Incidents resolve never touches.
   const incidentsApi = window.useIncidentsApi();
-  const gitops = window.useGitopsApi();
   // CC-T2.2 — alert channels (read + audit-mutated PUT/DELETE/POST-test)
   const alertReceivers = window.useAlertReceiversApi();
 
@@ -9461,7 +9448,7 @@ function PageTracking() {
         <div>
           <h1 className="page-title">Health &amp; SLOs</h1>
           <p className="page-subtitle">
-            Operational state · SLO · cluster · GitOps · cert health
+            Operational state · SLO · cluster · cert health
             <span style={{ marginLeft: 8 }}>
               <span className="pill neutral">
                 {ourNode ? `node ${ourNode}` : 'standalone'}
@@ -9476,7 +9463,6 @@ function PageTracking() {
             slo.reload && slo.reload();
             certs.reload && certs.reload();
             alerts.reload && alerts.reload();
-            gitops.reload && gitops.reload();
             alertReceivers.reload && alertReceivers.reload();
           }}>
             <window.I.Refresh /> Refresh
@@ -9778,43 +9764,6 @@ function PageTracking() {
         </div>
       </div>
 
-      <div className="card">
-        {(() => {
-          const g = gitops.data || {};
-          const configured = Boolean(g.repo);
-          return (
-            <>
-              <window.SectionHeader
-                title="GitOps sync"
-                sub={configured ? `auto-pull from ${g.branch || 'main'}` : 'not configured'}
-              />
-              {configured ? (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, fontSize: 12 }}>
-                  <div><div className="field-label">Repo</div><div className="mono">{g.repo}</div></div>
-                  <div><div className="field-label">Branch</div><span className="pill neutral">{g.branch}</span></div>
-                  <div><div className="field-label">Last sync</div><span className="num">{g.last_sync ? new Date(g.last_sync).toLocaleTimeString() : '—'}</span></div>
-                  <div><div className="field-label">Drift</div><span className={`pill ${g.drift ? 'warn' : 'ok'}`}>{g.drift ? 'drift' : 'none'}</span></div>
-                  {g.head_commit && (
-                    <div style={{ gridColumn: '1 / -1' }}>
-                      <div className="field-label">HEAD commit</div>
-                      <div className="mono" style={{ fontSize: 11 }}>
-                        <span style={{ color: 'var(--brand-yellow)' }}>{g.head_commit.slice(0, 7)}</span>
-                        <span className={`pill ${g.signature_ok ? 'ok' : 'err'}`} style={{ marginLeft: 8 }}>
-                          {g.signature_ok ? 'signature verified' : 'signature failed'}
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)' }}>
-                  GitOps disabled. Set <span className="mono">gitops.repo_url</span> in your config to enable config-as-code.
-                </div>
-              )}
-            </>
-          );
-        })()}
-      </div>
     </>
   );
 }

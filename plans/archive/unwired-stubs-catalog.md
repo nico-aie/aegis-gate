@@ -11,6 +11,14 @@
 > entry below). The roadmap in
 > [`world-class-waf-roadmap.md`](../future/world-class-waf-roadmap.md) treats this
 > file as the Tier-0/Ops wire-up backlog.
+>
+> **PE-1 sweep (2026-07-04,
+> [FEAT-placeholder-endpoints-cleanup](../issues/archived/FEAT-placeholder-endpoints-cleanup-2026-07.md)):**
+> the placeholder endpoints catalogued here were dispositioned —
+> `/api/threat-intel/feeds`, `/api/gitops/status`, `/api/audit/witness`
+> (and the `WitnessRecord` shell + the witness-signing sketch this file
+> carries), plus the never-routed `render_cert_renew`, were **removed**.
+> Treat any witness/gitops entries below as historical.
 
 > **Status:** Drafted 2026-05-11 as Phase 4 of the
 > `plans/issue-fix/2026-05-11-policy-qa-and-audits` triage.

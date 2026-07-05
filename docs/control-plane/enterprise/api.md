@@ -102,7 +102,6 @@ GET /api/audit/{request_id}
 GET /api/audit/since?cursor=<seq>&limit=200
 GET /api/filters
 GET /api/audit/{id}/sinks
-GET /api/audit/witness
 ```
 
 ### Rule Manager extras
@@ -185,16 +184,20 @@ GET /api/upstreams
 GET /api/upstreams/summary
 GET /api/cluster
 GET /api/certs
-POST /api/certs/{host}/renew
-GET /api/gitops/status
 GET /api/alerts
 GET /api/tracking/snapshot
 ```
 
 `/api/tracking/snapshot` is an aggregate read used by the Tracking
 page to keep the per-tab fan-out cheap. It returns the union of
-slo, upstreams summary, cluster peers, certs summary, gitops
-status, and alerts in one response (~5KB JSON typical).
+slo, upstreams summary, cluster peers, certs summary, and alerts
+in one response (~5KB JSON typical).
+
+> Removed 2026-07-04 (PE-1, committee round-2 🔴3): `GET
+> /api/gitops/status`, `GET /api/audit/witness`,
+> `GET /api/threat-intel/feeds`, and the never-routed
+> `POST /api/certs/{host}/renew` — all were placeholder or dead
+> surface; they now return 404.
 
 ### Scaling page (SC-T2)
 
@@ -293,6 +296,24 @@ fixed allow-list:
 Any other `expr` returns 400. The `bench_*` queries return zero
 samples when `benchmark.mode == disabled`, by design — see
 [`../benchmark-mode.md`](../../operator/benchmark-mode.md).
+
+**Backend (PE-2, 2026-07-04):** the resolved PromQL is proxied to the
+external Prometheus configured at `admin.prometheus_url`
+(`http://` only in v1) — `/api/v1/query` for instantaneous queries,
+`/api/v1/query_range` when `start`+`end` are set (`$step` is
+substituted server-side). Responses:
+
+- `200` — instant: `{expr, promql, result_type: "scalar", value}`
+  (`value` is `null` when Prometheus has no data yet — never a fake
+  `0.0`), or `{..., result_type: "vector", samples: [{metric,
+  value}]}` for grouped keys with >1 sample. Range:
+  `{..., result_type: "matrix", series: [{metric, points: [{ts,
+  value}]}]}` — grouped keys (`errors_by_route`,
+  `bench_detector_p99`) keep one labeled series per dimension.
+- `502 prometheus_unreachable` — connect/timeout (3 s budget),
+  non-2xx, or unparseable upstream response.
+- `503 analytics_not_implemented` / `503 no_history_backend` —
+  `admin.prometheus_url` not configured (unchanged honest posture).
 
 ### Security toggles (P1–P8 of the security-toggle plan)
 
@@ -408,17 +429,27 @@ Below `Info` → drop the verbose `fields` payload.
 
 #### `GET /api/cold-tier`
 
-Read-only inventory of the configured `audit.sinks` array. Each
-row reports the destination + a `delivery` placeholder (`unknown`
-until the sink runtime publishes per-sink lag). Splunk tokens
-are redacted before they reach the response.
+Read-only inventory of the configured `audit.sinks` array, joined
+against live per-sink delivery counters recorded by the sink tasks
+(PE-2, 2026-07-04 — replaces the old `delivery: "unknown"`
+placeholder). Splunk tokens are redacted before they reach the
+response.
+
+`delivery` taxonomy: `ok` (last write succeeded) · `error` (last
+write failed) · `pending` (task running, nothing flushed yet) ·
+`unwired` (configured but no forwarder task in this build —
+Splunk/Kafka today — or the task failed to start).
 
 ```
 GET /api/cold-tier
 {
   "sinks": [
-    {"id":"jsonl",  "kind":"file",   "destination":"/var/log/aegis/audit.jsonl", "delivery":"unknown"},
-    {"id":"splunk", "kind":"https",  "destination":"https://splunk:8088",         "delivery":"unknown"}
+    {"id":"jsonl", "kind":"file", "destination":"/var/log/aegis/audit.jsonl",
+     "delivery":"ok", "delivered":18234, "errors":0,
+     "last_success":"2026-07-04T12:00:01Z", "last_error":null},
+    {"id":"splunk", "kind":"https", "destination":"https://splunk:8088",
+     "delivery":"unwired", "delivered":0, "errors":0,
+     "last_success":null, "last_error":null}
   ],
   "fallback_buffer_bytes": 0
 }

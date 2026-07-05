@@ -113,6 +113,12 @@ enum TransportState {
 }
 
 impl SyslogSink {
+    /// The operator-configured receiver address — the identity half
+    /// of this sink's [`super::delivery::syslog_key`] registry key.
+    pub fn destination(&self) -> &str {
+        &self.cfg.address
+    }
+
     /// Construct + connect. UDP binds an ephemeral local
     /// socket; TCP connects synchronously and backs off on
     /// failure (initial connect failure is logged and the
@@ -470,11 +476,16 @@ async fn tls_connect(
 /// continues; the data plane never blocks. Send failures are
 /// logged and dropped from this sink only.
 pub async fn run_forward_task(bus: AuditBus, sink: Arc<SyslogSink>) {
+    // PE-2 — delivery accounting for `/api/cold-tier`.
+    let delivery = super::delivery::DeliveryRegistry::global()
+        .handle(super::delivery::syslog_key(sink.destination()));
     let mut rx = bus.subscribe();
     loop {
         match rx.recv().await {
-            Ok(ev) => {
-                if let Err(e) = sink.send(&ev).await {
+            Ok(ev) => match sink.send(&ev).await {
+                Ok(()) => delivery.record_success(1),
+                Err(e) => {
+                    delivery.record_error();
                     tracing::warn!(
                         sink = "syslog",
                         error = %e,
@@ -486,6 +497,10 @@ pub async fn run_forward_task(bus: AuditBus, sink: Arc<SyslogSink>) {
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                crate::metrics::audit_events::record_dropped(
+                    crate::metrics::audit_events::consumer_label::SYSLOG,
+                    n,
+                );
                 tracing::warn!(
                     dropped = n,
                     "syslog forward task lagged; events dropped from broadcast",

@@ -256,6 +256,12 @@ impl JsonlSink {
         })
     }
 
+    /// The operator-configured sink path — the identity half of this
+    /// sink's [`super::delivery::jsonl_key`] registry key.
+    pub fn source_path(&self) -> &Path {
+        &self.cfg.path
+    }
+
     /// In-memory variant for tests — events accumulate in a Vec
     /// instead of touching disk. The configured `path` is ignored.
     pub fn new_in_memory(cfg: JsonlConfig) -> Self {
@@ -534,6 +540,15 @@ pub async fn run_persist_task(
     if sinks.is_empty() {
         return;
     }
+    // PE-2 — register a delivery handle per sink so `/api/cold-tier`
+    // reports real counters (delivered / errors / last success).
+    let delivery: Vec<_> = sinks
+        .iter()
+        .map(|s| {
+            super::delivery::DeliveryRegistry::global()
+                .handle(super::delivery::jsonl_key(s.source_path()))
+        })
+        .collect();
     let mut rx = bus.subscribe();
     let mut buf: Vec<AuditEvent> = Vec::with_capacity(max_batch.max(1));
     let mut tick = tokio::time::interval(flush_interval);
@@ -545,10 +560,14 @@ pub async fn run_persist_task(
                 Ok(ev) => {
                     buf.push(ev);
                     if buf.len() >= max_batch {
-                        flush_buf(&sinks, &mut buf).await;
+                        flush_buf(&sinks, &delivery, &mut buf).await;
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    crate::metrics::audit_events::record_dropped(
+                        crate::metrics::audit_events::consumer_label::JSONL,
+                        n,
+                    );
                     tracing::warn!(
                         dropped = n,
                         "audit jsonl persist task lagged; events dropped from broadcast",
@@ -558,27 +577,35 @@ pub async fn run_persist_task(
             },
             _ = tick.tick() => {
                 if !buf.is_empty() {
-                    flush_buf(&sinks, &mut buf).await;
+                    flush_buf(&sinks, &delivery, &mut buf).await;
                 }
             }
         }
     }
     if !buf.is_empty() {
-        flush_buf(&sinks, &mut buf).await;
+        flush_buf(&sinks, &delivery, &mut buf).await;
     }
     for sink in &sinks {
         let _ = sink.flush().await;
     }
 }
 
-async fn flush_buf(sinks: &[Arc<JsonlSink>], buf: &mut Vec<AuditEvent>) {
-    for sink in sinks {
-        if let Err(e) = sink.write_batch(buf).await {
-            tracing::warn!(
-                sink = "jsonl",
-                error = %e,
-                "audit jsonl sink batch write failed; events dropped from this sink only",
-            );
+async fn flush_buf(
+    sinks: &[Arc<JsonlSink>],
+    delivery: &[Arc<super::delivery::SinkDeliveryHandle>],
+    buf: &mut Vec<AuditEvent>,
+) {
+    for (sink, handle) in sinks.iter().zip(delivery) {
+        match sink.write_batch(buf).await {
+            Ok(()) => handle.record_success(buf.len() as u64),
+            Err(e) => {
+                handle.record_error();
+                tracing::warn!(
+                    sink = "jsonl",
+                    error = %e,
+                    "audit jsonl sink batch write failed; events dropped from this sink only",
+                );
+            }
         }
     }
     buf.clear();

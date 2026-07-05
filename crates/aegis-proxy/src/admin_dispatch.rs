@@ -74,7 +74,7 @@ pub(crate) async fn handle_admin_request(
         return handle_admin_login(req, peer, services).await;
     }
     if method == hyper::Method::POST && path == "/admin/logout" {
-        return handle_admin_logout(req, services).await;
+        return handle_admin_logout(req, peer, services).await;
     }
     // FIX 2026-05-03 — GET /admin/login renders the standalone
     // login page (the SPA's CSRF interceptor + logout button both
@@ -604,6 +604,12 @@ pub(crate) async fn handle_admin_request(
     // (DNS/TCP/TLS/HTTP I/O), read-only, admin-auth gated upstream.
     if method == hyper::Method::GET && path == "/api/upstreams/probe" {
         return crate::admin_get::handle_upstream_probe(req, services).await;
+    }
+    // PE-2 (2026-07-04) — allow-listed PromQL proxy to
+    // `admin.prometheus_url`. Async (HTTP I/O), read-only,
+    // admin-auth gated upstream.
+    if method == hyper::Method::GET && path == "/api/analytics/query" {
+        return crate::admin_get::handle_analytics_query(req, cfg).await;
     }
     // Async so it can read this node's applied config-doc version from
     // the state backend (the convergence signal the dashboard polls

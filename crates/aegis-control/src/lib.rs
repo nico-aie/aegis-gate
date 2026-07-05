@@ -28,10 +28,9 @@ pub mod admin_auth;
 // pub mod compliance;
 // 2026-05-17 F-CRITICAL-005 (control audit): `gitops` module deleted
 // — `GitOpsLoader::sync` had zero production callers and
-// `set_gitops_loader` was never invoked from boot. The `/api/gitops/
-// status` endpoint always returned `placeholder()` shape. Removed
-// the entire subsystem rather than leaving dead infrastructure;
-// re-introduce when there's a real customer requirement for the
+// `set_gitops_loader` was never invoked from boot. The placeholder
+// `/api/gitops/status` endpoint followed it in PE-1 (2026-07-04).
+// Re-introduce when there's a real customer requirement for the
 // Round-3 §5.9 bonus.
 // pub mod gitops;
 pub mod identity_tracker;

@@ -929,6 +929,40 @@ pub async fn run(
         aegis_control::metrics::audit_events::AuditEventMetrics::register(&metrics)
             .expect("audit event metrics registration failed"),
     );
+    // AU-2 — waf_audit_events_dropped_total{consumer}. Installed
+    // globally so the consumer tasks (dashboard drain, jsonl persist,
+    // syslog forward, this metrics subscriber) can record their
+    // Lagged drops without threading the handle everywhere.
+    aegis_control::metrics::audit_events::AuditDropMetrics::register(&metrics)
+        .expect("audit drop metrics registration failed")
+        .install_global();
+    // AU-3B — risk-tracker saturation gauges, sampled off the hot
+    // path. `saturation_rejects` is monotonic (cumulative at-cap
+    // requests scored-but-not-stored); `saturated` is 0/1.
+    {
+        let g_rejects = metrics
+            .register_gauge(
+                "waf_risk_tracker_saturation_rejects",
+                "Cumulative requests scored but NOT stored because the risk tracker hit MAX_TRACKED_KEYS (fail-open, AU-3B).",
+            )
+            .expect("risk saturation gauge registration failed");
+        let g_saturated = metrics
+            .register_gauge(
+                "waf_risk_tracker_saturated",
+                "1 while the risk tracker is at its cardinality cap (new keys never accumulate), else 0.",
+            )
+            .expect("risk saturated gauge registration failed");
+        let tracker = risk.clone();
+        tokio::spawn(async move {
+            let mut tick =
+                tokio::time::interval(std::time::Duration::from_secs(15));
+            loop {
+                tick.tick().await;
+                g_rejects.set(tracker.saturation_rejects() as f64);
+                g_saturated.set(if tracker.is_saturated() { 1.0 } else { 0.0 });
+            }
+        });
+    }
     {
         let bus_sub = bus.clone();
         let m = audit_event_metrics.clone();
@@ -938,6 +972,10 @@ pub async fn run(
                 match rx.recv().await {
                     Ok(ev) => m.record(ev.class),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        aegis_control::metrics::audit_events::record_dropped(
+                            aegis_control::metrics::audit_events::consumer_label::METRICS,
+                            n,
+                        );
                         tracing::warn!(dropped = n, "audit event metrics subscriber lagged",);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -2858,6 +2896,9 @@ pub(crate) fn build_interop_runtime(
         // Phase 5 — installed post-construction when cluster.pubsub_nudge
         // is on (see `set_cluster_nudge`); empty otherwise.
         cluster_nudge: std::sync::OnceLock::new(),
+        // AU-1 — installed post-construction in `accept` where the
+        // AuditBus lives (see `set_audit_bus`); empty in tests.
+        audit_bus: std::sync::OnceLock::new(),
     };
 
     Some(Arc::new(InteropRuntime {

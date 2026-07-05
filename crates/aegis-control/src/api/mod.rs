@@ -18,6 +18,7 @@ pub mod incidents;
 pub mod load_mode;
 pub mod logging;
 pub mod login;
+pub mod login_audit;
 pub mod zero_trust;
 pub mod mutation;
 pub mod response_filter;
