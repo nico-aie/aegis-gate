@@ -44,6 +44,32 @@ Candidate detectors (final set per EG-1; all content-type-gated, size-capped, lo
   enforcement is a later, explicit decision.
 - Reuse: response-outcome channel plumbing (AC-P2 work) is the natural attachment point.
 
+#### ⚠️ Coordination with the shipped Response Filtering surface (Settings page — verify at EG-2 kickoff)
+The existing **Response Filtering** card (`ResponseFilterCard`, `pages.jsx:8141`; `Pipeline::on_body_frame`,
+`aegis-security/src/pipeline.rs:223`) already runs EG-2's T2/T3/T4 scans — but in *mitigate-and-discard* mode.
+EG-2 must converge with it, not build a second scanner:
+- **Shared scan, not a second pass.** `redact_dlp` → `dlp::redact()` already sweeps every T2/T3 pattern
+  (Luhn PANs, PEM keys, AWS/GitHub/Stripe/Slack/JWT/env-secret markers). `dlp::scan()` (`dlp/mod.rs:112`)
+  already returns a structured `Vec<DlpMatch>` — the exact observability primitive T2/T3 needs; today
+  `on_body_frame` discards it and keeps only the redacted string. EG-2 T2/T3 = surface that match set (audit
+  + risk delta) from **one** `dlp::scan()` call. A separate EG-2 body pass would scan the body twice and
+  blow the §4 perf budget (which assumes T2/T3 is the only body scan).
+- **T4 twin already runs.** `scrub_stack_traces` / `mask_internal_ips` (same `on_body_frame`) are exactly
+  T4's targets; T4 = count/audit what these scrub instead of silently rewriting (design §3).
+- **Observe-before-redact (correctness).** `redact_dlp` is **default-ON** and rewrites PANs→`[REDACTED]`
+  in `on_body_frame`. An EG-2 detector attached after redaction sees `[REDACTED]` and never fires — the
+  observation point must precede the redact rewrite.
+- **`max_scan_bytes` is a behavior change to a shipped feature.** The redact path ignores
+  `dlp.max_scan_bytes` (2 MiB default is an unused config shell) and scans the full body with **no
+  content-type gate**. EG-2's mandated content-type gate + size cap, applied to the shared scan, silently
+  changes the default-ON redact rung (stops redacting past the cap). Decision needed: gate both together
+  (accept the redact behavior change, document it) or keep redact full-body and cap only the EG-2 read.
+- **Settings-page UX.** Response Filtering = *remove/mitigate* (default-ON, silent); EG-2 detectors =
+  *observe/score/attribute* (default-OFF until FP-tuning). Two surfaces over the same patterns — state the
+  relationship on the settings surface (e.g. a cross-link/sub-line) so operators don't read them as
+  redundant or conflicting. No new rung on the Response Filtering card; EG-2 observability is its own
+  detector config + the EG-3 "Internal Flows"/audit surface.
+
 ### EG-3 — internal observability surface · **M**
 - One dashboard page ("Internal Flows"): fleet-channel health/latency, Redis/etcd round-trip +
   error rates, upstream dial outcomes by zone (data exists — zone-aware LB + passive health),
@@ -67,5 +93,8 @@ Candidate detectors (final set per EG-1; all content-type-gated, size-capped, lo
       T4→T5→T2/T3 order, T2/T3 v1 = PAN+secret markers only, own "Internal Flows" page,
       propagation-lag via config-version field on fleet snapshot.
 - [ ] EG-2: response-path detectors live in log-only with bench evidence; risk-model integration.
+- [ ] EG-2: converged with the shipped Response Filtering path — single shared `dlp::scan()` (no double
+      body pass), observe-before-redact ordering, and an explicit `max_scan_bytes`/content-type-gate
+      decision recorded (see EG-2 §"Coordination with the shipped Response Filtering surface").
 - [ ] EG-3: internal-flows page live from existing signals.
 - [ ] Documented boundary: origin-initiated egress explicitly out of scope with integration guidance.

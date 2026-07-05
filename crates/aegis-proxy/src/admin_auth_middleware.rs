@@ -287,12 +287,20 @@ fn login_redirect_response(next: &str) -> Response<Full<Bytes>> {
         .unwrap()
 }
 
-/// Strip the client-supplied `X-Actor` header. F-CRITICAL-004 —
-/// callers must not let arbitrary clients dictate the audit chain's
-/// actor field. Done unconditionally on every admin-port request so
-/// no handler accidentally reads a spoofed value.
-pub fn strip_client_actor(req: &mut Request<hyper::body::Incoming>) {
-    req.headers_mut().remove("x-actor");
+/// Strip client-supplied identity headers that the trusted admin edge
+/// owns. F-CRITICAL-004 — callers must not let arbitrary clients
+/// dictate the audit chain's actor field (`x-actor`). RC-5a / V9 — the
+/// same rule applies to the server-namespace headers the listener
+/// injects (`x-aegis-actor`, `x-aegis-client-ip`): scrub any inbound
+/// copy so a client can never pre-seed one that survives to a handler
+/// (belt-and-suspenders with the authenticated arm's `insert`, and the
+/// only guard on the open-endpoint arm). Done unconditionally on every
+/// admin-port request.
+pub fn strip_client_actor<B>(req: &mut Request<B>) {
+    let headers = req.headers_mut();
+    headers.remove("x-actor");
+    headers.remove("x-aegis-actor");
+    headers.remove("x-aegis-client-ip");
 }
 
 /// Open endpoints — no auth required. Kept tight; everything else
@@ -537,6 +545,28 @@ mod tests {
             b = b.header(*k, *v);
         }
         b.body(()).unwrap()
+    }
+
+    #[test]
+    fn strip_client_actor_scrubs_spoofable_identity_headers() {
+        // RC-5a / V9: a client must not be able to pre-seed the audit
+        // identity headers the trusted edge owns.
+        let mut r = req(
+            Method::PUT,
+            "/api/mode",
+            &[
+                ("x-actor", "spoofed"),
+                ("x-aegis-actor", "spoofed-admin"),
+                ("x-aegis-client-ip", "1.2.3.4"),
+                ("x-request-id", "keep-me"),
+            ],
+        );
+        strip_client_actor(&mut r);
+        assert!(r.headers().get("x-actor").is_none());
+        assert!(r.headers().get("x-aegis-actor").is_none());
+        assert!(r.headers().get("x-aegis-client-ip").is_none());
+        // Unrelated headers survive.
+        assert_eq!(r.headers().get("x-request-id").unwrap(), "keep-me");
     }
 
     #[test]
