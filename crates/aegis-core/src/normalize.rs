@@ -24,8 +24,95 @@ use std::borrow::Cow;
 /// it is not a filesystem path. Returns `Cow::Borrowed` unchanged when
 /// the path is already canonical (the common benign case → no alloc).
 pub fn normalize_path(path: &str) -> Cow<'_, str> {
-    // Identity stub (RED) — real normalization lands in GREEN.
-    Cow::Borrowed(path)
+    // Fast path: nothing to decode or resolve → borrow, no allocation.
+    // This is the overwhelmingly common benign case; it costs one scan.
+    if !needs_normalization(path) {
+        return Cow::Borrowed(path);
+    }
+    Cow::Owned(normalize_slow(path))
+}
+
+/// True iff `path` contains a `%` escape or a slash immediately followed
+/// by another slash or a `.` — the only inputs `normalize_slow` changes.
+fn needs_normalization(path: &str) -> bool {
+    let b = path.as_bytes();
+    for (i, &c) in b.iter().enumerate() {
+        match c {
+            b'%' => return true,
+            b'/' => match b.get(i + 1) {
+                Some(b'/') | Some(b'.') => return true,
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    false
+}
+
+fn normalize_slow(path: &str) -> String {
+    // Normalize the PATH only; keep the query/fragment verbatim (it is
+    // not a filesystem path, and `//` / `.` are legal data there).
+    let (raw_path, rest) = match path.find(['?', '#']) {
+        Some(i) => (&path[..i], &path[i..]),
+        None => (path, ""),
+    };
+    let decoded = percent_decode(raw_path);
+    // Resolve segments: `""`/`.` collapse (handles `//` and `/./`),
+    // `..` pops the previous segment.
+    let mut segs: Vec<&str> = Vec::new();
+    for seg in decoded.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                segs.pop();
+            }
+            s => segs.push(s),
+        }
+    }
+    let mut out = String::with_capacity(decoded.len() + rest.len() + 1);
+    out.push('/');
+    // join without an intermediate Vec allocation from `.join`.
+    for (i, s) in segs.iter().enumerate() {
+        if i > 0 {
+            out.push('/');
+        }
+        out.push_str(s);
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Single-pass percent-decode. Double-encoding (`%252e`) is deliberately
+/// NOT recursively decoded — one decode matches the standard gateway
+/// behavior and avoids over-normalizing a literal `%25`.
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    if !b.contains(&b'%') {
+        return s.to_string();
+    }
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(h), Some(l)) = (hex_val(b[i + 1]), hex_val(b[i + 2])) {
+                out.push((h << 4) | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_val(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
