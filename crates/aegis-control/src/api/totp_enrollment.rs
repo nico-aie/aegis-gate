@@ -100,6 +100,21 @@ pub async fn confirm(
     }
 }
 
+/// TOTP-4 — terminal QR for CLI parity (`waf admin enroll-totp` /
+/// `create-account --with-totp`): headless setups scan straight off
+/// the terminal, matching the web flow. Unicode half-block rendering
+/// (▀▄█) keeps the art compact enough for a QR that encodes a full
+/// `otpauth://` URI.
+pub fn render_qr_ascii(data: &str) -> aegis_core::Result<String> {
+    let code = qrcode::QrCode::new(data.as_bytes()).map_err(|e| {
+        aegis_core::WafError::State(format!("QR encode failed: {e}"))
+    })?;
+    Ok(code
+        .render::<qrcode::render::unicode::Dense1x2>()
+        .quiet_zone(true)
+        .build())
+}
+
 /// Render `data` as a self-contained SVG QR. Pure-Rust `qrcode` crate,
 /// no raster/image dependency, no external host.
 fn render_qr_svg(data: &str) -> aegis_core::Result<String> {

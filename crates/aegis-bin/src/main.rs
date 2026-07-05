@@ -602,6 +602,7 @@ fn cmd_admin(args: &[String]) -> i32 {
     let sub = args.get(2).map(String::as_str).unwrap_or("help");
     match sub {
         "set-password" => cmd_admin_set_password(),
+        "create-account" => cmd_admin_create_account(args),
         "enroll-totp" => cmd_admin_enroll_totp(args),
         "service-account" => cmd_admin_service_account(args),
         "help" | "--help" => {
@@ -609,6 +610,11 @@ fn cmd_admin(args: &[String]) -> i32 {
             println!();
             println!("SUBCOMMANDS:");
             println!("    set-password           Hash a password (interactive prompt)");
+            println!("    create-account --username <NAME> [--with-totp]");
+            println!("                           Hash a password and print a ready-to-paste");
+            println!("                           cfg.admin.dashboard_auth.accounts entry");
+            println!("                           (--with-totp: also enroll a TOTP secret +");
+            println!("                           otpauth:// URI + QR for Google Authenticator)");
             println!("    enroll-totp --issuer <ISSUER> --account <ACCOUNT>");
             println!("                           Generate TOTP secret + provisioning URI");
             println!("    service-account mint --name <NAME> [--scopes read,write]");
@@ -651,31 +657,16 @@ fn cmd_admin_enroll_totp(args: &[String]) -> i32 {
     let issuer = parse_flag(args, "--issuer").unwrap_or("Aegis-Gate");
     let account = parse_flag(args, "--account").unwrap_or("admin");
 
-    // 2026-05-17 F-CRITICAL-003 follow-up: this CLI is the operator-
-    // facing half of the TOTP wire-up. Pre-fix `secret_bytes` was
-    // derived from `blake3(nanos:pid)` — predictable enough to
-    // brute-force the secret given approximate clock skew, even
-    // though the per-call output looks random. UUID v4 is what we
-    // standardised on for tokens (see `csrf.rs`, `session.rs`);
-    // reuse it here as the CSPRNG source.
-    let mut secret = [0u8; 32];
-    let id_bytes_a = uuid::Uuid::new_v4().into_bytes();
-    let id_bytes_b = uuid::Uuid::new_v4().into_bytes();
-    secret[..16].copy_from_slice(&id_bytes_a);
-    secret[16..].copy_from_slice(&id_bytes_b);
-
-    // Pre-fix `b32` came from a byte-modulo-32 character mapping —
-    // not real RFC 4648 base32. Authenticator apps decoded the
-    // string back to bytes expecting a round-trip, got garbage,
-    // and generated TOTP codes that never matched the WAF's
-    // expected codes. The whole feature was end-to-end broken even
-    // after the SHA-256 → SHA-1 fix in Phase 3 step 3. Now use the
-    // `base32` crate (RFC 4648, no padding — matches what
-    // `api::login::authenticate` decodes with).
-    let b32 = base32::encode(
-        base32::Alphabet::Rfc4648 { padding: false },
-        &secret,
-    );
+    // 2026-05-17 F-CRITICAL-003 follow-up + TOTP-3: the CSPRNG secret
+    // generation (2×UUIDv4 → 32 bytes → real RFC 4648 base32) moved to
+    // `admin_auth::totp::generate_secret_b32` so this CLI and the web
+    // enrollment endpoint (`POST /api/admin/totp/enroll`) share one
+    // generator. History of the two bugs that construction fixed
+    // (predictable blake3(nanos:pid) seed; fake byte-modulo-32 "base32")
+    // lives on that function's doc.
+    let b32 = aegis_control::admin_auth::totp::generate_secret_b32();
+    let secret = base32::decode(base32::Alphabet::Rfc4648 { padding: false }, &b32)
+        .expect("generated secret must round-trip");
 
     let uri = aegis_control::admin_auth::totp::provisioning_uri(&b32, issuer, account);
 
@@ -685,13 +676,110 @@ fn cmd_admin_enroll_totp(args: &[String]) -> i32 {
     println!("TOTP Secret (base32): {b32}");
     println!("Provisioning URI:     {uri}");
     println!();
+    // TOTP-4 — terminal QR so headless setup matches the web flow: scan
+    // straight off the terminal with Google Authenticator.
+    match aegis_control::api::totp_enrollment::render_qr_ascii(&uri) {
+        Ok(art) => {
+            println!("Scan with Google Authenticator / Authy / 1Password:");
+            println!("{art}");
+        }
+        Err(e) => eprintln!("(QR render failed: {e} — use the URI/secret above)"),
+    }
+    println!();
     println!("Paste this into cfg.admin.dashboard_auth:");
     println!("  totp_enabled: true");
     println!("  totp_secret_b32: \"{b32}\"");
     println!();
+    println!("(multi-admin configs: set the same two fields on the matching");
+    println!(" cfg.admin.dashboard_auth.accounts entry instead)");
+    println!();
     println!("Recovery codes (store securely, each usable once):");
     for (i, code) in recovery.iter().enumerate() {
         println!("  {}: {code}", i + 1);
+    }
+    0
+}
+
+/// TOTP-4 — the ready-to-paste `accounts:` entry `create-account`
+/// prints. Kept as a pure helper so the shape is unit-testable.
+fn account_yaml_fragment(username: &str, password_hash: &str, totp_b32: Option<&str>) -> String {
+    let mut frag = String::new();
+    frag.push_str("  accounts:\n");
+    frag.push_str(&format!("    - username: \"{username}\"\n"));
+    frag.push_str(&format!("      password_hash_ref: \"{password_hash}\"\n"));
+    if let Some(b32) = totp_b32 {
+        frag.push_str(&format!("      totp_secret_b32: \"{b32}\"\n"));
+        frag.push_str("      totp_enabled: true\n");
+    }
+    frag
+}
+
+/// TOTP-4 — `waf admin create-account --username <NAME> [--with-totp]`.
+/// Reuses the `set-password` hashing flow (argon2id) and, with
+/// `--with-totp`, the shared secret generator + QR so one command
+/// bootstraps a fully-enrolled admin account. Without `--with-totp`
+/// the account enrolls at first login instead (require_totp flow).
+fn cmd_admin_create_account(args: &[String]) -> i32 {
+    let Some(username) = parse_flag(args, "--username") else {
+        eprintln!("missing --username <NAME> (e.g. --username alice)");
+        return 1;
+    };
+    if username.trim().is_empty() {
+        eprintln!("--username cannot be empty");
+        return 1;
+    }
+    let with_totp = args.iter().any(|a| a == "--with-totp");
+
+    println!("Enter password for `{username}` (will echo — pipe from stdin in prod):");
+    let mut password = String::new();
+    if std::io::stdin().read_line(&mut password).is_err() {
+        eprintln!("failed to read password");
+        return 1;
+    }
+    let password = password.trim();
+    if password.is_empty() {
+        eprintln!("password cannot be empty");
+        return 1;
+    }
+    let hash = match aegis_control::admin_auth::password::hash_password(password) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("hashing error: {e}");
+            return 1;
+        }
+    };
+
+    let totp_b32 = with_totp.then(aegis_control::admin_auth::totp::generate_secret_b32);
+
+    println!();
+    println!("Paste this into cfg.admin.dashboard_auth (merge with existing accounts):");
+    println!();
+    print!("{}", account_yaml_fragment(username, &hash, totp_b32.as_deref()));
+    println!();
+
+    if let Some(b32) = &totp_b32 {
+        let uri = aegis_control::admin_auth::totp::provisioning_uri(b32, "Aegis-Gate", username);
+        let secret = base32::decode(base32::Alphabet::Rfc4648 { padding: false }, b32)
+            .expect("generated secret must round-trip");
+        println!("TOTP Secret (base32): {b32}");
+        println!("Provisioning URI:     {uri}");
+        match aegis_control::api::totp_enrollment::render_qr_ascii(&uri) {
+            Ok(art) => {
+                println!("Scan with Google Authenticator / Authy / 1Password:");
+                println!("{art}");
+            }
+            Err(e) => eprintln!("(QR render failed: {e} — use the URI/secret above)"),
+        }
+        println!("Recovery codes (store securely, each usable once):");
+        for (i, code) in
+            aegis_control::admin_auth::totp::generate_recovery_codes(&secret).iter().enumerate()
+        {
+            println!("  {}: {code}", i + 1);
+        }
+    } else {
+        println!("No TOTP enrolled: with require_totp (the default), `{username}`'s");
+        println!("first login lands in the enrollment flow — scan the QR there,");
+        println!("or re-run with --with-totp to enroll now.");
     }
     0
 }
@@ -827,7 +915,8 @@ fn print_help() {
     println!("                                    (H2b cutover; needs the `etcd_config` feature)");
     println!("    audit     verify --from <path> Verify audit chain integrity");
     println!("    admin     set-password          Hash admin password (argon2id)");
-    println!("    admin     enroll-totp           Generate TOTP secret + recovery codes");
+    println!("    admin     create-account        Create a named admin account (accounts: fragment)");
+    println!("    admin     enroll-totp           Generate TOTP secret + recovery codes + QR");
     println!("    snapshot  --output <path>       Bundle effective config + rules into a JSON snapshot");
     println!("    restore   --from <path>         Restore config + rules from a snapshot (validates first)");
     println!("    version                         Show version");
