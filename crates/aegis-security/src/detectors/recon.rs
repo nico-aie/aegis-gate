@@ -47,7 +47,9 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)(?:server-info)",
         r"(?i)(?:backup\.(?:sql|zip|tar|gz|bak))",
         r"(?i)(?:database\.(?:sql|dump))",
-        r"(?i)(?:\.(?:bak|old|orig|save|swp|tmp)$)",
+        // RC-3 (2026-07-05) — `.backup` added to the generic editor/backup
+        // suffix tail (zero legit use as a served extension).
+        r"(?i)(?:\.(?:bak|old|orig|save|swp|tmp|backup)$)",
         // Editor backup files left in the webroot (`/index.php~`,
         // `/config~`). 2026-06-21 (l-tester FP sweep) — the `~` must
         // terminate the PATH, not a query value: `^[^?]*~$` rejects
@@ -194,6 +196,66 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // cPanel / WHM internal subdomain proxy — `___proxy_subdomain*`
         // is a cPanel-internal token never seen in legit external traffic.
         r"(?i)(?:^|/)___proxy_subdomain",
+        // ── RC-3 (2026-07-05) — genuinely-missing signature families ────
+        // All score at recon::PATH (25): accumulate via the per-IP model,
+        // never single-block. Tight anchors + look-alike negatives in the
+        // test module; corpus re-validation deferred to Wave B.
+        //
+        // Secrets — bare SSH private key at the webroot. Segment-anchored
+        // to a value boundary so `/id_rsa_setup_guide.html` (the `_`
+        // breaks the boundary) does NOT fire. The `.ssh/` directory form
+        // is already covered above.
+        r"(?i)(?:^|/)id_rsa(?:$|[?#])",
+        // npm credential file (`_authToken=…`) and the git-credentials
+        // store (`https://user:pass@host`). `.git-credentials` is NOT
+        // caught by the `\.git(?:/|$)` dir pattern (the `-` breaks it).
+        r"(?i)(?:^|/)\.npmrc(?:$|[?#])",
+        r"(?i)(?:^|/)\.git-credentials(?:$|[?#])",
+        // Generic `secrets.*` / `secret.*` exposure — broadens the
+        // existing `secrets?\.ya?ml` to the other credential-bearing
+        // extensions. Value-anchored so `/secrets-rotation-guide.html`
+        // and `/api/secretary/…` (no `.`-boundary) do NOT fire.
+        r"(?i)(?:^|/)secrets?\.(?:json|txt|ya?ml|env|config)(?:$|[?#])",
+        // `word.env` dotenv variants (`config.env`, `aws.env`, `db.env`)
+        // — distinct from the `/.env` dotfile pattern above, which
+        // requires `.env` right after a `/`. Value-anchored so
+        // `*.environment` does NOT fire (the trailing chars break `$`).
+        r"(?i)(?:^|/)[\w-]+\.env(?:$|[?#])",
+        // WordPress config leaked as `.txt` (the `.php.bak` etc. forms
+        // are already caught by the generic backup-suffix tail below).
+        r"(?i)(?:^|/)wp-config\.txt(?:$|[?#])",
+        // Webroot backup archives — anchored to a *backup-shaped* leading
+        // word so legit downloadable archives (`/downloads/report.zip`,
+        // `/assets/app.js.gz`) do NOT fire. Catches `/www.tar.gz`,
+        // `/site.zip`, `/db.gz`, `/backup.tar.gz`, `/wwwroot.zip`.
+        r"(?i)(?:^|/)(?:backup|bak|www|wwwroot|web|htdocs|public_html|site|db|database|dump|release|deploy|full|old)[\w.-]*\.(?:zip|tgz|tar\.gz|tar|gz|rar|7z)(?:$|[?#])",
+        // Exchange / ProxyShell — the `.json` autodiscover SSRF vector
+        // (CVE-2021-34473). The `.xml` autodiscover endpoint is hit by
+        // every legit Outlook client and is deliberately NOT matched.
+        r"(?i)(?:^|/)autodiscover/autodiscover\.json\b",
+        // OWA / ManageEngine login pages — exploit-chain entry points
+        // (ProxyLogon, CVE-2022-47966). On a site NOT fronting Exchange/
+        // ManageEngine any hit is recon; run one behind the WAF and tune
+        // these out. Score 25 keeps the blast radius bounded.
+        r"(?i)(?:^|/)owa/auth/logon\.aspx(?:$|[?#])",
+        r"(?i)(?:^|/)Core/Skin/Login\.aspx(?:$|[?#])",
+        // WordPress — abused wp-json subpaths (Gravity Forms SMTP creds,
+        // wp/v2/settings enumeration). Bare `/wp-json/` and legit REST
+        // collections (`/wp-json/wp/v2/posts`) are NOT matched.
+        r"(?i)(?:^|/)wp-json/(?:gravitysmtp|wp/v2/settings)\b",
+        // WLW manifest + XML-RPC — classic WP enumeration / pingback and
+        // brute-force surfaces. Value-anchored.
+        r"(?i)(?:^|/)wlwmanifest\.xml(?:$|[?#])",
+        r"(?i)(?:^|/)xmlrpc\.php(?:$|[?#])",
+        // CI/CD — Jenkins pipeline definition + job config.xml (leaks
+        // credentials/secrets). `config.xml` is anchored to a jenkins
+        // path context so bare `/config.xml` (too generic) does NOT fire.
+        r"(?i)(?:^|/)Jenkinsfile(?:$|[?#])",
+        r"(?i)(?:^|/)jenkins[\w./-]*config\.xml\b",
+        // Terraform working directory — may contain state with plaintext
+        // provider creds. Segment-anchored so `/my.terraform-guide`
+        // (the `-` breaks the boundary) does NOT fire.
+        r"(?i)(?:^|/)\.terraform(?:/|$)",
     ]
     .iter()
     .map(|p| Regex::new(p).unwrap())
@@ -535,6 +597,71 @@ mod tests {
     path_negative!(fp_database_status,    "/api/database-status");
     path_negative!(fp_parameters_api,     "/api/parameters?env=prod");
     path_negative!(fp_file_manager_list,  "/file-manager/list");
+
+    // ── RC-3 (2026-07-05) — genuinely-missing signature families ───────
+    // Raw-form positives + look-alike negatives per family. Score stays
+    // at recon::PATH (25) — no single-hit block; corpus re-validation is
+    // deferred to Wave B. Raw forms only (detectors see the raw
+    // percent-encoded path; never validate via the Python harness).
+
+    // Secrets — private keys, npm/git credential files, generic secrets.*
+    path_positive!(rc3_id_rsa_bare,        "/id_rsa");
+    path_positive!(rc3_npmrc,              "/.npmrc");
+    path_positive!(rc3_git_credentials,    "/.git-credentials");
+    path_positive!(rc3_secrets_json,       "/secrets.json");
+    path_positive!(rc3_secret_txt,         "/secret.txt");
+    path_positive!(rc3_secrets_env,        "/secrets.env");
+    path_positive!(rc3_secrets_config,     "/secrets.config");
+    // ...look-alikes that must NOT fire (the RC-1 canary negatives + more).
+    path_negative!(rc3_fp_id_rsa_guide,    "/id_rsa_setup_guide.html");
+    path_negative!(rc3_fp_secrets_guide,   "/secrets-rotation-guide.html");
+    path_negative!(rc3_fp_npmrc_example,   "/.npmrc-example");
+    path_negative!(rc3_fp_secretary,       "/api/secretary/list");
+
+    // V2 real gaps — word.env (config.env/aws.env), wp-config.txt,
+    // .backup suffix, webroot archive dumps.
+    path_positive!(rc3_config_env,         "/config.env");
+    path_positive!(rc3_aws_env,            "/aws.env");
+    path_positive!(rc3_wp_config_txt,      "/wp-config.txt");
+    path_positive!(rc3_config_backup,      "/config.backup");
+    path_positive!(rc3_www_targz,          "/www.tar.gz");
+    path_positive!(rc3_site_zip,           "/site.zip");
+    path_positive!(rc3_db_gz,              "/db.gz");
+    // ...must NOT match *.environment or legit downloadable archives.
+    path_negative!(rc3_fp_app_environment, "/app.environment");
+    path_negative!(rc3_fp_settings_environ,"/settings.environment");
+    path_negative!(rc3_fp_asset_js_gz,     "/assets/app.js.gz");
+    path_negative!(rc3_fp_report_zip,      "/downloads/report.zip");
+    path_negative!(rc3_fp_photos_zip,      "/albums/holiday-photos.zip");
+
+    // Exchange / ProxyShell — the .json autodiscover SSRF vector and
+    // product login pages. The legit .xml autodiscover (hit by every
+    // Outlook client) must NOT fire.
+    path_positive!(rc3_autodiscover_json,  "/autodiscover/autodiscover.json?@evil.com/x");
+    path_positive!(rc3_owa_logon,          "/owa/auth/logon.aspx");
+    path_positive!(rc3_manageengine_login, "/Core/Skin/Login.aspx");
+    path_negative!(rc3_fp_autodiscover_xml,"/autodiscover/autodiscover.xml");
+    path_negative!(rc3_fp_logon_history,   "/api/logon-history?user=1");
+
+    // WordPress — abused wp-json subpaths, enumeration manifest, xmlrpc.
+    // Bare /wp-json/ and legit REST collections must NOT fire.
+    path_positive!(rc3_wpjson_gravitysmtp, "/wp-json/gravitysmtp/v1/settings");
+    path_positive!(rc3_wpjson_settings,    "/wp-json/wp/v2/settings");
+    path_positive!(rc3_wlwmanifest,        "/wlwmanifest.xml");
+    path_positive!(rc3_xmlrpc,             "/xmlrpc.php");
+    path_negative!(rc3_fp_wpjson_root,     "/wp-json/");
+    path_negative!(rc3_fp_wpjson_posts,    "/wp-json/wp/v2/posts?per_page=10");
+    path_negative!(rc3_fp_xmlrpc_guide,    "/blog/xmlrpc-guide.html");
+
+    // Misc — Jenkinsfile, Jenkins job config.xml, Terraform working dir.
+    path_positive!(rc3_jenkinsfile,        "/Jenkinsfile");
+    path_positive!(rc3_jenkins_config,     "/jenkins/config.xml");
+    path_positive!(rc3_jenkins_job_config, "/jenkins/job/main/config.xml");
+    path_positive!(rc3_terraform_dir,      "/.terraform/terraform.tfstate");
+    // ...bare config.xml is too generic to flag; look-alikes must not fire.
+    path_negative!(rc3_fp_bare_config_xml, "/config.xml");
+    path_negative!(rc3_fp_jenkinsfile_view,"/JenkinsfileViewer");
+    path_negative!(rc3_fp_terraform_guide, "/my.terraform-guide");
 
     // ── L-tester run (2026-06-21) recon-path FP sweep ──────────────────
     // 165 normal requests fired recon-path. Root causes + guards below.

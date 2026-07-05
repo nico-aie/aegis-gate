@@ -98,7 +98,7 @@ happened — `FEAT-audit-coverage-gaps` is archived COMPLETE with no mention of 
       even on allowed requests (documented in the same note). A separate counter would be redundant
       and pull code onto a docs-only branch; skip per YAGNI.
 
-### RC-3 — close the genuinely-missing signatures · **S–M**
+### RC-3 — close the genuinely-missing signatures · **S–M** · ✅ Wave A DONE (branch feat/rc3-recon-signatures)
 
 **Decision (2026-07-05):** ships in Wave A protected by tight-anchor unit tests only; corpus
 re-validation is a Wave B checkbox. Blast radius is bounded because these score `recon::PATH = 25`
@@ -117,14 +117,22 @@ Add to `RECON_PATHS` (`recon.rs`), grouped as reviewable families:
 Skip: `/.DS_Store`, `/.htaccess` (already present), `/.well-known/security.txt` (legit standard).
 
 **RED tests — every addition, no exceptions:**
-- [ ] Raw-form positive unit test per signature ([[project_ltester_decodes_dataplane_raw]] —
+- [x] Raw-form positive unit test per signature (25 positives; [[project_ltester_decodes_dataplane_raw]] —
       detectors see raw percent-encoded paths; never validate via the Python harness).
-- [ ] Negative look-alike test per risky pattern: `.env` family must not match `*.environment`;
-      `secrets` regex must not match `/secrets-rotation-guide.html`-style paths; backup suffixes
-      must not match legit `.gz` assets if any anchor allows it.
-- [ ] Existing recon test module stays green — if an existing test goes stale, confirm it's an
-      intended change before touching it ([[feedback_test_suite_green_baseline]]).
+- [x] Negative look-alike test per risky pattern (17 negatives): `.env` family does not match
+      `*.environment`; `secrets` regex does not match `/secrets-rotation-guide.html`; webroot-archive
+      pattern is backup-word-anchored so legit `/downloads/report.zip` + `/assets/app.js.gz` don't
+      fire; Exchange `.json`-only (legit `autodiscover.xml` excluded); WordPress abused subpaths only
+      (bare `/wp-json/` + `wp/v2/posts` excluded); bare `/config.xml` excluded (jenkins-anchored).
+- [x] Existing recon test module stays green (251 recon tests; workspace 4854, zero warnings).
 - [ ] **Deferred to Wave B:** benign-corpus negative run over all new signatures.
+
+**Shipped 2026-07-05 (branch `feat/rc3-recon-signatures`).** Families added to `RECON_PATHS`:
+Secrets (`/id_rsa`, `/.npmrc`, `/.git-credentials`, `secrets?.{json,txt,ya?ml,env,config}`),
+V2 gaps (`word.env`, `/wp-config.txt`, `.backup` tail, backup-word-anchored archive suffixes),
+Exchange (`autodiscover.json`, `owa/auth/logon.aspx`, `Core/Skin/Login.aspx`),
+WordPress (`wp-json/{gravitysmtp,wp/v2/settings}`, `wlwmanifest.xml`, `xmlrpc.php`),
+Misc (`Jenkinsfile`, jenkins-anchored `config.xml`, `.terraform/`).
 
 ---
 
