@@ -379,4 +379,62 @@ mod tests {
         // Blanks dropped, surrounding whitespace trimmed.
         assert_eq!(paths.raw(), vec!["/wp-admin".to_string(), "/.env".to_string()]);
     }
+
+    // ── RC-4 (2026-07-05) — normalized-path defense-in-depth ───────────
+    // The canary tripwire matches raw AND a normalized copy, so encoding /
+    // traversal evasions of a curated honeypot entry still trip it. The
+    // raw form stays the primary match (unchanged fast path).
+    macro_rules! canary_evasion_fires {
+        ($name:ident, $entry:expr, $request:expr) => {
+            #[test]
+            fn $name() {
+                let d = CanaryDetector::new(&vec![$entry.into()]);
+                let (m, u, h, b) = req($request);
+                let signals = d.inspect(&view(&m, &u, &h, &b));
+                assert_eq!(
+                    signals.len(),
+                    1,
+                    "evasion {} should trip canary {}",
+                    $request,
+                    $entry
+                );
+                assert_eq!(signals[0].tag, "canary");
+                assert_eq!(signals[0].score, 100);
+            }
+        };
+    }
+
+    // %2e-encoded, dot-segment, dot-dot, and doubled-slash evasions of a
+    // `/.git/config` honeypot all canonicalize back to it.
+    canary_evasion_fires!(rc4_pct_encoded_dot,  "/.git/config", "/%2egit/config");
+    canary_evasion_fires!(rc4_dot_segment,      "/.git/config", "/./.git/config");
+    canary_evasion_fires!(rc4_dotdot_segment,   "/.git/config", "/x/../.git/config");
+    canary_evasion_fires!(rc4_double_slash,     "/.git/config", "//.git/config");
+    canary_evasion_fires!(rc4_pct_slash_dotdot, "/.git/config", "/a%2f%2e%2e%2f.git/config");
+    // Prefix honeypot with an encoded/doubled-slash evasion.
+    canary_evasion_fires!(rc4_prefix_evasion,   "/admin/*",     "//admin//panel");
+
+    #[test]
+    fn rc4_raw_match_still_fires_unchanged() {
+        // Regression: the canonical raw form matches on the fast path.
+        let d = CanaryDetector::new(&vec!["/.git/config".into()]);
+        let (m, u, h, b) = req("/.git/config");
+        let s = d.inspect(&view(&m, &u, &h, &b));
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].field, "path:/.git/config");
+    }
+
+    #[test]
+    fn rc4_normalization_does_not_introduce_false_positive() {
+        // A benign path that normalizes cleanly must NOT match a canary
+        // it doesn't actually resolve to.
+        let d = CanaryDetector::new(&vec!["/.git/config".into()]);
+        for benign in ["/api/users/../orders", "/a//b//c", "/%2e%2e/products"] {
+            let (m, u, h, b) = req(benign);
+            assert!(
+                d.inspect(&view(&m, &u, &h, &b)).is_empty(),
+                "false positive on {benign}"
+            );
+        }
+    }
 }
