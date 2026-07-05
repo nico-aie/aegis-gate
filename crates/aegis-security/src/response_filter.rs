@@ -155,6 +155,24 @@ static INTERNAL_IPV6_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     ).unwrap()
 });
 
+/// EG-2 T4 (2026-07-05) — detection oracle over the SAME
+/// [`struct@STACK_TRACE_PATTERNS`] the scrubber rewrites. The error-leak
+/// detector (`detectors::egress_leak`) reuses this so the "observe" and the
+/// "redact" halves can never drift to different pattern sets: one is the
+/// twin of the other (design §3 — "count/audit what these scrub instead of
+/// silently rewriting").
+pub fn has_stack_trace(text: &str) -> bool {
+    STACK_TRACE_PATTERNS.iter().any(|re| re.is_match(text))
+}
+
+/// EG-2 T4 — detection oracle over the internal-IP patterns
+/// [`mask_internal_ips`] rewrites (IPv4 RFC-1918/loopback/link-local + the
+/// IPv6 ULA/link-local/loopback/mapped set). True when the text contains any
+/// internal address.
+pub fn has_internal_ip(text: &str) -> bool {
+    INTERNAL_IP_PATTERN.is_match(text) || INTERNAL_IPV6_PATTERN.is_match(text)
+}
+
 /// Scrub stack traces from a text chunk.
 pub fn scrub_stack_traces(text: &str) -> String {
     let mut result = text.to_string();

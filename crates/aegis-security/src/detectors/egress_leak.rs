@@ -29,6 +29,14 @@
 //! bound (unlike `enumeration` / T5 egress-volume).
 
 use super::Signal;
+use std::collections::HashMap;
+use std::net::IpAddr;
+use std::sync::Mutex;
+
+/// Fleet cardinality bound for the pending-risk bridge map (mirrors
+/// `enumeration` / `behavior_signals`). At the ceiling a new IP evicts an
+/// arbitrary existing entry rather than growing.
+const DEFAULT_MAX_TRACKED: usize = 100_000;
 
 /// Score emitted per error-leak hit — an accumulation signal (stacks toward
 /// a cumulative block) rather than a single-hit blocker, matching the
@@ -84,24 +92,102 @@ const DEBUG_BANNERS: &[&str] = &[
 /// `Option<Arc<…>>` presence on `ProxyContext` (like `enumeration`).
 pub struct ErrorLeakDetector {
     max_scan_bytes: usize,
+    /// Per-IP risk delta accumulated on the response side, awaiting the
+    /// data-plane's outcome hook to drain it into the `RiskTracker` (which
+    /// the response-body site doesn't hold). Bounded at `max_tracked`.
+    /// Mirrors `behavior_analyzer.observe_outcome`: record on the response,
+    /// fold into risk where `risk` is in scope.
+    pending: Mutex<HashMap<IpAddr, u32>>,
+    max_tracked: usize,
 }
 
 impl ErrorLeakDetector {
     pub fn new() -> Self {
-        Self { max_scan_bytes: DEFAULT_MAX_SCAN_BYTES }
+        Self {
+            max_scan_bytes: DEFAULT_MAX_SCAN_BYTES,
+            pending: Mutex::new(HashMap::new()),
+            max_tracked: DEFAULT_MAX_TRACKED,
+        }
     }
 
     pub fn with_cap(max_scan_bytes: usize) -> Self {
-        Self { max_scan_bytes }
+        Self { max_scan_bytes, ..Self::new() }
     }
 
     /// Scan a response for error-page information leaks. Returns one
     /// [`Signal`] per distinct [`LeakKind`] found (so audit attribution is
     /// specific), or empty when the gate rejects the response or nothing
     /// leaked. `content_type` is the raw header value (or `None`).
-    pub fn scan(&self, _status: u16, _content_type: Option<&str>, _body: &[u8]) -> Vec<Signal> {
-        // RED stub — real detection lands in the GREEN step.
-        Vec::new()
+    pub fn scan(&self, status: u16, content_type: Option<&str>, body: &[u8]) -> Vec<Signal> {
+        if !is_server_error(status) {
+            return Vec::new();
+        }
+        if !content_type.is_some_and(is_scannable_error_ct) {
+            return Vec::new();
+        }
+        // Bound the scan window, then decode lossily just once.
+        let window = &body[..body.len().min(self.max_scan_bytes)];
+        let text = String::from_utf8_lossy(window);
+
+        let mut signals = Vec::new();
+        let mut push = |kind: LeakKind| {
+            signals.push(Signal {
+                score: SCORE,
+                tag: "egress_error_leak".into(),
+                field: format!("kind:{},status:{}", kind.tag(), status),
+            });
+        };
+
+        if crate::response_filter::has_stack_trace(&text) {
+            push(LeakKind::StackTrace);
+        }
+        if has_debug_banner(&text) {
+            push(LeakKind::DebugBanner);
+        }
+        if crate::response_filter::has_internal_ip(&text) {
+            push(LeakKind::InternalIp);
+        }
+        signals
+    }
+
+    /// Response-side entry point: [`scan`](Self::scan) the response and, on
+    /// any hit, accumulate the summed score into the per-IP pending map for
+    /// the outcome hook to fold into risk. Returns the signals so the caller
+    /// emits one Detection-class audit row per leak. No allocation / lock on
+    /// the clean path (empty signals → early return before touching the map).
+    pub fn observe(
+        &self,
+        ip: IpAddr,
+        status: u16,
+        content_type: Option<&str>,
+        body: &[u8],
+    ) -> Vec<Signal> {
+        let signals = self.scan(status, content_type, body);
+        if signals.is_empty() {
+            return signals;
+        }
+        let delta: u32 = signals.iter().map(|s| s.score).sum();
+        let mut map = self.pending.lock().unwrap();
+        // Fleet bound: evict an arbitrary entry before admitting a new IP.
+        if !map.contains_key(&ip) && map.len() >= self.max_tracked {
+            if let Some(k) = map.keys().next().copied() {
+                map.remove(&k);
+            }
+        }
+        let e = map.entry(ip).or_insert(0);
+        *e = e.saturating_add(delta);
+        signals
+    }
+
+    /// Take and clear the pending risk delta for `ip` (0 when none). Called
+    /// from the data-plane outcome hook where the `RiskTracker` is in scope.
+    pub fn drain_risk_delta(&self, ip: IpAddr) -> u32 {
+        self.pending.lock().unwrap().remove(&ip).unwrap_or(0)
+    }
+
+    /// Drop all pending state (wired into the `reset_state` path).
+    pub fn clear(&self) {
+        self.pending.lock().unwrap().clear();
     }
 }
 
@@ -243,6 +329,52 @@ mod tests {
         assert!(
             d.scan(500, Some(JSON), body).is_empty(),
             "a clean 500 error body must not score",
+        );
+    }
+
+    // ---- observe / drain risk bridge ----
+
+    fn ip(s: &str) -> std::net::IpAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn observe_accumulates_pending_risk_and_drains_once() {
+        let d = ErrorLeakDetector::new();
+        let body = b"Traceback (most recent call last)\n  File \"/a.py\", line 1";
+        let sigs = d.observe(ip("203.0.113.7"), 500, Some(HTML), body);
+        assert!(!sigs.is_empty(), "observe returns signals for the audit row");
+        // The pending delta equals the summed signal score.
+        let delta = d.drain_risk_delta(ip("203.0.113.7"));
+        assert_eq!(delta, sigs.iter().map(|s| s.score).sum::<u32>());
+        // Draining is one-shot — a second drain yields nothing.
+        assert_eq!(d.drain_risk_delta(ip("203.0.113.7")), 0);
+    }
+
+    #[test]
+    fn observe_on_clean_response_records_nothing() {
+        let d = ErrorLeakDetector::new();
+        let body = br#"{"error":"internal server error"}"#;
+        assert!(d.observe(ip("203.0.113.8"), 500, Some(JSON), body).is_empty());
+        assert_eq!(d.drain_risk_delta(ip("203.0.113.8")), 0, "no leak → no pending risk");
+    }
+
+    #[test]
+    fn drain_for_unknown_ip_is_zero() {
+        let d = ErrorLeakDetector::new();
+        assert_eq!(d.drain_risk_delta(ip("203.0.113.9")), 0);
+    }
+
+    #[test]
+    fn pending_map_is_bounded() {
+        let d = ErrorLeakDetector { max_tracked: 3, ..ErrorLeakDetector::new() };
+        let body = b"Traceback (most recent call last)\n  File \"/a.py\", line 1";
+        for octet in 1..=50u8 {
+            d.observe(ip(&format!("203.0.113.{octet}")), 500, Some(HTML), body);
+        }
+        assert!(
+            d.pending.lock().unwrap().len() <= 3,
+            "pending map must stay within max_tracked",
         );
     }
 
