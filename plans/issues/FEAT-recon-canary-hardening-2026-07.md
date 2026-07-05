@@ -141,7 +141,17 @@ Misc (`Jenkinsfile`, jenkins-anchored `config.xml`, `.terraform/`).
 Do not start until the S-Tester's committed benign corpus + harness exist. Measurement must happen
 at the Rust `EvalContext` level on raw forms (FPM plan §2 traps).
 
-### RC-2 — tiered recon scoring · **M**
+### RC-2 — tiered recon scoring · **M** · 🔶 CODE SHIPPED 2026-07-05 (branch feat/rc2-tiered-recon-scoring); corpus gate deferred
+
+**Shipped (corpus-independent):** `recon::SENSITIVE = 50` + `RECON_SENSITIVE_PATHS` (checked before
+`RECON_PATHS`); secret-exposure subset (creds files, private keys/`.ssh/`/`id_rsa`, `.terraform/`,
+`(database|parameters|secrets|settings|credentials).ya?ml`, actuator heapdump/env/configprops/
+threaddump/jolokia/shutdown/dump, `wp-config.php`/`.txt`) scores 50; generic probes stay 25. Tag
+unchanged (`recon_path`), no threshold change. 50 stays **below** `block_at = 70` (two hits to
+cumulative-block; single-hit ≤ challenge). 21 tier-separation unit tests; existing `benign_corpus.rs`
+FP guard stays green (interim). **Deferred to Wave B:** the committed-corpus zero-FP gate + any ≥70
+single-hit-block escalation (owner-gated).
+
 
 The FP-averse `25` (`scores.rs:117`) is right for generic probes but too low for unambiguous
 secret/RCE exposure.
