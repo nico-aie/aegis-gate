@@ -108,6 +108,12 @@ pub struct DashboardServices {
     /// store (Redis ⇒ fleet-wide) after construction, the same opt-in
     /// pattern as `allow_ca_upload` / `fleet_event_bus`.
     pub totp_store: Arc<crate::admin_auth::totp_store::TotpEnrollmentStore>,
+    /// AM-P2a — runtime admin-account store backing the account-management
+    /// API (create / reset-password / reset-TOTP / delete). Defaults to an
+    /// in-memory instance; `aegis-proxy::accept` swaps in the StateBackend-
+    /// wired store after construction, the same opt-in pattern as
+    /// `totp_store`, and also injects it into the `admin_directory` overlay.
+    pub admin_account_store: Arc<crate::admin_auth::account_store::AdminAccountStore>,
     /// AU-1 — auth audit emitter (login_success / login_failure /
     /// logout events with per-IP flood aggregation).
     pub login_auditor: Arc<crate::api::login_audit::LoginAuditor>,
@@ -659,6 +665,9 @@ impl DashboardServices {
                 admin_directory,
                 totp_store: Arc::new(
                     crate::admin_auth::totp_store::TotpEnrollmentStore::in_memory(),
+                ),
+                admin_account_store: Arc::new(
+                    crate::admin_auth::account_store::AdminAccountStore::in_memory(),
                 ),
                 login_auditor: Arc::new(crate::api::login_audit::LoginAuditor::new(
                     bus_handle.clone(),

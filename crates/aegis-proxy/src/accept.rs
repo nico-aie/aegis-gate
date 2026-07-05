@@ -550,9 +550,19 @@ pub(crate) async fn admin_accept_loop(
             state_backend.clone(),
         ),
     );
+    // AM-P2a — runtime admin-account store on the same backend (fleet-wide +
+    // durable). Overlaid by the login directory (create/reset/delete without
+    // a YAML edit) and shared with the account-management API via
+    // `DashboardServices`.
+    let admin_account_store = Arc::new(
+        aegis_control::admin_auth::account_store::AdminAccountStore::with_backend(
+            state_backend.clone(),
+        ),
+    );
     let admin_directory = Arc::new(
         aegis_control::api::login::AdminDirectory::from_config(auth)
-            .with_totp_store(Arc::clone(&totp_store)),
+            .with_totp_store(Arc::clone(&totp_store))
+            .with_account_store(Arc::clone(&admin_account_store)),
     );
     let session_idle_seconds = auth.session_ttl_idle.as_secs();
 
@@ -1113,6 +1123,10 @@ pub(crate) async fn admin_accept_loop(
     // overlays), so /api/admin/totp/enroll|confirm and authenticate()
     // read/write identical state.
     services.totp_store = Arc::clone(&totp_store);
+    // AM-P2a — same story for the runtime account store: the account-mgmt
+    // API mutates it through `services`, and the login directory overlays
+    // the same instance, so create/reset/delete converge with authenticate().
+    services.admin_account_store = Arc::clone(&admin_account_store);
     // MTLS-T10 Phase 2 — share the live trust store as a type-erased
     // writer so the audit-mutated PUT handler can hot-swap roots.
     services.trust_anchor_writer = client_trust
