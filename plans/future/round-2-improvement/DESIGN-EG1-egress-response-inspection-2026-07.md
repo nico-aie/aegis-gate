@@ -133,6 +133,8 @@ round-2 response goes out.
 ## 7. Acceptance (mirrors the plan file)
 
 - [x] This doc reviewed by owner (2026-07-05, §6 decisions recorded); §1 framing agreed → EG-2/EG-3 unlocked.
-- [ ] EG-2 detectors live log-only with bench evidence + risk-model wiring.
+- [x] EG-2 detectors live log-only with risk-model wiring — ✅ 2026-07-05 (T4 `egress_leak`,
+      T5 `egress_volume`, T2/T3 `egress_sensitive`; all default-OFF). `max_scan_bytes` decision:
+      cap the EG-2 read only, leave the shipped `redact_dlp` rung full-body/unchanged.
 - [ ] EG-3 page live from existing signals.
 - [ ] Out-of-scope boundary documented with integration guidance (§1).
