@@ -115,19 +115,24 @@ or (b) drop the card from v1. Owner picks at EG-3 kickoff. mTLS card note: the
 `/api/mtls/*` identity tracker is **downstream** (client) identity; upstream
 zero_trust status is thin — surface it via member health, don't promise more.
 
-## 6. Decision points for the owner
+## 6. Decision points for the owner — ✅ DECIDED (Nico, 2026-07-05)
 
-1. **Detector order** — proposal: T4 → T5 → T2/T3 (value/cost). Veto/reorder?
-2. **T2/T3 scope** — PAN+secret-markers only in v1, or full PII-shape set?
-   (FP risk concentrates in the PII shapes.)
-3. **EG-3 page name/placement** — "Internal Flows" as its own page vs a
-   section on Health & SLOs.
-4. **Committee wording** — sign off on the §1 boundary statement before it
-   goes in the round-2 response.
+1. **Detector order** — **T4 → T5 → T2/T3** confirmed (value/cost order).
+2. **T2/T3 scope** — **PAN + secret markers only in v1** (Luhn-validated PANs,
+   PEM/cloud-credential/bearer markers). PII-shape density deferred until the
+   FPM corpus exists.
+3. **EG-3 page** — **own "Internal Flows" page** (standard pages.jsx + NAV
+   registration).
+4. **Propagation-lag card** — **piggyback the active config version as one
+   field on the existing per-node fleet snapshot** (a field, not a new
+   collector; keeps the card honest to "aggregation only").
+
+Committee §1 boundary wording: not vetoed at review; flag any edits before the
+round-2 response goes out.
 
 ## 7. Acceptance (mirrors the plan file)
 
-- [ ] This doc reviewed by owner; §1 framing agreed → unlocks EG-2/EG-3.
+- [x] This doc reviewed by owner (2026-07-05, §6 decisions recorded); §1 framing agreed → EG-2/EG-3 unlocked.
 - [ ] EG-2 detectors live log-only with bench evidence + risk-model wiring.
 - [ ] EG-3 page live from existing signals.
 - [ ] Out-of-scope boundary documented with integration guidance (§1).

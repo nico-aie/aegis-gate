@@ -1,6 +1,6 @@
 # FEAT — Egress & internal-traffic visibility (design-first)
 
-> **Type:** FEAT (committee round-2 🟡4) · **Status:** ⏳ EG-1 design doc DELIVERED 2026-07-05, awaiting owner review — **design-first**, EG-2/EG-3 gated on that review
+> **Type:** FEAT (committee round-2 🟡4) · **Status:** 🔄 EG-1 ✅ REVIEWED & SIGNED OFF 2026-07-05 (decisions in design doc §6) — EG-2/EG-3 UNLOCKED; next = EG-2 T4 error-leak detector
 > **Track ID prefix:** `EG-<1–3>` · Largest and least-defined round-2 item — do last; EG-1 is a
 > design doc, not code → [`DESIGN-EG1-egress-response-inspection-2026-07.md`](../future/round-2-improvement/DESIGN-EG1-egress-response-inspection-2026-07.md).
 
@@ -63,7 +63,9 @@ Candidate detectors (final set per EG-1; all content-type-gated, size-capped, lo
 
 ## 4. Acceptance
 
-- [ ] EG-1 design doc reviewed by owner; committee framing agreed.
+- [x] EG-1 design doc reviewed by owner (2026-07-05); committee framing agreed; decisions:
+      T4→T5→T2/T3 order, T2/T3 v1 = PAN+secret markers only, own "Internal Flows" page,
+      propagation-lag via config-version field on fleet snapshot.
 - [ ] EG-2: response-path detectors live in log-only with bench evidence; risk-model integration.
 - [ ] EG-3: internal-flows page live from existing signals.
 - [ ] Documented boundary: origin-initiated egress explicitly out of scope with integration guidance.
