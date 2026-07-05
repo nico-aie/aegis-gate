@@ -67,10 +67,11 @@ tripwire (recon scoring + RC-4 back it up). Linear scan, cap 256 — keep the li
       caller → permanent self-block of the org's own monitoring. Mitigated by the REFERENCE.md
       upgrade note + `canary_paths: []` opt-out + mask-persistence honoring pre-upgrade toggles;
       Nico decides keep vs drop before merge.
-- [ ] Optional regression test: config-plane round-trip of the opt-out — seed `ConfigStore` with
-      (a) a doc lacking `canary_paths` and (b) `canary_paths: []`, assert (a) re-seeds curated and
-      (b) stays empty through `activate`/`canonicalize_active_doc`. Reviewer hand-traced this safe
-      (text-level YAML merges never materialize the struct) but no test pins it.
+- [x] Optional regression test: config-plane round-trip of the opt-out — DONE (branch
+      `test/rc1-canary-optout-roundtrip`). Three tests in `config_store.rs`: opt-out `[]` text
+      survives activate+canonicalize verbatim; a doc lacking the key is never injected with the
+      curated default by the config plane; and the serde half — `load_config_str` re-seeds curated
+      when absent, stays empty on explicit `[]`. All pass (confirms the reviewer's hand-trace; no bug).
 
 ### RC-5a — populate top-level `ip` in admin audit events (V9) · **S**
 
