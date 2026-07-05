@@ -212,6 +212,7 @@ impl AuditedMutate {
             action: req.action.into(),
             reason: req.reason.into(),
             diff: serde_json::json!({ "before": before, "after": after }),
+            client_ip: String::new(),
         };
         let event: AuditEvent = entry.to_audit_event(req.request_id);
         let chain_entry = {
@@ -265,6 +266,7 @@ impl AuditedMutate {
             action: req.action.into(),
             reason: req.reason.into(),
             diff: serde_json::json!({ "before": before, "after": after }),
+            client_ip: String::new(),
         };
         let event: AuditEvent = entry.to_audit_event(req.request_id);
         let chain_entry = {
