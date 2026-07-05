@@ -261,6 +261,74 @@ pub(crate) async fn process_admin_logout(
 }
 
 #[cfg(test)]
+mod login_page_contract_tests {
+    // TOTP-5 — the shipped login page must speak the SAME protocol the
+    // backend serves, or the flow silently breaks in the browser (the
+    // exact drift found in review: authenticate() grew totp_code +
+    // enrollment_required while login.js still posted user/password and
+    // blind-redirected on 200). These guards pin the FE assets to the
+    // backend contract; they fail when either side renames a field or
+    // endpoint without updating the other.
+    const LOGIN_JS: &str = include_str!("assets/login.js");
+    const LOGIN_HTML: &str = include_str!("assets/login.html");
+
+    #[test]
+    fn login_form_carries_a_totp_code_field() {
+        // Enrolled accounts must be able to submit their app code from
+        // the login page (LoginRequest.totp_code).
+        assert!(
+            LOGIN_HTML.contains("name=\"totp_code\""),
+            "login.html must have a totp_code input for enrolled accounts",
+        );
+        assert!(
+            LOGIN_JS.contains("totp_code"),
+            "login.js must send totp_code in the login POST body",
+        );
+    }
+
+    #[test]
+    fn login_js_handles_the_enrollment_required_state() {
+        // A 200 with enrollment_required:true must NOT redirect to the
+        // dashboard (every API there 403s for that session) — it must
+        // switch to the QR enrollment flow.
+        assert!(
+            LOGIN_JS.contains("enrollment_required"),
+            "login.js must branch on the enrollment_required response field",
+        );
+    }
+
+    #[test]
+    fn login_js_drives_the_enroll_and_confirm_endpoints() {
+        assert!(
+            LOGIN_JS.contains("/api/admin/totp/enroll"),
+            "login.js must call the enroll endpoint to fetch the QR",
+        );
+        assert!(
+            LOGIN_JS.contains("/api/admin/totp/confirm"),
+            "login.js must confirm the app code to activate the factor",
+        );
+        // Both are POSTs behind the CSRF gate — the double-submit header
+        // must be read from the JS-readable aegis_csrf cookie.
+        assert!(
+            LOGIN_JS.contains("x-csrf-token") && LOGIN_JS.contains("aegis_csrf"),
+            "login.js must send x-csrf-token from the aegis_csrf cookie",
+        );
+    }
+
+    #[test]
+    fn login_html_has_the_enrollment_surface() {
+        // QR container (the server returns an inline SVG), manual-entry
+        // secret fallback, and the 6-digit confirm input.
+        for id in ["enroll-section", "enroll-qr", "enroll-secret", "enroll-code"] {
+            assert!(
+                LOGIN_HTML.contains(&format!("id=\"{id}\"")),
+                "login.html must have #{id} for the enrollment flow",
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod au1_wiring_tests {
     // AU-1 (committee round-2 🟡3) — the login path must leave an
     // audit trail. These drive the real process_admin_login /
