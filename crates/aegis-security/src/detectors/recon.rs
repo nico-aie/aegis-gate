@@ -536,6 +536,71 @@ mod tests {
     path_negative!(fp_parameters_api,     "/api/parameters?env=prod");
     path_negative!(fp_file_manager_list,  "/file-manager/list");
 
+    // ── RC-3 (2026-07-05) — genuinely-missing signature families ───────
+    // Raw-form positives + look-alike negatives per family. Score stays
+    // at recon::PATH (25) — no single-hit block; corpus re-validation is
+    // deferred to Wave B. Raw forms only (detectors see the raw
+    // percent-encoded path; never validate via the Python harness).
+
+    // Secrets — private keys, npm/git credential files, generic secrets.*
+    path_positive!(rc3_id_rsa_bare,        "/id_rsa");
+    path_positive!(rc3_npmrc,              "/.npmrc");
+    path_positive!(rc3_git_credentials,    "/.git-credentials");
+    path_positive!(rc3_secrets_json,       "/secrets.json");
+    path_positive!(rc3_secret_txt,         "/secret.txt");
+    path_positive!(rc3_secrets_env,        "/secrets.env");
+    path_positive!(rc3_secrets_config,     "/secrets.config");
+    // ...look-alikes that must NOT fire (the RC-1 canary negatives + more).
+    path_negative!(rc3_fp_id_rsa_guide,    "/id_rsa_setup_guide.html");
+    path_negative!(rc3_fp_secrets_guide,   "/secrets-rotation-guide.html");
+    path_negative!(rc3_fp_npmrc_example,   "/.npmrc-example");
+    path_negative!(rc3_fp_secretary,       "/api/secretary/list");
+
+    // V2 real gaps — word.env (config.env/aws.env), wp-config.txt,
+    // .backup suffix, webroot archive dumps.
+    path_positive!(rc3_config_env,         "/config.env");
+    path_positive!(rc3_aws_env,            "/aws.env");
+    path_positive!(rc3_wp_config_txt,      "/wp-config.txt");
+    path_positive!(rc3_config_backup,      "/config.backup");
+    path_positive!(rc3_www_targz,          "/www.tar.gz");
+    path_positive!(rc3_site_zip,           "/site.zip");
+    path_positive!(rc3_db_gz,              "/db.gz");
+    // ...must NOT match *.environment or legit downloadable archives.
+    path_negative!(rc3_fp_app_environment, "/app.environment");
+    path_negative!(rc3_fp_settings_environ,"/settings.environment");
+    path_negative!(rc3_fp_asset_js_gz,     "/assets/app.js.gz");
+    path_negative!(rc3_fp_report_zip,      "/downloads/report.zip");
+    path_negative!(rc3_fp_photos_zip,      "/albums/holiday-photos.zip");
+
+    // Exchange / ProxyShell — the .json autodiscover SSRF vector and
+    // product login pages. The legit .xml autodiscover (hit by every
+    // Outlook client) must NOT fire.
+    path_positive!(rc3_autodiscover_json,  "/autodiscover/autodiscover.json?@evil.com/x");
+    path_positive!(rc3_owa_logon,          "/owa/auth/logon.aspx");
+    path_positive!(rc3_manageengine_login, "/Core/Skin/Login.aspx");
+    path_negative!(rc3_fp_autodiscover_xml,"/autodiscover/autodiscover.xml");
+    path_negative!(rc3_fp_logon_history,   "/api/logon-history?user=1");
+
+    // WordPress — abused wp-json subpaths, enumeration manifest, xmlrpc.
+    // Bare /wp-json/ and legit REST collections must NOT fire.
+    path_positive!(rc3_wpjson_gravitysmtp, "/wp-json/gravitysmtp/v1/settings");
+    path_positive!(rc3_wpjson_settings,    "/wp-json/wp/v2/settings");
+    path_positive!(rc3_wlwmanifest,        "/wlwmanifest.xml");
+    path_positive!(rc3_xmlrpc,             "/xmlrpc.php");
+    path_negative!(rc3_fp_wpjson_root,     "/wp-json/");
+    path_negative!(rc3_fp_wpjson_posts,    "/wp-json/wp/v2/posts?per_page=10");
+    path_negative!(rc3_fp_xmlrpc_guide,    "/blog/xmlrpc-guide.html");
+
+    // Misc — Jenkinsfile, Jenkins job config.xml, Terraform working dir.
+    path_positive!(rc3_jenkinsfile,        "/Jenkinsfile");
+    path_positive!(rc3_jenkins_config,     "/jenkins/config.xml");
+    path_positive!(rc3_jenkins_job_config, "/jenkins/job/main/config.xml");
+    path_positive!(rc3_terraform_dir,      "/.terraform/terraform.tfstate");
+    // ...bare config.xml is too generic to flag; look-alikes must not fire.
+    path_negative!(rc3_fp_bare_config_xml, "/config.xml");
+    path_negative!(rc3_fp_jenkinsfile_view,"/JenkinsfileViewer");
+    path_negative!(rc3_fp_terraform_guide, "/my.terraform-guide");
+
     // ── L-tester run (2026-06-21) recon-path FP sweep ──────────────────
     // 165 normal requests fired recon-path. Root causes + guards below.
 
