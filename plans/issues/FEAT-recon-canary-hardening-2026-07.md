@@ -175,7 +175,17 @@ secret/RCE exposure.
 
 ## Wave C — optional/last
 
-### RC-4 — path normalization for matching (defense-in-depth) · **M**
+### RC-4 — path normalization for matching (defense-in-depth) · **M** · ✅ SHIPPED 2026-07-05 (branch feat/rc4-normalized-path-view)
+
+**Shipped:** `aegis_core::normalize::normalize_path` (percent-decode + `//`-collapse + `.`/`..`
+resolution; `Cow::Borrowed` zero-alloc when canonical; query preserved verbatim). The **canary
+tripwire** now matches raw first, then the normalized copy only when it differs — so `/%2egit/config`,
+`//​.git/config`, `/x/../.git/config` trip a `/.git/config` honeypot (closes RC-1's raw-match known
+limit). Raw stays the contract for every other detector (unchanged). Bench (release profile,
+micro): **+~14 ns/request** on the canary path for benign canonical traffic (borrow, no alloc);
+~100 ns only for non-canonical evasion paths — well within budget. Single-decode only (double-
+encoding a documented limitation). recon adoption of the same helper deferred (canary is the
+single-hit-block tripwire, the high-value target).
 
 - Collapse `//`→`/`, resolve `.`/`..`, and match a **percent-decoded copy in addition to** the raw
   form — never replacing raw (raw is the contract for other detectors,

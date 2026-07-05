@@ -178,7 +178,20 @@ impl Detector for CanaryDetector {
 
     fn inspect(&self, req: &RequestView<'_>) -> Vec<Signal> {
         let path = req.uri.path();
-        if let Some(matched) = self.paths.matches(path) {
+        // Primary match: the raw request path (unchanged fast path).
+        let matched = self.paths.matches(path).or_else(|| {
+            // RC-4 defense-in-depth: retry against a normalized copy so
+            // encoding / traversal evasions of a honeypot entry
+            // (`/%2egit/config`, `//​.git/config`, `/x/../.git/config`)
+            // still trip it. `normalize_path` borrows (no work) when the
+            // path is already canonical, so we only pay the second match
+            // when normalization actually changed something.
+            match aegis_core::normalize::normalize_path(path) {
+                std::borrow::Cow::Owned(norm) => self.paths.matches(&norm),
+                std::borrow::Cow::Borrowed(_) => None,
+            }
+        });
+        if let Some(matched) = matched {
             return vec![Signal {
                 // 100 — maximum confidence. Honeypot paths are
                 // operator-curated and have no legitimate caller, so
