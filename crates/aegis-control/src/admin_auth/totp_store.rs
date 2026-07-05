@@ -173,6 +173,21 @@ impl TotpEnrollmentStore {
         Ok(true)
     }
 
+    /// AM-P2b — admin-driven 2FA reset: drop the account's active factor and
+    /// any pending enrollment so the next login re-enrolls. Idempotent (Ok
+    /// even when nothing was set) — this is the lost-device recovery path an
+    /// admin runs for another account.
+    pub async fn clear(&self, user: &str) -> aegis_core::Result<()> {
+        if let Some(b) = &self.backend {
+            b.hdel(ACTIVE_HASH_KEY, &[user.to_string()]).await?;
+            let _ = b.del(&Self::pending_key(user)).await;
+        } else {
+            self.local_active.lock().unwrap().remove(user);
+            self.local_pending.lock().unwrap().remove(user);
+        }
+        Ok(())
+    }
+
     /// The account's confirmed factor, if any. Login overlays this over
     /// the YAML-configured state (store wins when present).
     pub async fn active(&self, user: &str) -> Option<ActiveTotp> {

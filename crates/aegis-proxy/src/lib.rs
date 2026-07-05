@@ -30,6 +30,7 @@ pub mod cluster_lease;
 pub mod config_source;
 mod accept;
 mod admin_auth_middleware;
+mod admin_accounts;
 mod admin_dispatch;
 mod admin_get;
 mod admin_login;
