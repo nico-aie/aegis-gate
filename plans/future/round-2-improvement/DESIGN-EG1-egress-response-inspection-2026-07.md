@@ -133,11 +133,11 @@ round-2 response goes out.
 ## 7. Acceptance (mirrors the plan file)
 
 - [x] This doc reviewed by owner (2026-07-05, §6 decisions recorded); §1 framing agreed → EG-2/EG-3 unlocked.
-- [x] EG-2 detectors live log-only with risk-model wiring — ✅ 2026-07-05 (T4 `egress_leak`,
-      T5 `egress_volume`, T2/T3 `egress_sensitive`; all default-OFF). `max_scan_bytes` decision:
-      cap the EG-2 read only, leave the shipped `redact_dlp` rung full-body/unchanged.
-- [x] EG-3 page live from existing signals — ✅ 2026-07-05 (`Internal Flows` page; propagation-lag
-      card uses the existing `ConfigStore::applied_map()` roster via new `/api/config/applied`,
-      not the §6.4 fleet-snapshot piggyback — the "no per-node signal" premise was outdated).
-- [x] Out-of-scope boundary documented with integration guidance (§1) — EG-3 page footer +
+- [x] EG-2 detectors live — ✅ 2026-07-05 (T4 `egress_leak`, T5 `egress_volume`, T2/T3
+      `egress_sensitive`; all default-OFF). **Owner override: observability-only — audit rows, no
+      risk-score feedback** (risk-bump-then-future-block was hard to explain). `max_scan_bytes`
+      decision: cap the EG-2 read only, leave the shipped `redact_dlp` rung full-body/unchanged.
+- [~] EG-3 page — DROPPED (owner, 2026-07-05): the cards duplicated the Scaling / Upstreams pages;
+      only config-propagation-lag was net-new. Built then reverted (page + `/api/config/applied`).
+- [x] Out-of-scope boundary documented with integration guidance (§1) —
       `docs/security/egress-observability.md`.

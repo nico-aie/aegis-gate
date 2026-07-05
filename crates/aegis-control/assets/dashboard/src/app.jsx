@@ -57,11 +57,6 @@ const NAV = [
     { id: 'health',        label: 'Health & SLOs',    icon: <window.I.Heart />,    badge: 'SLO', tone: 'warn' },
     { id: 'audit',         label: 'Audit Trail',      icon: <window.I.Book />,     badge: null },
     { id: 'scaling',       label: 'Scaling',          icon: <window.I.Cluster />,  badge: null },
-    // EG-3 (2026-07-05) — Internal Flows: the WAF's own internal traffic
-    // (fleet channel, state backend, upstream dials by zone, config-plane
-    // propagation) aggregated from existing signals. The internal-observability
-    // half of the egress track.
-    { id: 'internal-flows',label: 'Internal Flows',   icon: <window.I.Cluster />,  badge: null },
   ]},
   { group: 'Admin', items: [
     { id: 'settings',      label: 'Settings',         icon: <window.I.Settings />, badge: null },
@@ -667,7 +662,6 @@ function App() {
     case 'health':           page = <window.PageTracking />; break;
     case 'audit':            page = <window.PageAuditLog />; break;
     case 'scaling':          page = <window.PageScaling />; break;
-    case 'internal-flows':   page = <window.PageInternalFlows />; break;
     case 'settings':         page = <window.PageSettings />; break;
     case 'reports':          page = <window.PageReports />; break;
     case 'help':             page = <window.PageHelp />; break;
