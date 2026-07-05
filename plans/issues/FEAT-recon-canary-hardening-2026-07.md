@@ -86,15 +86,17 @@ happened — `FEAT-audit-coverage-gaps` is archived COMPLETE with no mention of 
 - [ ] Unit test: `to_audit_event` on an entry with a known actor IP → event `client_ip` == that IP.
 - [ ] Unit test: entry with no recorded IP → sensible fallback (empty or `unknown`), not a panic.
 
-### RC-5b — document V7/V8 as working-as-designed (+ optional metric) · **S**
+### RC-5b — document V7/V8 as working-as-designed (+ optional metric) · **S** · ✅ DONE (branch docs/rc5b-two-score-model)
 
-- [ ] Detection docs: short note explaining the two-score model (per-request SUM vs cumulative
+- [x] Detection docs: short note explaining the two-score model (per-request SUM vs cumulative
       MAX+decay, [[feedback_two_score_model]]) and the dev XFF collapse (empty `trusted_proxies` →
       all local traffic keys to `127.0.0.1`, [[feedback_dev_xff_single_ip_gates]]) so the next
-      black-box report doesn't re-misdiagnose.
-- [ ] Optional: per-path detector-hit metric independent of `risk-score` blocks (V7's one useful
-      insight — aggregate dashboards currently mask per-path detection ability). If included: unit
-      test on the metric emission.
+      black-box report doesn't re-misdiagnose. → `docs/security/risk-scoring.md` "Testing note"
+      subsection (branch `docs/rc5b-two-score-model`).
+- [x] Optional per-path detector-hit metric: **DECLINED** — per-path detection is already visible
+      without a new metric: every fired detector is stamped in `X-WAF-Rule-Id` + audit `rule_id`
+      even on allowed requests (documented in the same note). A separate counter would be redundant
+      and pull code onto a docs-only branch; skip per YAGNI.
 
 ### RC-3 — close the genuinely-missing signatures · **S–M**
 
