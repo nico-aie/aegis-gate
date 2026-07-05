@@ -254,6 +254,14 @@ pub struct ProxyContext {
     /// client's current risk score and folds any volume signal into risk.
     pub egress_volume:
         Option<Arc<aegis_security::detectors::egress_volume::EgressVolumeTracker>>,
+    /// EG-2 T2/T3 (2026-07-05) — response sensitive-data sampling. Off the
+    /// chain (needs the response body). Behind the default-OFF
+    /// `detectors.egress_sensitive` toggle; `Some` only when enabled. The
+    /// body-scrub site calls `observe_and_record(...)` (before redact) and
+    /// emits a Detection audit row per hit; the outcome hook drains the
+    /// per-IP risk delta into the `RiskTracker`.
+    pub egress_sensitive:
+        Option<Arc<aegis_security::detectors::egress_sensitive::SensitiveDataDetector>>,
     /// 2026-05-21 — gate-style on/off for the bot classifier
     /// (`cfg.bots.enabled`). The listener reads this before
     /// classifying; `false` skips classification and leaves
@@ -397,6 +405,13 @@ impl ProxyContext {
             egress_volume: cfg.detectors.egress_volume.enabled.then(|| {
                 Arc::new(
                     aegis_security::detectors::egress_volume::EgressVolumeTracker::new(),
+                )
+            }),
+            // EG-2 T2/T3 — construct only when opted in; carries the default
+            // 64 KiB cap, 1-in-8 sampling, and PAN-density threshold.
+            egress_sensitive: cfg.detectors.egress_sensitive.enabled.then(|| {
+                Arc::new(
+                    aegis_security::detectors::egress_sensitive::SensitiveDataDetector::new(),
                 )
             }),
             bots_enabled: Arc::new(std::sync::atomic::AtomicBool::new(

@@ -169,6 +169,14 @@ pub(crate) async fn handle_data_request(
             risk.record_malicious(peer.ip(), delta);
         }
     }
+    // EG-2 T2/T3 — fold the response-side sensitive-data risk delta
+    // (accumulated at the body-scrub site) into the RiskTracker here.
+    if let Some(sd) = &upstream_ctx.egress_sensitive {
+        let delta = sd.drain_risk_delta(peer.ip());
+        if delta > 0 {
+            risk.record_malicious(peer.ip(), delta);
+        }
+    }
     // EG-2 T5 (2026-07-05) — egress-volume accounting. Feed the forwarded
     // response's size + the client's CURRENT risk score to the volume
     // tracker; it fires only when the per-IP window volume crosses the
@@ -3283,6 +3291,58 @@ pub(crate) async fn forward_allow_to_upstream(
                             "method": method.to_string(),
                             "egress_leak_field": sig.field,
                             "egress_leak_score": sig.score,
+                        }),
+                    };
+                    bus.emit(ev);
+                }
+            }
+            // EG-2 T2/T3 (2026-07-05) — response sensitive-data sampling.
+            // Also runs BEFORE the on_body_frame redact so it sees the raw
+            // PAN / secret markers the `redact_dlp` rung would rewrite to
+            // `[REDACTED]` (design §"observe-before-redact"). The read is
+            // content-type-gated, size-capped and 1-in-N sampled inside
+            // `observe_and_record`; the shipped redact rung is left full-body
+            // and unchanged (design §"max_scan_bytes" decision: cap the EG-2
+            // read, not the redact rung). `always_scan = false` — risk-band-
+            // forced sampling waits until the client risk band is reachable
+            // here. Emits one Detection audit row per hit; the outcome hook
+            // folds the per-IP risk delta.
+            if let Some(sd) = &ctx.egress_sensitive {
+                let ct = parts_out
+                    .headers
+                    .get(hyper::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok());
+                for sig in sd.observe_and_record(peer_ip, ct, &body_bytes, false) {
+                    let ev = aegis_core::audit::AuditEvent {
+                        schema_version: 1,
+                        ts: chrono::Utc::now(),
+                        request_id: blake3::hash(
+                            format!(
+                                "{}:{}",
+                                peer_ip,
+                                chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+                            )
+                            .as_bytes(),
+                        )
+                        .to_hex()
+                        .to_string(),
+                        class: aegis_core::audit::AuditClass::Detection,
+                        tenant_id: None,
+                        tier: None,
+                        action: "observe".into(),
+                        reason: format!("egress sensitive-data ({})", sig.field),
+                        client_ip: peer_ip.to_string(),
+                        route_id: None,
+                        rule_id: Some("egress_sensitive".into()),
+                        risk_score: None,
+                        method: Some(method.to_string()),
+                        path: Some(path.clone()),
+                        mode: None,
+                        fields: serde_json::json!({
+                            "path": path,
+                            "method": method.to_string(),
+                            "egress_sensitive_field": sig.field,
+                            "egress_sensitive_score": sig.score,
                         }),
                     };
                     bus.emit(ev);

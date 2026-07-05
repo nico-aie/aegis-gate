@@ -1745,6 +1745,13 @@ pub async fn run(
                     egress_volume.clear();
                 }));
         }
+        // EG-2 T2/T3 — clear the sensitive-data pending-risk map on reset.
+        if let Some(egress_sensitive) = upstream_ctx.egress_sensitive.clone() {
+            rt.control
+                .register_reset_callback(std::sync::Arc::new(move || {
+                    egress_sensitive.clear();
+                }));
+        }
         // SC-1 — wire `POST /__waf_control/flush_cache` to actually evict the
         // data-plane response cache (all pools), and fan the purge out to the
         // rest of the fleet over Redis pub/sub (control-plane Redis, not the
