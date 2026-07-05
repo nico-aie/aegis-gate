@@ -13,6 +13,7 @@ pub mod fleet;
 pub mod health;
 pub mod identity;
 pub mod load_mode;
+pub mod normalize;
 pub mod pipeline;
 pub mod risk;
 pub mod sd;
