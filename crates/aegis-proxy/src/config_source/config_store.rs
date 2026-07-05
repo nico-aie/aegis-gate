@@ -474,6 +474,68 @@ mod tests {
         assert!(s.rollback(99, "u").await.is_err());
     }
 
+    // ── RC-1 follow-up (2026-07-05) — canary opt-out round-trip ────────
+    // The reviewer hand-traced that the config-plane text operations
+    // (activate strip + canonicalize) never materialize `WafConfig`, so
+    // an explicit `canary_paths: []` opt-out survives verbatim and a doc
+    // lacking the key is NOT injected with the curated default (that
+    // default fires only at deserialize). These pin that behavior.
+
+    #[tokio::test]
+    async fn canary_optout_text_survives_config_plane_roundtrip() {
+        // (b) explicit opt-out must survive activate + canonicalize as
+        // literal text — never silently re-seeded to the curated set.
+        let s = store();
+        let blob = format!("{FULL_YAML}risk:\n  canary_paths: []\n");
+        s.activate(0, blob, "u", "").await.unwrap();
+        let _ = s.canonicalize_active_doc().await.unwrap();
+        let doc = s.load().await.unwrap().unwrap();
+        assert!(
+            doc.blob.contains("canary_paths: []"),
+            "explicit opt-out must survive verbatim; stored blob:\n{}",
+            doc.blob
+        );
+        // Bootstrap keys stripped, the dynamic risk section preserved.
+        assert!(!aegis_core::yaml_has_legacy_bootstrap_keys(&doc.blob));
+    }
+
+    #[tokio::test]
+    async fn canary_paths_absent_is_not_injected_by_config_plane() {
+        // (a) a doc lacking the key must stay lacking it through the
+        // config plane — the curated default is applied on deserialize,
+        // never baked into the stored text.
+        let s = store();
+        s.activate(0, FULL_YAML.into(), "u", "").await.unwrap();
+        let _ = s.canonicalize_active_doc().await.unwrap();
+        let doc = s.load().await.unwrap().unwrap();
+        assert!(
+            !doc.blob.contains("canary_paths"),
+            "config plane must not inject canary_paths; stored blob:\n{}",
+            doc.blob
+        );
+    }
+
+    #[test]
+    fn deserialize_reseeds_curated_when_key_absent_and_honors_optout() {
+        // The serde half of the round-trip: (a) absent → curated default;
+        // (b) `[]` → stays empty. This is what fires when the stored blob
+        // above is loaded into a live `WafConfig`.
+        let absent = aegis_core::load_config_str(FULL_YAML)
+            .expect("FULL_YAML parses");
+        assert!(
+            !absent.risk.canary_paths.is_empty(),
+            "absent canary_paths must re-seed the curated default"
+        );
+        let optout = aegis_core::load_config_str(&format!(
+            "{FULL_YAML}risk:\n  canary_paths: []\n"
+        ))
+        .expect("opt-out YAML parses");
+        assert!(
+            optout.risk.canary_paths.is_empty(),
+            "explicit [] must disarm (stay empty), not re-seed"
+        );
+    }
+
     #[tokio::test]
     async fn applied_map_tracks_per_node_versions() {
         let s = store();

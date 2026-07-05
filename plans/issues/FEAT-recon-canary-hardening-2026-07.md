@@ -69,10 +69,11 @@ tripwire (recon scoring + RC-4 back it up). Linear scan, cap 256 — keep the li
       detected + accumulated, just not a hard tripwire. Curated set is now **11 paths**. Branch
       `fix/rc1-drop-actuator-env-canary` (TDD: expected-set test + canary do-not-fire pin + REFERENCE
       upgrade-note reword).
-- [ ] Optional regression test: config-plane round-trip of the opt-out — seed `ConfigStore` with
-      (a) a doc lacking `canary_paths` and (b) `canary_paths: []`, assert (a) re-seeds curated and
-      (b) stays empty through `activate`/`canonicalize_active_doc`. Reviewer hand-traced this safe
-      (text-level YAML merges never materialize the struct) but no test pins it.
+- [x] Optional regression test: config-plane round-trip of the opt-out — DONE (branch
+      `test/rc1-canary-optout-roundtrip`, merged). Three tests in `config_store.rs`: opt-out `[]` text
+      survives activate+canonicalize verbatim; a doc lacking the key is never injected with the
+      curated default by the config plane; and the serde half — `load_config_str` re-seeds curated
+      when absent, stays empty on explicit `[]`. All pass (confirms the reviewer's hand-trace; no bug).
 
 ### RC-5a — populate top-level `ip` in admin audit events (V9) · **S**
 
@@ -187,7 +188,17 @@ secret/RCE exposure.
 
 ## Wave C — optional/last
 
-### RC-4 — path normalization for matching (defense-in-depth) · **M**
+### RC-4 — path normalization for matching (defense-in-depth) · **M** · ✅ SHIPPED 2026-07-05 (branch feat/rc4-normalized-path-view)
+
+**Shipped:** `aegis_core::normalize::normalize_path` (percent-decode + `//`-collapse + `.`/`..`
+resolution; `Cow::Borrowed` zero-alloc when canonical; query preserved verbatim). The **canary
+tripwire** now matches raw first, then the normalized copy only when it differs — so `/%2egit/config`,
+`//​.git/config`, `/x/../.git/config` trip a `/.git/config` honeypot (closes RC-1's raw-match known
+limit). Raw stays the contract for every other detector (unchanged). Bench (release profile,
+micro): **+~14 ns/request** on the canary path for benign canonical traffic (borrow, no alloc);
+~100 ns only for non-canonical evasion paths — well within budget. Single-decode only (double-
+encoding a documented limitation). recon adoption of the same helper deferred (canary is the
+single-hit-block tripwire, the high-value target).
 
 - Collapse `//`→`/`, resolve `.`/`..`, and match a **percent-decoded copy in addition to** the raw
   form — never replacing raw (raw is the contract for other detectors,
