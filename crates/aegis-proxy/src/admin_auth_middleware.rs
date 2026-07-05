@@ -78,8 +78,12 @@ pub enum Admit {
 }
 
 /// 2026-05-17 F-CRITICAL-002 + 004 + 005 — primary gate.
-pub async fn admit(
-    req: &Request<hyper::body::Incoming>,
+///
+/// Generic over the body type (TOTP-6): the gate only reads
+/// method/path/headers, and `B: ()` lets unit tests drive the full
+/// admit path without faking a hyper `Incoming`.
+pub async fn admit<B>(
+    req: &Request<B>,
     peer: SocketAddr,
     cfg: &WafConfig,
     auth_sessions: &Arc<AuthSessionStore>,
@@ -181,6 +185,14 @@ pub async fn admit(
                 path = %path,
                 "admin: enrollment-only session attempted a non-enrollment endpoint",
             );
+            // TOTP-6 — a human navigating in a tab gets bounced to the
+            // login page (which hosts the QR enrollment flow) exactly
+            // like an unauthenticated navigation; only programmatic
+            // fetches see the JSON 403.
+            if wants_html_navigation(req) {
+                let next = request_path_with_query(req);
+                return Admit::Denied(login_redirect_response(&next));
+            }
             return Admit::Denied(deny_response(
                 StatusCode::FORBIDDEN,
                 "totp_enrollment_required",
@@ -385,8 +397,8 @@ fn requires_write_scope(method: &Method) -> bool {
     )
 }
 
-fn try_bearer_auth(
-    req: &Request<hyper::body::Incoming>,
+fn try_bearer_auth<B>(
+    req: &Request<B>,
     cfg: &WafConfig,
 ) -> Option<Identity> {
     let header = req.headers().get("authorization")?.to_str().ok()?;
@@ -413,8 +425,8 @@ fn try_bearer_auth(
 /// Validate the session cookie. Returns the identity plus the record's
 /// `totp_verified` flag so `admit` can hold enrollment-only sessions to
 /// the TOTP surface (TOTP-2).
-async fn try_session_auth(
-    req: &Request<hyper::body::Incoming>,
+async fn try_session_auth<B>(
+    req: &Request<B>,
     _cfg: &WafConfig,
     sessions: &Arc<AuthSessionStore>,
 ) -> Option<(Identity, bool)> {
@@ -436,8 +448,8 @@ async fn try_session_auth(
 
 /// Extract a named cookie value from the Cookie header. RFC 6265
 /// minimal parser — pairs are `name=value` separated by `; `.
-fn extract_cookie<'a>(
-    req: &'a Request<hyper::body::Incoming>,
+fn extract_cookie<'a, B>(
+    req: &'a Request<B>,
     name: &str,
 ) -> Option<&'a str> {
     let header = req.headers().get(hyper::header::COOKIE)?;

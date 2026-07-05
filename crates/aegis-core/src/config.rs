@@ -7140,12 +7140,21 @@ path: /var/log/waf/audit.jsonl
                 cfg.risk.trust_recovery.is_some(),
                 "dev config must enable trust recovery (P6)",
             );
+            // TOTP-1 — dev.yaml migrated from the legacy top-level
+            // password_hash_ref to the multi-admin `accounts:` block.
+            let accounts = cfg.admin.dashboard_auth.effective_accounts();
             assert!(
-                cfg.admin.dashboard_auth.password_hash_ref
-                    .starts_with("$argon2id$"),
-                "admin password must be a real argon2id hash, \
-                 not a `${{secret:env:…}}` reference",
+                !accounts.is_empty(),
+                "dev config must declare at least one admin account",
             );
+            for account in &accounts {
+                assert!(
+                    account.password_hash_ref.starts_with("$argon2id$"),
+                    "admin password for `{}` must be a real argon2id hash, \
+                     not a `${{secret:env:…}}` reference",
+                    account.username,
+                );
+            }
         }
     }
 
