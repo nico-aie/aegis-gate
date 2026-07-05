@@ -2373,6 +2373,26 @@ accounts:
     }
 
     #[test]
+    fn require_totp_defaults_to_true() {
+        // TOTP-2 (TF-1) — enforcement is the DEFAULT; dev/CI opt out
+        // loudly with an explicit `require_totp: false`.
+        assert!(DashboardAuthConfig::default().require_totp);
+        let cfg = parse(
+            r#"
+csrf_secret_ref: "test-csrf-secret-do-not-use-in-production-32b"
+"#,
+        );
+        assert!(cfg.require_totp, "omitted require_totp must default to enforced");
+        let cfg = parse(
+            r#"
+csrf_secret_ref: "test-csrf-secret-do-not-use-in-production-32b"
+require_totp: false
+"#,
+        );
+        assert!(!cfg.require_totp);
+    }
+
+    #[test]
     fn csrf_validation_fires_when_accounts_enable_login() {
         // CTL-02 must keep holding on the accounts path: any account
         // with a password hash means login is reachable, so an empty

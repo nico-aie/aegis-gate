@@ -1050,4 +1050,133 @@ mod tests {
         let record = ss.validate(&session_value).await.expect("session must validate");
         assert_eq!(record.user, "alice", "audit identity must be per-account");
     }
+
+    // ---- TOTP-2 (TF-1) — require_totp enforcement -----------------------
+    //
+    // A password alone must never grant admin access. With enforcement on
+    // (the production config default) an un-enrolled account's correct
+    // password yields an ENROLLMENT-ONLY session (totp_verified=false —
+    // the middleware restricts it to the TOTP enroll/confirm surface),
+    // never a full session.
+
+    fn cookie_value(cookie: &str) -> String {
+        cookie
+            .strip_prefix("aegis_session=")
+            .and_then(|rest| rest.split(';').next())
+            .unwrap()
+            .to_string()
+    }
+
+    fn enforced_unenrolled_directory() -> AdminDirectory {
+        AdminDirectory::new(vec![Arc::new(AdminIdentity {
+            user: "alice".into(),
+            password_hash: hash_password("alice-pw-1234").unwrap(),
+            ..AdminIdentity::default()
+        })])
+        .with_require_totp(true)
+    }
+
+    #[tokio::test]
+    async fn require_totp_password_only_login_yields_enrollment_only_session() {
+        let (_, rl, ss, ds) = fixtures();
+        let dir = enforced_unenrolled_directory();
+        let outcome = authenticate(
+            &login_body("alice", "alice-pw-1234"),
+            &dir, &rl, &ss, &ds, "127.0.0.1", "ua", 1800,
+        ).await;
+        let (session_cookie, body) = match outcome {
+            LoginOutcome::EnrollmentRequired { session_cookie, body, .. } => {
+                (session_cookie, body)
+            }
+            other => panic!("expected EnrollmentRequired, got {other:?}"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["enrollment_required"], true);
+        assert_eq!(v["user"], "alice");
+        // The session exists but is NOT second-factor verified — the
+        // middleware keys the enrollment-only restriction off this flag.
+        let record = ss
+            .validate(&cookie_value(&session_cookie))
+            .await
+            .expect("enrollment session must validate");
+        assert!(!record.totp_verified, "enrollment session must not be totp_verified");
+        assert_eq!(record.user, "alice");
+    }
+
+    #[tokio::test]
+    async fn require_totp_wrong_password_still_unauthorized_not_enrollment() {
+        // Enforcement must not turn a WRONG password into an enrollment
+        // session — password verification stays the first gate.
+        let (_, rl, ss, ds) = fixtures();
+        let dir = enforced_unenrolled_directory();
+        let outcome = authenticate(
+            &login_body("alice", "wrong-pw"),
+            &dir, &rl, &ss, &ds, "127.0.0.1", "ua", 1800,
+        ).await;
+        assert!(matches!(outcome, LoginOutcome::Unauthorized { .. }));
+    }
+
+    #[tokio::test]
+    async fn require_totp_enrolled_account_stays_strict_and_fully_verified() {
+        let (_, rl, ss, ds) = fixtures();
+        let dir = AdminDirectory::new(vec![Arc::new(AdminIdentity {
+            user: "bob".into(),
+            password_hash: hash_password("bob-pw-5678").unwrap(),
+            totp_secret_b32: TEST_TOTP_SECRET_B32.into(),
+            totp_enabled: true,
+            ..AdminIdentity::default()
+        })])
+        .with_require_totp(true);
+        // Without a code → plain Unauthorized (never enrollment — the
+        // account IS enrolled).
+        let outcome = authenticate(
+            &login_body("bob", "bob-pw-5678"),
+            &dir, &rl, &ss, &ds, "127.0.0.1", "ua", 1800,
+        ).await;
+        assert!(matches!(outcome, LoginOutcome::Unauthorized { .. }));
+        // With the app code → full, totp_verified session.
+        let code = current_totp_code(TEST_TOTP_SECRET_B32);
+        let body = serde_json::json!({
+            "user": "bob", "password": "bob-pw-5678", "totp_code": code,
+        }).to_string();
+        let outcome = authenticate(&body, &dir, &rl, &ss, &ds, "10.0.0.3", "ua", 1800).await;
+        let session_cookie = match outcome {
+            LoginOutcome::Ok { session_cookie, .. } => session_cookie,
+            other => panic!("expected Ok, got {other:?}"),
+        };
+        let record = ss
+            .validate(&cookie_value(&session_cookie))
+            .await
+            .expect("session must validate");
+        assert!(record.totp_verified, "full login must be second-factor verified");
+    }
+
+    #[tokio::test]
+    async fn require_totp_false_preserves_password_only_login() {
+        // Explicit opt-out (dev/CI) — today's behaviour, fully verified
+        // session (the policy is satisfied because there is no policy).
+        let (_, rl, ss, ds) = fixtures();
+        let dir = AdminDirectory::new(vec![Arc::new(AdminIdentity {
+            user: "alice".into(),
+            password_hash: hash_password("alice-pw-1234").unwrap(),
+            ..AdminIdentity::default()
+        })])
+        .with_require_totp(false);
+        let outcome = authenticate(
+            &login_body("alice", "alice-pw-1234"),
+            &dir, &rl, &ss, &ds, "127.0.0.1", "ua", 1800,
+        ).await;
+        let session_cookie = match outcome {
+            LoginOutcome::Ok { session_cookie, .. } => session_cookie,
+            other => panic!("expected Ok, got {other:?}"),
+        };
+        let record = ss
+            .validate(&cookie_value(&session_cookie))
+            .await
+            .expect("session must validate");
+        assert!(
+            record.totp_verified,
+            "opt-out sessions must be fully admitted (not enrollment-locked)",
+        );
+    }
 }

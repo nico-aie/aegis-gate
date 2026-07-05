@@ -511,6 +511,24 @@ mod tests {
     }
 
     #[test]
+    fn enrollment_only_sessions_reach_only_the_totp_surface() {
+        // TOTP-2 (TF-1) — a session issued in the enrollment_required
+        // state (totp_verified=false) may reach ONLY the TOTP
+        // enroll/confirm endpoints; everything else on the admin surface
+        // is denied until the second factor is confirmed. (Login/logout/
+        // health/static are open endpoints and never get here.)
+        assert!(is_enrollment_allowed(&Method::POST, "/api/admin/totp/enroll"));
+        assert!(is_enrollment_allowed(&Method::POST, "/api/admin/totp/confirm"));
+        // Nothing else unlocks.
+        assert!(!is_enrollment_allowed(&Method::GET, "/api/stats"));
+        assert!(!is_enrollment_allowed(&Method::GET, "/api/admin/sessions"));
+        assert!(!is_enrollment_allowed(&Method::PUT, "/api/detectors"));
+        assert!(!is_enrollment_allowed(&Method::POST, "/api/rules"));
+        assert!(!is_enrollment_allowed(&Method::GET, "/api/admin/totp/enroll"));
+        assert!(!is_enrollment_allowed(&Method::DELETE, "/api/admin/totp/enroll"));
+    }
+
+    #[test]
     fn csp_report_is_csrf_exempt() {
         assert!(is_csrf_exempt("/api/csp/report"));
         // Other POST endpoints are NOT exempt.
