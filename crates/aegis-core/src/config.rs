@@ -5081,6 +5081,14 @@ pub struct DetectorsConfig {
     /// OFF** until FP-tuned; `Some` on `ProxyContext` only when enabled.
     #[serde(default = "default_detector_toggle_off")]
     pub egress_error_leak: DetectorToggle,
+    /// EG-2 T5 (2026-07-05) — response egress-volume accounting. Off the
+    /// chain (needs the response size + `RiskTracker`, seen only at the
+    /// outcome hook). Per-IP sliding-window bytes-out; scores only when the
+    /// window volume crosses the threshold AND the client is already
+    /// risk-elevated (the FP guard vs legit large downloads). Log/score only,
+    /// never blocks. **Default OFF**; `Some` on `ProxyContext` when enabled.
+    #[serde(default = "default_detector_toggle_off")]
+    pub egress_volume: DetectorToggle,
     /// AC-P2-e (2026-07-03) — Referer origin validation, a sub-feature of
     /// the `behavior_signals` detector. **Default OFF**; only active when
     /// `behavior_signals` is also enabled. Restart-to-change (boot-time
@@ -5249,6 +5257,7 @@ impl Default for DetectorsConfig {
             behavior_analyzer: default_detector_toggle_off(),
             enumeration: default_detector_toggle_off(),
             egress_error_leak: default_detector_toggle_off(),
+            egress_volume: default_detector_toggle_off(),
             referer_origin: RefererOriginConfig::default(),
             velocity: default_detector_toggle(),
             canary: default_detector_toggle(),
@@ -6675,6 +6684,15 @@ redis:
         let cfg: DetectorsConfig =
             serde_yaml::from_str("egress_error_leak: { enabled: true }").unwrap();
         assert!(cfg.egress_error_leak.enabled);
+    }
+
+    // EG-2 T5 (2026-07-05) — egress-volume detector defaults OFF + parses.
+    #[test]
+    fn egress_volume_defaults_off() {
+        assert!(!DetectorsConfig::default().egress_volume.enabled);
+        let cfg: DetectorsConfig =
+            serde_yaml::from_str("egress_volume: { enabled: true }").unwrap();
+        assert!(cfg.egress_volume.enabled);
     }
 
     // AC-P2-e (2026-07-03) — referer_origin default-OFF + YAML wire shape.

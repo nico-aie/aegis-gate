@@ -169,6 +169,61 @@ pub(crate) async fn handle_data_request(
             risk.record_malicious(peer.ip(), delta);
         }
     }
+    // EG-2 T5 (2026-07-05) — egress-volume accounting. Feed the forwarded
+    // response's size + the client's CURRENT risk score to the volume
+    // tracker; it fires only when the per-IP window volume crosses the
+    // threshold AND the client is already risk-elevated (the FP guard). Gated
+    // on `Action::Allow` so a WAF block page (small, WAF-origin) never counts
+    // as upstream egress. Size comes from Content-Length (0 for streaming /
+    // unknown size — those only track, never fire). Log/score only: a hit
+    // records a risk delta + a Detection audit row.
+    if let Some(ev) = &upstream_ctx.egress_volume {
+        if matches!(tag.action, aegis_control::interop::headers::Action::Allow) {
+            let bytes = resp
+                .headers()
+                .get(hyper::header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .unwrap_or(0);
+            let client_risk = risk.snapshot(peer.ip()).map(|s| s.score).unwrap_or(0);
+            if let Some(sig) = ev.observe(peer.ip(), bytes, client_risk) {
+                risk.record_malicious(peer.ip(), sig.score);
+                let ip = peer.ip();
+                let event = aegis_core::audit::AuditEvent {
+                    schema_version: 1,
+                    ts: chrono::Utc::now(),
+                    request_id: blake3::hash(
+                        format!(
+                            "{}:{}",
+                            ip,
+                            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+                        )
+                        .as_bytes(),
+                    )
+                    .to_hex()
+                    .to_string(),
+                    class: aegis_core::audit::AuditClass::Detection,
+                    tenant_id: None,
+                    tier: None,
+                    action: "observe".into(),
+                    reason: format!("egress volume anomaly ({})", sig.field),
+                    client_ip: ip.to_string(),
+                    route_id: None,
+                    rule_id: Some("egress_volume".into()),
+                    risk_score: Some(sig.score),
+                    method: None,
+                    path: None,
+                    mode: None,
+                    fields: serde_json::json!({
+                        "egress_volume_field": sig.field,
+                        "response_bytes": bytes,
+                        "client_risk": client_risk,
+                    }),
+                };
+                bus.emit(event);
+            }
+        }
+    }
     (resp, tag)
 }
 

@@ -1737,6 +1737,14 @@ pub async fn run(
                     egress_leak.clear();
                 }));
         }
+        // EG-2 T5 — clear the egress-volume window state on reset_state so a
+        // bench phase boundary doesn't inherit the prior phase's byte counts.
+        if let Some(egress_volume) = upstream_ctx.egress_volume.clone() {
+            rt.control
+                .register_reset_callback(std::sync::Arc::new(move || {
+                    egress_volume.clear();
+                }));
+        }
         // SC-1 — wire `POST /__waf_control/flush_cache` to actually evict the
         // data-plane response cache (all pools), and fan the purge out to the
         // rest of the fleet over Redis pub/sub (control-plane Redis, not the
