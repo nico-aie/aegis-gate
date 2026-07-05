@@ -4,6 +4,7 @@ pub mod brute_force;
 pub mod canary;
 pub mod command_injection;
 pub mod cookie_injection;
+pub mod egress_leak;
 pub mod enumeration;
 pub mod header_injection;
 pub mod jwt_inspection;
