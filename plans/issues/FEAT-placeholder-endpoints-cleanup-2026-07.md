@@ -41,10 +41,12 @@ for the committee ("removed unfinished surface" is an acceptable — and honest 
   success ts). Surfaces the audit-durability story from `FEAT-audit-coverage-gaps-2026-07.md`.
 - #7 geoip: wire `indicator_count` from the loaded DB/country list.
 
-### PE-3 — regression guard · **S**
-- CI/test sweep: route-table walk asserting every registered handler is reachable from the
-  dashboard or documented API surface, and grep-guard against `"coming soon"`/`placeholder()`
-  returns on newly added auth-gated routes. Keeps round-3 from finding a fresh crop.
+### PE-3 — regression guard · **S** · ✅ shipped 2026-07-05 (`feat/au3-decay-caveats-pe3-guard`)
+- `pe3_route_guard` tests in `admin_get.rs` (run in CI via `cargo test`): every `/api/*` route
+  literal in the dispatch layer must appear in the documented surface (enterprise api.md /
+  openapi / usage.md / ops docs) or the dashboard sources; banned-marker scan
+  ("coming soon" / "ships in phase" / `placeholder()`) on the comment-stripped route layer.
+  First run caught 4 real doc gaps (`/api/config/rollback`, 3 × zero-trust downstream) — fixed.
 
 ## 3. Risks
 

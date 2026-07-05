@@ -152,7 +152,9 @@ GET    /api/zero-trust/downstream                 mode / ca / sans / apply_to (+
 PUT    /api/zero-trust/downstream/{mode,ca-bundle,sans}
 DELETE /api/zero-trust/downstream/sans/{san}
 POST   /api/zero-trust/downstream/sans/{san}/test
-GET    /api/zero-trust/downstream/{connections,failures,ca-summary}
+GET    /api/zero-trust/downstream/connections
+GET    /api/zero-trust/downstream/failures
+GET    /api/zero-trust/downstream/ca-summary
 
 # upstream (WAF-as-client)
 GET    /api/zero-trust/upstream/identity          shared identity metadata (NO key)

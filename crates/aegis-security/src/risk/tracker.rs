@@ -104,6 +104,19 @@ const HSET_CHUNK: usize = 1;
 /// [`IDLE_TTL`] so the strike-block guarantee holds for real offenders.
 const ZERO_VALUE_IDLE_TTL: Duration = Duration::from_secs(120);
 
+/// AU-3A (2026-07-04, owner decision) — safety valve on the
+/// lifetime-block sweep exemption. Slots at/above `strikes.block_at`
+/// are exempt from idle eviction (a permanently-blocked source must
+/// not un-block itself by going quiet), but only while the blocked
+/// population stays under this cap; a pathological blocked flood
+/// falls back to plain TTL so memory stays bounded.
+/// [`MAX_TRACKED_KEYS`] remains the hard ceiling regardless.
+#[cfg(not(test))]
+const STRUCK_EXEMPT_CAP: usize = 100_000;
+/// Small in tests so the fallback path is exercisable.
+#[cfg(test)]
+const STRUCK_EXEMPT_CAP: usize = 8;
+
 /// Snapshot of one client's risk state. Returned from every
 /// mutating call so the caller can act on the post-state without
 /// a follow-up read.
@@ -204,6 +217,11 @@ struct TrackerInner {
     /// so a flush can't re-write a strike that an operator/bench reset
     /// (`HDEL` / `UNLINK`) removed mid-flush and resurrect it on the next boot.
     reset_gen: std::sync::atomic::AtomicU64,
+    /// AU-3B — how many at-cap requests were scored but NOT stored
+    /// (the [`MAX_TRACKED_KEYS`] fail-open). Pre-fix this was
+    /// silent; now it's countable (`saturation_rejects()`) and
+    /// surfaced via `/api/risk` + metrics.
+    saturation_rejects: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -218,6 +236,14 @@ impl RiskTracker {
     /// in `RiskConfig` (e.g. trust recovery off) fall back to
     /// sensible defaults — the legacy engine still runs alongside.
     pub fn new(cfg: &RiskConfig) -> Self {
+        // AU-3C — same sticky-scores warning as `set_trust_per_hour`,
+        // for the boot-config path.
+        if cfg.trust_recovery.clone().unwrap_or_default().per_hour == 0 {
+            tracing::warn!(
+                "risk trust_recovery.per_hour is 0 — score decay is DISABLED; \
+                 cumulative scores will never recover (sticky until reset)",
+            );
+        }
         Self {
             inner: Arc::new(TrackerInner {
                 map: DashMap::new(),
@@ -232,6 +258,7 @@ impl RiskTracker {
                 backend: std::sync::OnceLock::new(),
                 dirty: DashSet::new(),
                 reset_gen: std::sync::atomic::AtomicU64::new(0),
+                saturation_rejects: std::sync::atomic::AtomicU64::new(0),
             }),
         }
     }
@@ -481,7 +508,35 @@ impl RiskTracker {
         *guard = now;
         drop(guard);
 
+        // AU-3A (2026-07-04, owner decision) — strike-BLOCKED slots
+        // (strikes ≥ block_at, gate enabled) are exempt from idle
+        // eviction: "permanently blocked" must mean permanent, not
+        // "until the attacker idles for an hour". Exemption is
+        // narrowed to blocked slots (every malicious record strikes,
+        // so exempting all struck slots would exempt every offender
+        // ever seen) and capped by [`STRUCK_EXEMPT_CAP`].
+        let strike_cfg = self.inner.strikes.load();
+        let block_at = if strike_cfg.enabled {
+            Some(strike_cfg.block_at)
+        } else {
+            None
+        };
+        let exempt_blocked = match block_at {
+            Some(b) => {
+                let blocked = self
+                    .inner
+                    .map
+                    .iter()
+                    .filter(|e| e.strikes >= b)
+                    .count();
+                blocked <= STRUCK_EXEMPT_CAP
+            }
+            None => false,
+        };
         self.inner.map.retain(|_, slot| {
+            if exempt_blocked && slot.strikes >= block_at.expect("checked") {
+                return true;
+            }
             let ttl = if slot.score == 0 && slot.strikes == 0 {
                 ZERO_VALUE_IDLE_TTL
             } else {
@@ -541,7 +596,33 @@ impl RiskTracker {
     /// change applies live and converges across nodes. Per-IP score state is
     /// preserved — only the rate at which it ages changes.
     pub fn set_trust_per_hour(&self, per_hour: u32) {
+        // AU-3C — 0 disables decay entirely: scores become sticky
+        // forever (an operator foot-gun the committee flagged).
+        // Reachable via config AND the hot-tune API, so warn loudly
+        // at the single choke point rather than adding a validation
+        // floor that would break operators who freeze decay on
+        // purpose during an incident.
+        if per_hour == 0 {
+            tracing::warn!(
+                "risk trust_per_hour set to 0 — score decay is DISABLED; \
+                 cumulative scores will never recover (sticky until reset)",
+            );
+        }
         self.inner.trust_per_hour.store(per_hour, Ordering::Relaxed);
+    }
+
+    /// AU-3B — at-cap requests that were scored but not stored (the
+    /// [`MAX_TRACKED_KEYS`] fail-open). Monotonic per process.
+    pub fn saturation_rejects(&self) -> u64 {
+        self.inner
+            .saturation_rejects
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// AU-3B — `true` while the tracker is at its cardinality cap
+    /// (new keys score per-request but never accumulate).
+    pub fn is_saturated(&self) -> bool {
+        self.inner.map.len() >= MAX_TRACKED_KEYS
     }
 
     /// Register a malicious event. Adds `delta` to the score
@@ -615,6 +696,10 @@ impl RiskTracker {
             // PROXY-02 — at the cardinality cap: don't persist this new key.
             // Return the would-be state so this single request is still scored,
             // but nothing is stored (no accumulation across a flood).
+            // AU-3B — the fail-open is counted, not silent.
+            self.inner
+                .saturation_rejects
+                .fetch_add(1, Ordering::Relaxed);
             slot_to_state(Slot { score: delta.min(max), strikes: 1, last_seen: now })
         };
         self.maybe_sweep(now);
@@ -662,6 +747,10 @@ impl RiskTracker {
         } else {
             // PROXY-02 — at the cardinality cap: a clean, never-seen key has
             // zero security value, so don't persist it. Behaves as Allow.
+            // AU-3B — still counted: saturation gates ALL accumulation.
+            self.inner
+                .saturation_rejects
+                .fetch_add(1, Ordering::Relaxed);
             slot_to_state(Slot { score: 0, strikes: 0, last_seen: now })
         };
         self.maybe_sweep(now);
