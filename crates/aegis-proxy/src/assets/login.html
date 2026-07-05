@@ -85,6 +85,39 @@
       font-size: 0.75rem;
       text-align: center;
     }
+    .login-card .hint {
+      color: var(--fg-muted, #999);
+      font-size: 0.78rem;
+      margin: 0.35rem 0 0;
+    }
+    /* TOTP-5 — first-login enrollment surface (hidden until the server
+       answers enrollment_required). */
+    #enroll-section {
+      display: none;
+    }
+    #enroll-qr {
+      display: flex;
+      justify-content: center;
+      background: #fff;            /* QR needs light background to scan */
+      border-radius: 8px;
+      padding: 0.5rem;
+      margin: 0.85rem 0;
+    }
+    #enroll-qr svg {
+      width: 220px;
+      height: 220px;
+    }
+    #enroll-secret {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.72rem;
+      word-break: break-all;
+      background: var(--surface-2, #111);
+      border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+      border-radius: 6px;
+      padding: 0.5rem 0.6rem;
+      margin: 0.35rem 0 0;
+      user-select: all;
+    }
   </style>
 </head>
 <body>
@@ -96,9 +129,35 @@
       <input id="login-user" name="user" required autofocus autocomplete="username">
       <label for="login-password">Password</label>
       <input id="login-password" name="password" type="password" required autocomplete="current-password">
+      <label for="login-totp">Authenticator code</label>
+      <input id="login-totp" name="totp_code" inputmode="numeric" pattern="[0-9]*"
+             maxlength="8" autocomplete="one-time-code"
+             placeholder="6-digit code (if enrolled)">
+      <p class="hint">Leave empty if you haven't set up an authenticator yet.</p>
       <button type="submit" id="login-submit">Sign in</button>
       <div class="error" id="login-error" role="alert" aria-live="polite"></div>
     </form>
+
+    <!-- TOTP-5 — first-login enrollment: shown when the server answers
+         enrollment_required (password OK, no factor enrolled yet). -->
+    <div id="enroll-section">
+      <h1>Set up two-factor</h1>
+      <p class="subtitle">
+        Scan this QR with Google Authenticator (or Authy / 1Password),
+        then enter the 6-digit code it shows.
+      </p>
+      <div id="enroll-qr" aria-label="TOTP enrollment QR code"></div>
+      <p class="hint">Can't scan? Enter this key manually (time-based):</p>
+      <div id="enroll-secret"></div>
+      <form id="enroll-form">
+        <label for="enroll-code">Code from the app</label>
+        <input id="enroll-code" name="code" inputmode="numeric" pattern="[0-9]*"
+               maxlength="8" required autocomplete="one-time-code">
+        <button type="submit" id="enroll-submit">Verify &amp; activate</button>
+        <div class="error" id="enroll-error" role="alert" aria-live="polite"></div>
+      </form>
+    </div>
+
     <div class="footer">aegis-gate · admin</div>
   </div>
   <script src="/admin/login.js"></script>
