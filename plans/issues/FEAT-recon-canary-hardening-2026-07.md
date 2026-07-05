@@ -1,6 +1,6 @@
 # FEAT — Recon detection hardening + canary-path seeding (implementation)
 
-> **Type:** FEAT (from round-2 IMPROVE) · **Status:** 🔄 In progress — RC-1 MERGED to develop 2026-07-05 (PR #157) · **Owner: Nico**
+> **Type:** FEAT (from round-2 IMPROVE) · **Status:** 🟢 All code shipped — Wave A + RC-2 + RC-4 + follow-ups MERGED to develop 2026-07-05 (PRs #157–165). Only the **corpus-gated Wave B validation** remains (RC-2 zero-FP gate, RC-3 corpus re-validation, 263-path committee evidence) — blocked on the S-Tester's FP-baseline corpus (separate task). · **Owner: Nico**
 > **Track ID prefix:** `RC-<1–5>` · **Source / verification record:**
 > [IMPROVE-recon-detection-and-canary-2026-07.md](../future/round-2-improvement/IMPROVE-recon-detection-and-canary-2026-07.md)
 > — **read its §1 before touching code**: the l-tester report's headline (263 recon paths pass from
@@ -75,7 +75,7 @@ tripwire (recon scoring + RC-4 back it up). Linear scan, cap 256 — keep the li
       curated default by the config plane; and the serde half — `load_config_str` re-seeds curated
       when absent, stays empty on explicit `[]`. All pass (confirms the reviewer's hand-trace; no bug).
 
-### RC-5a — populate top-level `ip` in admin audit events (V9) · **S**
+### RC-5a — populate top-level `ip` in admin audit events (V9) · **S** · ✅ MERGED (PR #158)
 
 **Rescued item:** the source plan folded this into the audit plan's AU-1, but the fold-in never
 happened — `FEAT-audit-coverage-gaps` is archived COMPLETE with no mention of it, and
@@ -86,8 +86,10 @@ happened — `FEAT-audit-coverage-gaps` is archived COMPLETE with no mention of 
 (today it's only buried at `fields.diff.after.value`).
 
 **RED tests:**
-- [ ] Unit test: `to_audit_event` on an entry with a known actor IP → event `client_ip` == that IP.
-- [ ] Unit test: entry with no recorded IP → sensible fallback (empty or `unknown`), not a panic.
+- [x] Unit test: `to_audit_event` on an entry with a known actor IP → event `client_ip` == that IP.
+- [x] Unit test: entry with no recorded IP → sensible fallback (empty or `unknown`), not a panic.
+      (Also shipped end-to-end: `MutationRequest.client_ip` threaded from the TCP peer via
+      `x-aegis-client-ip`; `strip_client_actor` scrubs spoofed identity headers.)
 
 ### RC-5b — document V7/V8 as working-as-designed (+ optional metric) · **S** · ✅ DONE (branch docs/rc5b-two-score-model)
 
@@ -168,10 +170,12 @@ secret/RCE exposure.
   `recon.rs` pattern metadata) — no gate/threshold change, composes with existing accumulation.
 
 **RED tests:**
-- [ ] Sensitive-tier path from fresh IP reaches the intended verdict at the chosen score.
-- [ ] Generic probe still allowed single-hit (tier separation holds).
-- [ ] Corpus gate: sensitive tier fires zero times on the benign corpus.
-- [ ] Log-only soak evidence recorded before any single-hit-block score goes live.
+- [x] Sensitive-tier path from fresh IP reaches the intended verdict at the chosen score (15
+      `path_score!` tests assert the secret-exposure subset emits `recon::SENSITIVE = 50`; PR #161).
+- [x] Generic probe still allowed single-hit (tier separation holds — 6 `path_score!` tests assert
+      generic probes stay `recon::PATH = 25`; PR #161).
+- [ ] **Wave B** — Corpus gate: sensitive tier fires zero times on the benign corpus.
+- [ ] **Wave B** — Log-only soak evidence recorded before any single-hit-block score goes live.
 
 ### RC-3 corpus re-validation · **S**
 
@@ -206,10 +210,14 @@ single-hit-block tripwire, the high-value target).
 - Land as a shared normalized-view helper the detectors read alongside `origin_form_uri` — touches
   hot-path shared plumbing, hence last.
 
-**RED tests:**
-- [ ] `//x`, `/./x`, `%2e`-encoded variants normalize to the canonical match.
-- [ ] Raw path still available/unchanged for other detectors.
-- [ ] Release-profile bench delta within budget (LT-P1 profile) — bench gate per PR.
+**RED tests:** (all ✅ — PR #162)
+- [x] `//x`, `/./x`, `%2e`-encoded variants normalize to the canonical match (`normalize_path` unit
+      tests + canary evasion tests: `/%2egit/config`, `//​.git/config`, `/x/../.git/config`).
+- [x] Raw path still available/unchanged for other detectors (canary matches raw first, normalized
+      only when it differs; no other detector touched — raw stays the contract).
+- [x] Release-profile bench delta within budget: release micro-bench measured +~14 ns/request on
+      the canary path for benign canonical traffic (zero-alloc borrow), ~100 ns only for
+      non-canonical evasion paths. (Micro-bench, not the full LT-P1 server harness.)
 
 ---
 
@@ -228,14 +236,18 @@ single-hit-block tripwire, the high-value target).
 - [x] RC-1: curated canary set shipped + toggle on by default; single-hit block from fresh IP
       proven per path; look-alike/legit-path negatives green. (PR #157, merged develop 2026-07-05;
       `/actuator/env` keep-vs-drop still an open owner call — shipped keeping it.)
-- [ ] RC-5a: admin audit events carry the actor's real `client_ip` (V9 closed for real this time).
-- [ ] RC-5b: V7/V8 documented as designed; optional per-path metric decided.
-- [ ] RC-3 (Wave A): all families added with raw-form positive + negative unit tests.
-- [ ] RC-2 (Wave B): sensitive tier corpus-gated with soak evidence.
-- [ ] RC-3 (Wave B): corpus-clean.
-- [ ] Committee-facing: before/after 263-path fresh-IP replay numbers.
-- [ ] RC-4 (optional): normalized matching view, benched.
-- [ ] Regression: existing recon tests green; workspace zero-warning throughout.
+- [x] RC-5a: admin audit events carry the actor's real `client_ip` (V9 closed for real this time). (PR #158)
+- [x] RC-5b: V7/V8 documented as designed; optional per-path metric decided (declined, YAGNI). (PR #159)
+- [x] RC-3 (Wave A): all families added with raw-form positive + negative unit tests. (PR #160)
+- [ ] **Wave B** — RC-2: sensitive tier corpus-gated with soak evidence. *(code shipped PR #161 at
+      score 50; corpus gate + any ≥70 escalation blocked on the FP-baseline corpus.)*
+- [ ] **Wave B** — RC-3: corpus-clean.
+- [ ] **Wave B** — Committee-facing: before/after 263-path fresh-IP replay numbers.
+- [x] RC-4 (optional): normalized matching view, benched. (PR #162)
+- [x] Regression: existing recon tests green; workspace zero-warning throughout (maintained across
+      PRs #157–165; 4898 tests green after the final merge).
+- [x] Docs: `recon.md` / `risk-scoring.md` / `security-engine.md` reflect the shipped two-tier
+      scoring, RC-3 families, RC-4 evasion resistance, and the armed canary default. (PR #165)
 
 ## Suggested PR slicing
 
