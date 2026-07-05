@@ -118,7 +118,12 @@
       padding: 0.6rem 0.4rem 0.6rem 0.85rem; /* left pad rebalances letter-spacing */
     }
 
-    /* ---- TOTP-10 — two-step OTP dialog ------------------------------- */
+    /* ---- TOTP-10/11 — two-step OTP dialog ----------------------------- */
+    /* The dialog card carries BOTH classes (`login-card otp-card`) so
+       every `.login-card input/button/error` rule above applies inside
+       the dialog too — TOTP-11 fixed the unstyled white input + tiny
+       Verify button that came from scoping the design system to a class
+       the dialog didn't have. `.otp-card` only holds dialog overrides. */
     #otp-modal {
       display: none;
       position: fixed;
@@ -131,17 +136,19 @@
     }
     #otp-modal.open { display: flex; }
     .otp-card {
-      background: var(--surface-1, #1a1a1a);
-      color: var(--fg, #f0f0f0);
-      border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
-      border-radius: 12px;
-      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
-      padding: 1.75rem 2rem;
-      width: 100%;
       max-width: 340px;
+      min-width: 0;
       text-align: center;
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+      animation: otp-pop 160ms ease-out;
     }
-    .otp-card .subtitle { margin-bottom: 1.1rem; }
+    @keyframes otp-pop {
+      from { opacity: 0; transform: translateY(10px) scale(0.98); }
+      to   { opacity: 1; transform: none; }
+    }
+    .otp-card .subtitle { margin-bottom: 1.35rem; }
+    .otp-card .error { margin-top: 1rem; }
+    .otp-card #otp-back { margin-top: 1.15rem; }
     .otp-badge {
       width: 44px;
       height: 44px;
@@ -300,7 +307,7 @@
 
   <!-- TOTP-10 — step 2: OTP dialog, opened after the password step. -->
   <div id="otp-modal" role="dialog" aria-modal="true" aria-labelledby="otp-title">
-    <div class="otp-card">
+    <div class="login-card otp-card">
       <div class="otp-badge">🔐</div>
       <h2 id="otp-title">Two-step verification</h2>
       <p class="subtitle">

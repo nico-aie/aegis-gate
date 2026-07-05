@@ -95,6 +95,19 @@
 
   if (otpBack) otpBack.addEventListener('click', closeOtpStep);
 
+  // Code inputs accept digits only — pasted "123 456" or stray
+  // characters from the authenticator app's copy button are cleaned
+  // in place instead of failing the pattern check on submit.
+  function digitsOnly(input) {
+    if (!input) return;
+    input.addEventListener('input', function () {
+      var cleaned = input.value.replace(/\D/g, '');
+      if (cleaned !== input.value) input.value = cleaned;
+    });
+  }
+  digitsOnly(otpCode);
+  digitsOnly(document.getElementById('enroll-code'));
+
   // ---- Enrollment surface ----------------------------------------------
 
   function startEnrollment() {
