@@ -109,7 +109,7 @@ Add to `RECON_PATHS` (`recon.rs`), each with a unit test on the **raw** form:
 
 ### RC-5 — the small true fixes + documentation · **S**
 - **V9:** populate top-level `ip` in admin audit events with the actor's client IP — folds into
-  [FEAT-audit-coverage-gaps-2026-07.md](../../issues/FEAT-audit-coverage-gaps-2026-07.md) AU-1 (do it there, not
+  [FEAT-audit-coverage-gaps-2026-07.md](../../issues/archived/FEAT-audit-coverage-gaps-2026-07.md) AU-1 (do it there, not
   twice); cross-referenced here so it isn't lost.
 - **V7/V8:** working-as-designed — **document**, don't "fix". Add a short note to the detection docs
   explaining the two-score model and the dev-XFF-collapse ([[feedback_dev_xff_single_ip_gates]],

@@ -1,6 +1,6 @@
 # Evidence pack — risk decay & audit coverage (committee round-2 🟡3)
 
-> **AU-4** deliverable of [FEAT-audit-coverage-gaps](../../issues/FEAT-audit-coverage-gaps-2026-07.md).
+> **AU-4** deliverable of [FEAT-audit-coverage-gaps](../../issues/archived/FEAT-audit-coverage-gaps-2026-07.md).
 > Compiled 2026-07-05. Every claim carries a file:line anchor and a reproducible
 > test; run commands from the repo root.
 

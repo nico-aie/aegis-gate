@@ -13,7 +13,7 @@
 > file as the Tier-0/Ops wire-up backlog.
 >
 > **PE-1 sweep (2026-07-04,
-> [FEAT-placeholder-endpoints-cleanup](../issues/FEAT-placeholder-endpoints-cleanup-2026-07.md)):**
+> [FEAT-placeholder-endpoints-cleanup](../issues/archived/FEAT-placeholder-endpoints-cleanup-2026-07.md)):**
 > the placeholder endpoints catalogued here were dispositioned —
 > `/api/threat-intel/feeds`, `/api/gitops/status`, `/api/audit/witness`
 > (and the `WitnessRecord` shell + the witness-signing sketch this file

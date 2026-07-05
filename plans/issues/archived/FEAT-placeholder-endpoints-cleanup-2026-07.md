@@ -1,6 +1,6 @@
 # FEAT — Placeholder endpoints: complete or remove
 
-> **Type:** FEAT/chore (committee round-2 🔴3) · **Status:** ☐ Not started — planned 2026-07-04
+> **Type:** FEAT/chore (committee round-2 🔴3) · **Status:** ✅ COMPLETE 2026-07-05 — PE-1 (#152), PE-2 (#153/merged), PE-3 (merged). All 7 endpoints dispositioned; CI guard live.
 > **Track ID prefix:** `PE-<1–3>` · Sweep verified 2026-07-04 against the full admin route table
 > (`admin_dispatch.rs:59-617`, `admin_get.rs:111-1443`) + control plane (`interop/control.rs`).
 

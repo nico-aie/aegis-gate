@@ -1,6 +1,6 @@
 # PLAN — Validation under realistic operating conditions
 
-> **Type:** PLAN (committee round-2 🟡5) · **Status:** ☐ Not started — planned 2026-07-04
+> **Type:** PLAN (committee round-2 🟡5) · **Status:** ⏳ Runbook DELIVERED 2026-07-05 ([`docs/ops/validation-runbook.md`](../../docs/ops/validation-runbook.md)); drills need a live ≥2-node fleet, scheduled separately (team-plan week 4)
 > **Track ID prefix:** `OV-<1–3>` · Deliverable is **evidence** (runbook + drill transcripts),
 > not features. Schedule before round 3.
 
@@ -57,7 +57,7 @@ Scripted operator drills against the live fleet (each = steps + expected observa
 
 ## 3. Deliverables
 
-- [ ] `docs/ops/validation-runbook.md` — consolidated drill scripts + env footguns.
+- [x] `docs/ops/validation-runbook.md` — consolidated drill scripts + env footguns (2026-07-05).
 - [ ] Evidence pack per drill (transcripts, metrics screenshots, SLO panel captures) under
       `plans/future/` or `docs/ops/evidence/` — committee-facing.
 - [ ] Defect list from drills triaged into issues (the real output — expect to find some).
