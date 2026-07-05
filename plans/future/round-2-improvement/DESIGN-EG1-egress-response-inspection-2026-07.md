@@ -136,5 +136,8 @@ round-2 response goes out.
 - [x] EG-2 detectors live log-only with risk-model wiring — ✅ 2026-07-05 (T4 `egress_leak`,
       T5 `egress_volume`, T2/T3 `egress_sensitive`; all default-OFF). `max_scan_bytes` decision:
       cap the EG-2 read only, leave the shipped `redact_dlp` rung full-body/unchanged.
-- [ ] EG-3 page live from existing signals.
-- [ ] Out-of-scope boundary documented with integration guidance (§1).
+- [x] EG-3 page live from existing signals — ✅ 2026-07-05 (`Internal Flows` page; propagation-lag
+      card uses the existing `ConfigStore::applied_map()` roster via new `/api/config/applied`,
+      not the §6.4 fleet-snapshot piggyback — the "no per-node signal" premise was outdated).
+- [x] Out-of-scope boundary documented with integration guidance (§1) — EG-3 page footer +
+      `docs/security/egress-observability.md`.

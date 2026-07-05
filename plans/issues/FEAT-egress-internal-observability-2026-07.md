@@ -1,7 +1,8 @@
 # FEAT — Egress & internal-traffic visibility (design-first)
 
-> **Type:** FEAT (committee round-2 🟡4) · **Status:** 🔄 EG-1 ✅ SIGNED OFF + EG-2 ✅ SHIPPED 2026-07-05
-> (T4/T5/T2/T3 detectors on `feat/eg2-egress-observability`, all default-OFF log/score-only) — next = EG-3 Internal Flows page
+> **Type:** FEAT (committee round-2 🟡4) · **Status:** ✅ COMPLETE 2026-07-05 — EG-1 signed off, EG-2
+> (T4/T5/T2/T3 detectors, default-OFF log/score-only) + EG-3 (Internal Flows page) shipped on
+> `feat/eg2-egress-observability`. Only open thread: EG-2 detectors default-OFF pending FP tuning.
 > **Track ID prefix:** `EG-<1–3>` · Largest and least-defined round-2 item — do last; EG-1 is a
 > design doc, not code → [`DESIGN-EG1-egress-response-inspection-2026-07.md`](../future/round-2-improvement/DESIGN-EG1-egress-response-inspection-2026-07.md).
 
@@ -111,6 +112,13 @@ EG-2 must converge with it, not build a second scanner:
       `dlp::scan()` (the shipped path calls `dlp::redact()`, not `scan()`, so there is no existing
       `scan()` to piggyback yet); the double body pass is bounded by the cap + sampling. A future
       refactor can fold redact to reuse the scan match set for a single pass.
-- [ ] EG-3: internal-flows page live from existing signals.
-- [ ] Documented boundary: origin-initiated egress explicitly out of scope with integration guidance
-      (stated in EG-1 §1; restate on the EG-3 page + a short docs note).
+- [x] EG-3: internal-flows page live from existing signals — ✅ 2026-07-05. New Observability page
+      `Internal Flows` (`PageInternalFlows`) with 4 cards from existing endpoints: fleet channel
+      (`/api/fleet/status`), state backend RTT+circuit (`/api/state`), upstream dials by zone
+      (`/api/upstreams` zone rollup), config-plane propagation lag (`/api/config/applied` — NEW
+      endpoint exposing `ConfigStore::applied_map()`). NB: EG-1 §6.4 chose the fleet-snapshot
+      config-version piggyback on the premise "no per-node applied-version signal exists"; discovery
+      found `applied_map()` already provides it, so we surfaced that directly (less code, no
+      snapshot/merge change) — flag for owner.
+- [x] Documented boundary: origin-initiated egress explicitly out of scope with integration guidance
+      (EG-1 §1; restated on the EG-3 page footer + `docs/security/egress-observability.md`).
