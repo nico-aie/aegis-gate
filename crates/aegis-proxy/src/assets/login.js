@@ -1,20 +1,21 @@
 // Login page client — pure browser JS, no bundler.
-// Posts JSON to /admin/login, handles 200 / 401 / 429 / 4xx, then
-// navigates to ?next=… (defaulting to /dashboard/).  CSP is
-// `script-src 'self'`, so this file must live at /admin/login.js
-// served from the same origin.
+// CSP is `script-src 'self'`, so this file must live at
+// /admin/login.js served from the same origin.
 //
-// TOTP-5 — two additions over the original password-only client:
-// 1. The form carries an optional `totp_code` field (enrolled accounts
-//    must submit their app code with the password).
-// 2. A 200 whose body says `enrollment_required: true` does NOT
-//    redirect (that session can only reach the TOTP endpoints).
-//    Instead: POST /api/admin/totp/enroll → render the inline-SVG QR +
-//    manual-entry secret → the operator scans it with Google
-//    Authenticator → POST /api/admin/totp/confirm with the app code →
-//    on success the session is fully verified and we redirect to
-//    ?next=. Both POSTs send the double-submit CSRF header read from
-//    the JS-readable `aegis_csrf` cookie.
+// TOTP-10 — two-step sign-in:
+//   Step 1: username + password only.
+//   Step 2: on a CODE-LESS 401 the #otp-modal dialog opens and asks for
+//   the authenticator code, then retries the same credentials WITH the
+//   code. The server deliberately answers wrong-password and
+//   missing-code with one uniform envelope (F-CRITICAL-003 anti-oracle),
+//   so the dialog is optimistic: a genuinely wrong password just fails
+//   again inside the dialog, which offers "Back to password".
+//
+// TOTP-5 — first-login enrollment: a 200 with `enrollment_required:
+// true` switches the card to the QR enrollment surface
+// (POST /api/admin/totp/enroll → scan → POST /api/admin/totp/confirm),
+// then redirects to ?next=. Both POSTs send the double-submit CSRF
+// header read from the JS-readable `aegis_csrf` cookie.
 
 (function () {
   var form = document.getElementById('login-form');
@@ -26,7 +27,20 @@
   var enrollBtn = document.getElementById('enroll-submit');
   var enrollQr = document.getElementById('enroll-qr');
   var enrollSecret = document.getElementById('enroll-secret');
+  var enrollCopy = document.getElementById('enroll-copy');
+  var enrollUser = document.getElementById('enroll-user');
+  var otpModal = document.getElementById('otp-modal');
+  var otpForm = document.getElementById('otp-form');
+  var otpCode = document.getElementById('otp-code');
+  var otpErrEl = document.getElementById('otp-error');
+  var otpBtn = document.getElementById('otp-submit');
+  var otpBack = document.getElementById('otp-back');
+  var otpUser = document.getElementById('otp-user');
   if (!form || !errEl || !btn) return;
+
+  // Credentials held between step 1 and step 2 (page-local, never
+  // persisted).
+  var pending = { user: '', password: '' };
 
   function safeNextUrl() {
     try {
@@ -39,13 +53,9 @@
     return '/dashboard/';
   }
 
-  function showError(msg) {
-    errEl.textContent = msg;
-  }
-
-  function showEnrollError(msg) {
-    if (enrollErrEl) enrollErrEl.textContent = msg;
-  }
+  function showError(msg) { errEl.textContent = msg; }
+  function showOtpError(msg) { if (otpErrEl) otpErrEl.textContent = msg; }
+  function showEnrollError(msg) { if (enrollErrEl) enrollErrEl.textContent = msg; }
 
   // Double-submit CSRF: the login response set the JS-readable
   // `aegis_csrf` cookie; the auth middleware requires the same value
@@ -61,20 +71,44 @@
     return '';
   }
 
-  // Switch the card from the sign-in form to the enrollment surface
-  // and fetch the QR payload from the server.
+  // ---- Step 2: OTP dialog --------------------------------------------
+
+  function openOtpStep() {
+    if (!otpModal || !otpCode) {
+      // Dialog markup missing — degrade to an inline hint.
+      showError('This account requires an authenticator code.');
+      return;
+    }
+    showOtpError('');
+    otpCode.value = '';
+    if (otpUser) otpUser.textContent = pending.user;
+    otpModal.className = 'open';
+    otpCode.focus();
+  }
+
+  function closeOtpStep() {
+    if (otpModal) otpModal.className = '';
+    pending.password = '';
+    var pw = document.getElementById('login-password');
+    if (pw) { pw.value = ''; pw.focus(); }
+  }
+
+  if (otpBack) otpBack.addEventListener('click', closeOtpStep);
+
+  // ---- Enrollment surface ----------------------------------------------
+
   function startEnrollment() {
     if (!enrollSection || !enrollQr || !enrollSecret) {
-      // Page shipped without the enrollment markup — fall back to an
-      // actionable error instead of a dead redirect loop.
       showError('TOTP enrollment required — run `waf admin enroll-totp` or contact your operator.');
       return;
     }
+    if (otpModal) otpModal.className = '';
     form.style.display = 'none';
     var title = document.querySelector('.login-card > h1');
     var subtitle = document.querySelector('.login-card > .subtitle');
     if (title) title.style.display = 'none';
     if (subtitle) subtitle.style.display = 'none';
+    if (enrollUser && pending.user) enrollUser.textContent = pending.user;
     enrollSection.style.display = 'block';
 
     fetch('/api/admin/totp/enroll', {
@@ -105,6 +139,29 @@
       .catch(function (e) {
         showEnrollError('Network error: ' + (e && e.message ? e.message : e));
       });
+  }
+
+  if (enrollCopy && enrollSecret) {
+    enrollCopy.addEventListener('click', function () {
+      var key = enrollSecret.textContent || '';
+      if (!key) return;
+      var done = function () {
+        enrollCopy.textContent = 'Copied';
+        setTimeout(function () { enrollCopy.textContent = 'Copy'; }, 1500);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(key).then(done).catch(function () { done(); });
+      } else {
+        // Clipboard API unavailable (plain-HTTP dev) — select the key
+        // so a manual Ctrl/Cmd+C works.
+        var range = document.createRange();
+        range.selectNodeContents(enrollSecret);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        done();
+      }
+    });
   }
 
   if (enrollForm) {
@@ -151,19 +208,15 @@
     });
   }
 
-  form.addEventListener('submit', function (ev) {
-    ev.preventDefault();
-    showError('');
-    var user = (form.user.value || '').trim();
-    var password = form.password.value || '';
-    var totpCode = (form.totp_code && form.totp_code.value || '').trim();
-    if (!user || !password) {
-      showError('Username and password required');
-      return;
-    }
-    var payload = { user: user, password: password };
-    if (totpCode) payload.totp_code = totpCode;
-    btn.disabled = true;
+  // ---- Login (both steps post here) ------------------------------------
+
+  // `fromDialog` routes errors to the right surface: step-1 errors land
+  // under the password form, step-2 errors inside the OTP dialog.
+  function attemptLogin(code, fromDialog, submitBtn) {
+    var payload = { user: pending.user, password: pending.password };
+    if (code) payload.totp_code = code;
+    if (submitBtn) submitBtn.disabled = true;
+    var showErr = fromDialog ? showOtpError : showError;
     fetch('/admin/login', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -183,27 +236,54 @@
         return r.json().catch(function () { return {}; }).then(function (body) {
           if (r.status === 429) {
             var retry = r.headers.get('retry-after') || '60';
-            showError('Too many attempts. Try again in ' + retry + 's.');
+            showErr('Too many attempts. Try again in ' + retry + 's.');
           } else if (r.status === 401) {
-            // TOTP-9 — the server intentionally answers a missing TOTP
-            // code with the SAME envelope as a wrong password (no
-            // oracle). The client knows locally whether the code field
-            // was empty, so it can hint without leaking anything.
-            showError(totpCode
-              ? 'Invalid username, password, or authenticator code'
-              : 'Invalid credentials. If this account already has 2FA set up, you must also enter the authenticator code.');
+            if (!code && !fromDialog) {
+              // Step 1 rejected without a code: either the password is
+              // wrong or the account is enrolled and needs its code —
+              // the envelope is uniform by design. Ask for the code;
+              // a wrong password fails again inside the dialog.
+              openOtpStep();
+            } else {
+              showErr('Invalid username, password, or authenticator code.');
+            }
           } else if (r.status === 400) {
-            showError(body.message || 'Bad request');
+            showErr(body.message || 'Bad request');
           } else {
-            showError(body.message || 'Login failed (' + r.status + ')');
+            showErr(body.message || 'Login failed (' + r.status + ')');
           }
         });
       })
       .catch(function (e) {
-        showError('Network error: ' + (e && e.message ? e.message : e));
+        showErr('Network error: ' + (e && e.message ? e.message : e));
       })
       .then(function () {
-        btn.disabled = false;
+        if (submitBtn) submitBtn.disabled = false;
       });
+  }
+
+  form.addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    showError('');
+    pending.user = (form.user.value || '').trim();
+    pending.password = form.password.value || '';
+    if (!pending.user || !pending.password) {
+      showError('Username and password required');
+      return;
+    }
+    attemptLogin('', false, btn);
   });
+
+  if (otpForm) {
+    otpForm.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      showOtpError('');
+      var code = (otpCode && otpCode.value || '').trim();
+      if (!code) {
+        showOtpError('Enter the 6-digit code from your app');
+        return;
+      }
+      attemptLogin(code, true, otpBtn);
+    });
+  }
 })();
