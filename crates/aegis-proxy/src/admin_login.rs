@@ -353,6 +353,25 @@ mod login_page_contract_tests {
     }
 
     #[test]
+    fn login_page_presents_2fa_as_mandatory() {
+        // TOTP-8 (owner ask 2026-07-05): 2FA is not optional — the login
+        // page must say so. `require_totp` defaults to true, so copy
+        // like "(if enrolled)" / "Leave empty if you haven't set up an
+        // authenticator" misrepresents the policy and trains operators
+        // to skip the field.
+        assert!(
+            LOGIN_HTML.contains("Two-factor authentication is required"),
+            "login page must state that 2FA is mandatory",
+        );
+        for optional_copy in ["(if enrolled)", "Leave empty if you haven't set up"] {
+            assert!(
+                !LOGIN_HTML.contains(optional_copy),
+                "login page must not present 2FA as optional: found {optional_copy:?}",
+            );
+        }
+    }
+
+    #[test]
     fn login_html_has_the_enrollment_surface() {
         // QR container (the server returns an inline SVG), manual-entry
         // secret fallback, and the 6-digit confirm input.
