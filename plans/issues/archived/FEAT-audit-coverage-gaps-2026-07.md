@@ -1,6 +1,6 @@
 # FEAT — Audit-logging coverage gaps + risk-decay caveats
 
-> **Type:** FEAT (committee round-2 🟡3) · **Status:** ☐ Not started — planned 2026-07-04
+> **Type:** FEAT (committee round-2 🟡3) · **Status:** ✅ COMPLETE 2026-07-05 — AU-1/AU-2 (merged), AU-3/AU-4 (merged). Auth+reset_state events, drop metrics, decay caveats A/B/C, evidence pack.
 > **Track ID prefix:** `AU-<1–4>` · Verified 2026-07-04 across both audit paths (hash-chain +
 > interop contract log) and the risk tracker.
 

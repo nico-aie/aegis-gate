@@ -1,8 +1,8 @@
 # FEAT — Egress & internal-traffic visibility (design-first)
 
-> **Type:** FEAT (committee round-2 🟡4) · **Status:** ☐ Not started — planned 2026-07-04, **design-first**
+> **Type:** FEAT (committee round-2 🟡4) · **Status:** ⏳ EG-1 design doc DELIVERED 2026-07-05, awaiting owner review — **design-first**, EG-2/EG-3 gated on that review
 > **Track ID prefix:** `EG-<1–3>` · Largest and least-defined round-2 item — do last; EG-1 is a
-> design doc, not code.
+> design doc, not code → [`DESIGN-EG1-egress-response-inspection-2026-07.md`](../future/round-2-improvement/DESIGN-EG1-egress-response-inspection-2026-07.md).
 
 **Objective (intent, not letter):** detect suspicious activity *leaving* the environment, not just
 attacks entering it — and make traffic between system components observable.
@@ -26,7 +26,7 @@ Claiming "egress inspection" beyond the response path would be exactly the lette
 
 ## 2. Staging
 
-### EG-1 — design doc + committee expectation-setting · **S** · START HERE
+### EG-1 — design doc + committee expectation-setting · **S** · ✅ DELIVERED 2026-07-05 → [`DESIGN-EG1-egress-response-inspection-2026-07.md`](../future/round-2-improvement/DESIGN-EG1-egress-response-inspection-2026-07.md)
 - One design doc: threat model (what exfil through the response path looks like), the honest
   boundary above, perf budget (response-path inspection is hot-path — body scanning cost must be
   bounded/sampled), and the intended committee story. Owner review before any code.
