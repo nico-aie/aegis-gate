@@ -159,11 +159,16 @@ pub struct AdminDirectory {
     /// it `false` (test/legacy shorthand); production boots read the
     /// config default (`true`) via [`AdminDirectory::from_config`].
     require_totp: bool,
+    /// TOTP-3 (TF-1a) — runtime enrollment overlay. When wired, an
+    /// account's effective TOTP state is the store's confirmed factor
+    /// (if any) over the YAML-configured one — web enrollment without a
+    /// YAML edit, fleet-wide on a shared backend.
+    totp_store: Option<std::sync::Arc<crate::admin_auth::totp_store::TotpEnrollmentStore>>,
 }
 
 impl AdminDirectory {
     pub fn new(accounts: Vec<std::sync::Arc<AdminIdentity>>) -> Self {
-        Self { accounts, require_totp: false }
+        Self { accounts, require_totp: false, totp_store: None }
     }
 
     /// Wrap one identity — the single-admin shorthand (tests + legacy
@@ -172,7 +177,33 @@ impl AdminDirectory {
         Self {
             accounts: vec![std::sync::Arc::new(identity)],
             require_totp: false,
+            totp_store: None,
         }
+    }
+
+    /// Wire the TOTP-3 runtime enrollment overlay (builder-style).
+    pub fn with_totp_store(
+        mut self,
+        store: std::sync::Arc<crate::admin_auth::totp_store::TotpEnrollmentStore>,
+    ) -> Self {
+        self.totp_store = Some(store);
+        self
+    }
+
+    /// The account's effective `(totp_enabled, secret_b32)`: the runtime
+    /// store's confirmed factor wins over the YAML bootstrap state. An
+    /// enrolled factor is honoured even under `require_totp: false` —
+    /// enrollment is a promise to that operator, not something the
+    /// global policy silently disables.
+    pub async fn effective_totp(&self, account: &AdminIdentity) -> (bool, String) {
+        if let Some(store) = &self.totp_store {
+            if let Some(active) = store.active(&account.user).await {
+                if active.enabled {
+                    return (true, active.secret_b32);
+                }
+            }
+        }
+        (account.totp_enabled, account.totp_secret_b32.clone())
     }
 
     /// Set the TF-1 enforcement policy (builder-style, used by tests
@@ -207,6 +238,7 @@ impl AdminDirectory {
         Self {
             accounts,
             require_totp: auth.require_totp,
+            totp_store: None,
         }
     }
 
@@ -338,7 +370,11 @@ pub async fn authenticate(
     //     POST /api/admin/totp/enroll|confirm) instead of a full one.
     //     Counts as a rate-limit success: the password WAS right, and a
     //     legitimate first login must not accrue failure strikes.
-    if directory.require_totp() && !admin.totp_enabled {
+    // Effective TOTP state: the runtime enrollment overlay (TOTP-3)
+    // wins over the YAML bootstrap fields.
+    let (totp_enabled, totp_secret_b32) = directory.effective_totp(admin).await;
+
+    if directory.require_totp() && !totp_enabled {
         rate_limiter.record_success(ip, &req.user);
         let (session_cookie, csrf_cookie) = match issue_session(
             sessions,
@@ -379,7 +415,7 @@ pub async fn authenticate(
     //     for repeated TOTP failures stays the same as repeated
     //     password failures — both feed `rate_limiter::record_failure`
     //     so the lockout threshold counts them together.
-    if admin.totp_enabled {
+    if totp_enabled {
         use crate::admin_auth::totp;
 
         let code = match req.totp_code.as_deref() {
@@ -394,7 +430,7 @@ pub async fn authenticate(
 
         let secret_bytes = match base32::decode(
             base32::Alphabet::Rfc4648 { padding: false },
-            &admin.totp_secret_b32,
+            &totp_secret_b32,
         ) {
             Some(b) if !b.is_empty() => b,
             _ => {

@@ -52,6 +52,7 @@ dependencies = [
  "num_cpus",
  "parking_lot",
  "prometheus",
+ "qrcode",
  "rcgen 0.13.2",
  "reqwest",
  "rustls 0.23.39",
@@ -3204,6 +3205,12 @@ name = "protobuf"
 version = "2.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "106dd99e98437432fed6519dedecfade6a06a73bb7b2a1e019fdd2bee5778d94"
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 
 [[package]]
 name = "quinn"

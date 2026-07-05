@@ -110,6 +110,16 @@ pub(crate) async fn handle_admin_request(
         return handle_node_drain_get(readiness, services);
     }
 
+    // TOTP-3 (TF-1a) — Google Authenticator enrollment. Session-gated by
+    // the upstream middleware; these two are also the ONLY endpoints an
+    // enrollment-only session (require_totp, no factor yet) may reach.
+    if method == hyper::Method::POST && path == "/api/admin/totp/enroll" {
+        return crate::admin_totp::handle_totp_enroll(req, peer, cfg, services).await;
+    }
+    if method == hyper::Method::POST && path == "/api/admin/totp/confirm" {
+        return crate::admin_totp::handle_totp_confirm(req, peer, services).await;
+    }
+
     // external interop contract control plane .
     // Always under `/__waf_control/*`; auth via `X-Benchmark-Secret`.
     // No-op (404) when the binary was built without the

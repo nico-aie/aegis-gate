@@ -187,6 +187,21 @@ pub fn provisioning_uri(secret_b32: &str, issuer: &str, account: &str) -> String
     )
 }
 
+/// Generate a fresh 32-byte TOTP shared secret, RFC 4648 base32
+/// encoded (no padding — matches what `api::login` decodes and what
+/// authenticator apps consume off the `otpauth://` URI).
+///
+/// CSPRNG source: two UUID v4s (the token standard across `csrf.rs` /
+/// `session.rs`; the CLI's `enroll-totp` used the same construction —
+/// TOTP-3 hoists it here so the web enrollment endpoint and the CLI
+/// share one generator).
+pub fn generate_secret_b32() -> String {
+    let mut secret = [0u8; 32];
+    secret[..16].copy_from_slice(&uuid::Uuid::new_v4().into_bytes());
+    secret[16..].copy_from_slice(&uuid::Uuid::new_v4().into_bytes());
+    base32::encode(base32::Alphabet::Rfc4648 { padding: false }, &secret)
+}
+
 /// Generate recovery codes (10 codes, 8 chars each).
 pub fn generate_recovery_codes(seed: &[u8]) -> Vec<String> {
     (0..10)

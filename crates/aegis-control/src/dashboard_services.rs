@@ -102,6 +102,12 @@ pub struct DashboardServices {
     /// `cfg.admin.dashboard_auth` (`AdminDirectory::from_config`);
     /// legacy single-admin YAMLs fold into one `admin` entry.
     pub admin_directory: Arc<AdminDirectory>,
+    /// TOTP-3 (TF-1a) — runtime TOTP enrollment store backing
+    /// `POST /api/admin/totp/enroll|confirm`. Defaults to an in-memory
+    /// instance; `aegis-proxy::accept` swaps in the StateBackend-wired
+    /// store (Redis ⇒ fleet-wide) after construction, the same opt-in
+    /// pattern as `allow_ca_upload` / `fleet_event_bus`.
+    pub totp_store: Arc<crate::admin_auth::totp_store::TotpEnrollmentStore>,
     /// AU-1 — auth audit emitter (login_success / login_failure /
     /// logout events with per-IP flood aggregation).
     pub login_auditor: Arc<crate::api::login_audit::LoginAuditor>,
@@ -651,6 +657,9 @@ impl DashboardServices {
                 auth_sessions,
                 login_rate_limiter,
                 admin_directory,
+                totp_store: Arc::new(
+                    crate::admin_auth::totp_store::TotpEnrollmentStore::in_memory(),
+                ),
                 login_auditor: Arc::new(crate::api::login_audit::LoginAuditor::new(
                     bus_handle.clone(),
                 )),

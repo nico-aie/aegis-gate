@@ -92,8 +92,15 @@ async fn enroll_returns_ga_uri_secret_and_self_contained_qr() {
     // Self-contained SVG QR — rendered server-side, no external hosts
     // (offline admin box must work).
     assert!(resp.qr_svg.contains("<svg"), "must be inline SVG");
+    // Self-contained: no fetched sub-resources. (The standard
+    // `xmlns="http://www.w3.org/2000/svg"` namespace IDENTIFIER is not a
+    // network reference and is allowed.)
+    let without_xmlns = resp.qr_svg.replace("xmlns=\"http://www.w3.org/2000/svg\"", "");
     assert!(
-        !resp.qr_svg.contains("http://") && !resp.qr_svg.contains("https://"),
+        !without_xmlns.contains("http://")
+            && !without_xmlns.contains("https://")
+            && !without_xmlns.contains("<image")
+            && !without_xmlns.contains("src="),
         "QR must not reference an external host",
     );
     assert!(resp.expires_in_seconds > 0);

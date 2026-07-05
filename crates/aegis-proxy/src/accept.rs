@@ -540,8 +540,19 @@ pub(crate) async fn admin_accept_loop(
     // state, and replay guard (per-principal counter monotonicity —
     // guards zero-init at boot, correct: tracking starts at the first
     // verify).
+    // TOTP-3 (TF-1a) — runtime enrollment store on the SAME state
+    // backend as admin sessions: Redis ⇒ fleet-wide (enroll on node A,
+    // log in on node B) + restart-durable; in_memory ⇒ process-lifetime
+    // only (YAML + CLI stay the durable bootstrap — see the storage
+    // decision in plans/issues/FEAT-totp-google-authenticator-2026-07.md).
+    let totp_store = Arc::new(
+        aegis_control::admin_auth::totp_store::TotpEnrollmentStore::with_backend(
+            state_backend.clone(),
+        ),
+    );
     let admin_directory = Arc::new(
-        aegis_control::api::login::AdminDirectory::from_config(auth),
+        aegis_control::api::login::AdminDirectory::from_config(auth)
+            .with_totp_store(Arc::clone(&totp_store)),
     );
     let session_idle_seconds = auth.session_ttl_idle.as_secs();
 
@@ -1097,6 +1108,11 @@ pub(crate) async fn admin_accept_loop(
     // upload card. Default off; flip via
     // `cfg.admin.dashboard_auth.allow_ca_upload: true`.
     services.allow_ca_upload = cfg.admin.dashboard_auth.allow_ca_upload;
+    // TOTP-3 — swap the default in-memory enrollment store for the
+    // backend-wired one built above (same instance the login directory
+    // overlays), so /api/admin/totp/enroll|confirm and authenticate()
+    // read/write identical state.
+    services.totp_store = Arc::clone(&totp_store);
     // MTLS-T10 Phase 2 — share the live trust store as a type-erased
     // writer so the audit-mutated PUT handler can hot-swap roots.
     services.trust_anchor_writer = client_trust
