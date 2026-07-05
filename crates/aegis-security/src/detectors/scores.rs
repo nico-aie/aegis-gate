@@ -117,6 +117,14 @@ pub mod recon {
     pub const PATH: u32 = 25;
     /// Scanner User-Agent (`sqlmap`, `nikto`, `nmap`, …).
     pub const TOOL: u32 = 50;
+    /// RC-2 (2026-07-05) — secret-exposure subset of the path probes:
+    /// credential files, private keys, `.terraform/`, Spring actuator
+    /// heapdump/env/configprops, `wp-config`. Higher confidence than a
+    /// generic probe, so it scores above `PATH` — but stays **below**
+    /// `block_at` (70): still two hits to cumulative-block, single-hit is
+    /// at most a challenge. Any escalation to a single-hit-block score
+    /// (≥70) is gated on the FP-baseline corpus + owner sign-off.
+    pub const SENSITIVE: u32 = 50;
 }
 
 pub mod brute_force {

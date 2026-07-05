@@ -1718,6 +1718,16 @@ pub(crate) async fn admin_accept_loop(
                             if let Ok(v) = hyper::header::HeaderValue::from_str(&identity.actor) {
                                 req.headers_mut().insert("x-aegis-actor", v);
                             }
+                            // RC-5a / V9: stamp the authenticated actor's real
+                            // client IP (the TCP peer) so mutation handlers can
+                            // record *where* an admin change came from. The
+                            // client-supplied copy was just stripped above; this
+                            // insert is the only trusted source.
+                            if let Ok(v) =
+                                hyper::header::HeaderValue::from_str(&peer.ip().to_string())
+                            {
+                                req.headers_mut().insert("x-aegis-client-ip", v);
+                            }
                             handle_admin_request(
                                 req, peer, &cfg, &readiness, &startup, &metrics, &services,
                             )

@@ -1,6 +1,11 @@
 # FEAT — Admin-channel mTLS: wire it, then make it the default
 
-> **Type:** FEAT (committee round-2 🔴1) · **Status:** ☐ Not started — planned 2026-07-04
+> **Type:** FEAT (committee round-2 🔴1) · **Status:** ⏸️ **DEFERRED (owner, 2026-07-05) — not this round.**
+> We are **not** building mTLS-by-default on the admin listener. Instead round 3 **validates the
+> already-shipped `zero_trust` / mTLS feature** end-to-end (see the round-2 response §2.1 + the
+> ops-validation runbook's zero-trust drill). The "Admin scope is a silent no-op" finding below
+> stands and is worth fixing later — this plan is kept as the record, not scheduled. The round-1
+> public-HTTP admin contract (`[[project_admin_public_http_contract]]`) therefore **stays valid**.
 > **Track ID prefix:** `MT-A<1–3>` · **Design context:** committee round-2 response
 > ([COMMITTEE-ROUND2-response-2026-07-04.md](COMMITTEE-ROUND2-response-2026-07-04.md))
 >

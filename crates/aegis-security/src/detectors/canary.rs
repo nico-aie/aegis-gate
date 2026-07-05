@@ -5,6 +5,11 @@
 //! path matches one of those entries gets a high-severity signal
 //! (score 100) — single-hit-to-block at the §3 §5 risk thresholds.
 //!
+//! RC-1 (2026-07-05, FEAT-recon-canary-hardening): ships **armed by
+//! default** — `risk.canary_paths` seeds a curated never-legit set
+//! (see `default_canary_paths` in aegis-core `config.rs`) and the
+//! `detectors.canary` toggle defaults ON. `canary_paths: []` disarms.
+//!
 //! ## Why this lives outside `DetectorClass`
 //!
 //! `DetectorClass` is a closed-set bitfield with stable bit
@@ -173,7 +178,20 @@ impl Detector for CanaryDetector {
 
     fn inspect(&self, req: &RequestView<'_>) -> Vec<Signal> {
         let path = req.uri.path();
-        if let Some(matched) = self.paths.matches(path) {
+        // Primary match: the raw request path (unchanged fast path).
+        let matched = self.paths.matches(path).or_else(|| {
+            // RC-4 defense-in-depth: retry against a normalized copy so
+            // encoding / traversal evasions of a honeypot entry
+            // (`/%2egit/config`, `//​.git/config`, `/x/../.git/config`)
+            // still trip it. `normalize_path` borrows (no work) when the
+            // path is already canonical, so we only pay the second match
+            // when normalization actually changed something.
+            match aegis_core::normalize::normalize_path(path) {
+                std::borrow::Cow::Owned(norm) => self.paths.matches(&norm),
+                std::borrow::Cow::Borrowed(_) => None,
+            }
+        });
+        if let Some(matched) = matched {
             return vec![Signal {
                 // 100 — maximum confidence. Honeypot paths are
                 // operator-curated and have no legitimate caller, so
@@ -321,6 +339,55 @@ mod tests {
         assert_eq!(detector.inspect(&view(&m, &u, &h, &b)).len(), 1);
     }
 
+    /// RC-1 (2026-07-05) — every curated default canary path fires
+    /// as a single max-confidence signal. Score 100 ≥ every tier's
+    /// block threshold, so one probe from a fresh IP blocks — the
+    /// distributed-recon counter this list exists for.
+    #[test]
+    fn rc1_default_curated_paths_single_hit_max_confidence() {
+        let defaults = aegis_core::config::RiskConfig::default().canary_paths;
+        assert!(!defaults.is_empty(), "RC-1 ships a curated default list");
+        let d = CanaryDetector::new(&defaults);
+        for path in &defaults {
+            let (m, u, h, b) = req(path);
+            let signals = d.inspect(&view(&m, &u, &h, &b));
+            assert_eq!(signals.len(), 1, "curated path {path} must fire");
+            assert_eq!(signals[0].tag, "canary");
+            assert_eq!(signals[0].score, 100, "curated path {path} must be max confidence");
+        }
+    }
+
+    /// RC-1 (2026-07-05) — look-alike paths with legitimate callers
+    /// must NOT fire. Canary is a hard single-hit block; a false
+    /// entry here is an outage, so the negative space is load-bearing.
+    #[test]
+    fn rc1_default_curated_lookalikes_do_not_fire() {
+        let d = CanaryDetector::new(&aegis_core::config::RiskConfig::default().canary_paths);
+        for legit in [
+            "/actuator/health",  // monitoring — the classic near-miss
+            "/actuator/info",
+            "/actuator",         // bare index scores recon 25, never canary
+            "/actuator/env",     // 2026-07-05 owner call: dropped from the
+                                 // canary set (Spring Boot Admin polls it
+                                 // legitimately) — recon still scores it,
+                                 // but it must NOT hard-block as a canary.
+                                 // (`/actuator/heapdump` DOES stay a canary
+                                 // — verified in rc1_default_curated_paths.)
+            "/environment",      // exact-match: `/.env` must not prefix-hit
+            "/id_rsa.pub",       // public half is not the secret
+            "/server.key.pem",   // exact-match: `/server.key` must not prefix-hit
+            "/git/config",       // no dot — different path entirely
+            "/",
+            "/api/users",
+        ] {
+            let (m, u, h, b) = req(legit);
+            assert!(
+                d.inspect(&view(&m, &u, &h, &b)).is_empty(),
+                "legit look-alike {legit} must not trip the canary",
+            );
+        }
+    }
+
     #[test]
     fn raw_reads_back_normalized_entries() {
         let paths = CanaryPaths::new(&vec![
@@ -330,5 +397,63 @@ mod tests {
         ]);
         // Blanks dropped, surrounding whitespace trimmed.
         assert_eq!(paths.raw(), vec!["/wp-admin".to_string(), "/.env".to_string()]);
+    }
+
+    // ── RC-4 (2026-07-05) — normalized-path defense-in-depth ───────────
+    // The canary tripwire matches raw AND a normalized copy, so encoding /
+    // traversal evasions of a curated honeypot entry still trip it. The
+    // raw form stays the primary match (unchanged fast path).
+    macro_rules! canary_evasion_fires {
+        ($name:ident, $entry:expr, $request:expr) => {
+            #[test]
+            fn $name() {
+                let d = CanaryDetector::new(&vec![$entry.into()]);
+                let (m, u, h, b) = req($request);
+                let signals = d.inspect(&view(&m, &u, &h, &b));
+                assert_eq!(
+                    signals.len(),
+                    1,
+                    "evasion {} should trip canary {}",
+                    $request,
+                    $entry
+                );
+                assert_eq!(signals[0].tag, "canary");
+                assert_eq!(signals[0].score, 100);
+            }
+        };
+    }
+
+    // %2e-encoded, dot-segment, dot-dot, and doubled-slash evasions of a
+    // `/.git/config` honeypot all canonicalize back to it.
+    canary_evasion_fires!(rc4_pct_encoded_dot,  "/.git/config", "/%2egit/config");
+    canary_evasion_fires!(rc4_dot_segment,      "/.git/config", "/./.git/config");
+    canary_evasion_fires!(rc4_dotdot_segment,   "/.git/config", "/x/../.git/config");
+    canary_evasion_fires!(rc4_double_slash,     "/.git/config", "//.git/config");
+    canary_evasion_fires!(rc4_pct_slash_dotdot, "/.git/config", "/a%2f%2e%2e%2f.git/config");
+    // Prefix honeypot with an encoded/doubled-slash evasion.
+    canary_evasion_fires!(rc4_prefix_evasion,   "/admin/*",     "//admin//panel");
+
+    #[test]
+    fn rc4_raw_match_still_fires_unchanged() {
+        // Regression: the canonical raw form matches on the fast path.
+        let d = CanaryDetector::new(&vec!["/.git/config".into()]);
+        let (m, u, h, b) = req("/.git/config");
+        let s = d.inspect(&view(&m, &u, &h, &b));
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].field, "path:/.git/config");
+    }
+
+    #[test]
+    fn rc4_normalization_does_not_introduce_false_positive() {
+        // A benign path that normalizes cleanly must NOT match a canary
+        // it doesn't actually resolve to.
+        let d = CanaryDetector::new(&vec!["/.git/config".into()]);
+        for benign in ["/api/users/../orders", "/a//b//c", "/%2e%2e/products"] {
+            let (m, u, h, b) = req(benign);
+            assert!(
+                d.inspect(&view(&m, &u, &h, &b)).is_empty(),
+                "false positive on {benign}"
+            );
+        }
     }
 }

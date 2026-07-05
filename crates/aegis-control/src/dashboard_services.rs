@@ -1070,6 +1070,7 @@ mod tests {
             resource: "/api/rules/sqli-1",
             action: "create",
             reason: "wire-up smoke",
+            client_ip: "203.0.113.50",
         };
         let rules = Arc::clone(&services.rules);
         let outcome = services
@@ -1123,6 +1124,7 @@ mod tests {
             resource: "/api/rules/x",
             action: "create",
             reason: "csrf attempt",
+            client_ip: "203.0.113.50",
         };
         let rules = Arc::clone(&services.rules);
         let result: Result<_, _> = services.mutate.apply(
@@ -1180,6 +1182,7 @@ mod tests {
             resource: "/api/detectors",
             action: "update",
             reason: "disable recon",
+            client_ip: "203.0.113.50",
         };
         let mask_handle = initial_mask.clone();
         let outcome = services
@@ -1249,6 +1252,7 @@ mod tests {
             resource: "/api/detectors",
             action: "update",
             reason: "try to drop sqli",
+            client_ip: "203.0.113.50",
         };
         let modes = vec![aegis_core::config::ComplianceMode::Pci];
         let mask_handle = initial_mask.clone();

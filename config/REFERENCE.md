@@ -386,7 +386,7 @@ tier without changing the global mask.
 | `open_redirect` | `enabled: true` | Plus `allowed_domains[]` operator allowlist |
 | `behavior_signals` | `enabled: false` | Stateful per-IP (no_ua, missing_referer, zero_depth). Default OFF — see [`docs/security/detectors/behavior-signals.md`](../docs/security/detectors/behavior-signals.md) |
 | `velocity` | `enabled: true` | Cross-endpoint sequence engine (login→deposit). Zero cost when upstream has no matching routes |
-| `canary` | `enabled: false` | Operator-supplied recon tripwire — also gated by `risk.canary_paths` |
+| `canary` | `enabled: true` | Honeypot-path recon tripwire — also gated by `risk.canary_paths` (non-empty by default since RC-1; `canary_paths: []` disarms) |
 | `per_tier.<tier>.<class>` | unset | Per-tier override; `None` inherits global |
 | `persistence.path` | unset | File-backed snapshot of dashboard mask edits across restart |
 
@@ -540,7 +540,18 @@ tracker-wide and apply to every bucket uniformly.
 | `thresholds.max` | `100` | Hard ceiling (clamped on update) |
 | `strikes.block_at` | `50` | Lifetime strikes (per bucket) that trip permanent block |
 | `trust_recovery.per_hour` | `30` | Trust-recovery rate when a bucket behaves |
-| `canary_paths[]` | `[]` | Hit on any of these → auto-block. Consumed by the `canary` detector |
+| `canary_paths[]` | curated 11-path set | Hit on any of these → auto-block (score 100, single hit). Default since RC-1 is a curated never-legit set (`/.git/config`, `/.env`, `/id_rsa`, `/actuator/heapdump`, …) — see `default_canary_paths` in `aegis-core/src/config.rs`. Explicit `canary_paths: []` opts out. Never add a path with real traffic — a wrong entry is an outage, not a false positive |
+
+> **Upgrade note (RC-1):** deployments that never set `canary_paths` or `detectors.canary` pick up
+> the armed defaults on the next restart/reload. Before upgrading, audit whether anything routes
+> **through the WAF edge** to the default entries — in particular `/actuator/heapdump` (a heap dump
+> has no legitimate polling caller, but confirm nothing scrapes it through the public edge before
+> it hard-blocks on first hit). `/actuator/env`, `/actuator/health`, and `/actuator/info` are
+> deliberately NOT canaried — `/actuator/env` was dropped from the default set (2026-07-05) because
+> Spring Boot Admin / config-refresh tooling legitimately polls it through the edge; recon still
+> scores it (sensitive tier), it just isn't a hard tripwire. Opt out entirely with
+> `canary_paths: []`, or trim the list via `PUT /api/risk/canary-paths`. Dashboard toggles saved
+> before the upgrade win over the new default (mask persistence restores the operator's setting).
 
 **Resetting state:**
 - `POST /api/risk/<ip>/reset` — wipes **every** bucket sharing that IP (cluster-wide convenience).

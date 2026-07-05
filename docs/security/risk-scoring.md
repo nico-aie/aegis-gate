@@ -123,9 +123,10 @@ all signals from the chain.
 | Body abuse — oversize | `body_abuse` | **30** | `scores::body_abuse::OVERSIZE` |
 | Open redirect | `open_redirect` | **50** | `scores::open_redirect::OPEN_REDIRECT` |
 | Recon — scanner UA | `recon` | **50** | `scores::recon::TOOL` |
-| Recon — probe path | `recon` | **25** | `scores::recon::PATH` |
+| Recon — probe path | `recon` | **25** | `scores::recon::PATH` — generic/ambiguous probes |
+| Recon — sensitive path | `recon` | **50** | `scores::recon::SENSITIVE` (RC-2, 2026-07-05) — secret-exposure subset (`RECON_SENSITIVE_PATHS`: creds files, private keys, `.terraform/`, actuator heapdump/env/configprops/…, `wp-config`). Checked before the generic set; still < `block_at` (70) so single-hit is at most a challenge |
 | Brute force | `brute_force` | **50** (default) | `scores::brute_force::DEFAULT` (off by default; set per-route) |
-| **Canary honeypot** (path hit) | `canary` | **100** | `detectors::canary` — operator-curated honeypot paths (`risk.canary_paths`); ~0 FP → max confidence, single-hit block at every tier. Default OFF. |
+| **Canary honeypot** (path hit) | `canary` | **100** | `detectors::canary` — operator-curated honeypot paths (`risk.canary_paths`); ~0 FP → max confidence, single-hit block at every tier. **Armed by default since RC-1** (curated 11-path set; `canary_paths: []` opts out). Also matches a normalized path copy (RC-4) so `%2e`/`//`/`..` evasions still trip it. |
 | **AI classifier** (verdict = attack) | `ai` | **50** | `scores::ai::AI` — runs ONLY when no Base detector matched (short-circuit). 2026-06-16: demoted 60→50 so a lone AI verdict no longer single-blocks on the catch-all `high` tier (60); it must stack with a rule detector except on `critical` (50) |
 
 ### B. Identity / behaviour signals (configurable in YAML)
@@ -238,6 +239,45 @@ one session and the IP risk goes `70 → 100` (`70 + 70`, capped).
   it as `risk-challenge · recon_path`, or `· cumulative` when this request
   itself scored 0 and was actioned purely on the IP's accumulated history.
 
+### Testing note — two behaviours that look like bugs but are by design
+
+Two properties of the model above regularly get filed as false-positive or
+missed-detection bugs by black-box test harnesses. Both are **working as
+designed**; document them here so the next report doesn't re-diagnose them.
+
+**(1) "The detector didn't block, so it's not detecting" (the two-score
+split).** A single probing request whose summed detector score is below the
+route tier's `risk_threshold` is **forwarded as `allow`** — but it *was*
+detected. The fired detectors are stamped in **both** `X-WAF-Rule-Id` and the
+audit `rule_id` on that allowed request, and they feed the source's cumulative
+IP risk (`max(signal)` per request). A harness that only checks the HTTP status
+of each individual request will see `200` and conclude "not detected"; the
+detection is in the labels and in the accumulating IP score, not in a per-request
+block. Enough such requests cross `challenge_at` / `block_at` and the
+**cumulative** gate then blocks — with `rule_id = risk-score` / `risk-challenge`,
+not the original detector tag. Read the `rule_id` / `fields.detectors`, not just
+the status code, to see per-path detection ability. (Aggregate dashboards that
+count only `block` actions understate this; the per-request labels are the
+source of truth.)
+
+**(2) "A clean request got challenged/blocked in dev" (the single-IP XFF
+collapse).** `cfg.proxy.trusted_proxies` is **empty by default** — the
+F-HIGH-002-safe posture — which means `x-forwarded-for` is ignored and the
+**TCP peer IP always wins** as the risk-bucket `ip` axis
+(`data_plane.rs` → `resolve_client_ip`). In a local/dev setup every request
+originates from `127.0.0.1`, so **all traffic shares one RiskKey bucket**. Run
+an attack suite against a dev instance and the loopback bucket accumulates risk;
+subsequent *benign* requests from the same loopback then get challenged or
+access-gate-blocked on the **cumulative** gate — not because the new request was
+malicious, but because it shares the poisoned bucket. This does not happen in
+production, where clients have distinct peer IPs (or a *trusted* L7/SNAT LB is
+listed in `trusted_proxies` so `resolve_client_ip` walks XFF back to the real
+client). To test cleanly against dev: send a realistic distinct `User-Agent`,
+space requests so decay applies, and reset the poisoned bucket between runs with
+`PUT /api/risk/{ip}/reset` (or the surgical `POST /api/risk/reset_key`). See
+[ip-reputation.md § Proxy-protocol / L4 real client IP](./ip-reputation.md#proxy-protocol-l4-real-client-ip)
+for the production XFF/PROXY-protocol resolution.
+
 ## Worked example: AI detector chain
 
 When `cfg.ai.enabled: true` and the binary is built `--features ai`,
@@ -299,15 +339,33 @@ Thresholds are per-tier overridable; CRITICAL can drop `allow` to 10 and
 
 ## Canary honeypots
 
-Canary routes are paths never advertised to legitimate users. Any touch
-immediately sets the score to `max_score`. Canary paths are also recorded
-with full request context for forensics.
+Canary paths are routes never advertised to legitimate users. Any touch
+immediately sets the score to `max_score` (100) — a single-hit block at every
+tier — and is recorded with full request context for forensics. The config key
+is **`risk.canary_paths`** (each entry is an exact path or a `*` suffix glob;
+cap 256), hot-swappable at runtime via `PUT /api/risk/canary-paths`.
+
+**Armed by default since RC-1 (2026-07-05):** an absent `canary_paths` key seeds
+a curated 11-path never-legit set (`/.git/config`, `/.git/HEAD`, `/.env`,
+`/.aws/credentials`, `/.git-credentials`, `/id_rsa`, `/wp-config.php`,
+`/terraform.tfstate`, `/actuator/heapdump`, `/.ssh/id_rsa`, `/server.key`) and
+`detectors.canary` defaults ON. Set an explicit `canary_paths: []` to disarm.
+`/actuator/env` is deliberately **not** canaried — Spring Boot Admin polls it
+legitimately through the edge (recon still scores it sensitive-tier 50).
+
+**Never add a path with real traffic** — a canary hit is a hard block, so a
+wrong entry is an outage, not a false positive.
+
+**Evasion resistance (RC-4):** the matcher checks the raw path first, then a
+normalized copy (percent-decode + `//`-collapse + `.`/`..` resolution), so
+`/%2egit/config`, `//.git/config`, and `/x/../.git/config` all trip a
+`/.git/config` honeypot.
 
 ```yaml
 risk:
   thresholds: { challenge_at: 40, block_at: 80, max: 100 }
   trust_recovery: { per_hour: 30 }   # linear decay, applied on read
-  canary_routes: [ "/admin/backup", "/.git/config", "/wp-admin" ]
+  canary_paths: [ "/.git/config", "/.env", "/wp-config.php", "/admin/backup/*" ]
 ```
 
 ## State backend
