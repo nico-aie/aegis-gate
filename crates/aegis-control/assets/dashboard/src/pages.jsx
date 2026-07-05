@@ -16909,8 +16909,241 @@ function CopilotMessage({ m }) {
   );
 }
 
+// ============================================================================
+// EG-3 (2026-07-05) — Internal Flows page.
+//
+// The internal-observability half of the egress track: the WAF's OWN internal
+// traffic, aggregated from EXISTING signals (no new collectors) —
+//   1. fleet-channel health          (/api/fleet/status)
+//   2. state backend (Redis/etcd)    (/api/state — RTT percentiles + circuit)
+//   3. upstream dial outcomes by zone(/api/upstreams — per-zone health rollup)
+//   4. config-plane propagation lag  (/api/config/applied — per-node roster)
+// Origin-initiated egress is out of path and explicitly out of scope (see the
+// boundary note at the foot of the page).
+// ============================================================================
+function PageInternalFlows() {
+  const fleet = window.useFleetScopeApi();       // /api/fleet/status
+  const state = window.useStateApi();            // /api/state
+  const upstreams = window.useUpstreamsApi();    // /api/upstreams
+  const applied = window.useConfigAppliedApi();  // /api/config/applied
+
+  const okColor = '#2EBD85', badColor = '#F6465D', muteColor = 'var(--ink-mute)';
+  const statusDot = (ok, label) => (
+    <span style={{ color: ok ? okColor : badColor, fontWeight: 600 }}>● {label}</span>
+  );
+
+  const f = fleet.data || {};
+  const fleetConfigured = !!f.configured;
+  const fleetActive = !!f.active;
+  const fleetNodes = f.nodes != null ? f.nodes : 1;
+  const fleetDegraded = fleetConfigured && !fleetActive;
+
+  const s = state.data || {};
+  const backend = s.backend || 'unknown';
+  const backendUp = !!s.connected;
+  const lat = s.latency || null;
+  const fmtUs = us => (us == null ? '—' : us >= 1000 ? `${(us / 1000).toFixed(2)} ms` : `${us} µs`);
+  const circuitState = s.circuit && s.circuit.state ? s.circuit.state : null;
+
+  const up = upstreams.data || {};
+  const pools = up.pools || [];
+  const zoneMap = {};
+  pools.forEach(p => (p.zones || []).forEach(z => {
+    const e = zoneMap[z.zone] || { zone: z.zone, healthy: 0, total: 0, local: false };
+    e.healthy += Number(z.healthy || 0);
+    e.total += Number(z.total || 0);
+    e.local = e.local || !!z.local;
+    zoneMap[z.zone] = e;
+  }));
+  const zones = Object.values(zoneMap).sort((a, b) => a.zone.localeCompare(b.zone));
+  const healthyMembers = up.healthy_members != null ? up.healthy_members : 0;
+  const totalMembers = up.total_members != null ? up.total_members : 0;
+  const selfZone = up.self_zone || null;
+
+  const cfg = applied.data;                       // null on single-node / no backend
+  const converged = cfg ? !!cfg.converged : true;
+  const maxLag = cfg ? Number(cfg.max_lag || 0) : 0;
+  const roster = cfg && cfg.nodes ? cfg.nodes : [];
+  const currentVersion = cfg && cfg.current_version != null ? cfg.current_version : null;
+
+  const refresh = () => {
+    fleet.reload && fleet.reload();
+    state.reload && state.reload();
+    upstreams.reload && upstreams.reload();
+    applied.reload && applied.reload();
+  };
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Internal Flows</h1>
+          <p className="page-subtitle">
+            The WAF's own internal traffic — fleet channel, state backend, upstream
+            dials by zone, and config-plane propagation. Aggregated from existing signals.
+          </p>
+        </div>
+        <div className="page-actions">
+          <button className="btn" onClick={refresh}><window.I.Refresh /> Refresh</button>
+        </div>
+      </div>
+
+      {/* KPI row */}
+      <div className="kpi-row">
+        <window.StatTile
+          title="Fleet nodes"
+          value={String(fleetNodes)}
+          sub={fleetConfigured ? (fleetActive ? <>live in the merged view</> : <>cluster configured · no merged snapshot</>) : <>single node · no cluster</>}
+          icon={<window.I.Cluster />}
+          tone={fleetDegraded ? 'down' : undefined}
+        />
+        <window.StatTile
+          title="State backend RTT · p99"
+          value={lat ? fmtUs(lat.p99_us) : '—'}
+          sub={<>{backend} · {backendUp ? 'connected' : 'unreachable'}</>}
+          icon={<window.I.Gauge />}
+          tone={backendUp ? undefined : 'down'}
+        />
+        <window.StatTile
+          title="Upstream members"
+          value={totalMembers ? `${healthyMembers}/${totalMembers}` : '—'}
+          sub={selfZone ? <>healthy · this node zone <span className="num">{selfZone}</span></> : <>healthy · total</>}
+          icon={<window.I.Server />}
+          tone={totalMembers && healthyMembers < totalMembers ? 'warn' : undefined}
+        />
+        <window.StatTile
+          title="Config propagation lag"
+          value={converged ? 'converged' : `${maxLag}`}
+          sub={converged ? <>all nodes on the current version</> : <>max versions behind current</>}
+          icon={<window.I.Layers />}
+          tone={converged ? undefined : 'warn'}
+        />
+      </div>
+
+      {/* Card 1 — fleet channel */}
+      <div className="card" style={{ marginBottom: 12 }}>
+        <div className="card-head">
+          <div>
+            <div className="card-title">Fleet channel</div>
+            <div className="card-sub">Cross-node snapshot publish/merge over the control-plane backend</div>
+          </div>
+          <div>{fleetConfigured ? statusDot(!fleetDegraded, fleetDegraded ? 'Degraded' : 'Healthy') : statusDot(true, 'Single node')}</div>
+        </div>
+        {fleetDegraded && (
+          <div style={{ color: badColor, fontSize: 12, marginBottom: 6 }}>
+            Cluster publish is configured but no merged snapshot is available — peers may be
+            unreachable or their snapshot keys have expired.
+          </div>
+        )}
+        <table className="tbl tbl-compact">
+          <tbody>
+            <tr><td>Mode</td><td>{fleetConfigured ? 'Cluster (fleet publish active)' : 'Standalone'}</td></tr>
+            <tr><td>Live nodes</td><td><span className="num">{fleetNodes}</span></td></tr>
+            <tr><td>Merged view</td><td>{fleetActive ? 'active' : (fleetConfigured ? 'none yet' : 'n/a (single node)')}</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      {/* Card 2 — state backend */}
+      <div className="card" style={{ marginBottom: 12 }}>
+        <div className="card-head">
+          <div>
+            <div className="card-title">State backend · {backend}</div>
+            <div className="card-sub">Shared-state round-trip (Redis / etcd ride the same op metric)</div>
+          </div>
+          <div>{statusDot(backendUp, backendUp ? 'Connected' : 'Unreachable')}</div>
+        </div>
+        <table className="tbl tbl-compact">
+          <tbody>
+            <tr><td>Round-trip p50 / p95 / p99</td><td>{lat ? <>{fmtUs(lat.p50_us)} · {fmtUs(lat.p95_us)} · {fmtUs(lat.p99_us)}</> : <span style={{ color: muteColor }}>not measured</span>}</td></tr>
+            <tr><td>Circuit breaker</td><td>{circuitState ? statusDot(circuitState === 'closed', circuitState) : <span style={{ color: muteColor }}>—</span>}</td></tr>
+            {s.key_count != null && <tr><td>Keys</td><td><span className="num">{Number(s.key_count).toLocaleString()}</span></td></tr>}
+            {s.replica_lag_ms != null && <tr><td>Replica lag</td><td><span className="num">{s.replica_lag_ms}</span> ms</td></tr>}
+            {s.server_version && <tr><td>Server</td><td style={{ color: muteColor }}>{s.server_version}</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Card 3 — upstream dial outcomes by zone */}
+      <div className="card" style={{ marginBottom: 12 }}>
+        <div className="card-head">
+          <div>
+            <div className="card-title">Upstream dials by zone</div>
+            <div className="card-sub">Per-zone member health from the passive-health + zone-aware LB signals{selfZone ? <> · this node in <span className="num">{selfZone}</span></> : null}</div>
+          </div>
+        </div>
+        {zones.length === 0 ? (
+          <div style={{ color: muteColor, fontSize: 12 }}>No zone-labelled upstream members — set <span className="num">node.zone</span> / member zones to populate this.</div>
+        ) : (
+          <table className="tbl tbl-compact">
+            <thead><tr><th>Zone</th><th>Healthy / total</th><th>Locality</th></tr></thead>
+            <tbody>
+              {zones.map(z => (
+                <tr key={z.zone}>
+                  <td><span className="num">{z.zone}</span></td>
+                  <td>{statusDot(z.total > 0 && z.healthy >= z.total, `${z.healthy}/${z.total}`)}</td>
+                  <td>{z.local ? <span style={{ color: okColor }}>same-zone</span> : <span style={{ color: muteColor }}>cross-zone</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* Card 4 — config-plane propagation lag */}
+      <div className="card" style={{ marginBottom: 12 }}>
+        <div className="card-head">
+          <div>
+            <div className="card-title">Config-plane propagation</div>
+            <div className="card-sub">Per-node applied config version vs the current cluster version</div>
+          </div>
+          <div>{statusDot(converged, converged ? 'Converged' : `${maxLag} behind`)}</div>
+        </div>
+        {(!cfg || roster.length === 0) ? (
+          <div style={{ color: muteColor, fontSize: 12 }}>Single node or no config backend — nothing to converge.</div>
+        ) : (
+          <>
+            <table className="tbl tbl-compact">
+              <thead><tr><th>Node</th><th>Applied version</th><th>Lag</th></tr></thead>
+              <tbody>
+                {roster.map(n => (
+                  <tr key={n.node}>
+                    <td><span className="num">{n.node}</span></td>
+                    <td><span className="num">{n.applied_version}</span></td>
+                    <td>{Number(n.lag) === 0 ? <span style={{ color: okColor }}>current</span> : <span style={{ color: badColor }}>-{n.lag}</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {currentVersion != null && <div style={{ color: muteColor, fontSize: 11, marginTop: 4 }}>Current cluster version: <span className="num">{currentVersion}</span></div>}
+          </>
+        )}
+      </div>
+
+      {/* Boundary note — the honest scope statement */}
+      <div className="card" style={{ borderStyle: 'dashed' }}>
+        <div className="card-head">
+          <div>
+            <div className="card-title">Scope</div>
+            <div className="card-sub">What this WAF can and cannot see</div>
+          </div>
+        </div>
+        <div style={{ fontSize: 12, color: muteColor }}>
+          Aegis is an inline reverse proxy — it observes inbound edge traffic, the responses to
+          it, and its own internal flows (above). <strong>Origin-initiated egress</strong> —
+          direct sockets from backends, DNS tunneling, lateral movement between services that
+          never traverse the WAF — is physically out of path and <strong>out of scope</strong>.
+          For that, deploy an egress gateway / NDR alongside Aegis; the audit-bus SIEM sinks let
+          it correlate on <span className="num">request_id</span> / <span className="num">client_ip</span>.
+        </div>
+      </div>
+    </>
+  );
+}
+
 Object.assign(window, {
   CopilotWidget,
+  PageInternalFlows,
   PageOverview, PageLiveFeed, PageAttackEvents, PageAnalytics, PageAuditLog,
   PageRuleManager, PageTierConfig, ListPage, PageSettings, PageTracking,
   PageUpstreams, CacheStatsCard,

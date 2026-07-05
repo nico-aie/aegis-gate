@@ -1496,6 +1496,11 @@ function useRuntimeApi()  { return useApi('/api/runtime',         { intervalMs: 
 // nodes still get a fresh number every tick (cheap).
 function useStateApi()    { return useApi('/api/state',           { intervalMs: 5000, fallback: null }); }
 
+// EG-3 (2026-07-05) — config-plane propagation-lag roster for the Internal
+// Flows page: `{ current_version, node_count, nodes:[{node,applied_version,
+// lag}], max_lag, converged }`. Null (fallback) on single-node / no backend.
+function useConfigAppliedApi() { return useApi('/api/config/applied', { intervalMs: 10000, fallback: null }); }
+
 // Live readiness/drain state for THIS node, so the Scaling page renders a
 // truthful Serving/Draining toggle (survives reload; reflects a drain from
 // SIGTERM or ops automation). `{ draining, node }`.
@@ -1974,7 +1979,7 @@ Object.assign(window, {
   incidentAck, incidentSnooze, incidentResolve,
   useAlertsApi, useUpstreamsApi, useRuntimeApi,
   // SC-T2 — Scaling page hooks + drain mutation
-  useStateApi, useNodeDrainApi, adminDrainPost, adminUndrainPost,
+  useStateApi, useConfigAppliedApi, useNodeDrainApi, adminDrainPost, adminUndrainPost,
   // CC-T1.1 — upstream-pool config view + CC-T1.1.b mutation helpers
   useUpstreamsConfigApi, upstreamsConfigPut, poolUpsert, poolDelete,
   // RT-T6 — route mutations
