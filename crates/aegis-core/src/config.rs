@@ -1765,6 +1765,19 @@ impl DynamicConfig {
                 "upstreams must contain at least one pool".into(),
             ));
         }
+        // AU-3 review (2026-07-05) — an enabled strike gate with
+        // `block_at: 0` means `strikes >= 0` at the gate: every
+        // tracked client (clean ones included) is permanently
+        // blocked, and the AU-3A sweep exemption would pin the whole
+        // map. The hot-tune API (`gates.rs`) already rejects this;
+        // the boot-YAML and `PUT /api/config` paths share this check.
+        if let Some(strikes) = &self.risk.strikes {
+            if strikes.enabled && strikes.block_at == 0 {
+                return Err(crate::error::WafError::Config(
+                    "risk.strikes.block_at must be > 0 when the strike gate is enabled".into(),
+                ));
+            }
+        }
         // Every route must reference a declared upstream.
         for route in &self.routes {
             if !self.upstreams.contains_key(&route.upstream) {
@@ -6268,6 +6281,52 @@ pub enum ComplianceMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // AU-3 review (2026-07-05) — `strikes.enabled` with `block_at: 0`
+    // means `strikes >= 0` at the gate: EVERY tracked client
+    // (including clean ones) is permanently blocked, and the AU-3A
+    // sweep exemption would pin the whole map. The hot-tune API
+    // (`gates.rs`) already rejects it; the config paths (boot YAML +
+    // `PUT /api/config`) must too — one validation surface per field.
+    #[test]
+    fn rejects_enabled_strike_gate_with_zero_block_at() {
+        let yaml = r#"
+listeners:
+  data: [{ bind: "0.0.0.0:443" }]
+  admin: { bind: "127.0.0.1:9443" }
+routes:
+  - { id: catch-all, path: "/", upstream: api }
+upstreams:
+  api: { members: [{ addr: "127.0.0.1:3000" }] }
+state: { backend: in_memory }
+risk:
+  strikes: { enabled: true, block_at: 0 }
+"#;
+        let err = crate::load_config_str(yaml).expect_err("block_at 0 must be rejected");
+        assert!(
+            err.to_string().contains("block_at"),
+            "error should name the field: {err}",
+        );
+    }
+
+    #[test]
+    fn accepts_disabled_strike_gate_with_zero_block_at() {
+        // Gate off ⇒ block_at is inert; don't break configs that
+        // merely carry the default-shaped block.
+        let yaml = r#"
+listeners:
+  data: [{ bind: "0.0.0.0:443" }]
+  admin: { bind: "127.0.0.1:9443" }
+routes:
+  - { id: catch-all, path: "/", upstream: api }
+upstreams:
+  api: { members: [{ addr: "127.0.0.1:3000" }] }
+state: { backend: in_memory }
+risk:
+  strikes: { enabled: false, block_at: 0 }
+"#;
+        assert!(crate::load_config_str(yaml).is_ok());
+    }
 
     #[test]
     fn tiers_config_parses_challenges_enabled_and_flattens_overrides() {
