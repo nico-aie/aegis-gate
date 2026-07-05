@@ -104,6 +104,19 @@ const HSET_CHUNK: usize = 1;
 /// [`IDLE_TTL`] so the strike-block guarantee holds for real offenders.
 const ZERO_VALUE_IDLE_TTL: Duration = Duration::from_secs(120);
 
+/// AU-3A (2026-07-04, owner decision) — safety valve on the
+/// lifetime-block sweep exemption. Slots at/above `strikes.block_at`
+/// are exempt from idle eviction (a permanently-blocked source must
+/// not un-block itself by going quiet), but only while the blocked
+/// population stays under this cap; a pathological blocked flood
+/// falls back to plain TTL so memory stays bounded.
+/// [`MAX_TRACKED_KEYS`] remains the hard ceiling regardless.
+#[cfg(not(test))]
+const STRUCK_EXEMPT_CAP: usize = 100_000;
+/// Small in tests so the fallback path is exercisable.
+#[cfg(test)]
+const STRUCK_EXEMPT_CAP: usize = 8;
+
 /// Snapshot of one client's risk state. Returned from every
 /// mutating call so the caller can act on the post-state without
 /// a follow-up read.
@@ -204,6 +217,11 @@ struct TrackerInner {
     /// so a flush can't re-write a strike that an operator/bench reset
     /// (`HDEL` / `UNLINK`) removed mid-flush and resurrect it on the next boot.
     reset_gen: std::sync::atomic::AtomicU64,
+    /// AU-3B — how many at-cap requests were scored but NOT stored
+    /// (the [`MAX_TRACKED_KEYS`] fail-open). Pre-fix this was
+    /// silent; now it's countable (`saturation_rejects()`) and
+    /// surfaced via `/api/risk` + metrics.
+    saturation_rejects: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -218,6 +236,14 @@ impl RiskTracker {
     /// in `RiskConfig` (e.g. trust recovery off) fall back to
     /// sensible defaults — the legacy engine still runs alongside.
     pub fn new(cfg: &RiskConfig) -> Self {
+        // AU-3C — same sticky-scores warning as `set_trust_per_hour`,
+        // for the boot-config path.
+        if cfg.trust_recovery.clone().unwrap_or_default().per_hour == 0 {
+            tracing::warn!(
+                "risk trust_recovery.per_hour is 0 — score decay is DISABLED; \
+                 cumulative scores will never recover (sticky until reset)",
+            );
+        }
         Self {
             inner: Arc::new(TrackerInner {
                 map: DashMap::new(),
@@ -232,6 +258,7 @@ impl RiskTracker {
                 backend: std::sync::OnceLock::new(),
                 dirty: DashSet::new(),
                 reset_gen: std::sync::atomic::AtomicU64::new(0),
+                saturation_rejects: std::sync::atomic::AtomicU64::new(0),
             }),
         }
     }
@@ -481,7 +508,35 @@ impl RiskTracker {
         *guard = now;
         drop(guard);
 
+        // AU-3A (2026-07-04, owner decision) — strike-BLOCKED slots
+        // (strikes ≥ block_at, gate enabled) are exempt from idle
+        // eviction: "permanently blocked" must mean permanent, not
+        // "until the attacker idles for an hour". Exemption is
+        // narrowed to blocked slots (every malicious record strikes,
+        // so exempting all struck slots would exempt every offender
+        // ever seen) and capped by [`STRUCK_EXEMPT_CAP`].
+        let strike_cfg = self.inner.strikes.load();
+        let block_at = if strike_cfg.enabled {
+            Some(strike_cfg.block_at)
+        } else {
+            None
+        };
+        let exempt_blocked = match block_at {
+            Some(b) => {
+                let blocked = self
+                    .inner
+                    .map
+                    .iter()
+                    .filter(|e| e.strikes >= b)
+                    .count();
+                blocked <= STRUCK_EXEMPT_CAP
+            }
+            None => false,
+        };
         self.inner.map.retain(|_, slot| {
+            if exempt_blocked && slot.strikes >= block_at.expect("checked") {
+                return true;
+            }
             let ttl = if slot.score == 0 && slot.strikes == 0 {
                 ZERO_VALUE_IDLE_TTL
             } else {
@@ -541,7 +596,33 @@ impl RiskTracker {
     /// change applies live and converges across nodes. Per-IP score state is
     /// preserved — only the rate at which it ages changes.
     pub fn set_trust_per_hour(&self, per_hour: u32) {
+        // AU-3C — 0 disables decay entirely: scores become sticky
+        // forever (an operator foot-gun the committee flagged).
+        // Reachable via config AND the hot-tune API, so warn loudly
+        // at the single choke point rather than adding a validation
+        // floor that would break operators who freeze decay on
+        // purpose during an incident.
+        if per_hour == 0 {
+            tracing::warn!(
+                "risk trust_per_hour set to 0 — score decay is DISABLED; \
+                 cumulative scores will never recover (sticky until reset)",
+            );
+        }
         self.inner.trust_per_hour.store(per_hour, Ordering::Relaxed);
+    }
+
+    /// AU-3B — at-cap requests that were scored but not stored (the
+    /// [`MAX_TRACKED_KEYS`] fail-open). Monotonic per process.
+    pub fn saturation_rejects(&self) -> u64 {
+        self.inner
+            .saturation_rejects
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// AU-3B — `true` while the tracker is at its cardinality cap
+    /// (new keys score per-request but never accumulate).
+    pub fn is_saturated(&self) -> bool {
+        self.inner.map.len() >= MAX_TRACKED_KEYS
     }
 
     /// Register a malicious event. Adds `delta` to the score
@@ -615,6 +696,10 @@ impl RiskTracker {
             // PROXY-02 — at the cardinality cap: don't persist this new key.
             // Return the would-be state so this single request is still scored,
             // but nothing is stored (no accumulation across a flood).
+            // AU-3B — the fail-open is counted, not silent.
+            self.inner
+                .saturation_rejects
+                .fetch_add(1, Ordering::Relaxed);
             slot_to_state(Slot { score: delta.min(max), strikes: 1, last_seen: now })
         };
         self.maybe_sweep(now);
@@ -662,6 +747,10 @@ impl RiskTracker {
         } else {
             // PROXY-02 — at the cardinality cap: a clean, never-seen key has
             // zero security value, so don't persist it. Behaves as Allow.
+            // AU-3B — still counted: saturation gates ALL accumulation.
+            self.inner
+                .saturation_rejects
+                .fetch_add(1, Ordering::Relaxed);
             slot_to_state(Slot { score: 0, strikes: 0, last_seen: now })
         };
         self.maybe_sweep(now);
@@ -1497,6 +1586,121 @@ mod tests {
         t.record_malicious_at_with_key(key.clone(), 20, late);
         assert_eq!(t.len(), 1);
         assert!(t.snapshot(ip("10.0.0.9")).is_some(), "active offender survives");
+    }
+
+    // ---- AU-3A (2026-07-04, owner decision) — lifetime strike-blocks
+    // survive idle. A source that crossed `block_at` is permanently
+    // blocked; going quiet for IDLE_TTL must NOT un-block it.
+
+    #[test]
+    fn strike_blocked_slot_survives_idle_sweep() {
+        use aegis_core::risk::RiskKey;
+        let t = RiskTracker::new(&cfg()); // strikes enabled, block_at 5
+        let t0 = Instant::now();
+        let offender = RiskKey::from_ip(ip("10.3.0.1"));
+        for i in 0..5 {
+            t.record_malicious_at_with_key(
+                offender.clone(),
+                20,
+                t0 + Duration::from_secs(i),
+            );
+        }
+        assert!(t.is_strike_blocked(ip("10.3.0.1")), "5 strikes ≥ block_at");
+
+        // Offender goes quiet well past IDLE_TTL; another key's
+        // traffic triggers the sweep.
+        let later = t0 + IDLE_TTL + Duration::from_secs(300);
+        t.record_malicious_at_with_key(RiskKey::from_ip(ip("10.3.0.2")), 20, later);
+
+        assert!(
+            t.is_strike_blocked(ip("10.3.0.1")),
+            "a permanently strike-blocked source must not un-block by idling",
+        );
+    }
+
+    #[test]
+    fn under_threshold_strikes_are_still_evicted_when_idle() {
+        use aegis_core::risk::RiskKey;
+        let t = RiskTracker::new(&cfg());
+        let t0 = Instant::now();
+        // 2 strikes < block_at 5 — not blocked, normal TTL applies.
+        let key = RiskKey::from_ip(ip("10.3.1.1"));
+        t.record_malicious_at_with_key(key.clone(), 20, t0);
+        t.record_malicious_at_with_key(key, 20, t0 + Duration::from_secs(1));
+
+        let later = t0 + IDLE_TTL + Duration::from_secs(300);
+        t.record_malicious_at_with_key(RiskKey::from_ip(ip("10.3.1.2")), 20, later);
+        assert!(
+            t.snapshot(ip("10.3.1.1")).is_none(),
+            "under-threshold idle slots keep the trust-recovery posture (evicted)",
+        );
+    }
+
+    #[test]
+    fn strike_block_exemption_disabled_with_the_gate() {
+        use aegis_core::risk::RiskKey;
+        let mut c = RiskConfig::default();
+        c.trust_recovery = Some(TrustRecoveryConfig { per_hour: 30 });
+        c.strikes = Some(StrikeConfig { enabled: false, block_at: 5 });
+        let t = RiskTracker::new(&c);
+        let t0 = Instant::now();
+        let key = RiskKey::from_ip(ip("10.3.2.1"));
+        for i in 0..5 {
+            t.record_malicious_at_with_key(key.clone(), 20, t0 + Duration::from_secs(i));
+        }
+        let later = t0 + IDLE_TTL + Duration::from_secs(300);
+        t.record_malicious_at_with_key(RiskKey::from_ip(ip("10.3.2.2")), 20, later);
+        assert!(
+            t.snapshot(ip("10.3.2.1")).is_none(),
+            "gate off ⇒ no lifetime-block contract ⇒ plain TTL eviction",
+        );
+    }
+
+    #[test]
+    fn strike_block_exemption_falls_back_to_ttl_past_safety_cap() {
+        use aegis_core::risk::RiskKey;
+        let t = RiskTracker::new(&cfg());
+        let t0 = Instant::now();
+        // Drive more blocked offenders than the (test-sized) safety
+        // cap allows — a pathological blocked population must fall
+        // back to plain TTL so memory stays bounded.
+        for i in 0..(STRUCK_EXEMPT_CAP + 2) {
+            let key = RiskKey::from_ip(ip(&format!("10.3.3.{}", i + 1)));
+            for s in 0..5 {
+                t.record_malicious_at_with_key(key.clone(), 20, t0 + Duration::from_secs(s));
+            }
+        }
+        let later = t0 + IDLE_TTL + Duration::from_secs(300);
+        t.record_malicious_at_with_key(RiskKey::from_ip(ip("10.3.4.1")), 20, later);
+        assert!(
+            t.len() <= 2,
+            "past the safety cap, idle blocked slots are swept (got {})",
+            t.len(),
+        );
+    }
+
+    // ---- AU-3B — cardinality-cap saturation is observable, not silent.
+
+    #[test]
+    fn saturation_rejects_counter_increments_at_cap() {
+        use aegis_core::risk::RiskKey;
+        let t = RiskTracker::new(&cfg());
+        let t0 = Instant::now();
+        for i in 0..MAX_TRACKED_KEYS {
+            let key = RiskKey::from_ip(ip(&format!("10.4.0.{}", i + 1)));
+            t.record_malicious_at_with_key(key, 20, t0);
+        }
+        assert_eq!(t.saturation_rejects(), 0, "no rejects before the cap");
+        assert!(!t.is_saturated() || t.len() >= MAX_TRACKED_KEYS);
+
+        t.record_malicious_at_with_key(RiskKey::from_ip(ip("10.4.9.1")), 20, t0);
+        t.record_clean_at_with_key(RiskKey::from_ip(ip("10.4.9.2")), t0);
+        assert_eq!(
+            t.saturation_rejects(),
+            2,
+            "both at-cap untracked paths must count",
+        );
+        assert!(t.is_saturated());
     }
 
     // PROXY-02 (LT-RUN-11) — a unique-key flood must not grow the map without

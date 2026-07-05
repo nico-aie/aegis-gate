@@ -24,6 +24,16 @@ use serde::Serialize;
 pub struct RiskListResponse {
     pub total_tracked: usize,
     pub returned: usize,
+    /// AU-3B — `true` while this node's tracker is at its
+    /// cardinality cap (new keys score per-request but never
+    /// accumulate — silent fail-open no more). `None` on the
+    /// fleet-merged view (node-local signal).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saturated: Option<bool>,
+    /// AU-3B — cumulative count of at-cap requests that were scored
+    /// but not stored on this node.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saturation_rejects: Option<u64>,
     pub clients: Vec<RiskSnapshot>,
 }
 
@@ -41,6 +51,8 @@ pub fn render_list(tracker: &RiskTracker, limit: u32) -> String {
     let body = RiskListResponse {
         total_tracked: tracker.len(),
         returned: 0, // re-set after the take below
+        saturated: Some(tracker.is_saturated()),
+        saturation_rejects: Some(tracker.saturation_rejects()),
         clients: tracker.top(limit),
     };
     let body = RiskListResponse {
@@ -90,6 +102,9 @@ pub fn render_list_from_fleet(
     let body = RiskListResponse {
         total_tracked: clients.len(),
         returned: clients.len(),
+        // Node-local signals — absent on the fleet-merged view.
+        saturated: None,
+        saturation_rejects: None,
         clients,
     };
     serde_json::to_string(&body).unwrap_or_else(|_| String::from("{}"))

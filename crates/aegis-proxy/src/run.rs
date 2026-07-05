@@ -936,6 +936,33 @@ pub async fn run(
     aegis_control::metrics::audit_events::AuditDropMetrics::register(&metrics)
         .expect("audit drop metrics registration failed")
         .install_global();
+    // AU-3B — risk-tracker saturation gauges, sampled off the hot
+    // path. `saturation_rejects` is monotonic (cumulative at-cap
+    // requests scored-but-not-stored); `saturated` is 0/1.
+    {
+        let g_rejects = metrics
+            .register_gauge(
+                "waf_risk_tracker_saturation_rejects",
+                "Cumulative requests scored but NOT stored because the risk tracker hit MAX_TRACKED_KEYS (fail-open, AU-3B).",
+            )
+            .expect("risk saturation gauge registration failed");
+        let g_saturated = metrics
+            .register_gauge(
+                "waf_risk_tracker_saturated",
+                "1 while the risk tracker is at its cardinality cap (new keys never accumulate), else 0.",
+            )
+            .expect("risk saturated gauge registration failed");
+        let tracker = risk.clone();
+        tokio::spawn(async move {
+            let mut tick =
+                tokio::time::interval(std::time::Duration::from_secs(15));
+            loop {
+                tick.tick().await;
+                g_rejects.set(tracker.saturation_rejects() as f64);
+                g_saturated.set(if tracker.is_saturated() { 1.0 } else { 0.0 });
+            }
+        });
+    }
     {
         let bus_sub = bus.clone();
         let m = audit_event_metrics.clone();

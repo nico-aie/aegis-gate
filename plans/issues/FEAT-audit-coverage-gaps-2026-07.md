@@ -71,18 +71,24 @@ are either fixed or documented as designed.
   model documented honestly in `docs/operator/usage.md` §6.
 - Posture kept: best-effort delivery, never block the data plane on audit I/O.
 
-### AU-3 — risk-decay caveats · **S–M**
-- **A (strike eviction):** owner decision — if "lifetime strikes" is the contract, exempt
-  struck slots from idle eviction (bounded: struck-slot count is small) or require Redis
-  durability for the strike gate; else fix the docs to say "strikes survive 1 h idle".
-- **B (cap):** emit `waf_risk_tracker_saturated_total` + dashboard warning when the cap gates
-  accumulation — silent fail-open is the committee-relevant part.
-- **C:** validation floor or explicit warning when `trust_per_hour: 0` set via API/config.
+### AU-3 — risk-decay caveats · **S–M** · ✅ shipped 2026-07-05 (`feat/au3-decay-caveats-pe3-guard`)
+- **A (strike eviction):** owner decided 2026-07-04: exempt struck slots. ✅ Shipped,
+  **narrowed**: exemption applies to strike-**blocked** slots (`strikes ≥ block_at`, gate
+  enabled), not all struck slots — every malicious record strikes (insert = `strikes: 1`), so
+  blanket exemption would have exempted every offender ever seen. Safety cap 100 k (fallback
+  to TTL past it); `MAX_TRACKED_KEYS` stays the hard memory ceiling. Under-threshold strikes
+  still age out (trust-recovery posture, now deliberate + tested).
+- **B (cap):** ✅ `saturation_rejects` counter + `is_saturated()`; surfaced on `GET /api/risk`
+  (`saturated`, `saturation_rejects`) and as `waf_risk_tracker_saturation_rejects` /
+  `waf_risk_tracker_saturated` gauges (15 s sampler). Dashboard tile deferred — the API
+  fields + metric are the alerting-relevant part.
+- **C:** ✅ explicit `tracing::warn!` at both wire points (boot config + `set_trust_per_hour`);
+  no validation floor — freezing decay mid-incident is a legitimate operator move.
 
-### AU-4 — committee evidence pack · **S**
-- Short doc (or section in the round-2 response) with the decay formula, defaults, file:line
-  anchors, and a reproducible test transcript (score a key, advance clock, show decayed read +
-  strike persistence). Same for audit coverage: the mutation-site enumeration.
+### AU-4 — committee evidence pack · **S** · ✅ shipped 2026-07-05
+- [`EVIDENCE-decay-and-audit-2026-07.md`](../future/round-2-improvement/EVIDENCE-decay-and-audit-2026-07.md)
+  — decay formula/defaults/anchors, AU-3 dispositions, audit-coverage enumeration,
+  reproducible test commands.
 
 ## 3. Tests (RED-first)
 

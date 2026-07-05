@@ -2312,6 +2312,122 @@ state: { backend: in_memory }
 }
 
 #[cfg(test)]
+mod pe3_route_guard {
+    //! PE-3 (committee round-2 🔴3) — regression guard so round 3
+    //! doesn't find a fresh crop of placeholder endpoints:
+    //! 1. every `/api/*` route literal registered in the admin
+    //!    dispatch layer must be documented (enterprise api.md /
+    //!    openapi / usage.md) or consumed by the dashboard sources;
+    //! 2. no route arm ships a "coming soon" body or a
+    //!    `placeholder()` call from this layer.
+
+    fn repo_file(rel: &str) -> String {
+        let path = format!("{}/../../{rel}", env!("CARGO_MANIFEST_DIR"));
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("guard needs {rel}: {e}"))
+    }
+
+    /// Strip `//` line comments so tombstone comments (which
+    /// legitimately mention removed placeholders) don't trip the
+    /// banned-pattern scan. Lines where the `//` sits inside a
+    /// string literal (odd number of quotes before it) are kept.
+    fn strip_line_comments(src: &str) -> String {
+        src.lines()
+            .map(|l| match l.find("//") {
+                Some(i) if l[..i].matches('"').count() % 2 == 0 => &l[..i],
+                _ => l,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Extract `"/api/..."` string literals from Rust source.
+    fn api_route_literals(src: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut rest = src;
+        while let Some(i) = rest.find("\"/api/") {
+            let tail = &rest[i + 1..];
+            let Some(end) = tail.find('"') else { break };
+            let lit = &tail[..end];
+            // Skip format-string fragments, upstream-URL fragments
+            // (`?query=`), and prose.
+            if !lit.contains('{') && !lit.contains(' ') && !lit.contains('?') {
+                out.push(lit.to_string());
+            }
+            rest = &tail[end + 1..];
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    #[test]
+    fn every_registered_api_route_is_documented_or_consumed() {
+        let sources = [
+            strip_line_comments(include_str!("admin_get.rs")),
+            strip_line_comments(include_str!("admin_dispatch.rs")),
+        ]
+        .join("\n");
+        let routes = api_route_literals(&sources);
+        assert!(
+            routes.len() > 40,
+            "route extraction looks broken — only {} literals found",
+            routes.len(),
+        );
+
+        // The corpus a route must appear in: the documented API
+        // surface or the dashboard sources that consume it.
+        let corpus = [
+            repo_file("docs/control-plane/enterprise/api.md"),
+            repo_file("docs/control-plane/api.openapi.yaml"),
+            repo_file("docs/operator/usage.md"),
+            repo_file("docs/operations/cluster-config-distribution.md"),
+            repo_file("docs/security/zero-trust-mtls.md"),
+            repo_file("crates/aegis-control/assets/dashboard/src/data.jsx"),
+            repo_file("crates/aegis-control/assets/dashboard/src/pages.jsx"),
+            repo_file("crates/aegis-control/assets/dashboard/src/widgets.jsx"),
+            repo_file("crates/aegis-control/assets/dashboard/src/app.jsx"),
+        ]
+        .join("\n");
+
+        let undocumented: Vec<&String> = routes
+            .iter()
+            .filter(|r| !corpus.contains(r.trim_end_matches('/')))
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "registered but neither documented nor dashboard-consumed \
+             (add docs, wire the UI, or remove the route — no silent \
+             surface): {undocumented:?}",
+        );
+    }
+
+    #[test]
+    fn no_placeholder_bodies_in_the_route_layer() {
+        let sources = [
+            strip_line_comments(include_str!("admin_get.rs")),
+            strip_line_comments(include_str!("admin_dispatch.rs")),
+        ]
+        .join("\n");
+        let lower = sources.to_lowercase();
+        // Built from pieces so this guard's own source can't
+        // self-match through include_str!.
+        let banned = [
+            ["coming", "soon"].join(" "),
+            ["ships in", "phase"].join(" "),
+            ["placeholder", "()"].concat(),
+        ];
+        for pattern in &banned {
+            assert!(
+                !lower.contains(pattern.as_str()),
+                "route layer contains a placeholder marker: {pattern:?} — \
+                 auth-gated endpoints do real work or don't exist (PE-1/PE-2)",
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod percent_decode_tests {
     use super::percent_decode;
 
