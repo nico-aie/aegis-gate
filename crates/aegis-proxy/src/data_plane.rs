@@ -157,6 +157,18 @@ pub(crate) async fn handle_data_request(
             en.observe_outcome(peer.ip(), resp.status() == hyper::StatusCode::NOT_FOUND);
         }
     }
+    // EG-2 T4 (2026-07-05) — fold the response-side error-leak risk delta
+    // (accumulated by `observe` at the body-scrub site) into the RiskTracker
+    // here, where `risk` is in scope. Per-IP keyed, matching the outcome-hook
+    // keying of `behavior_analyzer` / `enumeration`. No gate needed: `observe`
+    // only ran on the forwarded (allow) response path, so a blocked request
+    // has nothing pending and drains to 0.
+    if let Some(el) = &upstream_ctx.egress_error_leak {
+        let delta = el.drain_risk_delta(peer.ip());
+        if delta > 0 {
+            risk.record_malicious(peer.ip(), delta);
+        }
+    }
     (resp, tag)
 }
 
@@ -3167,6 +3179,60 @@ pub(crate) async fn forward_allow_to_upstream(
                     Err(_) => Bytes::new(),
                 }
             };
+            // EG-2 T4 (2026-07-05) — response-path error-leak observability.
+            // Runs BEFORE the `on_body_frame` redact below so it sees the raw
+            // stack trace / framework debug banner / internal IP the scrubber
+            // would rewrite to `[REDACTED]` (design §4 "observe-before-
+            // redact"). Gated to 5xx + text/json inside `observe`, so a 200
+            // costs a single integer compare; the whole block is skipped when
+            // `detectors.egress_error_leak` is off (`None`). Log/score only:
+            // one Detection audit row per leak + a per-IP risk delta the
+            // outcome hook folds into the RiskTracker.
+            if let Some(el) = &ctx.egress_error_leak {
+                let ct = parts_out
+                    .headers
+                    .get(hyper::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok());
+                let status_code = parts_out.status.as_u16();
+                for sig in el.observe(peer_ip, status_code, ct, &body_bytes) {
+                    let ev = aegis_core::audit::AuditEvent {
+                        schema_version: 1,
+                        ts: chrono::Utc::now(),
+                        request_id: blake3::hash(
+                            format!(
+                                "{}:{}",
+                                peer_ip,
+                                chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+                            )
+                            .as_bytes(),
+                        )
+                        .to_hex()
+                        .to_string(),
+                        class: aegis_core::audit::AuditClass::Detection,
+                        tenant_id: None,
+                        tier: None,
+                        // Observe-only: the WAF never blocks a response here,
+                        // so the audit action records the observation, not a
+                        // mitigation.
+                        action: "observe".into(),
+                        reason: format!("egress error-leak ({})", sig.field),
+                        client_ip: peer_ip.to_string(),
+                        route_id: None,
+                        rule_id: Some("egress_error_leak".into()),
+                        risk_score: None,
+                        method: Some(method.to_string()),
+                        path: Some(path.clone()),
+                        mode: None,
+                        fields: serde_json::json!({
+                            "path": path,
+                            "method": method.to_string(),
+                            "egress_leak_field": sig.field,
+                            "egress_leak_score": sig.score,
+                        }),
+                    };
+                    bus.emit(ev);
+                }
+            }
             // Pipeline::on_body_frame ignores rctx + route in the
             // shipping impl, but the trait sig requires both. Build
             // a minimal RequestCtx from peer_ip + identity so

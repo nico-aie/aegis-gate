@@ -1728,6 +1728,15 @@ pub async fn run(
                     enumeration.clear();
                 }));
         }
+        // EG-2 T4 — the error-leak detector's per-IP pending-risk map is the
+        // same class of temporary client metadata; clear it on reset_state so
+        // a bench phase boundary doesn't carry a prior phase's pending delta.
+        if let Some(egress_leak) = upstream_ctx.egress_error_leak.clone() {
+            rt.control
+                .register_reset_callback(std::sync::Arc::new(move || {
+                    egress_leak.clear();
+                }));
+        }
         // SC-1 — wire `POST /__waf_control/flush_cache` to actually evict the
         // data-plane response cache (all pools), and fan the purge out to the
         // rest of the fleet over Redis pub/sub (control-plane Redis, not the

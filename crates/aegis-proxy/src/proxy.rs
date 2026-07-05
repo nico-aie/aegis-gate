@@ -239,6 +239,14 @@ pub struct ProxyContext {
     /// when enabled, so a disabled deployment pays nothing.
     pub enumeration:
         Option<Arc<aegis_security::detectors::enumeration::EnumerationDetector>>,
+    /// EG-2 T4 (2026-07-05) — response-path error-leak detector. Off the
+    /// chain (needs response status + body). Behind the default-OFF
+    /// `detectors.egress_error_leak` toggle; `Some` only when enabled. The
+    /// body-scrub site calls `observe(...)` (before redact) and emits a
+    /// Detection audit row per leak; the outcome hook drains the per-IP risk
+    /// delta into the `RiskTracker`.
+    pub egress_error_leak:
+        Option<Arc<aegis_security::detectors::egress_leak::ErrorLeakDetector>>,
     /// 2026-05-21 — gate-style on/off for the bot classifier
     /// (`cfg.bots.enabled`). The listener reads this before
     /// classifying; `false` skips classification and leaves
@@ -367,6 +375,14 @@ impl ProxyContext {
             enumeration: cfg.detectors.enumeration.enabled.then(|| {
                 Arc::new(
                     aegis_security::detectors::enumeration::EnumerationDetector::new(),
+                )
+            }),
+            // EG-2 T4 — construct only when opted in; the scanner carries
+            // the default 64 KiB body-scan cap and a bounded per-IP pending
+            // map (100k IPs, mirroring enumeration).
+            egress_error_leak: cfg.detectors.egress_error_leak.enabled.then(|| {
+                Arc::new(
+                    aegis_security::detectors::egress_leak::ErrorLeakDetector::new(),
                 )
             }),
             bots_enabled: Arc::new(std::sync::atomic::AtomicBool::new(

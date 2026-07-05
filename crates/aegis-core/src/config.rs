@@ -5073,6 +5073,14 @@ pub struct DetectorsConfig {
     /// against the benchmark FP corpus before it ships on.
     #[serde(default = "default_detector_toggle_off")]
     pub enumeration: DetectorToggle,
+    /// EG-2 T4 (2026-07-05) — response-path error-leak detector. Off the
+    /// chain (needs the response status + body, which only the outcome /
+    /// body-scrub sites see, like `enumeration`). Scans 5xx text/html|json
+    /// bodies for stack traces / framework debug banners / internal IPs and
+    /// feeds a per-IP risk delta — log/score only, never blocks. **Default
+    /// OFF** until FP-tuned; `Some` on `ProxyContext` only when enabled.
+    #[serde(default = "default_detector_toggle_off")]
+    pub egress_error_leak: DetectorToggle,
     /// AC-P2-e (2026-07-03) — Referer origin validation, a sub-feature of
     /// the `behavior_signals` detector. **Default OFF**; only active when
     /// `behavior_signals` is also enabled. Restart-to-change (boot-time
@@ -5240,6 +5248,7 @@ impl Default for DetectorsConfig {
             behavior_signals: default_detector_toggle_off(),
             behavior_analyzer: default_detector_toggle_off(),
             enumeration: default_detector_toggle_off(),
+            egress_error_leak: default_detector_toggle_off(),
             referer_origin: RefererOriginConfig::default(),
             velocity: default_detector_toggle(),
             canary: default_detector_toggle(),
@@ -6657,6 +6666,15 @@ redis:
         let cfg: DetectorsConfig =
             serde_yaml::from_str("enumeration: { enabled: true }").unwrap();
         assert!(cfg.enumeration.enabled);
+    }
+
+    // EG-2 T4 (2026-07-05) — error-leak detector defaults OFF + parses.
+    #[test]
+    fn egress_error_leak_defaults_off() {
+        assert!(!DetectorsConfig::default().egress_error_leak.enabled);
+        let cfg: DetectorsConfig =
+            serde_yaml::from_str("egress_error_leak: { enabled: true }").unwrap();
+        assert!(cfg.egress_error_leak.enabled);
     }
 
     // AC-P2-e (2026-07-03) — referer_origin default-OFF + YAML wire shape.
