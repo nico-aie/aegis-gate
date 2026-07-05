@@ -185,7 +185,13 @@
             var retry = r.headers.get('retry-after') || '60';
             showError('Too many attempts. Try again in ' + retry + 's.');
           } else if (r.status === 401) {
-            showError(body.message || 'Invalid username, password, or code');
+            // TOTP-9 — the server intentionally answers a missing TOTP
+            // code with the SAME envelope as a wrong password (no
+            // oracle). The client knows locally whether the code field
+            // was empty, so it can hint without leaking anything.
+            showError(totpCode
+              ? 'Invalid username, password, or authenticator code'
+              : 'Invalid credentials. If this account already has 2FA set up, you must also enter the authenticator code.');
           } else if (r.status === 400) {
             showError(body.message || 'Bad request');
           } else {
