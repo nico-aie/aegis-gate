@@ -8094,7 +8094,6 @@ function PageSettings() {
           update) ship in a follow-up once the audit-mutated
           handlers are wired. */}
       <SettingsAccountCard />
-      <SettingsSessionsCard />
       <SettingsBreakGlassCard />
       <SettingsIntegrationsCard />
       <SettingsCertsCard />
@@ -8247,7 +8246,7 @@ function ResponseFilterCard() {
 // the current password server-side (unlike an admin reset) and signs out your
 // other sessions on success. To re-enroll a new authenticator, sign out and
 // use the login page's 2FA setup; a lost device is recovered by another admin
-// via Admin Accounts → Reset 2FA.
+// via Users → Reset 2FA.
 function SettingsAccountCard() {
   const [cur, setCur] = useStateP('');
   const [next, setNext] = useStateP('');
@@ -8264,12 +8263,13 @@ function SettingsAccountCard() {
     setBusy(true); setNotice(null);
     const res = await window.selfChangePassword(cur, next);
     setBusy(false);
-    if (res.status >= 200 && res.status < 300) {
-      setNotice({ ok: true, text: res.message || 'Password changed.' });
-      setCur(''); setNext(''); setConfirm('');
-    } else {
-      setNotice({ ok: false, text: res.message || res.reason || `Change failed (HTTP ${res.status})` });
-    }
+    const ok = res.status >= 200 && res.status < 300;
+    const text = ok
+      ? (res.message || 'Password changed.')
+      : (res.message || res.reason || `Change failed (HTTP ${res.status})`);
+    setNotice({ ok, text });
+    if (window.aegisToast) window.aegisToast(text, ok ? 'ok' : 'err');
+    if (ok) { setCur(''); setNext(''); setConfirm(''); }
   }
 
   return (
@@ -8280,8 +8280,16 @@ function SettingsAccountCard() {
         <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>· change your password</span>
       </div>
       {notice && (
-        <div style={{ padding: '6px 10px', marginBottom: 8, fontSize: 12, borderLeft: `3px solid var(--${notice.ok ? 'ok' : 'danger'})` }}>
-          {notice.text}
+        <div style={{
+          padding: '8px 10px', marginBottom: 8, fontSize: 12, borderRadius: 6,
+          display: 'flex', alignItems: 'center', gap: 8,
+          border: `1px solid var(--${notice.ok ? 'ok' : 'danger'})`,
+          background: 'var(--surface-2)',
+        }}>
+          <span style={{ color: `var(--${notice.ok ? 'ok' : 'danger'})`, display: 'inline-flex' }}>
+            {notice.ok ? <window.I.Check /> : <window.I.Ban />}
+          </span>
+          <span style={{ color: 'var(--ink)' }}>{notice.text}</span>
         </div>
       )}
       <form onSubmit={submit} style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
@@ -8311,7 +8319,10 @@ function SettingsAccountCard() {
   );
 }
 
-function SettingsSessionsCard() {
+// Active admin sessions — moved from Settings to the Users page (identity /
+// access surface). Read-only today; per-session revoke ships with the
+// self-service session controls (see the FEAT plan's deferred P2d items).
+function ActiveSessionsCard() {
   const sessions = window.useAdminSessionsApi
     ? window.useAdminSessionsApi()
     : { data: null };
@@ -12152,12 +12163,13 @@ function PageAccessLists() {
   );
 }
 
-// AM-P2c — Admin Accounts management page. Create / reset-password /
-// reset-2FA / delete dashboard admins at runtime (no YAML edit, no restart).
-// Equal-privilege v1 (any admin manages accounts); the last-admin + no-self
-// guards are enforced server-side (aegis_control::api::admin_accounts). The
-// list carries metadata only — never a hash or secret.
-function PageAdminAccounts() {
+// AM-P2c — Users page. Create / reset-password / reset-2FA / delete dashboard
+// user accounts at runtime (no YAML edit, no restart), plus the active admin
+// sessions. Equal-privilege v1 (any admin manages accounts); the last-admin +
+// no-self guards are enforced server-side (aegis_control::api::admin_accounts).
+// The list carries metadata only — never a hash or secret. (Named "Users"
+// ahead of the RBAC track, which adds roles per account.)
+function PageUsers() {
   const api = window.useAccountsApi ? window.useAccountsApi() : { data: null, loading: false, reload: () => {} };
   const accounts = api.data?.accounts || [];
   const [form, setForm] = useStateP({ username: '', password: '' });
@@ -12170,7 +12182,12 @@ function PageAdminAccounts() {
   const passwordOk = form.password.length >= 12;
   const canCreate = usernameOk && passwordOk && busy !== '__create__';
 
-  function flash(ok, text) { setNotice({ ok, text }); }
+  // Surface every outcome two ways so it can't be missed: a transient toast
+  // popup (the app-standard signal) + a persistent inline banner.
+  function flash(ok, text) {
+    setNotice({ ok, text });
+    if (window.aegisToast) window.aegisToast(text, ok ? 'ok' : 'err');
+  }
 
   async function doCreate(e) {
     e.preventDefault();
@@ -12203,8 +12220,8 @@ function PageAdminAccounts() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Admin Accounts</h1>
-          <p className="page-subtitle">Create, reset, and remove dashboard admins · 2FA enrolls at first login</p>
+          <h1 className="page-title">Users</h1>
+          <p className="page-subtitle">Create, reset, and remove dashboard users · 2FA enrolls at first login</p>
         </div>
       </div>
 
@@ -12214,8 +12231,18 @@ function PageAdminAccounts() {
       </div>
 
       {notice && (
-        <div className="card" style={{ padding: '8px 12px', marginBottom: 8, fontSize: 12, borderLeft: `3px solid var(--${notice.ok ? 'ok' : 'danger'})` }}>
-          {notice.text}
+        <div className="card" style={{
+          padding: '10px 12px', marginBottom: 10, fontSize: 13,
+          display: 'flex', alignItems: 'center', gap: 8,
+          borderLeft: `4px solid var(--${notice.ok ? 'ok' : 'danger'})`,
+          background: notice.ok ? 'var(--surface-2)' : 'var(--surface-2)',
+        }}>
+          <span style={{ color: `var(--${notice.ok ? 'ok' : 'danger'})`, display: 'inline-flex' }}>
+            {notice.ok ? <window.I.Check /> : <window.I.Ban />}
+          </span>
+          <span style={{ color: 'var(--ink)', fontWeight: 500 }}>{notice.text}</span>
+          <button className="btn" style={{ marginLeft: 'auto', padding: '2px 8px', fontSize: 11 }}
+            onClick={() => setNotice(null)}>Dismiss</button>
         </div>
       )}
 
@@ -12263,7 +12290,10 @@ function PageAdminAccounts() {
               const rowBusy = busy === acct.username;
               return (
                 <tr key={acct.username} style={{ borderBottom: '1px solid var(--border)' }}>
-                  <td style={{ padding: '8px 12px', fontWeight: 600 }}>{acct.username}</td>
+                  <td style={{ padding: '8px 12px', fontWeight: 600 }}>
+                    {acct.username}
+                    {acct.is_self && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 500, color: 'var(--accent)' }}>(you)</span>}
+                  </td>
                   <td style={{ padding: '8px 12px' }}><span className="pill" style={{ fontSize: 10 }}>{acct.source}</span></td>
                   <td style={{ padding: '8px 12px' }}>
                     {acct.totp_enrolled
@@ -12271,7 +12301,9 @@ function PageAdminAccounts() {
                       : <span style={{ color: 'var(--warn)' }}>○ not enrolled</span>}
                   </td>
                   <td style={{ padding: '8px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    {pwEdit && pwEdit.username === acct.username ? (
+                    {acct.is_self ? (
+                      <a href="#/settings" style={{ fontSize: 11, color: 'var(--accent)' }}>Manage in Settings →</a>
+                    ) : pwEdit && pwEdit.username === acct.username ? (
                       <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
                         <input type="password" autoFocus value={pwEdit.value} placeholder="new ≥12 char pw"
                           onChange={e => setPwEdit(p => ({ ...p, value: e.target.value }))}
@@ -12302,6 +12334,11 @@ function PageAdminAccounts() {
           </tbody>
         </table>
       </div>
+
+      <div style={{ margin: '16px 0 6px', fontSize: 12, fontWeight: 600, color: 'var(--ink-dim)' }}>
+        Active admin sessions
+      </div>
+      <ActiveSessionsCard />
     </>
   );
 }
@@ -17144,7 +17181,7 @@ Object.assign(window, {
   // Phase 2 — merged Access Lists, plus Phase 3 stubs.
   // PageHelp is owned by help.jsx (loaded after this file).
   PageAccessLists,
-  PageAdminAccounts,
+  PageUsers,
   PageIncidents, PageInvestigation,
   PageTopAttackers,
   PageReports,

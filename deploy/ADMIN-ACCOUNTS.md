@@ -147,7 +147,7 @@ Rules worth knowing:
 | Login succeeds but every page answers `403 totp_enrollment_required` | Enrollment-only session (password OK, factor not confirmed). Go to `/admin/login` — browser navigations redirect there automatically — and finish the QR setup. |
 | `no pending enrollment (expired or never started)` on confirm | The 15-minute pending window lapsed. Reload the login page and sign in again to get a fresh QR. |
 | Codes from the app never match | Check the phone's clock (TOTP is time-based, ±30 s skew tolerated). The QR encodes SHA-1 / 6 digits / 30 s — the Google-Authenticator baseline; don't change algorithm parameters. |
-| Admin lost their phone | Another admin resets their 2FA from the dashboard: **Admin Accounts → the row → Reset 2FA** (the account re-enrolls at next login). Manual equivalent: `redis-cli hdel control:waf:admin:totp <username>`. Recovery-code login is still deferred (TF-2). |
+| Admin lost their phone | Another admin resets their 2FA from the dashboard: **Users → the row → Reset 2FA** (the account re-enrolls at next login). Manual equivalent: `redis-cli hdel control:waf:admin:totp <username>`. Recovery-code login is still deferred (TF-2). |
 | New account rejected at boot | Run `./target/release/waf validate --config <file>` — most common: both legacy fields and `accounts:` set, or a duplicate username. |
 
 ## 6. Security notes
@@ -173,7 +173,7 @@ edit, no restart. Changes are stored in a fleet-wide, restart-durable runtime
 overlay (`control:waf:admin:accounts`) that wins over the YAML seed; a state
 wipe (`reset_state`) never touches it.
 
-**Admin Accounts page** (sidebar → Admin → Admin Accounts):
+**Users page** (sidebar → Admin → Users):
 
 | Action | Effect |
 |---|---|
@@ -186,7 +186,7 @@ Guardrails (equal-privilege v1 — any admin can manage accounts, every change i
 audit-chained):
 
 - You **cannot remove the last remaining admin** (lockout protection).
-- The Admin Accounts actions operate on **other** accounts. Manage your **own**
+- The Users-page actions operate on **other** accounts. Manage your **own**
   account from **Settings → My Account** (change password — verifies your
   current password and keeps your session while signing out the others). To
   move your own 2FA to a new phone, sign out and re-run the login-page setup;

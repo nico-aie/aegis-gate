@@ -60,11 +60,14 @@ fn emit_account_audit(services: &DashboardServices, action: &str, actor: &str, t
     });
 }
 
-/// `GET /api/admin/accounts` — non-secret account list for the UI.
+/// `GET /api/admin/accounts` — non-secret account list for the UI. `actor` is
+/// the requesting admin (from `x-aegis-actor`) so each row can be flagged
+/// `is_self` and the UI can hide self-only actions.
 pub(crate) async fn handle_accounts_list(
+    actor: &str,
     services: &DashboardServices,
 ) -> Response<Full<Bytes>> {
-    let accounts = list_accounts(&services.admin_directory, &services.totp_store).await;
+    let accounts = list_accounts(&services.admin_directory, &services.totp_store, actor).await;
     let body = serde_json::json!({ "ok": true, "accounts": accounts });
     json_body_response(200, body.to_string(), "private, no-store")
 }
@@ -358,12 +361,15 @@ mod tests {
         services.admin_account_store = Arc::clone(&store);
         store.upsert("alice", &hash_password("alice-pw-123456").unwrap()).await.unwrap();
 
-        let resp = handle_accounts_list(&services).await;
+        let resp = handle_accounts_list("admin", &services).await;
         let (status, json) = body_json(resp).await;
         assert_eq!(status, 200);
         let accounts = json["accounts"].as_array().unwrap();
         let names: Vec<&str> = accounts.iter().map(|a| a["username"].as_str().unwrap()).collect();
         assert_eq!(names, vec!["admin", "alice"]);
+        // The requesting actor's own row is flagged.
+        assert_eq!(accounts[0]["is_self"], serde_json::json!(true));
+        assert_eq!(accounts[1]["is_self"], serde_json::json!(false));
         // Non-secret metadata only — a password hash must never appear.
         assert!(
             !serde_json::to_string(&json).unwrap().contains("$argon2"),

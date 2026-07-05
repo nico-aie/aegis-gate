@@ -142,7 +142,13 @@ pub(crate) async fn handle_admin_request(
     }
     if path == "/api/admin/accounts" {
         if method == hyper::Method::GET {
-            return crate::admin_accounts::handle_accounts_list(services).await;
+            let actor = req
+                .headers()
+                .get("x-aegis-actor")
+                .and_then(|h| h.to_str().ok())
+                .unwrap_or("admin")
+                .to_string();
+            return crate::admin_accounts::handle_accounts_list(&actor, services).await;
         }
         if method == hyper::Method::POST {
             return crate::admin_accounts::handle_accounts_create(req, peer, services).await;

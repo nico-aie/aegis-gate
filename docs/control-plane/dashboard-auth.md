@@ -335,7 +335,7 @@ Multi-admin accounts are runtime-editable — no YAML edit or restart. A
 enrollment store) is consulted by `AdminDirectory::resolve` ahead of the YAML
 seed: a live record wins, a tombstone hides a seeded account. Create/reset/
 delete flow through `aegis_control::api::admin_accounts`; the dashboard's
-**Admin Accounts** page + **Settings → My Account** drive them.
+**Users** page + **Settings → My Account** drive them.
 
 - `crates/aegis-control/src/admin_auth/account_store.rs` — runtime account store
 - `crates/aegis-control/src/api/admin_accounts.rs` — list/create/reset/delete + self password change (guards: last-admin, no-self-target, current-password verify)

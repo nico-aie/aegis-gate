@@ -30,6 +30,10 @@ pub struct AccountView {
     pub source: &'static str,
     pub totp_enrolled: bool,
     pub disabled: bool,
+    /// `true` when this is the requesting admin's own account — the UI hides
+    /// the reset/delete actions on it (they'd 403 with `self_target`; self
+    /// management is the separate Settings → My Account surface).
+    pub is_self: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -72,10 +76,12 @@ pub async fn live_usernames(directory: &AdminDirectory) -> BTreeSet<String> {
 }
 
 /// The merged account list (YAML seed with the runtime overlay applied), each
-/// annotated with its source + whether 2FA is enrolled. Sorted by username.
+/// annotated with its source, 2FA-enrollment, and whether it's `actor`'s own
+/// account. Sorted by username.
 pub async fn list_accounts(
     directory: &AdminDirectory,
     totp_store: &TotpEnrollmentStore,
+    actor: &str,
 ) -> Vec<AccountView> {
     let runtime: HashMap<String, _> = match directory.account_store() {
         Some(store) => store
@@ -103,6 +109,7 @@ pub async fn list_accounts(
             source,
             totp_enrolled: is_enrolled(totp_store, uname).await,
             disabled: false,
+            is_self: uname == actor,
         });
     }
     for (uname, rec) in &runtime {
@@ -114,6 +121,7 @@ pub async fn list_accounts(
             source: "runtime",
             totp_enrolled: is_enrolled(totp_store, uname).await,
             disabled: rec.disabled,
+            is_self: uname == actor,
         });
     }
     views.sort_by(|a, b| a.username.cmp(&b.username));
@@ -352,14 +360,17 @@ mod tests {
     async fn list_reflects_seed_runtime_and_tombstone() {
         let (dir, store) = dir_with(&["admin"]);
         create_account(&dir, "alice", "long-enough-pw-123").await.unwrap();
-        let views = list_accounts(&dir, &totp()).await;
+        let views = list_accounts(&dir, &totp(), "admin").await;
         let names: Vec<_> = views.iter().map(|v| v.username.as_str()).collect();
         assert_eq!(names, vec!["admin", "alice"]);
         assert_eq!(views[0].source, "bootstrap");
         assert_eq!(views[1].source, "runtime");
+        // `actor` is "admin" → its own row is flagged, alice's is not.
+        assert!(views[0].is_self);
+        assert!(!views[1].is_self);
         // Tombstone the seed admin → drops out of the list.
         store.tombstone("admin").await.unwrap();
-        let views = list_accounts(&dir, &totp()).await;
+        let views = list_accounts(&dir, &totp(), "admin").await;
         assert_eq!(
             views.iter().map(|v| v.username.as_str()).collect::<Vec<_>>(),
             vec!["alice"]
