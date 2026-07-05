@@ -1,8 +1,10 @@
 # IMPROVE — Recon detection hardening + canary-path seeding
 
-> **Type:** IMPROVE (from l-tester `CURRENT-STATE-FINDINGS.md`) · **Status:** ☐ Not started — planned 2026-07-04
-> **Track ID prefix:** `RC-<1–5>` · **Sibling:** [IMPROVE-detection-fp-tuning-2026-07.md](IMPROVE-detection-fp-tuning-2026-07.md)
-> (shares the benign/attack corpus harness — build it once, both plans use it).
+> **Type:** IMPROVE (from l-tester `CURRENT-STATE-FINDINGS.md`) · **Status:** ☐ Not started — planned 2026-07-04 · **Owner: Nico (2026-07-05)**
+> **Track ID prefix:** `RC-<1–5>` · **Sibling:** [IMPROVE-detection-fp-tuning-2026-07.md](IMPROVE-detection-fp-tuning-2026-07.md).
+> **Shared corpus:** RC-2/RC-3 gate against the committed baseline from
+> [PLAN-fp-baseline-measurement-2026-07.md](PLAN-fp-baseline-measurement-2026-07.md) (S-Tester owns
+> the corpus; do not build a second one).
 > **Source report:** `tests/l-tester/reports/CURRENT-STATE-FINDINGS.md` — verified claim-by-claim against
 > code 2026-07-04 (verdicts in §1). **Read §1 before touching code — most of the report's root-cause
 > diagnosis is wrong even though its headline is right.**

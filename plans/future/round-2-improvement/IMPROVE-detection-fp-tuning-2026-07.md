@@ -1,9 +1,12 @@
 # IMPROVE — Detection accuracy: FP tuning & default-ON graduation
 
-> **Type:** IMPROVE (committee round-2 🟡1) · **Status:** ☐ Not started — planned 2026-07-04
+> **Type:** IMPROVE (committee round-2 🟡1) · **Status:** ☐ Not started — planned 2026-07-04 · **Owner: S-Tester member (2026-07-05)**
 > **Track ID prefix:** `FP-<1–3>` · Formalizes the previously-untracked loose thread from the
 > attack-coverage track: `enumeration` + `behavior_analyzer` shipped **default-OFF pending FP
 > tuning** (FEAT-attack-coverage-wiring, archived 2026-07-04).
+> **Prereq (round-3):** the measurement harness + current-FP baseline is now its own plan —
+> [PLAN-fp-baseline-measurement-2026-07.md](PLAN-fp-baseline-measurement-2026-07.md). This plan's
+> FP-1 is subsumed by it; FP-2/FP-3 **consume** that committed baseline.
 
 **Objective (intent, not letter):** raise real-world precision on the existing detection
 foundation — fewer false positives on benign traffic, no regression on true positives — and
@@ -27,15 +30,11 @@ graduate the two dormant detectors to default-ON with measured evidence, not vib
 
 ## 2. Staging
 
-### FP-1 — measurement harness + benign corpus · **M** · START HERE
-- Build a versioned **benign-traffic corpus** (checked into `tests/` or fetched fixture):
-  realistic browser sessions, API clients, static-asset paths, search queries with SQL-ish/HTML-ish
-  benign payloads, percent-encoded redirect params (the known l-tester artifact class), webhook
-  bodies (JSON/XML), file uploads.
-- Attack corpus: reuse the l-tester vectors, replayed **raw** through the Rust path (unit-level
-  `EvalContext` construction, not the Python harness).
-- Deliverable: `cargo test`-runnable precision/recall report per detector (FP rate on benign
-  corpus, TP rate on attack corpus), with a baseline snapshot committed so drift is diffable.
+### FP-1 — measurement harness + benign corpus · **MOVED** → [PLAN-fp-baseline-measurement-2026-07.md](PLAN-fp-baseline-measurement-2026-07.md)
+The harness + benign/attack corpora + committed baseline snapshot are now their own owned
+deliverable (FPM-1…FPM-3). Do **not** rebuild them here — FP-2/FP-3 start from that committed
+baseline. (Rationale: "get the current FP metric" is a distinct, checkable artifact separate from
+"reduce it"; and the recon/canary plan shares the same corpus.)
 
 ### FP-2 — tune the noisiest detectors · **M**
 - Rank detectors by corpus FP contribution; tune top offenders (thresholds, gating, context

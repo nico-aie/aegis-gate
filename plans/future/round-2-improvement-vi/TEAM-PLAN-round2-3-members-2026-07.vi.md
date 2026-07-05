@@ -1,9 +1,37 @@
 # KẾ HOẠCH TRIỂN KHAI ROUND 2 — Nhóm 3 người
 
-> **Ngày lập:** 2026-07-04 · **Trạng thái:** ☐ Chờ kick-off
+> **Ngày lập:** 2026-07-04 · **Cập nhật:** 2026-07-05
 > **Phạm vi:** toàn bộ feedback round-2 của committee, đã được verify từng mục so với code
 > (xem [COMMITTEE-ROUND2-response-2026-07-04.vi.md](COMMITTEE-ROUND2-response-2026-07-04.vi.md)).
 > Bản gốc tiếng Anh của từng plan là source of truth; bản `.vi.md` để đọc cho nhanh.
+
+## 0. Cập nhật 2026-07-05 — đợt 1 đã xong, phân công lại cho round 3
+
+**Đã ship & merge vào `develop`** (lane "phần còn lại", một người làm, RED-first, đã review):
+placeholder cleanup (🔴3) ✅ · audit gaps + risk-decay (🟡3) ✅ · EG-1 design doc (🟡4, chờ duyệt) ·
+OV runbook (🟡5, drill chờ chạy trên fleet thật).
+
+**Quyết định của owner cho round 3:**
+- **🔴1 mTLS mặc định cho admin — BỎ.** Không build mTLS-by-default cho admin listener nữa; thay vào
+  đó round 3 **test tính năng `zero_trust` / mTLS đã ship** (upstream + downstream mTLS, cert-swap,
+  SAN allow-list) qua drill trong OV runbook. Plan admin-mTLS **hoãn, không xoá**. Contract round-1
+  (admin plain-HTTP) **vẫn giữ nguyên** (C3 không còn là blocker).
+- **🔴2 2FA — LÀM, mở rộng:** enforce bằng **app Google Authenticator** (enroll bằng QR `otpauth://`)
+  + **nhiều tài khoản admin** (hiện chỉ có 1 identity).
+- **🟡1 detection accuracy — đo trước, cải thiện sau:** dựng baseline FP hiện tại rồi mới giảm.
+
+**Phân công lại (thay cho bảng §1 cho round 3):**
+
+| Ai | Track | Plan |
+|---|---|---|
+| **L-Tester** | 🔴2 2FA — Google Authenticator + nhiều tài khoản admin (`TF-1…TF-4`) | [FEAT-2fa-enforcement-2026-07.vi.md](FEAT-2fa-enforcement-2026-07.vi.md) |
+| **S-Tester** | FP — đo baseline FP hiện tại rồi giảm | `PLAN-fp-baseline-measurement-2026-07.md` → [IMPROVE-detection-fp-tuning-2026-07.vi.md](IMPROVE-detection-fp-tuning-2026-07.vi.md) |
+| **Nico** | Recon hardening + canary; review/merge; điều phối drill zero-trust/mTLS | [IMPROVE-recon-detection-and-canary-2026-07.vi.md](IMPROVE-recon-detection-and-canary-2026-07.vi.md) |
+
+> Bảng §1 và lộ trình §3 bên dưới là kế hoạch round-2 gốc (mTLS + 2FA song song 3 người) — giữ lại
+> làm lịch sử. Round 3 theo §0 này.
+
+---
 
 ---
 
