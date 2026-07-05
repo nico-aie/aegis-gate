@@ -5,6 +5,7 @@ pub mod canary;
 pub mod command_injection;
 pub mod cookie_injection;
 pub mod egress_leak;
+pub mod egress_sensitive;
 pub mod egress_volume;
 pub mod enumeration;
 pub mod header_injection;
