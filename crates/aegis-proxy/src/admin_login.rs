@@ -373,6 +373,20 @@ mod login_page_contract_tests {
     }
 
     #[test]
+    fn otp_dialog_inherits_the_card_styling() {
+        // TOTP-11 (owner screenshot 2026-07-05): every input/button rule
+        // in the page stylesheet is scoped under `.login-card`, and the
+        // OTP dialog lived OUTSIDE that class — so its code input and
+        // Verify button rendered with raw browser defaults (white input,
+        // tiny button, no spacing). The dialog card must carry the
+        // login-card class so it inherits the design system.
+        assert!(
+            LOGIN_HTML.contains("class=\"login-card otp-card\""),
+            "the OTP dialog card must reuse the login-card styling scope",
+        );
+    }
+
+    #[test]
     fn login_html_has_the_otp_step_dialog() {
         // TOTP-10 — the OTP entry lives in a dialog shown AFTER the
         // password step, not as an always-visible third field.
