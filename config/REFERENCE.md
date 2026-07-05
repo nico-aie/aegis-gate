@@ -540,16 +540,18 @@ tracker-wide and apply to every bucket uniformly.
 | `thresholds.max` | `100` | Hard ceiling (clamped on update) |
 | `strikes.block_at` | `50` | Lifetime strikes (per bucket) that trip permanent block |
 | `trust_recovery.per_hour` | `30` | Trust-recovery rate when a bucket behaves |
-| `canary_paths[]` | curated 12-path set | Hit on any of these → auto-block (score 100, single hit). Default since RC-1 is a curated never-legit set (`/.git/config`, `/.env`, `/id_rsa`, `/actuator/heapdump`, …) — see `default_canary_paths` in `aegis-core/src/config.rs`. Explicit `canary_paths: []` opts out. Never add a path with real traffic — a wrong entry is an outage, not a false positive |
+| `canary_paths[]` | curated 11-path set | Hit on any of these → auto-block (score 100, single hit). Default since RC-1 is a curated never-legit set (`/.git/config`, `/.env`, `/id_rsa`, `/actuator/heapdump`, …) — see `default_canary_paths` in `aegis-core/src/config.rs`. Explicit `canary_paths: []` opts out. Never add a path with real traffic — a wrong entry is an outage, not a false positive |
 
 > **Upgrade note (RC-1):** deployments that never set `canary_paths` or `detectors.canary` pick up
 > the armed defaults on the next restart/reload. Before upgrading, audit whether anything routes
-> **through the WAF edge** to the default entries — in particular `/actuator/env` /
-> `/actuator/heapdump` (Spring Boot Admin or config-refresh tooling polling actuator through the
-> public edge would be hard-blocked on first hit). `/actuator/health` and `/actuator/info` are
-> deliberately NOT canaried. Opt out with `canary_paths: []`, or trim the list via
-> `PUT /api/risk/canary-paths`. Dashboard toggles saved before the upgrade win over the new default
-> (mask persistence restores the operator's setting).
+> **through the WAF edge** to the default entries — in particular `/actuator/heapdump` (a heap dump
+> has no legitimate polling caller, but confirm nothing scrapes it through the public edge before
+> it hard-blocks on first hit). `/actuator/env`, `/actuator/health`, and `/actuator/info` are
+> deliberately NOT canaried — `/actuator/env` was dropped from the default set (2026-07-05) because
+> Spring Boot Admin / config-refresh tooling legitimately polls it through the edge; recon still
+> scores it (sensitive tier), it just isn't a hard tripwire. Opt out entirely with
+> `canary_paths: []`, or trim the list via `PUT /api/risk/canary-paths`. Dashboard toggles saved
+> before the upgrade win over the new default (mask persistence restores the operator's setting).
 
 **Resetting state:**
 - `POST /api/risk/<ip>/reset` — wipes **every** bucket sharing that IP (cluster-wide convenience).

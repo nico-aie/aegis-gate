@@ -4756,7 +4756,13 @@ fn default_canary_paths() -> Vec<String> {
         "/wp-config.php",
         "/terraform.tfstate",
         "/actuator/heapdump",
-        "/actuator/env",
+        // NOTE: `/actuator/env` is deliberately NOT canaried (2026-07-05
+        // owner call). Spring Boot Admin / config-refresh tooling polls
+        // it through the WAF edge as a legitimate caller, so a single-hit
+        // canary block would fail-close the org's own monitoring.
+        // `/actuator/heapdump` stays (a heap dump has no legit polling
+        // caller). Recon still scores `/actuator/env` at the sensitive
+        // tier (50) — detected and accumulated, just not a hard tripwire.
         "/.ssh/id_rsa",
         "/server.key",
     ]
@@ -8830,6 +8836,11 @@ canary_paths:
     /// fresh IP) where per-key accumulation never trips.
     #[test]
     fn rc1_canary_defaults_curated_and_enabled() {
+        // `/actuator/env` intentionally EXCLUDED (2026-07-05 owner call):
+        // Spring Boot Admin / config-refresh tooling legitimately polls
+        // it through the WAF edge, so a single-hit canary block would
+        // self-block the org's own monitoring. Recon still flags it
+        // (sensitive tier, score 50) — it just isn't a hard tripwire.
         let expected: &[&str] = &[
             "/.git/config",
             "/.git/HEAD",
@@ -8840,7 +8851,6 @@ canary_paths:
             "/wp-config.php",
             "/terraform.tfstate",
             "/actuator/heapdump",
-            "/actuator/env",
             "/.ssh/id_rsa",
             "/server.key",
         ];
