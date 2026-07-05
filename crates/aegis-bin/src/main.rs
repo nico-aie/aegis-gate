@@ -629,19 +629,34 @@ fn cmd_admin(args: &[String]) -> i32 {
     }
 }
 
-fn cmd_admin_set_password() -> i32 {
-    println!("Enter password (will echo — pipe from stdin in prod):");
-    let mut password = String::new();
-    if std::io::stdin().read_line(&mut password).is_err() {
-        eprintln!("failed to read password");
-        return 1;
+/// AM-0c — read a password without echoing it. `rpassword` suppresses
+/// terminal echo when stdin is a TTY and reads a piped line unchanged
+/// otherwise (the prod path — `deploy/create-admin.sh` pipes it), so
+/// interactive entry no longer leaks the secret to the screen / scrollback /
+/// `script` logs. The prompt goes to stderr so a piped
+/// `waf admin set-password` keeps stdout clean for the hash.
+fn read_admin_password(prompt: &str) -> Option<String> {
+    use std::io::Write;
+    eprint!("{prompt}");
+    let _ = std::io::stderr().flush();
+    match rpassword::read_password() {
+        Ok(p) => Some(p.trim().to_string()),
+        Err(e) => {
+            eprintln!("failed to read password: {e}");
+            None
+        }
     }
-    let password = password.trim();
+}
+
+fn cmd_admin_set_password() -> i32 {
+    let Some(password) = read_admin_password("Enter password (input hidden): ") else {
+        return 1;
+    };
     if password.is_empty() {
         eprintln!("password cannot be empty");
         return 1;
     }
-    match aegis_control::admin_auth::password::hash_password(password) {
+    match aegis_control::admin_auth::password::hash_password(&password) {
         Ok(hash) => {
             println!("{hash}");
             0
@@ -693,7 +708,13 @@ fn cmd_admin_enroll_totp(args: &[String]) -> i32 {
     println!("(multi-admin configs: set the same two fields on the matching");
     println!(" cfg.admin.dashboard_auth.accounts entry instead)");
     println!();
-    println!("Recovery codes (store securely, each usable once):");
+    // AM-0e — recovery-code LOGIN is not wired yet (ships with TF-2), so do
+    // not advertise these as "usable once". For v1, lost-device recovery is
+    // an existing admin resetting your 2FA from the dashboard
+    // (POST /api/admin/accounts/<user>/totp/reset). Codes are printed for
+    // forward-compatibility only.
+    println!("Recovery codes (NOT yet usable for login — reserved for a future");
+    println!("release; if you lose your device, another admin resets your 2FA):");
     for (i, code) in recovery.iter().enumerate() {
         println!("  {}: {code}", i + 1);
     }
@@ -730,18 +751,16 @@ fn cmd_admin_create_account(args: &[String]) -> i32 {
     }
     let with_totp = args.iter().any(|a| a == "--with-totp");
 
-    println!("Enter password for `{username}` (will echo — pipe from stdin in prod):");
-    let mut password = String::new();
-    if std::io::stdin().read_line(&mut password).is_err() {
-        eprintln!("failed to read password");
+    let Some(password) = read_admin_password(&format!(
+        "Enter password for `{username}` (input hidden): "
+    )) else {
         return 1;
-    }
-    let password = password.trim();
+    };
     if password.is_empty() {
         eprintln!("password cannot be empty");
         return 1;
     }
-    let hash = match aegis_control::admin_auth::password::hash_password(password) {
+    let hash = match aegis_control::admin_auth::password::hash_password(&password) {
         Ok(h) => h,
         Err(e) => {
             eprintln!("hashing error: {e}");
@@ -770,7 +789,10 @@ fn cmd_admin_create_account(args: &[String]) -> i32 {
             }
             Err(e) => eprintln!("(QR render failed: {e} — use the URI/secret above)"),
         }
-        println!("Recovery codes (store securely, each usable once):");
+        // AM-0e — see cmd_admin_enroll_totp: recovery-code login is deferred
+        // (TF-2); v1 recovery is an admin-driven 2FA reset. Not "usable once".
+        println!("Recovery codes (NOT yet usable for login — reserved for a future");
+        println!("release; if you lose your device, another admin resets your 2FA):");
         for (i, code) in
             aegis_control::admin_auth::totp::generate_recovery_codes(&secret).iter().enumerate()
         {

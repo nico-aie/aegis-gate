@@ -217,6 +217,36 @@ impl SessionStore {
         self.del_record(session_id).await
     }
 
+    /// AM-P2a — evict every session belonging to `user`, optionally keeping
+    /// one (`keep_session_id` — e.g. the caller's own session on a self
+    /// password change). Returns the number revoked. A password reset or an
+    /// account delete calls this so old cookies stop validating immediately.
+    ///
+    /// Backend path SCANs the session keyspace; local path retain-filters.
+    pub async fn revoke_user(&self, user: &str, keep_session_id: Option<&str>) -> usize {
+        if let Some(b) = &self.backend {
+            let keys = b.scan_prefix(KEY_PREFIX).await.unwrap_or_default();
+            let mut revoked = 0;
+            for key in keys {
+                let id = key.strip_prefix(KEY_PREFIX).unwrap_or(&key);
+                if keep_session_id == Some(id) {
+                    continue;
+                }
+                if let Some(rec) = self.get_record(id).await {
+                    if rec.user == user && self.del_record(id).await {
+                        revoked += 1;
+                    }
+                }
+            }
+            revoked
+        } else {
+            let mut map = self.local.lock().unwrap();
+            let before = map.len();
+            map.retain(|id, rec| rec.user != user || keep_session_id == Some(id.as_str()));
+            before - map.len()
+        }
+    }
+
     /// Mark a session TOTP-verified (the step-up second factor succeeded).
     pub async fn mark_totp_verified(&self, session_id: &str) -> bool {
         if let Some(mut record) = self.get_record(session_id).await {
@@ -310,6 +340,37 @@ mod tests {
         assert!(store.validate("garbage").await.is_none());
         let (_, cookie) = store.create("1.2.3.4", "ua").await.unwrap();
         assert!(store.validate(&format!("{cookie}X")).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn revoke_user_evicts_only_that_user_with_optional_keep() {
+        // AM-P2a — a password reset / delete revokes a user's sessions; a self
+        // password change keeps the caller's own session.
+        let store = SessionStore::new([7u8; 32]);
+        let (alice1, _) = store
+            .create_for_user("alice", "1.1.1.1", "ua", true)
+            .await
+            .unwrap();
+        let (_alice2, _) = store
+            .create_for_user("alice", "1.1.1.1", "ua", true)
+            .await
+            .unwrap();
+        let (_bob, _) = store
+            .create_for_user("bob", "2.2.2.2", "ua", true)
+            .await
+            .unwrap();
+        assert_eq!(store.active_count().await, 3);
+
+        // Keep alice's first session, revoke her others → 1 revoked, bob intact.
+        let revoked = store.revoke_user("alice", Some(&alice1)).await;
+        assert_eq!(revoked, 1, "only alice's non-kept session is revoked");
+        assert_eq!(store.active_count().await, 2, "alice1 + bob remain");
+
+        // Now revoke all of alice → the kept one goes; bob still intact.
+        assert_eq!(store.revoke_user("alice", None).await, 1);
+        assert_eq!(store.active_count().await, 1, "only bob remains");
+        assert_eq!(store.revoke_user("bob", None).await, 1);
+        assert_eq!(store.active_count().await, 0);
     }
 
     #[tokio::test]

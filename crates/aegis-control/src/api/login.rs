@@ -164,11 +164,26 @@ pub struct AdminDirectory {
     /// (if any) over the YAML-configured one — web enrollment without a
     /// YAML edit, fleet-wide on a shared backend.
     totp_store: Option<std::sync::Arc<crate::admin_auth::totp_store::TotpEnrollmentStore>>,
+    /// AM-P2a — runtime account overlay. When wired, `resolve` checks this
+    /// store first: a record overlays the YAML seed by username, and a
+    /// tombstone hides a YAML-seeded account. Runtime accounts created here
+    /// don't exist in `accounts`, so they're materialised into stable
+    /// `Arc<AdminIdentity>` values cached in `runtime_cache` (below) — a
+    /// fresh identity per request would reset the per-account TOTP replay
+    /// guard and defeat replay protection.
+    account_store: Option<std::sync::Arc<crate::admin_auth::account_store::AdminAccountStore>>,
+    /// AM-P2a — stable materialised identities for store-backed accounts,
+    /// keyed by username. Rebuilt only when the account's password hash
+    /// changes (which forces a re-login anyway), so the replay guard stays
+    /// stable across a login session's requests.
+    runtime_cache: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<AdminIdentity>>>,
+    >,
 }
 
 impl AdminDirectory {
     pub fn new(accounts: Vec<std::sync::Arc<AdminIdentity>>) -> Self {
-        Self { accounts, require_totp: false, totp_store: None }
+        Self { accounts, ..Default::default() }
     }
 
     /// Wrap one identity — the single-admin shorthand (tests + legacy
@@ -176,8 +191,7 @@ impl AdminDirectory {
     pub fn single(identity: AdminIdentity) -> Self {
         Self {
             accounts: vec![std::sync::Arc::new(identity)],
-            require_totp: false,
-            totp_store: None,
+            ..Default::default()
         }
     }
 
@@ -188,6 +202,23 @@ impl AdminDirectory {
     ) -> Self {
         self.totp_store = Some(store);
         self
+    }
+
+    /// AM-P2a — wire the runtime account overlay (builder-style).
+    pub fn with_account_store(
+        mut self,
+        store: std::sync::Arc<crate::admin_auth::account_store::AdminAccountStore>,
+    ) -> Self {
+        self.account_store = Some(store);
+        self
+    }
+
+    /// The wired runtime account store, if any (used by the account-mgmt
+    /// API to persist create/reset/delete).
+    pub fn account_store(
+        &self,
+    ) -> Option<&std::sync::Arc<crate::admin_auth::account_store::AdminAccountStore>> {
+        self.account_store.as_ref()
     }
 
     /// The account's effective `(totp_enabled, secret_b32)`: the runtime
@@ -238,22 +269,64 @@ impl AdminDirectory {
         Self {
             accounts,
             require_totp: auth.require_totp,
-            totp_store: None,
+            ..Default::default()
         }
     }
 
-    /// Resolve a submitted username. Scans the WHOLE set with a
-    /// constant-time per-name compare (no early exit) so response time
-    /// doesn't leak how much of a username prefix matched; the miss path
-    /// then runs `dummy_verify` in `authenticate` exactly like before.
-    pub fn resolve(&self, user: &str) -> Option<&std::sync::Arc<AdminIdentity>> {
-        let mut found: Option<&std::sync::Arc<AdminIdentity>> = None;
+    /// Resolve a submitted username to an owned identity.
+    ///
+    /// AM-P2a — the runtime account store (when wired) overlays the YAML
+    /// seed: a live store record wins; a tombstone (or a disabled record)
+    /// hides a YAML-seeded account (→ `None`, login denied). Falling through
+    /// to the YAML set uses the same constant-time per-name compare (no early
+    /// exit) so response time doesn't leak how much of a username prefix
+    /// matched; the miss path still runs `dummy_verify` in `authenticate`.
+    ///
+    /// Returns an owned `Arc` (runtime accounts aren't in `self.accounts`);
+    /// store-backed identities are materialised through `runtime_cache` so
+    /// their per-account replay guard is stable across requests.
+    pub async fn resolve(&self, user: &str) -> Option<std::sync::Arc<AdminIdentity>> {
+        if let Some(store) = &self.account_store {
+            if let Some(rec) = store.get(user).await {
+                if !rec.is_active() {
+                    return None; // tombstone / disabled hides the YAML seed too
+                }
+                return Some(self.materialize_runtime(&rec));
+            }
+        }
+        let mut found: Option<std::sync::Arc<AdminIdentity>> = None;
         for account in &self.accounts {
             if ct_eq_names(&account.user, user) {
-                found = Some(account);
+                found = Some(std::sync::Arc::clone(account));
             }
         }
         found
+    }
+
+    /// AM-P2a — build (or reuse) a stable identity for a store-backed
+    /// account. Cached by username; rebuilt only when the password hash
+    /// changes so the replay guard survives across a login session. Runtime
+    /// accounts start with no YAML TOTP fields — `effective_totp` overlays
+    /// the `TotpEnrollmentStore` factor exactly as for a seeded account.
+    fn materialize_runtime(
+        &self,
+        rec: &crate::admin_auth::account_store::RuntimeAccount,
+    ) -> std::sync::Arc<AdminIdentity> {
+        let mut cache = self.runtime_cache.lock().unwrap();
+        if let Some(existing) = cache.get(&rec.username) {
+            if existing.password_hash == rec.password_hash {
+                return std::sync::Arc::clone(existing);
+            }
+        }
+        let identity = std::sync::Arc::new(AdminIdentity {
+            user: rec.username.clone(),
+            password_hash: rec.password_hash.clone(),
+            totp_secret_b32: String::new(),
+            totp_enabled: false,
+            ..AdminIdentity::default()
+        });
+        cache.insert(rec.username.clone(), std::sync::Arc::clone(&identity));
+        identity
     }
 
     pub fn accounts(&self) -> &[std::sync::Arc<AdminIdentity>] {
@@ -262,8 +335,11 @@ impl AdminDirectory {
 
     /// True when at least one account has a password hash — i.e. login
     /// is reachable at all (drain-token fallback logic keys off this).
+    /// AM-P2a — a wired runtime account store also counts: an all-runtime
+    /// admin set (no YAML seed) still means login is reachable.
     pub fn login_enabled(&self) -> bool {
-        self.accounts.iter().any(|a| !a.password_hash.trim().is_empty())
+        self.account_store.is_some()
+            || self.accounts.iter().any(|a| !a.password_hash.trim().is_empty())
     }
 }
 
@@ -345,7 +421,7 @@ pub async fn authenticate(
     //    password. Unknown-user path runs dummy_verify so response time
     //    doesn't leak account existence — same property as the old
     //    single-admin compare, now per directory entry.
-    let admin = match directory.resolve(&req.user) {
+    let admin = match directory.resolve(&req.user).await {
         Some(account) => account,
         None => {
             dummy_verify(&req.password);
@@ -372,7 +448,7 @@ pub async fn authenticate(
     //     legitimate first login must not accrue failure strikes.
     // Effective TOTP state: the runtime enrollment overlay (TOTP-3)
     // wins over the YAML bootstrap fields.
-    let (totp_enabled, totp_secret_b32) = directory.effective_totp(admin).await;
+    let (totp_enabled, totp_secret_b32) = directory.effective_totp(&admin).await;
 
     if directory.require_totp() && !totp_enabled {
         rate_limiter.record_success(ip, &req.user);
@@ -653,6 +729,85 @@ mod tests {
 
     fn ok_body() -> String {
         serde_json::json!({"user":"admin","password":"aegis-test-1234"}).to_string()
+    }
+
+    // ---- AM-P2a: runtime account-store overlay ------------------------------
+
+    #[tokio::test]
+    async fn runtime_account_overlays_and_can_log_in() {
+        use crate::admin_auth::account_store::AdminAccountStore;
+        let store = Arc::new(AdminAccountStore::in_memory());
+        store
+            .upsert("carol", &hash_password("carol-pw-123456").unwrap())
+            .await
+            .unwrap();
+        // No YAML seed — only the runtime store.
+        let dir = AdminDirectory::new(vec![]).with_account_store(Arc::clone(&store));
+
+        let id = dir.resolve("carol").await.expect("runtime account resolves");
+        assert_eq!(id.user, "carol");
+
+        let rl = Arc::new(LoginRateLimiter::new(Default::default()));
+        let sessions = Arc::new(AuthSessionStore::new(derive_session_key("test-csrf-secret-32b")));
+        let dashboard = Arc::new(DashboardSessionStore::new());
+        let out = authenticate(
+            &serde_json::json!({"user":"carol","password":"carol-pw-123456"}).to_string(),
+            &dir,
+            &rl,
+            &sessions,
+            &dashboard,
+            "1.2.3.4",
+            "ua",
+            1800,
+        )
+        .await;
+        assert!(matches!(out, LoginOutcome::Ok { .. }), "got {out:?}");
+    }
+
+    #[tokio::test]
+    async fn tombstone_hides_a_yaml_seeded_account() {
+        use crate::admin_auth::account_store::AdminAccountStore;
+        let store = Arc::new(AdminAccountStore::in_memory());
+        let dir = AdminDirectory::single(AdminIdentity {
+            user: "admin".into(),
+            password_hash: hash_password("aegis-test-1234").unwrap(),
+            ..AdminIdentity::default()
+        })
+        .with_account_store(Arc::clone(&store));
+
+        assert!(
+            dir.resolve("admin").await.is_some(),
+            "seeded admin resolves before tombstone",
+        );
+        store.tombstone("admin").await.unwrap();
+        assert!(
+            dir.resolve("admin").await.is_none(),
+            "tombstone must hide the YAML-seeded admin (login denied)",
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_identity_is_stable_until_password_changes() {
+        // The materialised identity (and its per-account replay guard) must be
+        // reused across requests, else replay protection resets every login.
+        use crate::admin_auth::account_store::AdminAccountStore;
+        let store = Arc::new(AdminAccountStore::in_memory());
+        store.upsert("dave", "$argon2id$h1").await.unwrap();
+        let dir = AdminDirectory::new(vec![]).with_account_store(Arc::clone(&store));
+
+        let a = dir.resolve("dave").await.unwrap();
+        let b = dir.resolve("dave").await.unwrap();
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "same password → cached identity (stable replay guard)",
+        );
+
+        store.set_password("dave", "$argon2id$h2").await.unwrap();
+        let c = dir.resolve("dave").await.unwrap();
+        assert!(
+            !Arc::ptr_eq(&a, &c),
+            "password change → rebuilt identity",
+        );
     }
 
     // R-1 (2026-06-19) — correct credentials but a read-only/down session

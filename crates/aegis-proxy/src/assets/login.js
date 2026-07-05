@@ -46,7 +46,16 @@
     try {
       var params = new URLSearchParams(window.location.search);
       var next = params.get('next');
-      if (next && next.charAt(0) === '/' && !next.startsWith('//')) {
+      // AM-0b — same-origin guard. `next` must be a site-absolute path.
+      // Reject `//host` (protocol-relative) AND `\` in any position:
+      // browsers normalise `\`→`/`, so `/\evil.com` resolves to
+      // `//evil.com` (cross-origin) and would slip a naive `//` check.
+      if (
+        next &&
+        next.charAt(0) === '/' &&
+        !next.startsWith('//') &&
+        next.indexOf('\\') === -1
+      ) {
         return next;
       }
     } catch (_) { /* ignore */ }

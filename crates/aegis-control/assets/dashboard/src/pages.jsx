@@ -8093,7 +8093,7 @@ function PageSettings() {
           read-only today; mutation surfaces (terminate, toggle,
           update) ship in a follow-up once the audit-mutated
           handlers are wired. */}
-      <SettingsSessionsCard />
+      <SettingsAccountCard />
       <SettingsBreakGlassCard />
       <SettingsIntegrationsCard />
       <SettingsCertsCard />
@@ -8242,7 +8242,87 @@ function ResponseFilterCard() {
   );
 }
 
-function SettingsSessionsCard() {
+// AM-P2d — self-service "My Account" card: rotate your own password. Verifies
+// the current password server-side (unlike an admin reset) and signs out your
+// other sessions on success. To re-enroll a new authenticator, sign out and
+// use the login page's 2FA setup; a lost device is recovered by another admin
+// via Users → Reset 2FA.
+function SettingsAccountCard() {
+  const [cur, setCur] = useStateP('');
+  const [next, setNext] = useStateP('');
+  const [confirm, setConfirm] = useStateP('');
+  const [busy, setBusy] = useStateP(false);
+  const [notice, setNotice] = useStateP(null); // { ok, text }
+
+  const newOk = next.length >= 12;
+  const matchOk = next === confirm;
+  const canSubmit = cur.length > 0 && newOk && matchOk && next !== cur && !busy;
+
+  async function submit(e) {
+    e.preventDefault();
+    setBusy(true); setNotice(null);
+    const res = await window.selfChangePassword(cur, next);
+    setBusy(false);
+    const ok = res.status >= 200 && res.status < 300;
+    const text = ok
+      ? (res.message || 'Password changed.')
+      : (res.message || res.reason || `Change failed (HTTP ${res.status})`);
+    setNotice({ ok, text });
+    if (window.aegisToast) window.aegisToast(text, ok ? 'ok' : 'err');
+    if (ok) { setCur(''); setNext(''); setConfirm(''); }
+  }
+
+  return (
+    <div className="card" style={{ padding: 12, marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <window.I.Shield />
+        <strong style={{ fontSize: 13 }}>My Account</strong>
+        <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>· change your password</span>
+      </div>
+      {notice && (
+        <div style={{
+          padding: '8px 10px', marginBottom: 8, fontSize: 12, borderRadius: 6,
+          display: 'flex', alignItems: 'center', gap: 8,
+          border: `1px solid var(--${notice.ok ? 'ok' : 'danger'})`,
+          background: 'var(--surface-2)',
+        }}>
+          <span style={{ color: `var(--${notice.ok ? 'ok' : 'danger'})`, display: 'inline-flex' }}>
+            {notice.ok ? <window.I.Check /> : <window.I.Ban />}
+          </span>
+          <span style={{ color: 'var(--ink)' }}>{notice.text}</span>
+        </div>
+      )}
+      <form onSubmit={submit} style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--ink-dim)' }}>
+          Current password
+          <input type="password" value={cur} autoComplete="current-password"
+            onChange={e => setCur(e.target.value)} style={{ padding: '6px 8px' }} />
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--ink-dim)' }}>
+          New password
+          <input type="password" value={next} autoComplete="new-password" placeholder="≥ 12 characters"
+            onChange={e => setNext(e.target.value)} style={{ padding: '6px 8px' }} />
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--ink-dim)' }}>
+          Confirm new
+          <input type="password" value={confirm} autoComplete="new-password"
+            onChange={e => setConfirm(e.target.value)} style={{ padding: '6px 8px' }} />
+        </label>
+        <button type="submit" className="btn primary" disabled={!canSubmit}>Change password</button>
+        <span style={{ fontSize: 11, color: 'var(--warn)' }}>
+          {next && !newOk ? 'New password must be ≥ 12 characters'
+            : confirm && !matchOk ? 'Passwords don’t match'
+            : next && next === cur ? 'New password must differ from current' : ''}
+        </span>
+      </form>
+    </div>
+  );
+}
+
+// Active admin sessions — moved from Settings to the Users page (identity /
+// access surface). Read-only today; per-session revoke ships with the
+// self-service session controls (see the FEAT plan's deferred P2d items).
+function ActiveSessionsCard() {
   const sessions = window.useAdminSessionsApi
     ? window.useAdminSessionsApi()
     : { data: null };
@@ -12079,6 +12159,186 @@ function PageAccessLists() {
       {tab === 'blacklist'
         ? <ListPage kind="blacklist" />
         : <ListPage kind="whitelist" />}
+    </>
+  );
+}
+
+// AM-P2c — Users page. Create / reset-password / reset-2FA / delete dashboard
+// user accounts at runtime (no YAML edit, no restart), plus the active admin
+// sessions. Equal-privilege v1 (any admin manages accounts); the last-admin +
+// no-self guards are enforced server-side (aegis_control::api::admin_accounts).
+// The list carries metadata only — never a hash or secret. (Named "Users"
+// ahead of the RBAC track, which adds roles per account.)
+function PageUsers() {
+  const api = window.useAccountsApi ? window.useAccountsApi() : { data: null, loading: false, reload: () => {} };
+  const accounts = api.data?.accounts || [];
+  const [form, setForm] = useStateP({ username: '', password: '' });
+  const [busy, setBusy] = useStateP(null);      // username | '__create__' being mutated
+  const [notice, setNotice] = useStateP(null);  // { ok:bool, text }
+  const [confirm, setConfirm] = useStateP(null); // { username, label, run }
+  const [pwEdit, setPwEdit] = useStateP(null);   // { username, value }
+
+  const usernameOk = /^[A-Za-z0-9_.-]{1,64}$/.test(form.username.trim());
+  const passwordOk = form.password.length >= 12;
+  const canCreate = usernameOk && passwordOk && busy !== '__create__';
+
+  // Surface every outcome two ways so it can't be missed: a transient toast
+  // popup (the app-standard signal) + a persistent inline banner.
+  function flash(ok, text) {
+    setNotice({ ok, text });
+    if (window.aegisToast) window.aegisToast(text, ok ? 'ok' : 'err');
+  }
+
+  async function doCreate(e) {
+    e.preventDefault();
+    setBusy('__create__'); setNotice(null);
+    const name = form.username.trim();
+    const res = await window.accountCreate(name, form.password);
+    setBusy(null);
+    if (res.status >= 200 && res.status < 300) {
+      flash(true, `Account “${name}” created — it enrolls 2FA at first login.`);
+      setForm({ username: '', password: '' });
+      api.reload();
+    } else {
+      flash(false, res.message || res.reason || `Create failed (HTTP ${res.status})`);
+    }
+  }
+
+  async function runMutation(label, fn, username) {
+    setBusy(username); setNotice(null); setConfirm(null);
+    const res = await fn();
+    setBusy(null);
+    if (res.status >= 200 && res.status < 300) {
+      flash(true, res.message || `${label} succeeded.`);
+      api.reload();
+    } else {
+      flash(false, res.message || res.reason || `${label} failed (HTTP ${res.status})`);
+    }
+  }
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Users</h1>
+          <p className="page-subtitle">Create, reset, and remove dashboard users · 2FA enrolls at first login</p>
+        </div>
+      </div>
+
+      <div className="card" style={{ padding: '8px 12px', marginBottom: 8, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', gap: 8, alignItems: 'center' }}>
+        <window.I.Info />
+        <span>All admins are equal-privilege — any admin can manage accounts, and every change is audit-chained. You can’t remove the last admin. Manage your <em>own</em> account from <a href="#/settings" style={{ color: 'var(--accent)' }}>Settings</a>.</span>
+      </div>
+
+      {notice && (
+        <div className="card" style={{
+          padding: '10px 12px', marginBottom: 10, fontSize: 13,
+          display: 'flex', alignItems: 'center', gap: 8,
+          borderLeft: `4px solid var(--${notice.ok ? 'ok' : 'danger'})`,
+          background: notice.ok ? 'var(--surface-2)' : 'var(--surface-2)',
+        }}>
+          <span style={{ color: `var(--${notice.ok ? 'ok' : 'danger'})`, display: 'inline-flex' }}>
+            {notice.ok ? <window.I.Check /> : <window.I.Ban />}
+          </span>
+          <span style={{ color: 'var(--ink)', fontWeight: 500 }}>{notice.text}</span>
+          <button className="btn" style={{ marginLeft: 'auto', padding: '2px 8px', fontSize: 11 }}
+            onClick={() => setNotice(null)}>Dismiss</button>
+        </div>
+      )}
+
+      <div className="card" style={{ padding: 12, marginBottom: 12 }}>
+        <form onSubmit={doCreate} style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--ink-dim)' }}>
+            Username
+            <input value={form.username} autoComplete="off" placeholder="e.g. alice"
+              onChange={e => setForm(f => ({ ...f, username: e.target.value }))}
+              style={{ padding: '6px 8px' }} />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--ink-dim)' }}>
+            Temporary password
+            <input type="password" value={form.password} autoComplete="new-password" placeholder="≥ 12 characters"
+              onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
+              style={{ padding: '6px 8px' }} />
+          </label>
+          <button type="submit" className="btn primary" disabled={!canCreate}>
+            <window.I.Plus /> Create admin
+          </button>
+          <span style={{ fontSize: 11, color: 'var(--warn)' }}>
+            {form.username && !usernameOk ? 'Username: 1–64 of A–Z a–z 0–9 _ . -'
+              : form.password && !passwordOk ? 'Password must be ≥ 12 characters' : ''}
+          </span>
+        </form>
+      </div>
+
+      <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr style={{ textAlign: 'left', color: 'var(--ink-dim)', borderBottom: '1px solid var(--border)' }}>
+              <th style={{ padding: '8px 12px' }}>Username</th>
+              <th style={{ padding: '8px 12px' }}>Source</th>
+              <th style={{ padding: '8px 12px' }}>2FA</th>
+              <th style={{ padding: '8px 12px', textAlign: 'right' }}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {accounts.length === 0 && (
+              <tr><td colSpan={4} style={{ padding: 16, color: 'var(--ink-dim)' }}>
+                {api.loading ? 'Loading…' : 'No accounts.'}
+              </td></tr>
+            )}
+            {accounts.map(acct => {
+              const rowBusy = busy === acct.username;
+              return (
+                <tr key={acct.username} style={{ borderBottom: '1px solid var(--border)' }}>
+                  <td style={{ padding: '8px 12px', fontWeight: 600 }}>
+                    {acct.username}
+                    {acct.is_self && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 500, color: 'var(--accent)' }}>(you)</span>}
+                  </td>
+                  <td style={{ padding: '8px 12px' }}><span className="pill" style={{ fontSize: 10 }}>{acct.source}</span></td>
+                  <td style={{ padding: '8px 12px' }}>
+                    {acct.totp_enrolled
+                      ? <span style={{ color: 'var(--ok)' }}>● enrolled</span>
+                      : <span style={{ color: 'var(--warn)' }}>○ not enrolled</span>}
+                  </td>
+                  <td style={{ padding: '8px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    {acct.is_self ? (
+                      <a href="#/settings" style={{ fontSize: 11, color: 'var(--accent)' }}>Manage in Settings →</a>
+                    ) : pwEdit && pwEdit.username === acct.username ? (
+                      <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+                        <input type="password" autoFocus value={pwEdit.value} placeholder="new ≥12 char pw"
+                          onChange={e => setPwEdit(p => ({ ...p, value: e.target.value }))}
+                          style={{ padding: '4px 6px', fontSize: 11 }} />
+                        <button className="btn primary" disabled={pwEdit.value.length < 12 || rowBusy}
+                          onClick={() => { const v = pwEdit.value; setPwEdit(null); runMutation('Password reset', () => window.accountResetPassword(acct.username, v), acct.username); }}>Set</button>
+                        <button className="btn" onClick={() => setPwEdit(null)}>Cancel</button>
+                      </span>
+                    ) : confirm && confirm.username === acct.username ? (
+                      <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+                        <span style={{ fontSize: 11, color: 'var(--danger)' }}>{confirm.label}?</span>
+                        <button className="btn danger" disabled={rowBusy} onClick={() => confirm.run()}>Yes</button>
+                        <button className="btn" onClick={() => setConfirm(null)}>No</button>
+                      </span>
+                    ) : (
+                      <span style={{ display: 'inline-flex', gap: 4 }}>
+                        <button className="btn" disabled={rowBusy} onClick={() => setPwEdit({ username: acct.username, value: '' })}>Reset password</button>
+                        <button className="btn" disabled={rowBusy || !acct.totp_enrolled}
+                          onClick={() => setConfirm({ username: acct.username, label: 'Reset 2FA', run: () => runMutation('2FA reset', () => window.accountResetTotp(acct.username), acct.username) })}>Reset 2FA</button>
+                        <button className="btn danger" disabled={rowBusy}
+                          onClick={() => setConfirm({ username: acct.username, label: 'Delete account', run: () => runMutation('Delete', () => window.accountDelete(acct.username), acct.username) })}><window.I.Trash /> Delete</button>
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ margin: '16px 0 6px', fontSize: 12, fontWeight: 600, color: 'var(--ink-dim)' }}>
+        Active admin sessions
+      </div>
+      <ActiveSessionsCard />
     </>
   );
 }
@@ -16921,6 +17181,7 @@ Object.assign(window, {
   // Phase 2 — merged Access Lists, plus Phase 3 stubs.
   // PageHelp is owned by help.jsx (loaded after this file).
   PageAccessLists,
+  PageUsers,
   PageIncidents, PageInvestigation,
   PageTopAttackers,
   PageReports,

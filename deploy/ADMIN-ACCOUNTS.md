@@ -96,9 +96,11 @@ a headless box), skip the web flow:
 ```
 
 This prints the `accounts:` fragment **including** `totp_secret_b32` +
-`totp_enabled: true`, the `otpauth://` URI, an ASCII QR you can scan straight
-off the terminal, and 10 single-use recovery codes. Paste the fragment into
-the config yourself and restart.
+`totp_enabled: true`, the `otpauth://` URI, and an ASCII QR you can scan
+straight off the terminal. Paste the fragment into the config yourself and
+restart. (Recovery codes are also printed but are **not yet usable for login**
+— recovery-code sign-in is deferred to TF-2; today, lost-device recovery is an
+admin resetting your 2FA from the dashboard.)
 
 Related low-level commands:
 
@@ -145,7 +147,7 @@ Rules worth knowing:
 | Login succeeds but every page answers `403 totp_enrollment_required` | Enrollment-only session (password OK, factor not confirmed). Go to `/admin/login` — browser navigations redirect there automatically — and finish the QR setup. |
 | `no pending enrollment (expired or never started)` on confirm | The 15-minute pending window lapsed. Reload the login page and sign in again to get a fresh QR. |
 | Codes from the app never match | Check the phone's clock (TOTP is time-based, ±30 s skew tolerated). The QR encodes SHA-1 / 6 digits / 30 s — the Google-Authenticator baseline; don't change algorithm parameters. |
-| Admin lost their phone | Remove their runtime enrollment so the next login re-enrolls: `redis-cli hdel control:waf:admin:totp <username>` (or the docker equivalent). Recovery-code login and `waf admin disable-totp` are tracked separately (TF-2 / AA-P1b) and not shipped yet. |
+| Admin lost their phone | Another admin resets their 2FA from the dashboard: **Users → the row → Reset 2FA** (the account re-enrolls at next login). Manual equivalent: `redis-cli hdel control:waf:admin:totp <username>`. Recovery-code login is still deferred (TF-2). |
 | New account rejected at boot | Run `./target/release/waf validate --config <file>` — most common: both legacy fields and `accounts:` set, or a duplicate username. |
 
 ## 6. Security notes
@@ -160,3 +162,54 @@ Rules worth knowing:
   username — never the secret or codes.
 - For production, keep hashes and secrets behind `${secret:...}` references
   rather than inline YAML, and create accounts on a trusted machine.
+
+---
+
+## 7. Runtime management from the dashboard (no restart)
+
+The YAML `accounts:` block + `create-admin.sh` are the **bootstrap** path. Once
+the WAF is running, admins manage accounts live from the dashboard — no YAML
+edit, no restart. Changes are stored in a fleet-wide, restart-durable runtime
+overlay (`control:waf:admin:accounts`) that wins over the YAML seed; a state
+wipe (`reset_state`) never touches it.
+
+**Users page** (sidebar → Admin → Users):
+
+| Action | Effect |
+|---|---|
+| **Create admin** | New account (username `[A-Za-z0-9_.-]`, 1–64; password ≥ 12). It has no 2FA yet, so under `require_totp` it enrolls at first login. |
+| **Reset password** | Overrides the account's password and signs out all its sessions. |
+| **Reset 2FA** | Clears the account's authenticator factor (lost-device recovery) — it re-enrolls at next login — and signs out its sessions. |
+| **Delete** | Removes the account (a YAML-seeded one is *tombstoned* so it stays hidden without a file edit); purges its 2FA factor + sessions. |
+
+Guardrails (equal-privilege v1 — any admin can manage accounts, every change is
+audit-chained):
+
+- You **cannot remove the last remaining admin** (lockout protection).
+- The Users-page actions operate on **other** accounts. Manage your **own**
+  account from **Settings → My Account** (change password — verifies your
+  current password and keeps your session while signing out the others). To
+  move your own 2FA to a new phone, sign out and re-run the login-page setup;
+  a *lost* device is recovered by another admin via **Reset 2FA**.
+
+**API** (all behind the session + CSRF + write-scope gate; actor taken from the
+trusted `x-aegis-actor`, never a client header):
+
+```text
+GET    /api/admin/accounts                      list (metadata only — no hashes/secrets)
+POST   /api/admin/accounts                      { username, password }
+POST   /api/admin/accounts/{user}/password      { new_password }         (admin reset)
+POST   /api/admin/accounts/{user}/totp/reset                             (lost-device 2FA reset)
+DELETE /api/admin/accounts/{user}
+POST   /api/admin/self/password                 { current_password, new_password }   (self-service)
+```
+
+Every mutation emits an `AuditClass::Admin` event (`admin_account_created`,
+`admin_account_password_reset`, `admin_account_totp_reset`,
+`admin_account_deleted`, `admin_self_password_changed`) carrying the acting
+admin + target — never a password or secret.
+
+> Only-admin lost their phone with no second admin to reset them: recover via
+> the bootstrap path — `redis-cli hdel control:waf:admin:totp <username>` (or
+> re-seed the account in YAML and restart). Recovery-code login is deferred
+> (TF-2).
