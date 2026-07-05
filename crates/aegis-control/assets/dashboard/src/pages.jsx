@@ -12083,6 +12083,160 @@ function PageAccessLists() {
   );
 }
 
+// AM-P2c — Admin Accounts management page. Create / reset-password /
+// reset-2FA / delete dashboard admins at runtime (no YAML edit, no restart).
+// Equal-privilege v1 (any admin manages accounts); the last-admin + no-self
+// guards are enforced server-side (aegis_control::api::admin_accounts). The
+// list carries metadata only — never a hash or secret.
+function PageAdminAccounts() {
+  const api = window.useAccountsApi ? window.useAccountsApi() : { data: null, loading: false, reload: () => {} };
+  const accounts = api.data?.accounts || [];
+  const [form, setForm] = useStateP({ username: '', password: '' });
+  const [busy, setBusy] = useStateP(null);      // username | '__create__' being mutated
+  const [notice, setNotice] = useStateP(null);  // { ok:bool, text }
+  const [confirm, setConfirm] = useStateP(null); // { username, label, run }
+  const [pwEdit, setPwEdit] = useStateP(null);   // { username, value }
+
+  const usernameOk = /^[A-Za-z0-9_.-]{1,64}$/.test(form.username.trim());
+  const passwordOk = form.password.length >= 12;
+  const canCreate = usernameOk && passwordOk && busy !== '__create__';
+
+  function flash(ok, text) { setNotice({ ok, text }); }
+
+  async function doCreate(e) {
+    e.preventDefault();
+    setBusy('__create__'); setNotice(null);
+    const name = form.username.trim();
+    const res = await window.accountCreate(name, form.password);
+    setBusy(null);
+    if (res.status >= 200 && res.status < 300) {
+      flash(true, `Account “${name}” created — it enrolls 2FA at first login.`);
+      setForm({ username: '', password: '' });
+      api.reload();
+    } else {
+      flash(false, res.message || res.reason || `Create failed (HTTP ${res.status})`);
+    }
+  }
+
+  async function runMutation(label, fn, username) {
+    setBusy(username); setNotice(null); setConfirm(null);
+    const res = await fn();
+    setBusy(null);
+    if (res.status >= 200 && res.status < 300) {
+      flash(true, res.message || `${label} succeeded.`);
+      api.reload();
+    } else {
+      flash(false, res.message || res.reason || `${label} failed (HTTP ${res.status})`);
+    }
+  }
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Admin Accounts</h1>
+          <p className="page-subtitle">Create, reset, and remove dashboard admins · 2FA enrolls at first login</p>
+        </div>
+      </div>
+
+      <div className="card" style={{ padding: '8px 12px', marginBottom: 8, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', gap: 8, alignItems: 'center' }}>
+        <window.I.Info />
+        <span>All admins are equal-privilege — any admin can manage accounts, and every change is audit-chained. You can’t remove the last admin. Manage your <em>own</em> account from <a href="#/settings" style={{ color: 'var(--accent)' }}>Settings</a>.</span>
+      </div>
+
+      {notice && (
+        <div className="card" style={{ padding: '8px 12px', marginBottom: 8, fontSize: 12, borderLeft: `3px solid var(--${notice.ok ? 'ok' : 'danger'})` }}>
+          {notice.text}
+        </div>
+      )}
+
+      <div className="card" style={{ padding: 12, marginBottom: 12 }}>
+        <form onSubmit={doCreate} style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--ink-dim)' }}>
+            Username
+            <input value={form.username} autoComplete="off" placeholder="e.g. alice"
+              onChange={e => setForm(f => ({ ...f, username: e.target.value }))}
+              style={{ padding: '6px 8px' }} />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--ink-dim)' }}>
+            Temporary password
+            <input type="password" value={form.password} autoComplete="new-password" placeholder="≥ 12 characters"
+              onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
+              style={{ padding: '6px 8px' }} />
+          </label>
+          <button type="submit" className="btn primary" disabled={!canCreate}>
+            <window.I.Plus /> Create admin
+          </button>
+          <span style={{ fontSize: 11, color: 'var(--warn)' }}>
+            {form.username && !usernameOk ? 'Username: 1–64 of A–Z a–z 0–9 _ . -'
+              : form.password && !passwordOk ? 'Password must be ≥ 12 characters' : ''}
+          </span>
+        </form>
+      </div>
+
+      <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr style={{ textAlign: 'left', color: 'var(--ink-dim)', borderBottom: '1px solid var(--border)' }}>
+              <th style={{ padding: '8px 12px' }}>Username</th>
+              <th style={{ padding: '8px 12px' }}>Source</th>
+              <th style={{ padding: '8px 12px' }}>2FA</th>
+              <th style={{ padding: '8px 12px', textAlign: 'right' }}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {accounts.length === 0 && (
+              <tr><td colSpan={4} style={{ padding: 16, color: 'var(--ink-dim)' }}>
+                {api.loading ? 'Loading…' : 'No accounts.'}
+              </td></tr>
+            )}
+            {accounts.map(acct => {
+              const rowBusy = busy === acct.username;
+              return (
+                <tr key={acct.username} style={{ borderBottom: '1px solid var(--border)' }}>
+                  <td style={{ padding: '8px 12px', fontWeight: 600 }}>{acct.username}</td>
+                  <td style={{ padding: '8px 12px' }}><span className="pill" style={{ fontSize: 10 }}>{acct.source}</span></td>
+                  <td style={{ padding: '8px 12px' }}>
+                    {acct.totp_enrolled
+                      ? <span style={{ color: 'var(--ok)' }}>● enrolled</span>
+                      : <span style={{ color: 'var(--warn)' }}>○ not enrolled</span>}
+                  </td>
+                  <td style={{ padding: '8px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    {pwEdit && pwEdit.username === acct.username ? (
+                      <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+                        <input type="password" autoFocus value={pwEdit.value} placeholder="new ≥12 char pw"
+                          onChange={e => setPwEdit(p => ({ ...p, value: e.target.value }))}
+                          style={{ padding: '4px 6px', fontSize: 11 }} />
+                        <button className="btn primary" disabled={pwEdit.value.length < 12 || rowBusy}
+                          onClick={() => { const v = pwEdit.value; setPwEdit(null); runMutation('Password reset', () => window.accountResetPassword(acct.username, v), acct.username); }}>Set</button>
+                        <button className="btn" onClick={() => setPwEdit(null)}>Cancel</button>
+                      </span>
+                    ) : confirm && confirm.username === acct.username ? (
+                      <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+                        <span style={{ fontSize: 11, color: 'var(--danger)' }}>{confirm.label}?</span>
+                        <button className="btn danger" disabled={rowBusy} onClick={() => confirm.run()}>Yes</button>
+                        <button className="btn" onClick={() => setConfirm(null)}>No</button>
+                      </span>
+                    ) : (
+                      <span style={{ display: 'inline-flex', gap: 4 }}>
+                        <button className="btn" disabled={rowBusy} onClick={() => setPwEdit({ username: acct.username, value: '' })}>Reset password</button>
+                        <button className="btn" disabled={rowBusy || !acct.totp_enrolled}
+                          onClick={() => setConfirm({ username: acct.username, label: 'Reset 2FA', run: () => runMutation('2FA reset', () => window.accountResetTotp(acct.username), acct.username) })}>Reset 2FA</button>
+                        <button className="btn danger" disabled={rowBusy}
+                          onClick={() => setConfirm({ username: acct.username, label: 'Delete account', run: () => runMutation('Delete', () => window.accountDelete(acct.username), acct.username) })}><window.I.Trash /> Delete</button>
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
 // ================================================================
 // PHASE 3 — SOC pages, stub bodies until each lands fully wired.
 // Each page renders a "ships in Phase 3" frame plus whatever real
@@ -16921,6 +17075,7 @@ Object.assign(window, {
   // Phase 2 — merged Access Lists, plus Phase 3 stubs.
   // PageHelp is owned by help.jsx (loaded after this file).
   PageAccessLists,
+  PageAdminAccounts,
   PageIncidents, PageInvestigation,
   PageTopAttackers,
   PageReports,

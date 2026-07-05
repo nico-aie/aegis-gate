@@ -1033,6 +1033,33 @@ async function accessListDelete(kind, id) {
   return csrfMutate(`/api/${kind}/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
+// AM-P2c — admin account management. Read is fetch-once (no polling; the page
+// reloads after each mutation). Mutations are audit-chained + CSRF-gated. The
+// list carries metadata only — never a password hash or TOTP secret.
+function useAccountsApi() {
+  return useApi('/api/admin/accounts', { intervalMs: 0, fallback: { accounts: [] } });
+}
+async function accountCreate(username, password) {
+  return csrfMutate('/api/admin/accounts', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  });
+}
+async function accountResetPassword(username, newPassword) {
+  return csrfMutate(`/api/admin/accounts/${encodeURIComponent(username)}/password`, {
+    method: 'POST',
+    body: JSON.stringify({ new_password: newPassword }),
+  });
+}
+async function accountResetTotp(username) {
+  return csrfMutate(`/api/admin/accounts/${encodeURIComponent(username)}/totp/reset`, {
+    method: 'POST',
+  });
+}
+async function accountDelete(username) {
+  return csrfMutate(`/api/admin/accounts/${encodeURIComponent(username)}`, { method: 'DELETE' });
+}
+
 // CQF-T1 — admin logout. POSTs /admin/logout with the CSRF
 // header. The handler responds 204 + Set-Cookie clearing
 // both `aegis_session` and `aegis_csrf` so the browser
@@ -2012,6 +2039,7 @@ Object.assign(window, {
   adminLogout,
   // CQF-T2 — Blacklist + Whitelist add/delete
   accessListAdd, accessListDelete,
+  useAccountsApi, accountCreate, accountResetPassword, accountResetTotp, accountDelete,
   // CQF-T3 — Detector mask read + audit-mutated PUT
   useDetectorsApi, detectorsPut,
   // 2026-05-09 — Traffic Gates needs a generic CSRF-aware PUT

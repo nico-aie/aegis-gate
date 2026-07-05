@@ -59,6 +59,7 @@ const NAV = [
     { id: 'scaling',       label: 'Scaling',          icon: <window.I.Cluster />,  badge: null },
   ]},
   { group: 'Admin', items: [
+    { id: 'admin-accounts', label: 'Admin Accounts',  icon: <window.I.Shield />,   badge: null },
     { id: 'settings',      label: 'Settings',         icon: <window.I.Settings />, badge: null },
     { id: 'reports',       label: 'Reports',          icon: <window.I.Download />, badge: null },
     { id: 'help',          label: 'Help & Guide',     icon: <window.I.Book />,     badge: null },
@@ -662,6 +663,7 @@ function App() {
     case 'health':           page = <window.PageTracking />; break;
     case 'audit':            page = <window.PageAuditLog />; break;
     case 'scaling':          page = <window.PageScaling />; break;
+    case 'admin-accounts':   page = <window.PageAdminAccounts />; break;
     case 'settings':         page = <window.PageSettings />; break;
     case 'reports':          page = <window.PageReports />; break;
     case 'help':             page = <window.PageHelp />; break;
