@@ -19,7 +19,7 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)(?:\.DS_Store)",
         r"(?i)(?:\.htaccess)",
         r"(?i)(?:\.htpasswd)",
-        r"(?i)(?:wp-config\.php)",
+        // (wp-config.php moved to RECON_SENSITIVE_PATHS — RC-2)
         // 2026-06-21 (l-tester FP sweep) — segment-anchored so a mid-filename
         // `_web.Config…` (e.g. `config_fare_families_web.ConfigPrePageLanding`)
         // doesn't FP. Real probe is the IIS `/web.config` file.
@@ -77,8 +77,7 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)(?:^|/)v1\.\d+/(?:containers|images|networks|volumes|services|tasks|secrets|configs|swarm|nodes|plugins|info|version|events|system|build|auth)\b",
         r"(?i)(?:^|/)_ping\b",
         r"(?i)(?:Makefile$)",
-        r"(?i)(?:\.aws/credentials)",
-        r"(?i)(?:\.ssh/)",
+        // (.aws/credentials and .ssh/ moved to RECON_SENSITIVE_PATHS — RC-2)
         // VULN-03 (waf_security_report 2026-06-10) — bare config /
         // secret files served at a path segment leak DB creds & keys.
         // Anchored to a segment (`^` or `/`) and a value boundary so
@@ -90,13 +89,8 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // hit accumulates via the per-IP risk model rather than
         // single-blocking (operator decision 2026-06-13).
         r"(?i)(?:^|/)config\.ya?ml(?:$|[?#])",
-        r"(?i)(?:^|/)(?:secrets?|settings|credentials)\.ya?ml(?:$|[?#])",
-        // 2026-06-19 (btc-miss report) — framework DB/parameter config
-        // files. Same segment + value anchoring as the config/secrets
-        // family above: `/config/database.yaml` (Rails), `/app/config/
-        // parameters.yml` (Symfony) leak DB creds. Specific filenames
-        // only — NOT a blanket `*.yml` (FPs on legit manifest traffic).
-        r"(?i)(?:^|/)(?:database|parameters)\.ya?ml(?:$|[?#])",
+        // (secrets/settings/credentials.ya?ml + database/parameters.ya?ml
+        //  moved to RECON_SENSITIVE_PATHS — RC-2. config.yaml stays generic.)
         // SQL dumps left in the webroot — `dump.sql`, `db.sql.gz`,
         // `backup.sql`, `mysql.sql`, `pg_dump.sql`. Anchored to
         // dump-shaped filenames (NOT bare `*.sql`) + optional `.gz`.
@@ -105,15 +99,15 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // stack traces, queries, env. Anchored to the framework's
         // log directory so generic `*.log` API params don't FP.
         r"(?i)(?:^|/)storage/logs/[\w.-]*\.log\b",
-        // Private-key / keystore material. Restrict to private-bearing
-        // extensions; .crt/.cer/.der are EXCLUDED (public certs are
-        // sometimes legitimately downloadable) to keep FP at zero.
-        r"(?i)\.(?:pem|key|p12|pfx|jks|keystore)(?:$|[?#])",
+        // (private-key/keystore material moved to RECON_SENSITIVE_PATHS — RC-2)
         // GAP-001 (Run-5, 2026-05-08) — framework recon paths.
-        // Spring Boot actuator danger endpoints (/health and /info
-        // are intentionally public on most Spring deployments;
-        // only the dangerous subpaths flag).
-        r"(?i)/actuator/(?:heapdump|threaddump|env|configprops|loggers|trace|httptrace|auditevents|dump|jolokia|liquibase|flyway|gateway|conditions|beans|mappings|metrics/.*|sessions|shutdown)\b",
+        // Spring Boot actuator endpoints (/health and /info are
+        // intentionally public on most Spring deployments; only the
+        // dangerous subpaths flag). RC-2 (2026-07-05): the secret/RCE
+        // subset (heapdump, threaddump, env, configprops, jolokia,
+        // shutdown, dump) moved to RECON_SENSITIVE_PATHS (score 50); the
+        // remaining discovery endpoints stay at the generic probe tier.
+        r"(?i)/actuator/(?:loggers|trace|httptrace|auditevents|liquibase|flyway|gateway|conditions|beans|mappings|metrics/.*|sessions)\b",
         // Laravel Ignition — CVE-2021-3129 (RCE).
         r"(?i)/_ignition/(?:execute-solution|health-check|update-config)\b",
         // Swagger / OpenAPI surface enumeration.
@@ -201,29 +195,15 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // never single-block. Tight anchors + look-alike negatives in the
         // test module; corpus re-validation deferred to Wave B.
         //
-        // Secrets — bare SSH private key at the webroot. Segment-anchored
-        // to a value boundary so `/id_rsa_setup_guide.html` (the `_`
-        // breaks the boundary) does NOT fire. The `.ssh/` directory form
-        // is already covered above.
-        r"(?i)(?:^|/)id_rsa(?:$|[?#])",
-        // npm credential file (`_authToken=…`) and the git-credentials
-        // store (`https://user:pass@host`). `.git-credentials` is NOT
-        // caught by the `\.git(?:/|$)` dir pattern (the `-` breaks it).
-        r"(?i)(?:^|/)\.npmrc(?:$|[?#])",
-        r"(?i)(?:^|/)\.git-credentials(?:$|[?#])",
-        // Generic `secrets.*` / `secret.*` exposure — broadens the
-        // existing `secrets?\.ya?ml` to the other credential-bearing
-        // extensions. Value-anchored so `/secrets-rotation-guide.html`
-        // and `/api/secretary/…` (no `.`-boundary) do NOT fire.
-        r"(?i)(?:^|/)secrets?\.(?:json|txt|ya?ml|env|config)(?:$|[?#])",
+        // (RC-3 secret families — /id_rsa, /.npmrc, /.git-credentials,
+        //  secrets?.{json,txt,ya?ml,env,config} — moved to
+        //  RECON_SENSITIVE_PATHS by RC-2.)
         // `word.env` dotenv variants (`config.env`, `aws.env`, `db.env`)
         // — distinct from the `/.env` dotfile pattern above, which
         // requires `.env` right after a `/`. Value-anchored so
         // `*.environment` does NOT fire (the trailing chars break `$`).
         r"(?i)(?:^|/)[\w-]+\.env(?:$|[?#])",
-        // WordPress config leaked as `.txt` (the `.php.bak` etc. forms
-        // are already caught by the generic backup-suffix tail below).
-        r"(?i)(?:^|/)wp-config\.txt(?:$|[?#])",
+        // (wp-config.txt moved to RECON_SENSITIVE_PATHS — RC-2)
         // Webroot backup archives — anchored to a *backup-shaped* leading
         // word so legit downloadable archives (`/downloads/report.zip`,
         // `/assets/app.js.gz`) do NOT fire. Catches `/www.tar.gz`,
@@ -252,10 +232,47 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // path context so bare `/config.xml` (too generic) does NOT fire.
         r"(?i)(?:^|/)Jenkinsfile(?:$|[?#])",
         r"(?i)(?:^|/)jenkins[\w./-]*config\.xml\b",
-        // Terraform working directory — may contain state with plaintext
-        // provider creds. Segment-anchored so `/my.terraform-guide`
-        // (the `-` breaks the boundary) does NOT fire.
+        // (.terraform/ moved to RECON_SENSITIVE_PATHS — RC-2)
+    ]
+    .iter()
+    .map(|p| Regex::new(p).unwrap())
+    .collect()
+});
+
+/// RC-2 (2026-07-05) — the secret-exposure subset of the recon path
+/// probes. These are checked **before** `RECON_PATHS` and score
+/// `recon::SENSITIVE` (50) instead of `recon::PATH` (25): a leaked
+/// credential file / private key / state file is a much higher-confidence
+/// signal than a generic directory probe. Still below `block_at` (70), so
+/// single-hit is at most a challenge — no single-hit block without corpus
+/// evidence + owner sign-off. Every entry is a file/endpoint that, when
+/// actually served, exposes secrets or enables RCE — never a legitimately
+/// requested resource. All patterns keep the same tight anchoring +
+/// look-alike negatives they carried in `RECON_PATHS`.
+static RECON_SENSITIVE_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    [
+        // Credential files.
+        r"(?i)(?:\.aws/credentials)",
+        r"(?i)(?:^|/)\.git-credentials(?:$|[?#])",
+        r"(?i)(?:^|/)\.npmrc(?:$|[?#])",
+        r"(?i)(?:^|/)secrets?\.(?:json|txt|ya?ml|env|config)(?:$|[?#])",
+        r"(?i)(?:^|/)(?:secrets?|settings|credentials)\.ya?ml(?:$|[?#])",
+        // Framework DB/parameter config (leaks DB creds).
+        r"(?i)(?:^|/)(?:database|parameters)\.ya?ml(?:$|[?#])",
+        // Private-key / keystore material. .crt/.cer/.der stay EXCLUDED
+        // (public certs are sometimes legitimately downloadable).
+        r"(?i)\.(?:pem|key|p12|pfx|jks|keystore)(?:$|[?#])",
+        // SSH private-key directory + bare webroot id_rsa.
+        r"(?i)(?:\.ssh/)",
+        r"(?i)(?:^|/)id_rsa(?:$|[?#])",
+        // Terraform working dir — state with plaintext provider creds.
         r"(?i)(?:^|/)\.terraform(?:/|$)",
+        // WordPress config (DB creds, auth salts).
+        r"(?i)(?:wp-config\.php)",
+        r"(?i)(?:^|/)wp-config\.txt(?:$|[?#])",
+        // Spring actuator secret/RCE subset (env/configprops dump secrets;
+        // heapdump/threaddump leak memory; jolokia/shutdown = RCE/DoS).
+        r"(?i)/actuator/(?:heapdump|threaddump|env|configprops|jolokia|shutdown|dump)\b",
     ]
     .iter()
     .map(|p| Regex::new(p).unwrap())
@@ -336,16 +353,27 @@ impl Detector for ReconDetector {
             .unwrap_or_else(|| req.uri.path());
         // 2026-06-18 (round-2 FP fix): standard browser/CMS/SDK paths that
         // collide with the generic recon patterns are suppressed up front.
+        //
+        // RC-2 (2026-07-05) — tiered scoring. The secret-exposure subset
+        // (`RECON_SENSITIVE_PATHS`) is checked first and scores
+        // `recon::SENSITIVE` (50); everything else scores `recon::PATH`
+        // (25). Same tag either way ("recon_path"), so this composes with
+        // the existing per-request gate and cumulative accumulation with
+        // no threshold change — only the confidence weight differs.
         if !is_benign_recon_path(req.uri.path()) {
-            for re in RECON_PATHS.iter() {
-                if re.is_match(path_q) {
-                    signals.push(Signal {
-                        score: crate::detectors::scores::recon::PATH,
-                        tag: "recon_path".into(),
-                        field: "uri".into(),
-                    });
-                    break;
-                }
+            let score = if RECON_SENSITIVE_PATHS.iter().any(|re| re.is_match(path_q)) {
+                Some(super::scores::recon::SENSITIVE)
+            } else if RECON_PATHS.iter().any(|re| re.is_match(path_q)) {
+                Some(super::scores::recon::PATH)
+            } else {
+                None
+            };
+            if let Some(score) = score {
+                signals.push(Signal {
+                    score,
+                    tag: "recon_path".into(),
+                    field: "uri".into(),
+                });
             }
         }
 
