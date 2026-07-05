@@ -36,7 +36,7 @@ impl AdminChangeEntry {
             tier: None,
             action: self.action.as_str().into(),
             reason: self.reason.clone(),
-            client_ip: String::new(),
+            client_ip: self.client_ip.clone(),
             route_id: None,
             rule_id: None,
             risk_score: None,

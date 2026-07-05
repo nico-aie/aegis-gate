@@ -132,6 +132,7 @@ where
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/mode",
         action: "mode_set",
         reason: "operator pins global mode",
@@ -415,6 +416,7 @@ pub(crate) async fn handle_upstreams_config_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/upstreams/config",
         action: "upstreams_set",
         reason: "operator replaced upstream pool table",
@@ -538,6 +540,7 @@ pub(crate) async fn handle_pool_upsert(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: &resource,
         action: "pool_upsert",
         reason: "operator upserted upstream pool",
@@ -644,6 +647,7 @@ pub(crate) async fn handle_pool_delete(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: &resource,
         action: "pool_delete",
         reason: "operator removed upstream pool",
@@ -799,6 +803,7 @@ pub(crate) async fn handle_slo_config_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/slo/config",
         action: "slo_config_set",
         reason: "operator updated SLO objectives",
@@ -920,6 +925,7 @@ pub(crate) async fn handle_alert_receivers_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/alert-receivers",
         action: "alert_receivers_set",
         reason: "operator updated alert channel list",
@@ -1017,6 +1023,7 @@ pub(crate) async fn handle_alert_receiver_delete(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: &resource,
         action: "alert_receiver_delete",
         reason: "operator removed alert channel",
@@ -1120,6 +1127,7 @@ pub(crate) async fn handle_alert_receiver_test(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: &resource,
         action: "alert_receiver_test",
         reason: "operator fired test alert",
@@ -1194,6 +1202,7 @@ pub(crate) async fn handle_alert_ack(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: &resource,
         action: "alert_ack",
         reason: "operator acknowledged alert",
@@ -1316,6 +1325,7 @@ pub(crate) async fn handle_mtls_ca_bundle_put(
             csrf_header: pre.csrf_header.as_deref(),
             actor: &pre.actor,
             request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
             resource: "/api/zero-trust/downstream/ca-bundle",
             action: "zero_trust_ca_bundle_validated",
             reason: "operator previewed CA bundle (no swap)",
@@ -1390,6 +1400,7 @@ pub(crate) async fn handle_mtls_ca_bundle_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/zero-trust/downstream/ca-bundle",
         action: "zero_trust_ca_bundle_swapped",
         reason: "operator hot-swapped CA bundle",
@@ -1511,6 +1522,7 @@ pub(crate) async fn handle_mtls_mode_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/zero-trust/downstream/mode",
         action: action_label,
         reason: "operator changed mtls mode override",
@@ -1648,6 +1660,7 @@ pub(crate) async fn handle_zt_upstream_identity_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/zero-trust/upstream/identity",
         action: "zero_trust_upstream_identity_set",
         reason: "operator stored the shared WAF client identity (public cert + key reference)",
@@ -1818,6 +1831,7 @@ pub(crate) async fn handle_zt_upstream_trust_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: &resource,
         action: "zero_trust_upstream_trust_set",
         reason: "operator uploaded a backend-CA trust bundle",
@@ -1913,6 +1927,7 @@ pub(crate) async fn handle_zt_upstream_trust_delete(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: &resource,
         action: "zero_trust_upstream_trust_removed",
         reason: "operator removed a backend-CA trust bundle",
@@ -2023,6 +2038,7 @@ pub(crate) async fn handle_incident_ack(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: &resource,
         action: "incident_ack",
         reason: "operator acknowledged incident",
@@ -2084,6 +2100,7 @@ pub(crate) async fn handle_incident_snooze(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: &resource,
         action: "incident_snooze",
         reason: "operator snoozed incident",
@@ -2135,6 +2152,7 @@ pub(crate) async fn handle_incident_resolve(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: &resource,
         action: "incident_resolve",
         reason: "operator resolved incident",
@@ -2198,6 +2216,12 @@ pub(crate) async fn handle_logging_put(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("admin")
         .to_string();
+    let client_ip = req
+        .headers()
+        .get("x-aegis-client-ip")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
     let request_id = req
         .headers()
         .get("x-request-id")
@@ -2242,6 +2266,7 @@ pub(crate) async fn handle_logging_put(
         csrf_header: csrf_header.as_deref(),
         actor: &actor,
         request_id: &request_id,
+        client_ip: &client_ip,
         resource: "/api/logging",
         action: "verbosity_set",
         reason: "operator changes verbosity",
@@ -2292,6 +2317,12 @@ pub(crate) async fn handle_loadmode_put(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("admin")
         .to_string();
+    let client_ip = req
+        .headers()
+        .get("x-aegis-client-ip")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
     let request_id = req
         .headers()
         .get("x-request-id")
@@ -2336,6 +2367,7 @@ pub(crate) async fn handle_loadmode_put(
         csrf_header: csrf_header.as_deref(),
         actor: &actor,
         request_id: &request_id,
+        client_ip: &client_ip,
         resource: "/api/loadmode",
         action: "loadmode_set",
         reason: "operator pins load mode",
@@ -2457,6 +2489,7 @@ pub(crate) async fn handle_config_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/config",
         action: "config_activate",
         reason: "operator activated config version",
@@ -2544,6 +2577,7 @@ pub(crate) async fn handle_config_rollback(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/config/rollback",
         action: "config_rollback",
         reason: "operator rolled back config version",
@@ -2592,6 +2626,7 @@ struct MutationPreamble {
     csrf_header: Option<String>,
     actor: String,
     request_id: String,
+    client_ip: String,
 }
 
 fn mutation_preamble<B>(
@@ -2639,11 +2674,23 @@ fn mutation_preamble<B>(
             .to_hex()
             .to_string()
         });
+    // RC-5a / V9: the actor's real client IP, injected by the admin
+    // listener from the authenticated TCP peer (`accept.rs`) as
+    // `x-aegis-client-ip`. The client-supplied header is stripped at the
+    // gate alongside `x-actor`, so this can't be spoofed. Empty when a
+    // code path reaches a mutation handler without going through the edge.
+    let client_ip = req
+        .headers()
+        .get("x-aegis-client-ip")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
     MutationPreamble {
         csrf_cookie,
         csrf_header,
         actor,
         request_id,
+        client_ip,
     }
 }
 
@@ -2977,6 +3024,7 @@ pub(crate) async fn handle_rules_post(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/rules",
         action: "rule_create",
         reason: "operator creates rule",
@@ -3101,6 +3149,7 @@ pub(crate) async fn handle_rules_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: &resource,
         action: "rule_update",
         reason: "operator updates rule",
@@ -3191,6 +3240,7 @@ pub(crate) async fn handle_rules_delete(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: &resource,
         action: "rule_delete",
         reason: "operator deletes rule",
@@ -3284,6 +3334,7 @@ pub(crate) async fn handle_rules_toggle(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: &resource,
         action: "rule_toggle",
         reason: "operator toggles rule",
@@ -3437,6 +3488,7 @@ pub(crate) async fn handle_risk_thresholds_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/risk/thresholds",
         action: "risk_thresholds_set",
         reason: "operator updated risk thresholds",
@@ -3602,6 +3654,7 @@ pub(crate) async fn handle_risk_canary_paths_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/risk/canary-paths",
         action: "risk_canary_paths_set",
         reason: "operator updated canary honeypot paths",
@@ -3718,6 +3771,7 @@ pub(crate) async fn handle_bots_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/gates/bots",
         action: "bots_gate_set",
         reason: "operator toggled the bot classifier gate",
@@ -3800,6 +3854,12 @@ pub(crate) async fn handle_risk_reset(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("admin")
         .to_string();
+    let client_ip = req
+        .headers()
+        .get("x-aegis-client-ip")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
     let request_id = req
         .headers()
         .get("x-request-id")
@@ -3831,6 +3891,7 @@ pub(crate) async fn handle_risk_reset(
         csrf_header: csrf_header.as_deref(),
         actor: &actor,
         request_id: &request_id,
+        client_ip: &client_ip,
         resource: &resource,
         action: "risk_reset",
         reason: "operator clears risk state",
@@ -3910,6 +3971,12 @@ pub(crate) async fn handle_risk_reset_key(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("admin")
         .to_string();
+    let client_ip = req
+        .headers()
+        .get("x-aegis-client-ip")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
     let request_id = req
         .headers()
         .get("x-request-id")
@@ -3969,6 +4036,7 @@ pub(crate) async fn handle_risk_reset_key(
         csrf_header: csrf_header.as_deref(),
         actor: &actor,
         request_id: &request_id,
+        client_ip: &client_ip,
         resource,
         action: "risk_reset_key",
         reason: "operator clears one composite-key risk bucket",
@@ -4295,6 +4363,7 @@ pub(crate) async fn handle_detectors_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/detectors",
         action: "detector_mask_set",
         reason: "operator updated detector mask",
@@ -4526,6 +4595,7 @@ pub(crate) async fn handle_access_list_post(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: &resource,
         action: &action,
         reason: "operator added access-list entry",
@@ -4618,6 +4688,7 @@ pub(crate) async fn handle_access_list_delete(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: &resource,
         action: &action,
         reason: "operator removed access-list entry",
@@ -4756,6 +4827,7 @@ pub(crate) async fn handle_mtls_sans_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/zero-trust/downstream/sans",
         action: "zero_trust_sans_set",
         reason: "operator updated allowed SAN list",
@@ -4822,6 +4894,7 @@ pub(crate) async fn handle_mtls_sans_delete(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: &resource,
         action: "zero_trust_sans_removed",
         reason: "operator removed allowed SAN",
@@ -4993,6 +5066,7 @@ pub(crate) async fn handle_tier_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: &resource,
         action: "tier_set",
         reason: "operator updated tier",
@@ -5212,6 +5286,7 @@ pub(crate) async fn handle_ai_enabled_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/ai/enabled",
         action: "ai_enabled_put",
         reason: if patch.enabled {
@@ -5353,6 +5428,7 @@ pub(crate) async fn handle_ai_reload_post(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/ai/reload",
         action: "ai_model_reload",
         reason: "operator hot-reloaded the AI model",
@@ -5504,6 +5580,7 @@ pub(crate) async fn handle_ai_confidence_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/ai/confidence",
         action: "ai_confidence_put",
         reason: "operator adjusted AI confidence_threshold",
@@ -5723,6 +5800,7 @@ pub(crate) async fn handle_response_filter_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/response-filter",
         action: "response_filter_put",
         reason: "operator updated response-filter rungs",
@@ -5998,6 +6076,7 @@ where
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: &resource,
         action: "route_upsert",
         reason: "operator upserted route",
@@ -6170,6 +6249,7 @@ where
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: &resource,
         action: "route_delete",
         reason: "operator removed route",
@@ -6310,6 +6390,7 @@ pub(crate) async fn handle_ddos_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/gates/ddos",
         action: "ddos_set",
         reason: "operator updated DDoS gate thresholds",
@@ -6416,6 +6497,7 @@ where
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/gates/ddos/mode",
         action: "ddos_mode_set",
         reason: "operator toggled DDoS gate enforce/log-only",
@@ -6533,6 +6615,7 @@ pub(crate) async fn handle_rate_limit_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/rate-limit",
         action: "rate_limit_set",
         reason: "operator updated per-IP rate-limit config",
@@ -6652,6 +6735,7 @@ pub(crate) async fn handle_strikes_put(
         csrf_header: pre.csrf_header.as_deref(),
         actor: &pre.actor,
         request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
         resource: "/api/gates/strikes",
         action: "strikes_set",
         reason: "operator updated Strike-Block gate config",

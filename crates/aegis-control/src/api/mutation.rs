@@ -105,6 +105,10 @@ pub struct MutationRequest<'a> {
     pub resource: &'a str,
     pub action: &'a str,
     pub reason: &'a str,
+    /// The actor's client IP as observed at the admin edge (RC-5a / V9).
+    /// The proxy admin listener fills this from the TCP peer; empty when
+    /// unknown. Flows onto the durable audit event's top-level `client_ip`.
+    pub client_ip: &'a str,
 }
 
 /// Outcome bundle: the mutator's return value plus the chain entry
@@ -212,7 +216,7 @@ impl AuditedMutate {
             action: req.action.into(),
             reason: req.reason.into(),
             diff: serde_json::json!({ "before": before, "after": after }),
-            client_ip: String::new(),
+            client_ip: req.client_ip.into(),
         };
         let event: AuditEvent = entry.to_audit_event(req.request_id);
         let chain_entry = {
@@ -266,7 +270,7 @@ impl AuditedMutate {
             action: req.action.into(),
             reason: req.reason.into(),
             diff: serde_json::json!({ "before": before, "after": after }),
-            client_ip: String::new(),
+            client_ip: req.client_ip.into(),
         };
         let event: AuditEvent = entry.to_audit_event(req.request_id);
         let chain_entry = {
@@ -294,6 +298,7 @@ mod tests {
             resource: "/api/rules/r1",
             action: "update",
             reason: "test",
+            client_ip: "198.51.100.9",
         }
     }
 
@@ -345,6 +350,27 @@ mod tests {
             || Ok::<(), Boom>(()),
         );
         assert!(matches!(out.unwrap_err(), MutationError::CsrfMismatch));
+    }
+
+    #[test]
+    fn apply_stamps_request_client_ip_on_emitted_event() {
+        // RC-5a / V9 end-to-end: the IP on MutationRequest reaches the
+        // durable AuditEvent, not just the AdminChangeEntry. `req()` sets
+        // client_ip = "198.51.100.9".
+        let bus = AuditBus::new(8);
+        let mut rx = bus.subscribe();
+        let m = AuditedMutate::new(bus);
+        let r = req("PUT", Some("tok"), Some("tok"));
+        let _ = m
+            .apply(
+                &r,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                || Ok::<(), Boom>(()),
+            )
+            .unwrap();
+        let ev = rx.try_recv().expect("event emitted");
+        assert_eq!(ev.client_ip, "198.51.100.9");
     }
 
     #[test]
@@ -475,6 +501,7 @@ mod tests {
             resource: "/api/blacklist",
             action: "add",
             reason: "manual block",
+            client_ip: "192.0.2.11",
         };
         let _ = m
             .apply(
@@ -540,6 +567,7 @@ mod tests {
                     resource: "/api/rules/r1",
                     action: "update",
                     reason: "concurrent",
+                    client_ip: "192.0.2.22",
                 };
                 mc.apply(
                     &r,
@@ -582,6 +610,7 @@ mod tests {
             resource: "/api/tiers/high",
             action: "update",
             reason: "bump rate",
+            client_ip: "192.0.2.33",
         };
         let before = serde_json::json!({"rate_limit_rps": 100});
         let after = serde_json::json!({"rate_limit_rps": 250});
