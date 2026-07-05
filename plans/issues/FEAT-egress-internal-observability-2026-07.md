@@ -20,7 +20,7 @@ Claiming "egress inspection" beyond the response path would be exactly the lette
 
 | Layer | Visibility today | Opportunity |
 |---|---|---|
-| **Response path** (origin → client through WAF) | Response-outcome channel shipped (AC track); AI response filter exists (`response_filter_put`, `admin_mutate.rs:5726`); response-header strip | **EG-2: response/exfil inspection** — the real, in-path win |
+| **Response path** (origin → client through WAF) | Response-outcome channel shipped (AC track — status-only payload today); response filter exists (regex scrub, 4 runtime rungs incl. body-frame pass — `handle_response_filter_put`, `admin_mutate.rs:5620`); response-header strip wired (buffered path only) | **EG-2: response/exfil inspection** — the real, in-path win |
 | **WAF's own internal flows** (fleet channel, Redis, etcd, upstream dials) | Health signals, SLO producers, zero_trust upstream identity | **EG-3: internal observability** — mostly wiring existing signals into one surface |
 | **Origin-initiated egress** | None (out of path) | Out of scope; document the boundary + integration point (e.g. export to a NDR/egress proxy) — do not build |
 

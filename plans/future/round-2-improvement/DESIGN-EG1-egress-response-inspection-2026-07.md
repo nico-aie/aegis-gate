@@ -99,11 +99,21 @@ Hard rules for all three:
 ## 5. EG-3 — "Internal Flows" dashboard page (aggregation only)
 
 One page, four cards, all from existing signals — **no new collectors in v1**:
-fleet-channel health/latency; Redis/etcd round-trip + error rate + writability
-(the readiness probe signals); upstream dial outcomes by zone (passive-health +
-zone-routing metric); config-plane propagation lag (active vs per-node applied
-version). Alert hooks ride the existing multi-burn engine — no new alerting
-system.
+fleet-channel health/latency (fleet snapshots: per-node `last_seen_ms` staleness +
+latency histograms); Redis/etcd round-trip + error rate + writability
+(`waf_state_backend_ops_total{op,outcome}` via `MeteredStateBackend` + readiness
+signals — etcd has no dedicated health surface, it rides the same metric);
+upstream dial outcomes by zone (passive-health `MemberHealth` + `/api/upstreams`
+zone rollup + `waf_upstream_zone_routing_total`); config-plane propagation lag.
+
+**Re-verification correction (2026-07-05):** the propagation-lag card is the one
+place "data exists" was overstated — there is **no per-node applied-config-version
+signal today** (`/api/about` is global build info; fleet snapshots carry no config
+epoch). Options: (a) piggyback the active config version onto the existing fleet
+snapshot each node already publishes (one field, not a new collector — preferred),
+or (b) drop the card from v1. Owner picks at EG-3 kickoff. mTLS card note: the
+`/api/mtls/*` identity tracker is **downstream** (client) identity; upstream
+zero_trust status is thin — surface it via member health, don't promise more.
 
 ## 6. Decision points for the owner
 
