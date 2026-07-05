@@ -618,6 +618,12 @@ pub(crate) async fn handle_admin_request(
     if method == hyper::Method::GET && path == "/api/config/version" {
         return handle_config_version_get(services).await;
     }
+    // EG-3 (2026-07-05) — config-plane propagation-lag roster for the
+    // Internal Flows page. Async so it can read the per-node applied-version
+    // map from the state backend.
+    if method == hyper::Method::GET && path == "/api/config/applied" {
+        return handle_config_applied_get(services).await;
+    }
 
     admin_router(req, cfg, readiness, startup, metrics, services)
 }
@@ -734,6 +740,50 @@ pub(crate) fn config_version_body(
     serde_json::Value::Object(obj)
 }
 
+/// EG-3 (2026-07-05) — the config-plane **propagation-lag** view for the
+/// Internal Flows page. Renders the cluster's current activated version
+/// alongside each live node's applied version and its lag (`current -
+/// applied`), plus the fleet `max_lag` and a `converged` flag. This is pure
+/// aggregation of `ConfigStore::applied_map()` — the per-node applied-version
+/// roster that already exists (EG-1 §6.4 assumed no such signal existed; it
+/// does, so we surface it directly rather than adding a redundant field to the
+/// fleet snapshot). `now_ms` injected for testability.
+pub(crate) fn config_applied_body(
+    current_version: Option<u64>,
+    applied: Vec<(String, u64)>,
+    now_ms: i64,
+) -> serde_json::Value {
+    let mut roster = applied;
+    roster.sort_by(|a, b| a.0.cmp(&b.0));
+    // Lag is measured against the current activated version; if that's
+    // unknown (no backend), treat every node as its own reference → lag 0.
+    let current = current_version.unwrap_or(0);
+    let mut max_lag = 0u64;
+    let nodes: Vec<serde_json::Value> = roster
+        .iter()
+        .map(|(node, applied_v)| {
+            let lag = current.saturating_sub(*applied_v);
+            max_lag = max_lag.max(lag);
+            serde_json::json!({
+                "node": node,
+                "applied_version": applied_v,
+                "lag": lag,
+            })
+        })
+        .collect();
+
+    let mut obj = serde_json::Map::new();
+    if let Some(v) = current_version {
+        obj.insert("current_version".into(), v.into());
+    }
+    obj.insert("node_count".into(), (nodes.len() as u64).into());
+    obj.insert("nodes".into(), serde_json::Value::Array(nodes));
+    obj.insert("max_lag".into(), max_lag.into());
+    obj.insert("converged".into(), (max_lag == 0).into());
+    obj.insert("as_of_ms".into(), now_ms.into());
+    serde_json::Value::Object(obj)
+}
+
 /// This node's applied config-doc version: the version the config-plane
 /// watcher last recorded after `writer.apply()` (`config:waf:applied:<node>`).
 /// `None` when no state backend / roster is wired (single-node, test
@@ -766,6 +816,31 @@ async fn handle_config_version_get(
         services.mutate.chain_len() as u64,
         applied_version,
         &node,
+        chrono::Utc::now().timestamp_millis(),
+    );
+    json_body_response(200, body.to_string(), "private, no-store")
+}
+
+/// EG-3 (2026-07-05) — `GET /api/config/applied` — the config-plane
+/// propagation-lag roster for the Internal Flows page. Reads the current
+/// activated version + every live node's applied version from the config
+/// store (the same read-side store `/api/config/version` uses). Empty roster
+/// / omitted `current_version` when no backend is wired (single-node / test
+/// bundles) — the page then shows a single-node "converged" state.
+async fn handle_config_applied_get(
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let (current_version, applied) = match config_store_for(services) {
+        Some(store) => {
+            let current = store.current_version().await.ok();
+            let applied = store.applied_map().await.unwrap_or_default();
+            (current, applied)
+        }
+        None => (None, Vec::new()),
+    };
+    let body = config_applied_body(
+        current_version,
+        applied,
         chrono::Utc::now().timestamp_millis(),
     );
     json_body_response(200, body.to_string(), "private, no-store")
@@ -1803,6 +1878,53 @@ mod tests {
         let v = config_version_body(3, None, "", 0);
         assert_eq!(v["audit_chain_len"], 3);
         assert!(v.get("applied_version").is_none());
+    }
+
+    // EG-3 (2026-07-05) — config-plane propagation-lag body.
+    #[test]
+    fn config_applied_body_computes_per_node_lag_and_max() {
+        use super::config_applied_body;
+        let v = config_applied_body(
+            Some(10),
+            vec![("node-a".into(), 10), ("node-b".into(), 8), ("node-c".into(), 9)],
+            1_700_000_000_000,
+        );
+        assert_eq!(v["current_version"], 10);
+        assert_eq!(v["node_count"], 3);
+        // Max lag = 10 - 8 = 2 (node-b is the laggard) → not converged.
+        assert_eq!(v["max_lag"], 2);
+        assert_eq!(v["converged"], false);
+        let nodes = v["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 3);
+        // Nodes are sorted by node id for a stable render.
+        assert_eq!(nodes[0]["node"], "node-a");
+        assert_eq!(nodes[0]["applied_version"], 10);
+        assert_eq!(nodes[0]["lag"], 0);
+        assert_eq!(nodes[1]["node"], "node-b");
+        assert_eq!(nodes[1]["lag"], 2);
+    }
+
+    #[test]
+    fn config_applied_body_converged_when_all_current() {
+        use super::config_applied_body;
+        let v = config_applied_body(
+            Some(5),
+            vec![("node-a".into(), 5), ("node-b".into(), 5)],
+            0,
+        );
+        assert_eq!(v["max_lag"], 0);
+        assert_eq!(v["converged"], true);
+    }
+
+    #[test]
+    fn config_applied_body_handles_no_backend() {
+        use super::config_applied_body;
+        // Single-node / no backend: current omitted, empty roster, converged.
+        let v = config_applied_body(None, vec![], 0);
+        assert!(v.get("current_version").is_none());
+        assert_eq!(v["node_count"], 0);
+        assert_eq!(v["max_lag"], 0);
+        assert_eq!(v["converged"], true);
     }
 
     #[test]
