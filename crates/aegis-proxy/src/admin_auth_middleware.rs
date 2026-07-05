@@ -640,4 +640,139 @@ mod tests {
         let r = req(Method::GET, "/dashboard/rules?filter=ai", &[]);
         assert_eq!(request_path_with_query(&r), "/dashboard/rules?filter=ai");
     }
+
+    // ---- TOTP-6 — enrollment-only sessions in a browser -----------------
+    //
+    // A session that passed the password check but hasn't confirmed its
+    // factor is enrollment-only. When such a session NAVIGATES (GET /,
+    // Accept: text/html) it must be bounced to /admin/login — the page
+    // that hosts the QR flow — not shown the raw JSON 403 that fetch()
+    // clients get. Mirrors the existing unauthenticated-navigation
+    // redirect (`wants_html_navigation`).
+
+    async fn enrollment_only_fixture() -> (
+        Arc<AuthSessionStore>,
+        aegis_core::config::WafConfig,
+        String,
+    ) {
+        let key = [7u8; 32];
+        let sessions = Arc::new(AuthSessionStore::new(key));
+        let (_, cookie) = sessions
+            .create_for_user("liud", "127.0.0.1", "ua", false)
+            .await
+            .expect("session create");
+        let cfg = aegis_core::load_config_str(
+            r#"
+listeners:
+  data: [{ bind: "0.0.0.0:443" }]
+  admin: { bind: "127.0.0.1:9443" }
+routes:
+  - { id: catch-all, path: "/", upstream: api }
+upstreams:
+  api: { members: [{ addr: "127.0.0.1:3000" }] }
+state: { backend: in_memory }
+"#,
+        )
+        .expect("minimal cfg parses");
+        (sessions, cfg, cookie)
+    }
+
+    #[tokio::test]
+    async fn enrollment_only_browser_navigation_redirects_to_login() {
+        let (sessions, cfg, cookie) = enrollment_only_fixture().await;
+        let r = req(
+            Method::GET,
+            "/",
+            &[
+                ("cookie", &format!("aegis_session={cookie}")),
+                ("accept", "text/html,application/xhtml+xml"),
+                ("sec-fetch-dest", "document"),
+            ],
+        );
+        match admit(&r, loopback_peer(), &cfg, &sessions).await {
+            Admit::Denied(resp) => {
+                assert_eq!(
+                    resp.status(),
+                    StatusCode::SEE_OTHER,
+                    "browser navigation must redirect, not dump JSON",
+                );
+                let loc = resp
+                    .headers()
+                    .get(hyper::header::LOCATION)
+                    .and_then(|h| h.to_str().ok())
+                    .unwrap_or("");
+                assert!(
+                    loc.starts_with("/admin/login"),
+                    "redirect must land on the login page (QR flow host): {loc}",
+                );
+            }
+            _ => panic!("enrollment-only navigation must be Denied(redirect)"),
+        }
+    }
+
+    #[tokio::test]
+    async fn enrollment_only_api_fetch_still_gets_json_403() {
+        let (sessions, cfg, cookie) = enrollment_only_fixture().await;
+        let r = req(
+            Method::GET,
+            "/api/stats",
+            &[
+                ("cookie", &format!("aegis_session={cookie}")),
+                ("accept", "application/json"),
+            ],
+        );
+        match admit(&r, loopback_peer(), &cfg, &sessions).await {
+            Admit::Denied(resp) => {
+                assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+                assert_eq!(
+                    resp.headers()
+                        .get("x-waf-rule-id")
+                        .and_then(|h| h.to_str().ok()),
+                    Some("totp_enrollment_required"),
+                );
+            }
+            _ => panic!("enrollment-only API fetch must stay a JSON 403"),
+        }
+    }
+
+    #[tokio::test]
+    async fn enrollment_only_session_reaches_the_enroll_endpoint() {
+        let (sessions, cfg, cookie) = enrollment_only_fixture().await;
+        let r = req(
+            Method::POST,
+            "/api/admin/totp/enroll",
+            &[
+                ("cookie", &format!("aegis_session={cookie}; aegis_csrf=tok")),
+                ("x-csrf-token", "tok"),
+            ],
+        );
+        match admit(&r, loopback_peer(), &cfg, &sessions).await {
+            Admit::Authenticated(id) => assert_eq!(id.actor, "liud"),
+            _ => panic!("the enroll endpoint must admit enrollment-only sessions"),
+        }
+    }
+
+    #[tokio::test]
+    async fn fully_verified_session_navigates_without_redirect() {
+        let (sessions, cfg, _) = enrollment_only_fixture().await;
+        let (_, cookie) = sessions
+            .create_for_user("liud", "127.0.0.1", "ua", true)
+            .await
+            .expect("session create");
+        let r = req(
+            Method::GET,
+            "/",
+            &[
+                ("cookie", &format!("aegis_session={cookie}")),
+                ("accept", "text/html"),
+            ],
+        );
+        assert!(
+            matches!(
+                admit(&r, loopback_peer(), &cfg, &sessions).await,
+                Admit::Authenticated(_),
+            ),
+            "verified sessions must not be redirected",
+        );
+    }
 }
