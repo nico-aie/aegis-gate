@@ -1974,6 +1974,9 @@ impl BootstrapConfig {
         // session. Previously this was only a `warn!` at the accept loop
         // (fail-open). Fail closed at config-load instead.
         validate_admin_csrf_secret(&self.admin.dashboard_auth)?;
+        // TOTP-1 (TF-4) — multi-admin `accounts` sanity: reject the
+        // ambiguous legacy+accounts combination and malformed usernames.
+        validate_admin_accounts(&self.admin.dashboard_auth)?;
         // P7: load_mode thresholds + hysteresis must be coherent.
         self.load_mode.validate()?;
         // Layer-1: runtime sizing constraints (workers >= 2, sane
@@ -2152,7 +2155,13 @@ impl RuntimeConfig {
 /// secret is empty. A short-but-non-empty secret is not a known constant, so
 /// it stays a runtime `warn!` (see `accept.rs`) rather than a hard fail.
 pub(crate) fn validate_admin_csrf_secret(auth: &DashboardAuthConfig) -> crate::Result<()> {
-    let login_enabled = !auth.password_hash_ref.trim().is_empty();
+    // TOTP-1: login is also reachable when any `accounts` entry carries a
+    // password hash — the accounts path must not dodge CTL-02.
+    let login_enabled = !auth.password_hash_ref.trim().is_empty()
+        || auth
+            .accounts
+            .iter()
+            .any(|a| !a.password_hash_ref.trim().is_empty());
     if login_enabled && auth.csrf_secret_ref.trim().is_empty() {
         return Err(crate::error::WafError::Config(
             "admin.dashboard_auth.csrf_secret is empty while admin login is enabled \
@@ -2161,6 +2170,43 @@ pub(crate) fn validate_admin_csrf_secret(auth: &DashboardAuthConfig) -> crate::R
              csrf_secret, identical on every node (use a ${secret:...} ref in prod)."
                 .into(),
         ));
+    }
+    Ok(())
+}
+
+/// TOTP-1 (TF-4) — sanity for the multi-admin `accounts` block. Rejects the
+/// ambiguous legacy+accounts combination (which identity set is live?),
+/// empty usernames, and duplicate usernames (the login lookup would only
+/// ever resolve the first, silently orphaning the second).
+pub(crate) fn validate_admin_accounts(auth: &DashboardAuthConfig) -> crate::Result<()> {
+    if auth.accounts.is_empty() {
+        return Ok(());
+    }
+    let legacy_set = !auth.password_hash_ref.trim().is_empty()
+        || !auth.totp_secret_b32.trim().is_empty()
+        || auth.totp_enabled;
+    if legacy_set {
+        return Err(crate::error::WafError::Config(
+            "admin.dashboard_auth sets BOTH the legacy single-admin fields \
+             (password_hash / totp_secret_b32 / totp_enabled) and `accounts` — \
+             ambiguous. Move the legacy admin into an `accounts:` entry \
+             (username: admin) and clear the top-level fields."
+                .into(),
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for account in &auth.accounts {
+        let name = account.username.trim();
+        if name.is_empty() {
+            return Err(crate::error::WafError::Config(
+                "admin.dashboard_auth.accounts entry has an empty username".into(),
+            ));
+        }
+        if !seen.insert(name) {
+            return Err(crate::error::WafError::Config(format!(
+                "admin.dashboard_auth.accounts has duplicate username `{name}`",
+            )));
+        }
     }
     Ok(())
 }
@@ -6296,6 +6342,56 @@ pub struct DashboardAuthConfig {
     /// streaming cap) and tracked as a follow-up.
     #[serde(default = "default_admin_max_body_bytes")]
     pub max_request_body_bytes: u64,
+    /// TOTP-1 (TF-4, 2026-07-05) — multiple named admin accounts, each
+    /// with its own password hash + TOTP state (equal privilege — no
+    /// RBAC; see `plans/issues/FEAT-totp-google-authenticator-2026-07.md`).
+    /// The legacy top-level `password_hash_ref`/`totp_*` fields remain a
+    /// single-admin shorthand: at load they synthesize one account named
+    /// `admin` (see [`DashboardAuthConfig::effective_accounts`]). Setting
+    /// BOTH the legacy fields and `accounts` is rejected at validation —
+    /// ambiguous configs must not guess.
+    #[serde(default)]
+    pub accounts: Vec<AdminAccountConfig>,
+}
+
+/// One named admin account (TOTP-1 / TF-4). All accounts are
+/// equal-privilege admins; authorization tiers are the RBAC track's
+/// problem, not this struct's.
+#[derive(Clone, Debug, Deserialize)]
+pub struct AdminAccountConfig {
+    pub username: String,
+    /// argon2id hash (mint via `waf admin set-password` /
+    /// `waf admin create-account`).
+    pub password_hash_ref: String,
+    /// RFC 4648 base32 TOTP secret — same semantics as the legacy
+    /// top-level `totp_secret_b32`. Empty when the account enrolls at
+    /// first login instead (runtime store overlay).
+    #[serde(default)]
+    pub totp_secret_b32: String,
+    #[serde(default)]
+    pub totp_enabled: bool,
+}
+
+impl DashboardAuthConfig {
+    /// The account set the auth runtime boots from. `accounts` wins when
+    /// present; otherwise a non-empty legacy `password_hash_ref` (or a
+    /// legacy TOTP secret) synthesizes the single account `admin` so
+    /// existing YAMLs keep booting unchanged. Empty ⇒ login disabled
+    /// (existing behaviour for the empty-password default).
+    pub fn effective_accounts(&self) -> Vec<AdminAccountConfig> {
+        if !self.accounts.is_empty() {
+            return self.accounts.clone();
+        }
+        if self.password_hash_ref.trim().is_empty() && self.totp_secret_b32.trim().is_empty() {
+            return Vec::new();
+        }
+        vec![AdminAccountConfig {
+            username: "admin".into(),
+            password_hash_ref: self.password_hash_ref.clone(),
+            totp_secret_b32: self.totp_secret_b32.clone(),
+            totp_enabled: self.totp_enabled,
+        }]
+    }
 }
 
 fn default_session_idle() -> Duration {
@@ -6330,6 +6426,7 @@ impl Default for DashboardAuthConfig {
             lockout: LockoutConfig::default(),
             allow_ca_upload: false,
             max_request_body_bytes: default_admin_max_body_bytes(),
+            accounts: Vec::new(),
         }
     }
 }

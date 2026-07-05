@@ -524,23 +524,16 @@ pub(crate) async fn admin_accept_loop(
         ),
     );
     let login_rate_limiter = aegis_control::api::login::build_rate_limiter(auth);
-    let admin_identity = Arc::new(aegis_control::api::login::AdminIdentity {
-        // Single-admin model: hard-code "admin" until RBAC lands.
-        user: "admin".into(),
-        password_hash: auth.password_hash_ref.clone(),
-        // 2026-05-17 F-CRITICAL-003 — TOTP fields plumbed from cfg
-        // so `api::login::authenticate` runs the second-factor step
-        // when `dashboard_auth.totp_enabled = true`.
-        totp_secret_b32: auth.totp_secret_b32.clone(),
-        totp_enabled: auth.totp_enabled,
-        // 2026-05-17 F-HIGH-admin — TOTP replay guard. One per
-        // identity (single-admin model = one global). Default
-        // resets the counter to 0 at boot, which is correct:
-        // every previously-consumed code from before this WAF
-        // started is implicitly accepted by zero-init and the
-        // guard begins tracking from the first verify.
-        ..Default::default()
-    });
+    // TOTP-1 (TF-4) — the full named-account set. Legacy single-admin
+    // YAMLs (top-level `password_hash_ref`/`totp_*`) fold into one
+    // `admin` entry via `effective_accounts()`; the `accounts:` block
+    // supplies N named admins, each with its own password hash, TOTP
+    // state, and replay guard (per-principal counter monotonicity —
+    // guards zero-init at boot, correct: tracking starts at the first
+    // verify).
+    let admin_directory = Arc::new(
+        aegis_control::api::login::AdminDirectory::from_config(auth),
+    );
     let session_idle_seconds = auth.session_ttl_idle.as_secs();
 
     // Leaderless roster (Phase 1) — build a shared `RosterView`
@@ -653,7 +646,7 @@ pub(crate) async fn admin_accept_loop(
         verbosity,
         auth_sessions,
         login_rate_limiter,
-        admin_identity,
+        admin_directory,
         session_idle_seconds,
         Some(Arc::clone(&roster_view)),
         Arc::clone(&tiers),

@@ -105,7 +105,7 @@ pub(crate) async fn process_admin_login(
     let body_str = std::str::from_utf8(body_bytes).unwrap_or("");
     let outcome = aegis_control::api::login::authenticate(
         body_str,
-        &services.admin_identity,
+        &services.admin_directory,
         &services.login_rate_limiter,
         &services.auth_sessions,
         &services.sessions,
@@ -120,10 +120,10 @@ pub(crate) async fn process_admin_login(
     let ip = peer.ip().to_string();
     use aegis_control::api::login::LoginOutcome;
     match &outcome {
-        LoginOutcome::Ok { .. } => {
-            services
-                .login_auditor
-                .record_success(&ip, &services.admin_identity.user);
+        LoginOutcome::Ok { user, .. } => {
+            // TOTP-1 — audit the account that actually authenticated,
+            // not a hard-coded single-admin name.
+            services.login_auditor.record_success(&ip, user);
         }
         LoginOutcome::Unauthorized { .. } => {
             services
@@ -149,6 +149,7 @@ pub(crate) async fn process_admin_login(
             session_cookie,
             csrf_cookie,
             body,
+            ..
         } => Response::builder()
             .status(200)
             .header("content-type", "application/json; charset=utf-8")

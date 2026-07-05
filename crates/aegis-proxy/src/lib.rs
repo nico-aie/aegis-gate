@@ -391,17 +391,17 @@ state:
         use aegis_control::admin_auth::password::hash_password;
         use aegis_control::admin_auth::rate_limit::LoginRateLimiter;
         use aegis_control::admin_auth::session::SessionStore as AuthSessionStore;
-        use aegis_control::api::login::{derive_session_key, AdminIdentity};
+        use aegis_control::api::login::{derive_session_key, AdminDirectory, AdminIdentity};
 
         let bus = aegis_core::AuditBus::new(8);
         let pool = std::sync::Arc::new(|| {
             aegis_control::api::upstreams::PoolHealthSnapshot { pools: Vec::new(), ..Default::default() }
         });
-        let identity = std::sync::Arc::new(AdminIdentity {
+        let identity = std::sync::Arc::new(AdminDirectory::single(AdminIdentity {
             user: "admin".into(),
             password_hash: hash_password(password).unwrap(),
             ..AdminIdentity::default()
-        });
+        }));
         let key = derive_session_key("test-secret-32b");
         let auth_sessions = std::sync::Arc::new(AuthSessionStore::new(key));
         let rate_limiter =

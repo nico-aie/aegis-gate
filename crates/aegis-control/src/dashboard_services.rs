@@ -27,7 +27,7 @@ use crate::api::{
     audit::{AuditHandler, AuditRing},
     blacklist::AccessListStore,
     filters::{FilterCatalogue, FiltersHandler},
-    login::AdminIdentity,
+    login::AdminDirectory,
     mutation::AuditedMutate,
     routes::RoutesHandler,
     rules::{RuleStats, RuleStore},
@@ -97,10 +97,11 @@ pub struct DashboardServices {
     /// list. F-T1 wires both: login creates an entry in each.
     pub auth_sessions: Arc<AuthSessionStore>,
     pub login_rate_limiter: Arc<LoginRateLimiter>,
-    /// Single configured admin identity (until RBAC lands). The
-    /// proxy reads `cfg.admin.dashboard_auth.password_hash_ref`
-    /// and builds this once at boot.
-    pub admin_identity: Arc<AdminIdentity>,
+    /// TOTP-1 (TF-4) — the named admin account set the login handler
+    /// resolves against. The proxy builds it once at boot from
+    /// `cfg.admin.dashboard_auth` (`AdminDirectory::from_config`);
+    /// legacy single-admin YAMLs fold into one `admin` entry.
+    pub admin_directory: Arc<AdminDirectory>,
     /// AU-1 — auth audit emitter (login_success / login_failure /
     /// logout events with per-IP flood aggregation).
     pub login_auditor: Arc<crate::api::login_audit::LoginAuditor>,
@@ -401,7 +402,7 @@ impl DashboardServices {
         let auth_sessions = Arc::new(AuthSessionStore::new([0u8; 32]));
         let login_rate_limiter =
             Arc::new(LoginRateLimiter::new(Default::default()));
-        let admin_identity = Arc::new(AdminIdentity::default());
+        let admin_directory = Arc::new(AdminDirectory::default());
         Self::spawn_with_mask(
             bus,
             pool_snapshot,
@@ -413,7 +414,7 @@ impl DashboardServices {
             SharedVerbosity::default(),
             auth_sessions,
             login_rate_limiter,
-            admin_identity,
+            admin_directory,
             1800,
         )
     }
@@ -434,7 +435,7 @@ impl DashboardServices {
         verbosity: SharedVerbosity,
         auth_sessions: Arc<AuthSessionStore>,
         login_rate_limiter: Arc<LoginRateLimiter>,
-        admin_identity: Arc<AdminIdentity>,
+        admin_directory: Arc<AdminDirectory>,
         session_idle_seconds: u64,
     ) -> (Self, tokio::task::JoinHandle<()>) {
         Self::spawn_with_mask_and_roster(
@@ -448,7 +449,7 @@ impl DashboardServices {
             verbosity,
             auth_sessions,
             login_rate_limiter,
-            admin_identity,
+            admin_directory,
             session_idle_seconds,
             None,
             Arc::new(TierStore::new()),
@@ -478,7 +479,7 @@ impl DashboardServices {
         verbosity: SharedVerbosity,
         auth_sessions: Arc<AuthSessionStore>,
         login_rate_limiter: Arc<LoginRateLimiter>,
-        admin_identity: Arc<AdminIdentity>,
+        admin_directory: Arc<AdminDirectory>,
         session_idle_seconds: u64,
         roster_view: Option<Arc<crate::api::tracking::RosterView>>,
         // 2026-05-27 (config-plane fold-toggles) — the TierStore is now
@@ -649,7 +650,7 @@ impl DashboardServices {
                 verbosity,
                 auth_sessions,
                 login_rate_limiter,
-                admin_identity,
+                admin_directory,
                 login_auditor: Arc::new(crate::api::login_audit::LoginAuditor::new(
                     bus_handle.clone(),
                 )),
@@ -1158,7 +1159,7 @@ mod tests {
             SharedVerbosity::default(),
             Arc::new(AuthSessionStore::new([0u8; 32])),
             Arc::new(LoginRateLimiter::new(Default::default())),
-            Arc::new(AdminIdentity::default()),
+            Arc::new(AdminDirectory::default()),
             1800,
         );
 
@@ -1233,7 +1234,7 @@ mod tests {
             SharedVerbosity::default(),
             Arc::new(AuthSessionStore::new([0u8; 32])),
             Arc::new(LoginRateLimiter::new(Default::default())),
-            Arc::new(AdminIdentity::default()),
+            Arc::new(AdminDirectory::default()),
             1800,
         );
 

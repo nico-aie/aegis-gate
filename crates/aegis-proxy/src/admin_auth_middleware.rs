@@ -386,13 +386,11 @@ async fn try_session_auth(
 ) -> Option<Identity> {
     let cookie = extract_cookie(req, "aegis_session")?;
     let record = sessions.validate(cookie).await?;
-    let _ = record; // SessionRecord doesn't carry user_id yet
-    // Single-admin model: every session belongs to "admin" until
-    // RBAC lands. When multi-user auth ships, SessionRecord will
-    // gain a `user_id` field and this hard-coded literal goes
-    // away.
+    // TOTP-1 (TF-4) — the session record carries the account it was
+    // issued to (multi-admin model); the audit chain's `actor` is that
+    // username. Pre-multi-account records serde-default to `admin`.
     Some(Identity {
-        actor: "admin".into(),
+        actor: record.user,
         scopes: Scopes::FULL,
         is_service_account: false,
     })

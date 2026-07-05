@@ -56,7 +56,11 @@ pub struct LoginResponse {
 #[derive(Clone, Debug)]
 pub enum LoginOutcome {
     /// Auth succeeded. The proxy emits 200 + the two cookies.
+    /// `user` is the authenticated account name (TOTP-1: multi-account —
+    /// the auditor must record WHICH admin logged in, not a hard-coded
+    /// `admin`).
     Ok {
+        user: String,
         session_cookie: String,
         csrf_cookie: String,
         body: String,
@@ -129,6 +133,84 @@ pub struct AdminIdentity {
     pub totp_replay_guard: std::sync::Arc<crate::admin_auth::totp::TotpReplayGuard>,
 }
 
+/// TOTP-1 (TF-4) — the set of named admin accounts the login handler
+/// resolves against. Replaces the single hard-coded `AdminIdentity` in
+/// the auth runtime; each account keeps its own password hash, TOTP
+/// state, and replay guard. All accounts are equal-privilege (no RBAC —
+/// `plans/issues/FEAT-totp-google-authenticator-2026-07.md`).
+#[derive(Clone, Debug, Default)]
+pub struct AdminDirectory {
+    accounts: Vec<std::sync::Arc<AdminIdentity>>,
+}
+
+impl AdminDirectory {
+    pub fn new(accounts: Vec<std::sync::Arc<AdminIdentity>>) -> Self {
+        Self { accounts }
+    }
+
+    /// Wrap one identity — the single-admin shorthand (tests + legacy
+    /// boot paths).
+    pub fn single(identity: AdminIdentity) -> Self {
+        Self { accounts: vec![std::sync::Arc::new(identity)] }
+    }
+
+    /// Build from the YAML account set (legacy fields already folded in
+    /// by [`aegis_core::config::DashboardAuthConfig::effective_accounts`]).
+    /// One fresh replay guard per account — counter monotonicity is a
+    /// per-principal contract.
+    pub fn from_config(auth: &aegis_core::config::DashboardAuthConfig) -> Self {
+        let accounts = auth
+            .effective_accounts()
+            .into_iter()
+            .map(|a| {
+                std::sync::Arc::new(AdminIdentity {
+                    user: a.username,
+                    password_hash: a.password_hash_ref,
+                    totp_secret_b32: a.totp_secret_b32,
+                    totp_enabled: a.totp_enabled,
+                    ..AdminIdentity::default()
+                })
+            })
+            .collect();
+        Self { accounts }
+    }
+
+    /// Resolve a submitted username. Scans the WHOLE set with a
+    /// constant-time per-name compare (no early exit) so response time
+    /// doesn't leak how much of a username prefix matched; the miss path
+    /// then runs `dummy_verify` in `authenticate` exactly like before.
+    pub fn resolve(&self, user: &str) -> Option<&std::sync::Arc<AdminIdentity>> {
+        let mut found: Option<&std::sync::Arc<AdminIdentity>> = None;
+        for account in &self.accounts {
+            if ct_eq_names(&account.user, user) {
+                found = Some(account);
+            }
+        }
+        found
+    }
+
+    pub fn accounts(&self) -> &[std::sync::Arc<AdminIdentity>] {
+        &self.accounts
+    }
+
+    /// True when at least one account has a password hash — i.e. login
+    /// is reachable at all (drain-token fallback logic keys off this).
+    pub fn login_enabled(&self) -> bool {
+        self.accounts.iter().any(|a| !a.password_hash.trim().is_empty())
+    }
+}
+
+/// Branch-free equal-length compare, same shape as `totp::ct_eq_str` —
+/// usernames aren't secret, but the resolve scan must not leak match
+/// position via timing.
+fn ct_eq_names(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 /// Authenticate one POST /admin/login attempt.
 ///
 /// Side-effects on success:
@@ -146,7 +228,7 @@ pub struct AdminIdentity {
 #[allow(clippy::too_many_arguments)]
 pub async fn authenticate(
     body: &str,
-    admin: &AdminIdentity,
+    directory: &AdminDirectory,
     rate_limiter: &LoginRateLimiter,
     sessions: &AuthSessionStore,
     dashboard_sessions: &DashboardSessionStore,
@@ -192,16 +274,22 @@ pub async fn authenticate(
         }
     }
 
-    // 2. Verify password. Unknown-user path runs dummy_verify so
-    //    response time doesn't leak account existence.
-    let ok = if req.user == admin.user {
-        verify_password(&admin.password_hash, &req.password)
-    } else {
-        dummy_verify(&req.password);
-        false
+    // 2. Resolve the account (TOTP-1: N named admins) and verify the
+    //    password. Unknown-user path runs dummy_verify so response time
+    //    doesn't leak account existence — same property as the old
+    //    single-admin compare, now per directory entry.
+    let admin = match directory.resolve(&req.user) {
+        Some(account) => account,
+        None => {
+            dummy_verify(&req.password);
+            rate_limiter.record_failure(ip, &req.user);
+            return LoginOutcome::Unauthorized {
+                body: error_body("invalid_credentials", "user or password incorrect"),
+            };
+        }
     };
 
-    if !ok {
+    if !verify_password(&admin.password_hash, &req.password) {
         rate_limiter.record_failure(ip, &req.user);
         return LoginOutcome::Unauthorized {
             body: error_body("invalid_credentials", "user or password incorrect"),
@@ -277,7 +365,12 @@ pub async fn authenticate(
     // down shared backend), FAIL the login with 503 rather than handing back a
     // cookie for a session that was never stored — that produced the silent
     // 200→401 admin lockout during the Redis hijack.
-    let (session_id, signed_session_value) = match sessions.create(ip, user_agent).await {
+    // Session is bound to the resolved account (TOTP-1) and records that
+    // this login satisfied the second factor when one was configured.
+    let (session_id, signed_session_value) = match sessions
+        .create_for_user(&admin.user, ip, user_agent, admin.totp_enabled)
+        .await
+    {
         Ok(pair) => pair,
         Err(e) => {
             tracing::error!(error = %e, ip, "admin login: session store write failed — returning 503");
@@ -315,6 +408,7 @@ pub async fn authenticate(
         session_idle_seconds,
     };
     LoginOutcome::Ok {
+        user: admin.user.clone(),
         session_cookie,
         csrf_cookie,
         body: serde_json::to_string(&body).unwrap_or_else(|_| "{}".into()),
@@ -398,16 +492,16 @@ mod tests {
     use crate::admin_auth::password::hash_password;
 
     fn fixtures() -> (
-        AdminIdentity,
+        AdminDirectory,
         Arc<LoginRateLimiter>,
         Arc<AuthSessionStore>,
         Arc<DashboardSessionStore>,
     ) {
-        let admin = AdminIdentity {
+        let admin = AdminDirectory::single(AdminIdentity {
             user: "admin".into(),
             password_hash: hash_password("aegis-test-1234").unwrap(),
             ..AdminIdentity::default()
-        };
+        });
         let rl = Arc::new(LoginRateLimiter::new(Default::default()));
         let key = derive_session_key("test-csrf-secret-32b");
         let sessions = Arc::new(AuthSessionStore::new(key));
@@ -505,7 +599,7 @@ mod tests {
             1800,
         ).await;
         let (session, csrf, body) = match outcome {
-            LoginOutcome::Ok { session_cookie, csrf_cookie, body } => {
+            LoginOutcome::Ok { session_cookie, csrf_cookie, body, .. } => {
                 (session_cookie, csrf_cookie, body)
             }
             other => panic!("expected Ok, got {other:?}"),
@@ -697,14 +791,14 @@ mod tests {
     /// that survives round-trip through real base32.
     const TEST_TOTP_SECRET_B32: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
-    fn totp_admin() -> AdminIdentity {
-        AdminIdentity {
+    fn totp_admin() -> AdminDirectory {
+        AdminDirectory::single(AdminIdentity {
             user: "admin".into(),
             password_hash: hash_password("aegis-test-1234").unwrap(),
             totp_secret_b32: TEST_TOTP_SECRET_B32.into(),
             totp_enabled: true,
             ..AdminIdentity::default()
-        }
+        })
     }
 
     fn current_totp_code(secret_b32: &str) -> String {
@@ -756,7 +850,7 @@ mod tests {
     async fn login_with_totp_enabled_accepts_current_code() {
         let (_, rl, ss, ds) = fixtures();
         let admin = totp_admin();
-        let code = current_totp_code(&admin.totp_secret_b32);
+        let code = current_totp_code(&admin.accounts()[0].totp_secret_b32);
         let body = serde_json::json!({
             "user":"admin",
             "password":"aegis-test-1234",
@@ -773,7 +867,7 @@ mod tests {
     async fn login_with_totp_disabled_ignores_totp_code() {
         // TOTP disabled — extra `totp_code` field is harmless.
         let (admin, rl, ss, ds) = fixtures();
-        assert!(!admin.totp_enabled);
+        assert!(!admin.accounts()[0].totp_enabled);
         let body = serde_json::json!({
             "user":"admin",
             "password":"aegis-test-1234",
@@ -790,13 +884,13 @@ mod tests {
         // Unauthorized as any other failure (no info leak); server
         // side a tracing::error! fires for setup-time debugging.
         let (_, rl, ss, ds) = fixtures();
-        let admin = AdminIdentity {
+        let admin = AdminDirectory::single(AdminIdentity {
             user: "admin".into(),
             password_hash: hash_password("aegis-test-1234").unwrap(),
             totp_secret_b32: "this is not base32!!!".into(),
             totp_enabled: true,
             ..AdminIdentity::default()
-        };
+        });
         let body = serde_json::json!({
             "user":"admin",
             "password":"aegis-test-1234",

@@ -35,6 +35,15 @@ pub struct SessionRecord {
     pub ip: String,
     pub ua_hash: String,
     pub totp_verified: bool,
+    /// TOTP-1 (TF-4) — which admin account this session belongs to.
+    /// Serde-defaults to `admin` so records persisted by pre-multi-account
+    /// builds still deserialize during a rolling upgrade.
+    #[serde(default = "default_session_user")]
+    pub user: String,
+}
+
+fn default_session_user() -> String {
+    "admin".into()
 }
 
 /// Session store. Records live in a shared [`StateBackend`] when one is wired
@@ -139,6 +148,20 @@ impl SessionStore {
     /// persisted to the shared backend (read-only / down Redis) so the caller
     /// can return a 503 at login instead of a cookie that will never validate.
     pub async fn create(&self, ip: &str, user_agent: &str) -> aegis_core::Result<(String, String)> {
+        self.create_for_user("admin", ip, user_agent, false).await
+    }
+
+    /// TOTP-1/2 — create a session bound to a named admin account.
+    /// `totp_verified` records whether the login satisfied the second
+    /// factor: `false` sessions are enrollment-only (the middleware
+    /// restricts them to the TOTP enroll/confirm surface).
+    pub async fn create_for_user(
+        &self,
+        user: &str,
+        ip: &str,
+        user_agent: &str,
+        totp_verified: bool,
+    ) -> aegis_core::Result<(String, String)> {
         let id = generate_id();
         let now = Utc::now();
         let ua_hash = blake3::hash(user_agent.as_bytes()).to_hex().to_string();
@@ -148,7 +171,8 @@ impl SessionStore {
             last_seen: now,
             ip: ip.into(),
             ua_hash: ua_hash.clone(),
-            totp_verified: false,
+            totp_verified,
+            user: user.into(),
         };
         self.put_record(&record).await?;
         let cookie = self.sign_cookie(&id, now.timestamp(), ip, &ua_hash);
