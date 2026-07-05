@@ -1,6 +1,6 @@
 # FEAT — Recon detection hardening + canary-path seeding (implementation)
 
-> **Type:** FEAT (from round-2 IMPROVE) · **Status:** ☐ Not started — broken out 2026-07-05 · **Owner: Nico**
+> **Type:** FEAT (from round-2 IMPROVE) · **Status:** 🔄 In progress — RC-1 MERGED to develop 2026-07-05 (PR #157) · **Owner: Nico**
 > **Track ID prefix:** `RC-<1–5>` · **Source / verification record:**
 > [IMPROVE-recon-detection-and-canary-2026-07.md](../future/round-2-improvement/IMPROVE-recon-detection-and-canary-2026-07.md)
 > — **read its §1 before touching code**: the l-tester report's headline (263 recon paths pass from
@@ -33,7 +33,7 @@ Each item = its own branch/PR, TDD RED-first, workspace zero-warning
 
 ## Wave A — unblocked now
 
-### RC-1 — seed canary paths for never-legitimate routes · **S** · START HERE
+### RC-1 — seed canary paths for never-legitimate routes · **S** · ✅ MERGED 2026-07-05 (PR #157)
 
 Canary infra exists and is verified (2026-07-04): `detectors/canary.rs`, score 100 = single-hit
 block at every tier (`scores.rs:446`), runtime-editable via `PUT /api/risk/canary-paths`
@@ -51,11 +51,11 @@ in the default config. Both prerequisites currently default OFF/empty — both m
 route). Canary is a hard block — a wrong entry is an outage.
 
 **RED tests (write first, watch fail):**
-- [ ] For **each** curated path: single request from a **fresh IP** → 403 with reason `canary`.
-- [ ] Look-alike legit paths NOT blocked: `/actuator/health`, `/actuator/info`, `/environment`,
+- [x] For **each** curated path: single request from a **fresh IP** → 403 with reason `canary`.
+- [x] Look-alike legit paths NOT blocked: `/actuator/health`, `/actuator/info`, `/environment`,
       `/gitlab`, `/id_rsa_setup_guide.html` (or similar near-misses per entry).
-- [ ] `detectors.canary.enabled: false` → curated path NOT blocked (toggle respected).
-- [ ] Config-validation/guard test: default config parses with the list present and enabled.
+- [x] `detectors.canary.enabled: false` → curated path NOT blocked (toggle respected).
+- [x] Config-validation/guard test: default config parses with the list present and enabled.
 
 **Known limits (document in the PR, don't over-engineer):** canary matches **raw, case-sensitive**
 path (`canary.rs:97-135`) — `%2egit` / `//`-prefixed variants slip through; acceptable for a
@@ -192,8 +192,9 @@ secret/RCE exposure.
 
 ## Acceptance
 
-- [ ] RC-1: curated canary set shipped + toggle on by default; single-hit block from fresh IP
-      proven per path; look-alike/legit-path negatives green.
+- [x] RC-1: curated canary set shipped + toggle on by default; single-hit block from fresh IP
+      proven per path; look-alike/legit-path negatives green. (PR #157, merged develop 2026-07-05;
+      `/actuator/env` keep-vs-drop still an open owner call — shipped keeping it.)
 - [ ] RC-5a: admin audit events carry the actor's real `client_ip` (V9 closed for real this time).
 - [ ] RC-5b: V7/V8 documented as designed; optional per-path metric decided.
 - [ ] RC-3 (Wave A): all families added with raw-form positive + negative unit tests.
