@@ -123,9 +123,10 @@ all signals from the chain.
 | Body abuse — oversize | `body_abuse` | **30** | `scores::body_abuse::OVERSIZE` |
 | Open redirect | `open_redirect` | **50** | `scores::open_redirect::OPEN_REDIRECT` |
 | Recon — scanner UA | `recon` | **50** | `scores::recon::TOOL` |
-| Recon — probe path | `recon` | **25** | `scores::recon::PATH` |
+| Recon — probe path | `recon` | **25** | `scores::recon::PATH` — generic/ambiguous probes |
+| Recon — sensitive path | `recon` | **50** | `scores::recon::SENSITIVE` (RC-2, 2026-07-05) — secret-exposure subset (`RECON_SENSITIVE_PATHS`: creds files, private keys, `.terraform/`, actuator heapdump/env/configprops/…, `wp-config`). Checked before the generic set; still < `block_at` (70) so single-hit is at most a challenge |
 | Brute force | `brute_force` | **50** (default) | `scores::brute_force::DEFAULT` (off by default; set per-route) |
-| **Canary honeypot** (path hit) | `canary` | **100** | `detectors::canary` — operator-curated honeypot paths (`risk.canary_paths`); ~0 FP → max confidence, single-hit block at every tier. Default OFF. |
+| **Canary honeypot** (path hit) | `canary` | **100** | `detectors::canary` — operator-curated honeypot paths (`risk.canary_paths`); ~0 FP → max confidence, single-hit block at every tier. **Armed by default since RC-1** (curated 11-path set; `canary_paths: []` opts out). Also matches a normalized path copy (RC-4) so `%2e`/`//`/`..` evasions still trip it. |
 | **AI classifier** (verdict = attack) | `ai` | **50** | `scores::ai::AI` — runs ONLY when no Base detector matched (short-circuit). 2026-06-16: demoted 60→50 so a lone AI verdict no longer single-blocks on the catch-all `high` tier (60); it must stack with a rule detector except on `critical` (50) |
 
 ### B. Identity / behaviour signals (configurable in YAML)
@@ -338,15 +339,33 @@ Thresholds are per-tier overridable; CRITICAL can drop `allow` to 10 and
 
 ## Canary honeypots
 
-Canary routes are paths never advertised to legitimate users. Any touch
-immediately sets the score to `max_score`. Canary paths are also recorded
-with full request context for forensics.
+Canary paths are routes never advertised to legitimate users. Any touch
+immediately sets the score to `max_score` (100) — a single-hit block at every
+tier — and is recorded with full request context for forensics. The config key
+is **`risk.canary_paths`** (each entry is an exact path or a `*` suffix glob;
+cap 256), hot-swappable at runtime via `PUT /api/risk/canary-paths`.
+
+**Armed by default since RC-1 (2026-07-05):** an absent `canary_paths` key seeds
+a curated 11-path never-legit set (`/.git/config`, `/.git/HEAD`, `/.env`,
+`/.aws/credentials`, `/.git-credentials`, `/id_rsa`, `/wp-config.php`,
+`/terraform.tfstate`, `/actuator/heapdump`, `/.ssh/id_rsa`, `/server.key`) and
+`detectors.canary` defaults ON. Set an explicit `canary_paths: []` to disarm.
+`/actuator/env` is deliberately **not** canaried — Spring Boot Admin polls it
+legitimately through the edge (recon still scores it sensitive-tier 50).
+
+**Never add a path with real traffic** — a canary hit is a hard block, so a
+wrong entry is an outage, not a false positive.
+
+**Evasion resistance (RC-4):** the matcher checks the raw path first, then a
+normalized copy (percent-decode + `//`-collapse + `.`/`..` resolution), so
+`/%2egit/config`, `//.git/config`, and `/x/../.git/config` all trip a
+`/.git/config` honeypot.
 
 ```yaml
 risk:
   thresholds: { challenge_at: 40, block_at: 80, max: 100 }
   trust_recovery: { per_hour: 30 }   # linear decay, applied on read
-  canary_routes: [ "/admin/backup", "/.git/config", "/wp-admin" ]
+  canary_paths: [ "/.git/config", "/.env", "/wp-config.php", "/admin/backup/*" ]
 ```
 
 ## State backend

@@ -442,7 +442,7 @@ default **10 each**):
 | Unknown bot class | per-request + per-IP | `risk.weights.bot_unknown` | 10 |
 | Repeat offender (history bonus) | per-IP only | `risk.weights.repeat_offender` | 10 |
 | Rule engine `RaiseRisk(delta)` | per-request + per-IP | rule-defined | n/a |
-| Canary route touch | per-request + per-IP | `risk.canary_routes` | `max_score` (immediate cap) |
+| Canary path touch | per-request + per-IP | `risk.canary_paths` | `max_score` (immediate cap) |
 
 Concrete worked examples (single-request, multi-detector combo, lifecycle
 across decay, AI tiebreaker): [`risk-scoring.md`](risk-scoring.md#worked-example-sqli-probe-lifecycle).
