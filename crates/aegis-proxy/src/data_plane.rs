@@ -157,34 +157,18 @@ pub(crate) async fn handle_data_request(
             en.observe_outcome(peer.ip(), resp.status() == hyper::StatusCode::NOT_FOUND);
         }
     }
-    // EG-2 T4 (2026-07-05) — fold the response-side error-leak risk delta
-    // (accumulated by `observe` at the body-scrub site) into the RiskTracker
-    // here, where `risk` is in scope. Per-IP keyed, matching the outcome-hook
-    // keying of `behavior_analyzer` / `enumeration`. No gate needed: `observe`
-    // only ran on the forwarded (allow) response path, so a blocked request
-    // has nothing pending and drains to 0.
-    if let Some(el) = &upstream_ctx.egress_error_leak {
-        let delta = el.drain_risk_delta(peer.ip());
-        if delta > 0 {
-            risk.record_malicious(peer.ip(), delta);
-        }
-    }
-    // EG-2 T2/T3 — fold the response-side sensitive-data risk delta
-    // (accumulated at the body-scrub site) into the RiskTracker here.
-    if let Some(sd) = &upstream_ctx.egress_sensitive {
-        let delta = sd.drain_risk_delta(peer.ip());
-        if delta > 0 {
-            risk.record_malicious(peer.ip(), delta);
-        }
-    }
+    // EG-2 T4 / T2/T3 emit their audit rows at the body-scrub site (below);
+    // per the owner decision (2026-07-05) they are OBSERVABILITY ONLY and do
+    // not feed the risk score, so there is nothing to fold in here.
+    //
     // EG-2 T5 (2026-07-05) — egress-volume accounting. Feed the forwarded
     // response's size + the client's CURRENT risk score to the volume
     // tracker; it fires only when the per-IP window volume crosses the
-    // threshold AND the client is already risk-elevated (the FP guard). Gated
-    // on `Action::Allow` so a WAF block page (small, WAF-origin) never counts
-    // as upstream egress. Size comes from Content-Length (0 for streaming /
-    // unknown size — those only track, never fire). Log/score only: a hit
-    // records a risk delta + a Detection audit row.
+    // threshold AND the client is already risk-elevated (a read-only FP guard
+    // — it never *raises* risk). Gated on `Action::Allow` so a WAF block page
+    // (small, WAF-origin) never counts as upstream egress. Size comes from
+    // Content-Length (0 for streaming / unknown size — those only track, never
+    // fire). Observability only: a hit emits a Detection audit row, no risk delta.
     if let Some(ev) = &upstream_ctx.egress_volume {
         if matches!(tag.action, aegis_control::interop::headers::Action::Allow) {
             let bytes = resp
@@ -195,7 +179,6 @@ pub(crate) async fn handle_data_request(
                 .unwrap_or(0);
             let client_risk = risk.snapshot(peer.ip()).map(|s| s.score).unwrap_or(0);
             if let Some(sig) = ev.observe(peer.ip(), bytes, client_risk) {
-                risk.record_malicious(peer.ip(), sig.score);
                 let ip = peer.ip();
                 let event = aegis_core::audit::AuditEvent {
                     schema_version: 1,
@@ -3248,16 +3231,15 @@ pub(crate) async fn forward_allow_to_upstream(
             // would rewrite to `[REDACTED]` (design §4 "observe-before-
             // redact"). Gated to 5xx + text/json inside `observe`, so a 200
             // costs a single integer compare; the whole block is skipped when
-            // `detectors.egress_error_leak` is off (`None`). Log/score only:
-            // one Detection audit row per leak + a per-IP risk delta the
-            // outcome hook folds into the RiskTracker.
+            // `detectors.egress_error_leak` is off (`None`). Observability
+            // only: one Detection audit row per leak, no risk-score impact.
             if let Some(el) = &ctx.egress_error_leak {
                 let ct = parts_out
                     .headers
                     .get(hyper::header::CONTENT_TYPE)
                     .and_then(|v| v.to_str().ok());
                 let status_code = parts_out.status.as_u16();
-                for sig in el.observe(peer_ip, status_code, ct, &body_bytes) {
+                for sig in el.scan(status_code, ct, &body_bytes) {
                     let ev = aegis_core::audit::AuditEvent {
                         schema_version: 1,
                         ts: chrono::Utc::now(),
@@ -3301,18 +3283,18 @@ pub(crate) async fn forward_allow_to_upstream(
             // PAN / secret markers the `redact_dlp` rung would rewrite to
             // `[REDACTED]` (design §"observe-before-redact"). The read is
             // content-type-gated, size-capped and 1-in-N sampled inside
-            // `observe_and_record`; the shipped redact rung is left full-body
-            // and unchanged (design §"max_scan_bytes" decision: cap the EG-2
-            // read, not the redact rung). `always_scan = false` — risk-band-
-            // forced sampling waits until the client risk band is reachable
-            // here. Emits one Detection audit row per hit; the outcome hook
-            // folds the per-IP risk delta.
+            // `observe`; the shipped redact rung is left full-body and
+            // unchanged (design §"max_scan_bytes" decision: cap the EG-2 read,
+            // not the redact rung). `always_scan = false` — risk-band-forced
+            // sampling waits until the client risk band is reachable here.
+            // Observability only: one Detection audit row per hit, no risk
+            // impact.
             if let Some(sd) = &ctx.egress_sensitive {
                 let ct = parts_out
                     .headers
                     .get(hyper::header::CONTENT_TYPE)
                     .and_then(|v| v.to_str().ok());
-                for sig in sd.observe_and_record(peer_ip, ct, &body_bytes, false) {
+                for sig in sd.observe(ct, &body_bytes, false) {
                     let ev = aegis_core::audit::AuditEvent {
                         schema_version: 1,
                         ts: chrono::Utc::now(),

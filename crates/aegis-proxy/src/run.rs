@@ -1728,28 +1728,14 @@ pub async fn run(
                     enumeration.clear();
                 }));
         }
-        // EG-2 T4 — the error-leak detector's per-IP pending-risk map is the
-        // same class of temporary client metadata; clear it on reset_state so
-        // a bench phase boundary doesn't carry a prior phase's pending delta.
-        if let Some(egress_leak) = upstream_ctx.egress_error_leak.clone() {
-            rt.control
-                .register_reset_callback(std::sync::Arc::new(move || {
-                    egress_leak.clear();
-                }));
-        }
-        // EG-2 T5 — clear the egress-volume window state on reset_state so a
-        // bench phase boundary doesn't inherit the prior phase's byte counts.
+        // EG-2 T4 / T2/T3 are stateless (per-response scan, no risk feed) —
+        // nothing to clear on reset_state. Only T5's egress-volume window
+        // carries per-IP state, so it clears so a bench phase boundary doesn't
+        // inherit the prior phase's byte counts.
         if let Some(egress_volume) = upstream_ctx.egress_volume.clone() {
             rt.control
                 .register_reset_callback(std::sync::Arc::new(move || {
                     egress_volume.clear();
-                }));
-        }
-        // EG-2 T2/T3 — clear the sensitive-data pending-risk map on reset.
-        if let Some(egress_sensitive) = upstream_ctx.egress_sensitive.clone() {
-            rt.control
-                .register_reset_callback(std::sync::Arc::new(move || {
-                    egress_sensitive.clear();
                 }));
         }
         // SC-1 — wire `POST /__waf_control/flush_cache` to actually evict the
