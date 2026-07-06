@@ -154,6 +154,22 @@ impl LoginAuditor {
         self.bus.emit(event("login_failure", reason, ip, user, None));
     }
 
+    /// TOTP-2 (TF-1) — password verified but the account has no enrolled
+    /// second factor under `require_totp`: an enrollment-only session was
+    /// issued. Distinct action from `login_success` so the committee
+    /// evidence ("password alone never granted admin access") is
+    /// readable straight off the audit chain.
+    pub fn record_enrollment_required(&self, ip: &str, user: &str) {
+        self.flush_if_closed(ip, true);
+        self.bus.emit(event(
+            "login_enrollment_required",
+            "totp_enrollment_required",
+            ip,
+            Some(user),
+            None,
+        ));
+    }
+
     /// Real logout (session revoked). Idempotent no-cookie logouts
     /// are *not* audited — nothing happened.
     pub fn record_logout(&self, ip: &str) {

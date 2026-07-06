@@ -493,11 +493,20 @@ pub(crate) async fn admin_accept_loop(
                 "admin auth: csrf_secret is short (<16 chars) — use a random ≥32-char value.",
             );
         }
-        if auth.password_hash_ref.trim().is_empty() {
+        if auth.password_hash_ref.trim().is_empty() && auth.accounts.is_empty() {
             tracing::warn!(
                 "admin auth: no admin password configured \
-                 (cfg.admin.dashboard_auth.password_hash empty) — dashboard login \
-                 is DISABLED; operators cannot sign in.",
+                 (cfg.admin.dashboard_auth.password_hash empty, no accounts) — \
+                 dashboard login is DISABLED; operators cannot sign in.",
+            );
+        }
+        // TOTP-2 (TF-1) — enforcement is the default; an explicit opt-out
+        // is a dev/CI convenience and must be loud in a real deploy.
+        if !auth.require_totp {
+            tracing::warn!(
+                "admin auth: require_totp is DISABLED (explicit opt-out) — a \
+                 password alone grants admin access. Keep this false only for \
+                 dev/CI; production deployments should enforce TOTP.",
             );
         }
     }
@@ -524,23 +533,37 @@ pub(crate) async fn admin_accept_loop(
         ),
     );
     let login_rate_limiter = aegis_control::api::login::build_rate_limiter(auth);
-    let admin_identity = Arc::new(aegis_control::api::login::AdminIdentity {
-        // Single-admin model: hard-code "admin" until RBAC lands.
-        user: "admin".into(),
-        password_hash: auth.password_hash_ref.clone(),
-        // 2026-05-17 F-CRITICAL-003 — TOTP fields plumbed from cfg
-        // so `api::login::authenticate` runs the second-factor step
-        // when `dashboard_auth.totp_enabled = true`.
-        totp_secret_b32: auth.totp_secret_b32.clone(),
-        totp_enabled: auth.totp_enabled,
-        // 2026-05-17 F-HIGH-admin — TOTP replay guard. One per
-        // identity (single-admin model = one global). Default
-        // resets the counter to 0 at boot, which is correct:
-        // every previously-consumed code from before this WAF
-        // started is implicitly accepted by zero-init and the
-        // guard begins tracking from the first verify.
-        ..Default::default()
-    });
+    // TOTP-1 (TF-4) — the full named-account set. Legacy single-admin
+    // YAMLs (top-level `password_hash_ref`/`totp_*`) fold into one
+    // `admin` entry via `effective_accounts()`; the `accounts:` block
+    // supplies N named admins, each with its own password hash, TOTP
+    // state, and replay guard (per-principal counter monotonicity —
+    // guards zero-init at boot, correct: tracking starts at the first
+    // verify).
+    // TOTP-3 (TF-1a) — runtime enrollment store on the SAME state
+    // backend as admin sessions: Redis ⇒ fleet-wide (enroll on node A,
+    // log in on node B) + restart-durable; in_memory ⇒ process-lifetime
+    // only (YAML + CLI stay the durable bootstrap — see the storage
+    // decision in plans/issues/FEAT-totp-google-authenticator-2026-07.md).
+    let totp_store = Arc::new(
+        aegis_control::admin_auth::totp_store::TotpEnrollmentStore::with_backend(
+            state_backend.clone(),
+        ),
+    );
+    // AM-P2a — runtime admin-account store on the same backend (fleet-wide +
+    // durable). Overlaid by the login directory (create/reset/delete without
+    // a YAML edit) and shared with the account-management API via
+    // `DashboardServices`.
+    let admin_account_store = Arc::new(
+        aegis_control::admin_auth::account_store::AdminAccountStore::with_backend(
+            state_backend.clone(),
+        ),
+    );
+    let admin_directory = Arc::new(
+        aegis_control::api::login::AdminDirectory::from_config(auth)
+            .with_totp_store(Arc::clone(&totp_store))
+            .with_account_store(Arc::clone(&admin_account_store)),
+    );
     let session_idle_seconds = auth.session_ttl_idle.as_secs();
 
     // Leaderless roster (Phase 1) — build a shared `RosterView`
@@ -653,7 +676,7 @@ pub(crate) async fn admin_accept_loop(
         verbosity,
         auth_sessions,
         login_rate_limiter,
-        admin_identity,
+        admin_directory,
         session_idle_seconds,
         Some(Arc::clone(&roster_view)),
         Arc::clone(&tiers),
@@ -1095,6 +1118,15 @@ pub(crate) async fn admin_accept_loop(
     // upload card. Default off; flip via
     // `cfg.admin.dashboard_auth.allow_ca_upload: true`.
     services.allow_ca_upload = cfg.admin.dashboard_auth.allow_ca_upload;
+    // TOTP-3 — swap the default in-memory enrollment store for the
+    // backend-wired one built above (same instance the login directory
+    // overlays), so /api/admin/totp/enroll|confirm and authenticate()
+    // read/write identical state.
+    services.totp_store = Arc::clone(&totp_store);
+    // AM-P2a — same story for the runtime account store: the account-mgmt
+    // API mutates it through `services`, and the login directory overlays
+    // the same instance, so create/reset/delete converge with authenticate().
+    services.admin_account_store = Arc::clone(&admin_account_store);
     // MTLS-T10 Phase 2 — share the live trust store as a type-erased
     // writer so the audit-mutated PUT handler can hot-swap roots.
     services.trust_anchor_writer = client_trust

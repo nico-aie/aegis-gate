@@ -133,3 +133,4 @@ deploy/compose/.env
 # 518KB+ raw recon path dumps capture scanned tokens (Atlassian JWTs)
 # and trip GitHub push protection. Curated .md reports DO go in.
 /tests/l-tester/reports/recon-path.txt
+tests/l-tester/Audit-log/

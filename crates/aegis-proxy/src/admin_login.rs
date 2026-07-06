@@ -65,6 +65,20 @@ pub(crate) fn handle_admin_login_js() -> Response<Full<Bytes>> {
     .unwrap()
 }
 
+/// TOTP-7 — `GET /login` convenience alias. Operators guess this path
+/// constantly; pre-fix it 404'd — worse, because it required auth, an
+/// unauthenticated visit bounced to `/admin/login?next=%2Flogin` and the
+/// operator landed straight back on the 404 after signing in. 303 to the
+/// bare login page (default `next` = dashboard) so the chain resolves.
+pub(crate) fn handle_login_alias() -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(hyper::StatusCode::SEE_OTHER)
+        .header(hyper::header::LOCATION, "/admin/login")
+        .header(hyper::header::CACHE_CONTROL, "no-store")
+        .body(Full::new(Bytes::new()))
+        .unwrap()
+}
+
 pub(crate) async fn handle_admin_login(
     req: hyper::Request<hyper::body::Incoming>,
     peer: std::net::SocketAddr,
@@ -105,7 +119,7 @@ pub(crate) async fn process_admin_login(
     let body_str = std::str::from_utf8(body_bytes).unwrap_or("");
     let outcome = aegis_control::api::login::authenticate(
         body_str,
-        &services.admin_identity,
+        &services.admin_directory,
         &services.login_rate_limiter,
         &services.auth_sessions,
         &services.sessions,
@@ -120,10 +134,15 @@ pub(crate) async fn process_admin_login(
     let ip = peer.ip().to_string();
     use aegis_control::api::login::LoginOutcome;
     match &outcome {
-        LoginOutcome::Ok { .. } => {
-            services
-                .login_auditor
-                .record_success(&ip, &services.admin_identity.user);
+        LoginOutcome::Ok { user, .. } => {
+            // TOTP-1 — audit the account that actually authenticated,
+            // not a hard-coded single-admin name.
+            services.login_auditor.record_success(&ip, user);
+        }
+        LoginOutcome::EnrollmentRequired { user, .. } => {
+            // TOTP-2 — password right, no factor enrolled: distinct
+            // audit bucket (not a full login_success).
+            services.login_auditor.record_enrollment_required(&ip, user);
         }
         LoginOutcome::Unauthorized { .. } => {
             services
@@ -149,6 +168,24 @@ pub(crate) async fn process_admin_login(
             session_cookie,
             csrf_cookie,
             body,
+            ..
+        } => Response::builder()
+            .status(200)
+            .header("content-type", "application/json; charset=utf-8")
+            .header("cache-control", "no-store")
+            .header("set-cookie", session_cookie)
+            .header("set-cookie", csrf_cookie)
+            .body(Full::new(Bytes::from(body)))
+            .unwrap(),
+        // TOTP-2 — 200 with both cookies: the client IS authenticated
+        // enough to reach the enrollment surface, and the body's
+        // `enrollment_required: true` tells the login page to route to
+        // the TOTP setup flow instead of the dashboard.
+        LoginOutcome::EnrollmentRequired {
+            session_cookie,
+            csrf_cookie,
+            body,
+            ..
         } => Response::builder()
             .status(200)
             .header("content-type", "application/json; charset=utf-8")
@@ -235,6 +272,191 @@ pub(crate) async fn process_admin_logout(
         .header("set-cookie", clear_csrf)
         .body(Full::new(Bytes::new()))
         .unwrap()
+}
+
+#[cfg(test)]
+mod login_alias_tests {
+    // TOTP-7 — `GET /login` (a path operators guess constantly) must
+    // bounce to the real login page instead of 404ing. Crucially it is
+    // an OPEN endpoint: pre-fix, /login required auth, so the gate
+    // redirected to /admin/login?next=%2Flogin and the operator landed
+    // right back on the 404 after signing in.
+
+    #[test]
+    fn login_alias_redirects_to_admin_login() {
+        let resp = super::handle_login_alias();
+        assert_eq!(resp.status(), hyper::StatusCode::SEE_OTHER);
+        assert_eq!(
+            resp.headers()
+                .get(hyper::header::LOCATION)
+                .and_then(|h| h.to_str().ok()),
+            Some("/admin/login"),
+            "alias must land on the real login page with the DEFAULT next \
+             (never next=/login — that recreates the 404 loop)",
+        );
+    }
+}
+
+#[cfg(test)]
+mod login_page_contract_tests {
+    // TOTP-5 — the shipped login page must speak the SAME protocol the
+    // backend serves, or the flow silently breaks in the browser (the
+    // exact drift found in review: authenticate() grew totp_code +
+    // enrollment_required while login.js still posted user/password and
+    // blind-redirected on 200). These guards pin the FE assets to the
+    // backend contract; they fail when either side renames a field or
+    // endpoint without updating the other.
+    const LOGIN_JS: &str = include_str!("assets/login.js");
+    const LOGIN_HTML: &str = include_str!("assets/login.html");
+
+    #[test]
+    fn safe_next_url_rejects_backslash_open_redirect() {
+        // AM-0b — `?next=/\evil.com` normalises to a protocol-relative
+        // cross-origin redirect in browsers, slipping a naive `//` check.
+        // The same-origin guard must reject any backslash.
+        assert!(
+            LOGIN_JS.contains("indexOf('\\\\')") || LOGIN_JS.contains("includes('\\\\')"),
+            "safeNextUrl must reject backslashes to close the open-redirect bypass",
+        );
+    }
+
+    #[test]
+    fn login_form_carries_a_totp_code_field() {
+        // Enrolled accounts must be able to submit their app code from
+        // the login page (LoginRequest.totp_code).
+        assert!(
+            LOGIN_HTML.contains("name=\"totp_code\""),
+            "login.html must have a totp_code input for enrolled accounts",
+        );
+        assert!(
+            LOGIN_JS.contains("totp_code"),
+            "login.js must send totp_code in the login POST body",
+        );
+    }
+
+    #[test]
+    fn login_js_handles_the_enrollment_required_state() {
+        // A 200 with enrollment_required:true must NOT redirect to the
+        // dashboard (every API there 403s for that session) — it must
+        // switch to the QR enrollment flow.
+        assert!(
+            LOGIN_JS.contains("enrollment_required"),
+            "login.js must branch on the enrollment_required response field",
+        );
+    }
+
+    #[test]
+    fn login_js_drives_the_enroll_and_confirm_endpoints() {
+        assert!(
+            LOGIN_JS.contains("/api/admin/totp/enroll"),
+            "login.js must call the enroll endpoint to fetch the QR",
+        );
+        assert!(
+            LOGIN_JS.contains("/api/admin/totp/confirm"),
+            "login.js must confirm the app code to activate the factor",
+        );
+        // Both are POSTs behind the CSRF gate — the double-submit header
+        // must be read from the JS-readable aegis_csrf cookie.
+        assert!(
+            LOGIN_JS.contains("x-csrf-token") && LOGIN_JS.contains("aegis_csrf"),
+            "login.js must send x-csrf-token from the aegis_csrf cookie",
+        );
+    }
+
+    #[test]
+    fn codeless_401_opens_the_otp_step() {
+        // TOTP-10 (owner ask 2026-07-05, supersedes the TOTP-9 hint):
+        // two-step login. The operator submits username+password only;
+        // a 401 on that CODE-LESS attempt optimistically opens the OTP
+        // dialog (the server envelope is uniform by design — the FE
+        // can't and mustn't know whether the password or the code was
+        // the problem; a wrong password simply fails again inside the
+        // dialog, which offers a way back). A 401 WITH a code stays an
+        // in-dialog error, never a loop.
+        assert!(
+            LOGIN_JS.contains("openOtpStep"),
+            "login.js must open the OTP step on a code-less 401",
+        );
+        assert!(
+            LOGIN_JS.contains("otp-modal"),
+            "login.js must drive the #otp-modal dialog",
+        );
+    }
+
+    #[test]
+    fn otp_dialog_inherits_the_card_styling() {
+        // TOTP-11 (owner screenshot 2026-07-05): every input/button rule
+        // in the page stylesheet is scoped under `.login-card`, and the
+        // OTP dialog lived OUTSIDE that class — so its code input and
+        // Verify button rendered with raw browser defaults (white input,
+        // tiny button, no spacing). The dialog card must carry the
+        // login-card class so it inherits the design system.
+        assert!(
+            LOGIN_HTML.contains("class=\"login-card otp-card\""),
+            "the OTP dialog card must reuse the login-card styling scope",
+        );
+    }
+
+    #[test]
+    fn login_html_has_the_otp_step_dialog() {
+        // TOTP-10 — the OTP entry lives in a dialog shown AFTER the
+        // password step, not as an always-visible third field.
+        for id in ["otp-modal", "otp-code", "otp-submit", "otp-error", "otp-back"] {
+            assert!(
+                LOGIN_HTML.contains(&format!("id=\"{id}\"")),
+                "login.html must have #{id} for the two-step OTP dialog",
+            );
+        }
+    }
+
+    #[test]
+    fn enrollment_surface_has_steps_and_copy_affordance() {
+        // TOTP-10 — enrollment polish: numbered steps guide the scan →
+        // verify flow, and the manual-entry key gets a copy button.
+        assert!(
+            LOGIN_HTML.contains("id=\"enroll-steps\""),
+            "enrollment card must carry the numbered step guide",
+        );
+        assert!(
+            LOGIN_HTML.contains("id=\"enroll-copy\""),
+            "manual-entry key must have a copy button",
+        );
+        assert!(
+            LOGIN_JS.contains("enroll-copy"),
+            "login.js must wire the copy button",
+        );
+    }
+
+    #[test]
+    fn login_page_presents_2fa_as_mandatory() {
+        // TOTP-8 (owner ask 2026-07-05): 2FA is not optional — the login
+        // page must say so. `require_totp` defaults to true, so copy
+        // like "(if enrolled)" / "Leave empty if you haven't set up an
+        // authenticator" misrepresents the policy and trains operators
+        // to skip the field.
+        assert!(
+            LOGIN_HTML.contains("Two-factor authentication is required"),
+            "login page must state that 2FA is mandatory",
+        );
+        for optional_copy in ["(if enrolled)", "Leave empty if you haven't set up"] {
+            assert!(
+                !LOGIN_HTML.contains(optional_copy),
+                "login page must not present 2FA as optional: found {optional_copy:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn login_html_has_the_enrollment_surface() {
+        // QR container (the server returns an inline SVG), manual-entry
+        // secret fallback, and the 6-digit confirm input.
+        for id in ["enroll-section", "enroll-qr", "enroll-secret", "enroll-code"] {
+            assert!(
+                LOGIN_HTML.contains(&format!("id=\"{id}\"")),
+                "login.html must have #{id} for the enrollment flow",
+            );
+        }
+    }
 }
 
 #[cfg(test)]
