@@ -239,6 +239,29 @@ pub struct ProxyContext {
     /// when enabled, so a disabled deployment pays nothing.
     pub enumeration:
         Option<Arc<aegis_security::detectors::enumeration::EnumerationDetector>>,
+    /// EG-2 T4 (2026-07-05) — response-path error-leak detector. Off the
+    /// chain (needs response status + body). Behind the default-OFF
+    /// `detectors.egress_error_leak` toggle; `Some` only when enabled. The
+    /// body-scrub site calls `observe(...)` (before redact) and emits a
+    /// Detection audit row per leak; the outcome hook drains the per-IP risk
+    /// delta into the `RiskTracker`.
+    pub egress_error_leak:
+        Option<Arc<aegis_security::detectors::egress_leak::ErrorLeakDetector>>,
+    /// EG-2 T5 (2026-07-05) — response egress-volume accounting. Off the
+    /// chain (needs response size + `RiskTracker`, seen only at the outcome
+    /// hook). Behind the default-OFF `detectors.egress_volume` toggle; `Some`
+    /// only when enabled. The outcome hook feeds it the response size + the
+    /// client's current risk score and folds any volume signal into risk.
+    pub egress_volume:
+        Option<Arc<aegis_security::detectors::egress_volume::EgressVolumeTracker>>,
+    /// EG-2 T2/T3 (2026-07-05) — response sensitive-data sampling. Off the
+    /// chain (needs the response body). Behind the default-OFF
+    /// `detectors.egress_sensitive` toggle; `Some` only when enabled. The
+    /// body-scrub site calls `observe_and_record(...)` (before redact) and
+    /// emits a Detection audit row per hit; the outcome hook drains the
+    /// per-IP risk delta into the `RiskTracker`.
+    pub egress_sensitive:
+        Option<Arc<aegis_security::detectors::egress_sensitive::SensitiveDataDetector>>,
     /// 2026-05-21 — gate-style on/off for the bot classifier
     /// (`cfg.bots.enabled`). The listener reads this before
     /// classifying; `false` skips classification and leaves
@@ -367,6 +390,28 @@ impl ProxyContext {
             enumeration: cfg.detectors.enumeration.enabled.then(|| {
                 Arc::new(
                     aegis_security::detectors::enumeration::EnumerationDetector::new(),
+                )
+            }),
+            // EG-2 T4 — construct only when opted in; the scanner carries
+            // the default 64 KiB body-scan cap and a bounded per-IP pending
+            // map (100k IPs, mirroring enumeration).
+            egress_error_leak: cfg.detectors.egress_error_leak.enabled.then(|| {
+                Arc::new(
+                    aegis_security::detectors::egress_leak::ErrorLeakDetector::new(),
+                )
+            }),
+            // EG-2 T5 — construct only when opted in; carries the default
+            // 50 MiB/window threshold + risk gate + 100k-IP bound.
+            egress_volume: cfg.detectors.egress_volume.enabled.then(|| {
+                Arc::new(
+                    aegis_security::detectors::egress_volume::EgressVolumeTracker::new(),
+                )
+            }),
+            // EG-2 T2/T3 — construct only when opted in; carries the default
+            // 64 KiB cap, 1-in-8 sampling, and PAN-density threshold.
+            egress_sensitive: cfg.detectors.egress_sensitive.enabled.then(|| {
+                Arc::new(
+                    aegis_security::detectors::egress_sensitive::SensitiveDataDetector::new(),
                 )
             }),
             bots_enabled: Arc::new(std::sync::atomic::AtomicBool::new(

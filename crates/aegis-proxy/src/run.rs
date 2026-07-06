@@ -1728,6 +1728,16 @@ pub async fn run(
                     enumeration.clear();
                 }));
         }
+        // EG-2 T4 / T2/T3 are stateless (per-response scan, no risk feed) —
+        // nothing to clear on reset_state. Only T5's egress-volume window
+        // carries per-IP state, so it clears so a bench phase boundary doesn't
+        // inherit the prior phase's byte counts.
+        if let Some(egress_volume) = upstream_ctx.egress_volume.clone() {
+            rt.control
+                .register_reset_callback(std::sync::Arc::new(move || {
+                    egress_volume.clear();
+                }));
+        }
         // SC-1 — wire `POST /__waf_control/flush_cache` to actually evict the
         // data-plane response cache (all pools), and fan the purge out to the
         // rest of the fleet over Redis pub/sub (control-plane Redis, not the

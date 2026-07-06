@@ -157,6 +157,64 @@ pub(crate) async fn handle_data_request(
             en.observe_outcome(peer.ip(), resp.status() == hyper::StatusCode::NOT_FOUND);
         }
     }
+    // EG-2 T4 / T2/T3 emit their audit rows at the body-scrub site (below);
+    // per the owner decision (2026-07-05) they are OBSERVABILITY ONLY and do
+    // not feed the risk score, so there is nothing to fold in here.
+    //
+    // EG-2 T5 (2026-07-05) — egress-volume accounting. Feed the forwarded
+    // response's size + the client's CURRENT risk score to the volume
+    // tracker; it fires only when the per-IP window volume crosses the
+    // threshold AND the client is already risk-elevated (a read-only FP guard
+    // — it never *raises* risk). Gated on `Action::Allow` so a WAF block page
+    // (small, WAF-origin) never counts as upstream egress. Size comes from
+    // Content-Length (0 for streaming / unknown size — those only track, never
+    // fire). Observability only: a hit emits a Detection audit row, no risk delta.
+    if let Some(ev) = &upstream_ctx.egress_volume {
+        if matches!(tag.action, aegis_control::interop::headers::Action::Allow) {
+            let bytes = resp
+                .headers()
+                .get(hyper::header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .unwrap_or(0);
+            let client_risk = risk.snapshot(peer.ip()).map(|s| s.score).unwrap_or(0);
+            if let Some(sig) = ev.observe(peer.ip(), bytes, client_risk) {
+                let ip = peer.ip();
+                let event = aegis_core::audit::AuditEvent {
+                    schema_version: 1,
+                    ts: chrono::Utc::now(),
+                    request_id: blake3::hash(
+                        format!(
+                            "{}:{}",
+                            ip,
+                            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+                        )
+                        .as_bytes(),
+                    )
+                    .to_hex()
+                    .to_string(),
+                    class: aegis_core::audit::AuditClass::Detection,
+                    tenant_id: None,
+                    tier: None,
+                    action: "observe".into(),
+                    reason: format!("egress volume anomaly ({})", sig.field),
+                    client_ip: ip.to_string(),
+                    route_id: None,
+                    rule_id: Some("egress_volume".into()),
+                    risk_score: Some(sig.score),
+                    method: None,
+                    path: None,
+                    mode: None,
+                    fields: serde_json::json!({
+                        "egress_volume_field": sig.field,
+                        "response_bytes": bytes,
+                        "client_risk": client_risk,
+                    }),
+                };
+                bus.emit(event);
+            }
+        }
+    }
     (resp, tag)
 }
 
@@ -3167,6 +3225,111 @@ pub(crate) async fn forward_allow_to_upstream(
                     Err(_) => Bytes::new(),
                 }
             };
+            // EG-2 T4 (2026-07-05) — response-path error-leak observability.
+            // Runs BEFORE the `on_body_frame` redact below so it sees the raw
+            // stack trace / framework debug banner / internal IP the scrubber
+            // would rewrite to `[REDACTED]` (design §4 "observe-before-
+            // redact"). Gated to 5xx + text/json inside `observe`, so a 200
+            // costs a single integer compare; the whole block is skipped when
+            // `detectors.egress_error_leak` is off (`None`). Observability
+            // only: one Detection audit row per leak, no risk-score impact.
+            if let Some(el) = &ctx.egress_error_leak {
+                let ct = parts_out
+                    .headers
+                    .get(hyper::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok());
+                let status_code = parts_out.status.as_u16();
+                for sig in el.scan(status_code, ct, &body_bytes) {
+                    let ev = aegis_core::audit::AuditEvent {
+                        schema_version: 1,
+                        ts: chrono::Utc::now(),
+                        request_id: blake3::hash(
+                            format!(
+                                "{}:{}",
+                                peer_ip,
+                                chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+                            )
+                            .as_bytes(),
+                        )
+                        .to_hex()
+                        .to_string(),
+                        class: aegis_core::audit::AuditClass::Detection,
+                        tenant_id: None,
+                        tier: None,
+                        // Observe-only: the WAF never blocks a response here,
+                        // so the audit action records the observation, not a
+                        // mitigation.
+                        action: "observe".into(),
+                        reason: format!("egress error-leak ({})", sig.field),
+                        client_ip: peer_ip.to_string(),
+                        route_id: None,
+                        rule_id: Some("egress_error_leak".into()),
+                        risk_score: None,
+                        method: Some(method.to_string()),
+                        path: Some(path.clone()),
+                        mode: None,
+                        fields: serde_json::json!({
+                            "path": path,
+                            "method": method.to_string(),
+                            "egress_leak_field": sig.field,
+                            "egress_leak_score": sig.score,
+                        }),
+                    };
+                    bus.emit(ev);
+                }
+            }
+            // EG-2 T2/T3 (2026-07-05) — response sensitive-data sampling.
+            // Also runs BEFORE the on_body_frame redact so it sees the raw
+            // PAN / secret markers the `redact_dlp` rung would rewrite to
+            // `[REDACTED]` (design §"observe-before-redact"). The read is
+            // content-type-gated, size-capped and 1-in-N sampled inside
+            // `observe`; the shipped redact rung is left full-body and
+            // unchanged (design §"max_scan_bytes" decision: cap the EG-2 read,
+            // not the redact rung). `always_scan = false` — risk-band-forced
+            // sampling waits until the client risk band is reachable here.
+            // Observability only: one Detection audit row per hit, no risk
+            // impact.
+            if let Some(sd) = &ctx.egress_sensitive {
+                let ct = parts_out
+                    .headers
+                    .get(hyper::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok());
+                for sig in sd.observe(ct, &body_bytes, false) {
+                    let ev = aegis_core::audit::AuditEvent {
+                        schema_version: 1,
+                        ts: chrono::Utc::now(),
+                        request_id: blake3::hash(
+                            format!(
+                                "{}:{}",
+                                peer_ip,
+                                chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+                            )
+                            .as_bytes(),
+                        )
+                        .to_hex()
+                        .to_string(),
+                        class: aegis_core::audit::AuditClass::Detection,
+                        tenant_id: None,
+                        tier: None,
+                        action: "observe".into(),
+                        reason: format!("egress sensitive-data ({})", sig.field),
+                        client_ip: peer_ip.to_string(),
+                        route_id: None,
+                        rule_id: Some("egress_sensitive".into()),
+                        risk_score: None,
+                        method: Some(method.to_string()),
+                        path: Some(path.clone()),
+                        mode: None,
+                        fields: serde_json::json!({
+                            "path": path,
+                            "method": method.to_string(),
+                            "egress_sensitive_field": sig.field,
+                            "egress_sensitive_score": sig.score,
+                        }),
+                    };
+                    bus.emit(ev);
+                }
+            }
             // Pipeline::on_body_frame ignores rctx + route in the
             // shipping impl, but the trait sig requires both. Build
             // a minimal RequestCtx from peer_ip + identity so
