@@ -182,6 +182,20 @@ pub(crate) fn html_entity_decode(input: &str) -> String {
 }
 
 /// Simple URL decode: `+` → space, `%XX` → byte.
+/// SG-2 / CR-4 (2026-07-06) — undo one layer of JSON string escaping so a
+/// payload smuggled with backslash-escaped quotes (`{\"$ne\":null}`) matches
+/// the same operator/shell patterns as its unescaped form. Only the
+/// structural escapes are unwound (`\"`→`"`, `\/`→`/`); content escapes
+/// (`\n`, `\t`, `\uXXXX`) are left alone — detectors key off the quote/key
+/// shape, not whitespace. No-op (borrow-free fast path) when there's no
+/// backslash. Shared so ssrf/cmdi body scans can reuse it.
+pub(crate) fn json_unescape(input: &str) -> String {
+    if !input.contains('\\') {
+        return input.to_string();
+    }
+    input.replace("\\\"", "\"").replace("\\/", "/")
+}
+
 pub(crate) fn url_decode(input: &str) -> String {
     let mut out = Vec::with_capacity(input.len());
     let bytes = input.as_bytes();

