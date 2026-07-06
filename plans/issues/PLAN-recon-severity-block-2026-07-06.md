@@ -40,6 +40,15 @@ CRITICAL/HIGH config/secret files are BLOCKED, not `allow`**.
 
 ---
 
+> **Status (2026-07-06):** **RB-1 SHIPPED** (`feat/rb-recon-coverage`, PR #4) — credential/secret file
+> families added to SENSITIVE (50) + info-disclosure to PATH (25), 300/0 recon tests, benign corpus green,
+> 6 FP negatives. Double-slash/`%2e` traversal already covered by existing segment anchors → no normalizer
+> added. **RB-2 DECISION: option A (owner, 2026-07-06)** — keep the credential tier at **50 (2-hit
+> cumulative block)**, do NOT escalate to single-hit-block (≥70). Rationale: single-hit blocking a path
+> class is a FP-risky enforcement change, and the merged **RF response filter** already redacts the secret
+> in the served 200 body (defense-in-depth), so the first-hit leak is contained without the FP exposure.
+> `scores::recon::SENSITIVE` stays 50; RB-2 (§4) is **declined**, not deferred.
+
 ## 3. RB-1 — Keyword/stem matching + path normalization · **M** · START HERE
 
 - Match a sensitive **keyword anywhere in the normalized path**, regardless of prefix/dir/extension:
