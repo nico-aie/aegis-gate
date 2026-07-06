@@ -176,6 +176,11 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // Common filenames operators leave behind by accident:
         // `phpinfo.php`, `info.php`, `test.php`, `i.php`.
         r"(?i)/(?:phpinfo|info|test|i)\.php(?:$|\?|/)",
+        // RB-1 (2026-07-06) — bare `phpinfo` (no `.php`) + Symfony `_profiler`
+        // dev surface. Info-disclosure → generic PATH tier (accumulate).
+        // Segment-anchored so `/phpinfo-guide` and mid-word don't FP.
+        r"(?i)(?:^|/)phpinfo(?:$|[/?#])",
+        r"(?i)/_profiler(?:$|[/?#])",
         // 2026-06-19 (btc-miss report) — vendor/control-panel recon
         // surfaces that were fully missed.
         // SAP NetWeaver RECON (CVE-2020-6287) — unauthenticated admin
@@ -273,6 +278,29 @@ static RECON_SENSITIVE_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // Spring actuator secret/RCE subset (env/configprops dump secrets;
         // heapdump/threaddump leak memory; jolokia/shutdown = RCE/DoS).
         r"(?i)/actuator/(?:heapdump|threaddump|env|configprops|jolokia|shutdown|dump)\b",
+        // RB-1 (2026-07-06 S-Tester `RECON_MISSED`) — credential/secret file
+        // families the detector fully missed. Each is segment-anchored + a
+        // secret file-extension (or a distinctive dotfile) so legit endpoints
+        // that merely contain the word don't FP.
+        //
+        // Bare `credentials.*` file (mirrors the existing `secrets.*` rung).
+        // `/api/credentials` (no extension) is NOT a file → does not match.
+        r"(?i)(?:^|/)credentials?\.(?:json|xml|ini|cfg|ya?ml|txt|properties)(?:$|[?#])",
+        // Cloud creds: `aws_access_keys`, `aws_credentials`. The `access`/
+        // `credentials` requirement keeps `/docs/aws-keys-setup` from FP'ing.
+        r"(?i)(?:^|/)aws[_-]?(?:access[_-]?keys?|credentials)(?:\.[\w]+)?(?:$|[?#/])",
+        // Mail-service API-key dumps (`sendgrid.env`, `sparkpost_keys.json`,
+        // `mailjet_keys.json`, `mandrill.json`). Ext-gated so a blog slug
+        // (`sendgrid-integration-guide.html`) doesn't match.
+        r"(?i)(?:^|/)(?:sendgrid|sparkpost|mailjet|mandrill|mailgun)[\w.-]*\.(?:env|json|ini|cfg|ya?ml|txt|key|pem)(?:$|[?#])",
+        // FTP/deploy/DB client credential dotfiles.
+        r"(?i)(?:^|/)(?:\.ftpconfig|sftp\.json|remote-sync\.json|\.pgpass|\.my\.cnf|\.netrc)(?:$|[?#])",
+        // .NET connection-string config (DB creds).
+        r"(?i)(?:^|/)connectionstrings\.config(?:$|[?#])",
+        // Framework `.properties` config (DB/JDBC creds). Prefix-scoped so
+        // i18n/message bundles (`messages.properties`) and build metadata
+        // (`versions.properties`) don't FP.
+        r"(?i)(?:^|/)(?:application|database|jdbc|hibernate|bootstrap)[\w-]*\.properties(?:$|[?#])",
     ]
     .iter()
     .map(|p| Regex::new(p).unwrap())
@@ -794,6 +822,48 @@ mod tests {
     path_score!(rc2_actuator_loggers_generic, "/actuator/loggers",       crate::detectors::scores::recon::PATH);
     path_score!(rc2_actuator_bare_generic,    "/actuator",               crate::detectors::scores::recon::PATH);
     path_score!(rc2_config_yaml_generic,   "/config.yaml",               crate::detectors::scores::recon::PATH);
+
+    // ============================================================
+    // RB-1 (2026-07-06 S-Tester `RECON_MISSED`) — credential/secret file
+    // families the detector fully missed (score None → served). Added to
+    // the SENSITIVE (50) tier; the info-disclosure ones to PATH (25).
+    // ============================================================
+
+    // Credential / cloud / mail-service key files → SENSITIVE.
+    path_score!(rb_credentials_json,   "/credentials.json",            crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rb_credentials_xml,    "/config/credentials.xml",      crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rb_aws_access_keys,    "/aws_access_keys",             crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rb_aws_credentials,    "/aws_credentials",             crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rb_sendgrid_env,       "/sendgrid.env",                crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rb_sparkpost_keys,     "/sparkpost_keys.json",         crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rb_mailjet_keys,       "/api_keys/mailjet_keys.json",  crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rb_mandrill_json,      "/backup/mandrill.json",        crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rb_ftpconfig,          "/.ftpconfig",                  crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rb_sftp_json,          "/.vscode/sftp.json",           crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rb_remote_sync,        "/remote-sync.json",            crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rb_pgpass,             "/.pgpass",                     crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rb_mycnf,              "/.my.cnf",                     crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rb_netrc,              "/.netrc",                      crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rb_connstrings,        "/ConnectionStrings.config",    crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rb_app_properties,     "/application.properties",      crate::detectors::scores::recon::SENSITIVE);
+    path_score!(rb_db_properties,      "/config/database.properties",  crate::detectors::scores::recon::SENSITIVE);
+
+    // Info-disclosure / debug surfaces → PATH (accumulate, not single-block).
+    path_positive!(rb_profiler,        "/_profiler/latest");
+    path_positive!(rb_profiler_phpinfo, "/_profiler/phpinfo");
+    path_positive!(rb_phpinfo_bare,    "/phpinfo");
+
+    // Normalization — double-slash + percent-encoded traversal must not bypass.
+    path_positive!(rb_double_slash_wpconfig, "//wp-config.php");
+    path_positive!(rb_pct_encoded_env,       "/app/%2e%2e/.env");
+
+    // RB-1 FP guards — legit endpoints/assets that resemble the new families.
+    path_negative!(rb_fp_credentials_endpoint, "/api/credentials");        // no ext → not a file
+    path_negative!(rb_fp_aws_docs,             "/docs/aws-keys-setup");    // hyphenated doc slug
+    path_negative!(rb_fp_i18n_properties,      "/i18n/messages.properties"); // not a config prefix
+    path_negative!(rb_fp_versions_properties,  "/build/versions.properties");
+    path_negative!(rb_fp_sendgrid_blog,        "/blog/sendgrid-integration-guide.html");
+    path_negative!(rb_fp_profile_page,         "/user/profile");
 
     // UA-based positive tests.
     macro_rules! ua_positive {
