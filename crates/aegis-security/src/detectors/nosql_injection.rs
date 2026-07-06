@@ -87,12 +87,22 @@ impl Detector for NoSqlInjectionDetector {
         check(&raw_uri, "uri", &mut signals);
         check(&decoded_uri, "uri", &mut signals);
 
-        // Body — first 8 KiB, decoded.
+        // Body — first 8 KiB, decoded. SG-2 (2026-07-06): also check the
+        // JSON-unescaped form so `{\"$ne\":null}` (backslash-escaped quotes)
+        // matches the canonical `"$ne":` key shape.
         let body = std::str::from_utf8(req.body.peek(8192)).unwrap_or("");
-        if !body.is_empty() {
+        if !body.is_empty() && signals.is_empty() {
             let decoded_body = super::url_decode(body);
             check(body, "body", &mut signals);
-            check(&decoded_body, "body", &mut signals);
+            if signals.is_empty() {
+                check(&decoded_body, "body", &mut signals);
+            }
+            if signals.is_empty() {
+                let unescaped = super::json_unescape(body);
+                if unescaped != body {
+                    check(&unescaped, "body", &mut signals);
+                }
+            }
         }
 
         // Cookie values — NoSQL operators smuggled via session/other
@@ -274,5 +284,45 @@ mod tests {
         let (m, u, h, b) = view_with_cookie("sid=F1X3IwA81DkwXf5iryzMmdCp3gB7mGPt; theme=dark");
         let req = make_view(&m, &u, &h, &b);
         assert!(d.inspect(&req).is_empty(), "opaque session cookie must not FP");
+    }
+
+    // SG-2 (2026-07-06 S-Tester `MISSED_attacks_serious` id 17) — the body is
+    // `{\"$ne\":null}` with backslash-ESCAPED quotes, so the canonical
+    // `"$ne":` key shape never appears literally and the detector missed it.
+    // A JSON-unescape normalization pass (`\"`→`"`) restores the match.
+    fn body_view(body: &str) -> (http::Method, http::Uri, http::HeaderMap, BodyPeek) {
+        (
+            http::Method::POST,
+            "/login".parse().unwrap(),
+            http::HeaderMap::new(),
+            BodyPeek::new(body.as_bytes().to_vec(), Some(body.len() as u64), false),
+        )
+    }
+
+    #[test]
+    fn nosql_escaped_quote_body_fires() {
+        let d = NoSqlInjectionDetector;
+        // raw string keeps the backslashes literal — this is the wire body.
+        let (m, u, h, b) = body_view(r#"{\"$ne\":null}"#);
+        let req = make_view(&m, &u, &h, &b);
+        assert!(!d.inspect(&req).is_empty(), "escaped-quote NoSQL operator must fire");
+    }
+
+    #[test]
+    fn nosql_escaped_where_body_fires() {
+        let d = NoSqlInjectionDetector;
+        let (m, u, h, b) = body_view(r#"{\"$where\":\"return true\"}"#);
+        let req = make_view(&m, &u, &h, &b);
+        assert!(!d.inspect(&req).is_empty(), "escaped $where must fire");
+    }
+
+    #[test]
+    fn clean_escaped_json_no_fp() {
+        // A benign escaped-JSON body (a `$`-valued string, not a `$`-key) must
+        // not FP after unescape.
+        let d = NoSqlInjectionDetector;
+        let (m, u, h, b) = body_view(r#"{\"price\":\"$9.99\",\"note\":\"in stock\"}"#);
+        let req = make_view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).is_empty(), "escaped benign JSON must not FP");
     }
 }

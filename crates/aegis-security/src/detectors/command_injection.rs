@@ -159,6 +159,18 @@ static CMDI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // (`-c`/`-e`/`-r`/`-ne`) disambiguates execution from a filename
         // (`index.php`) or param (`?python=3`).
         r"(?i)\b(?:python[0-9.]*|perl|ruby|node|php)\s+-(?:c|e|r|ne|rne)\b",
+        // SG-3 (2026-07-06 S-Tester id 1) — Node/JS server-side RCE +
+        // prototype-pollution gadgets (Next.js RSC / server-action exploit:
+        // `process.mainModule.require('child_process').execSync(...)`,
+        // `__proto__`, `constructor:constructor`). Exploit-only tokens absent
+        // from valid fintech traffic → FP≈0. `constructor` is only flagged in
+        // the `constructor:constructor` / `constructor.constructor` gadget
+        // shape, never bare.
+        r"(?i)\bchild_process\b",
+        r"(?i)\b(?:execSync|spawnSync|execFileSync)\b",
+        r"(?i)process\.mainModule",
+        r"(?i)__proto__",
+        r"(?i)constructor\s*(?::\s*|\.)\s*constructor",
     ] {
         pats.push(p.to_string());
     }
@@ -915,6 +927,44 @@ mod tests {
             !d.inspect(&req).is_empty(),
             "real cmdi in a normal text body must still fire",
         );
+    }
+
+    // SG-3 (2026-07-06 S-Tester id 1) — Node/JS server-side RCE +
+    // prototype-pollution vocab (Next.js RSC exploit). Exploit-only tokens,
+    // caught on any scannable body (JSON/text/form) or query.
+    #[test]
+    fn cmdi_js_rce_execsync_body_fires() {
+        let d = CommandInjectionDetector;
+        let (m, u, h, b) = body_view(
+            Some("application/json"),
+            r#"{"_prefix":"var r=process.mainModule.require('child_process').execSync('printenv')"}"#,
+        );
+        let req = make_view(&m, &u, &h, &b);
+        assert!(!d.inspect(&req).is_empty(), "node RCE gadget must fire");
+    }
+
+    #[test]
+    fn cmdi_proto_pollution_body_fires() {
+        let d = CommandInjectionDetector;
+        let (m, u, h, b) = body_view(
+            Some("application/json"),
+            r#"{"then":"$1:__proto__:then","_formData":{"get":"$1:constructor:constructor"}}"#,
+        );
+        let req = make_view(&m, &u, &h, &b);
+        assert!(!d.inspect(&req).is_empty(), "prototype pollution must fire");
+    }
+
+    #[test]
+    fn cmdi_js_benign_words_no_fp() {
+        // Bare `constructor` / `exec` / `process` are ordinary words and must
+        // NOT fire (only the exploit-specific shapes do).
+        let d = CommandInjectionDetector;
+        let (m, u, h, b) = body_view(
+            Some("application/json"),
+            r#"{"role":"constructor","note":"exec summary","stage":"process onboarding"}"#,
+        );
+        let req = make_view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).is_empty(), "benign words must not FP");
     }
 
     #[test]
