@@ -1,0 +1,47 @@
+{
+  "note": "Kết quả bắn lại 148 request status-200 trong benign + soi response upstream. Các leak/nghi vấn THẬT (đã lọc false-positive từ trang chủ/app.js).",
+  "findings": [
+    {
+      "severity": "CRITICAL",
+      "endpoint": "GET /admin/dashboard",
+      "waf": "allow, rule=none",
+      "issue": "Broken access control — lộ credentials KHÔNG cần auth. WAF không bắt.",
+      "leaked": [
+        "admin_secret=__V22_ADMIN_ACL__",
+        "db_host=db.internal.novabet.local",
+        "db_user=admin",
+        "db_name=waf_hackathon_prod",
+        "redis_host=redis.internal.novabet.local:6379",
+        "secret_key=sk_live_wafhack2026_prod_key",
+        "ssh_keys=[ssh-ed25519 ...admin@novabet]",
+        "total_balance=140526"
+      ]
+    },
+    {
+      "severity": "HIGH",
+      "endpoint": "POST /api/integrations/preview",
+      "waf": "allow, rule=none",
+      "issue": "SSRF whitelist bypass — domain suffix confusion (assets.sec-team.waf-exams.info.evil.test). Backend xác nhận preview:true.",
+      "marker": "__V29_SSRF_WHITELIST_BYPASS__"
+    },
+    {
+      "severity": "HIGH",
+      "endpoint": "POST /api/feedback",
+      "waf": "allow, rule=none",
+      "issue": "SSTI (.NET Razor) payload phản hồi trong evaluated_comment",
+      "payload": "@{System.Diagnostics.Process.Start(\"cmd\",\"/c id\")}"
+    },
+    {
+      "severity": "MEDIUM",
+      "endpoint": "987x /admin/*",
+      "waf": "phần lớn allow",
+      "issue": "Không có admin-path access control nhất quán. block-admin-path detector fire 0 lần. Chỉ recon-path bắt được path có tên file nhạy cảm; route sạch như /admin/dashboard lọt."
+    },
+    {
+      "severity": "LOW",
+      "endpoint": "/api/notifications/stream?message= , /game/1?name=",
+      "waf": "allow",
+      "issue": "Phản chiếu input chưa lọc vào response (SSE/JSON). Nguy cơ nếu render ở client."
+    }
+  ]
+}

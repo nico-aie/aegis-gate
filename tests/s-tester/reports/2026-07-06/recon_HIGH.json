@@ -1,0 +1,3975 @@
+{
+  "severity": "HIGH",
+  "note": "Recon path WAF MISS — mức HIGH. Distinct URL, đã đọc & phân loại theo nội dung lộ nếu file bị serve.",
+  "total_distinct": 307,
+  "total_requests": 359,
+  "records": [
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.babelrc.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.bash_history",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.config/gatsby/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.config/netlify/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 2,
+      "headers": {
+        "accept": "*/*",
+        "referer": "http://18.140.47.62/.config/netlify/config.json",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.config/now/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 2,
+      "headers": {
+        "accept": "*/*",
+        "referer": "http://18.140.47.62/.config/now/config.json",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.config/serverless/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 2,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.cordova/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 3,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.docker/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 2,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitattributes",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitattributes.backup.backup",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitattributes.backup.original",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitattributes.orig.backup",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitattributes.orig.original",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitattributes.original.backup",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitattributes.original.original",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitattributes~~.backup",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitattributes~~.original",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitconfig",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": null,
+      "occurrences": 1,
+      "headers": {}
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept-encoding": "gzip",
+        "connection": "close",
+        "host": "127.0.0.1:8080",
+        "user-agent": "Go-http-client/1.1"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/*.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 3,
+      "headers": {
+        "accept-encoding": "gzip",
+        "connection": "close",
+        "host": "18.140.47.62",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/ansible.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/appveyor.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/argo.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/azure.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/backup.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/bamboo.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/bitbucket.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/build.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/chef.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 2,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/circleci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/codeship.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/concourse.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/consul.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/deploy.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 2,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/docker.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/drone.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/gcp.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/gitlab.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/istio.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/jenkins.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/knative.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/kubernetes.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/linkerd.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/main.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": null,
+      "occurrences": 1,
+      "headers": {}
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/nomad.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/production.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": null,
+      "occurrences": 1,
+      "headers": {}
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/puppet.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/release.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/salt.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/security.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/semaphore.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/spinnaker.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/teamcity.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/tekton.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/terraform.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/test.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/travis.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/vault.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.github/workflows/wercker.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitignore",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 4,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitignore.backup.backup",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitignore.backup.original",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitignore.orig.backup",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitignore.orig.original",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitignore.original.backup",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitignore.original.original",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitignore~~.backup",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitignore~~.original",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 3,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitmodules",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitmodules.backup.backup",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitmodules.backup.original",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitmodules.orig.backup",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitmodules.orig.original",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitmodules.original.backup",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitmodules.original.original",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitmodules~~.backup",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.gitmodules~~.original",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.jenkins.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.lanproxy/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.travis.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/.zshenv",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/Procfile",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/Procfile.dev",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/Procfile.prod",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/Procfile.staging",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/Procfile.test",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/_wpeprivate/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/account/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 3,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/backup.cfg",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/backup.conf",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/backup.crt",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/backup.inc",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/backup.ini",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/backup.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/backup.txt",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/backup.xml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/backup.yaml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/backup.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/docker-compose.cfg",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/docker-compose.conf",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/docker-compose.crt",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/docker-compose.gz",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/docker-compose.inc",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/docker-compose.ini",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/docker-compose.js",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/docker-compose.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/docker-compose.log",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/docker-compose.map",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/docker-compose.md",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/docker-compose.php",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/docker-compose.py",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/docker-compose.rb",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/docker-compose.tar",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/docker-compose.tar.gz",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/docker-compose.ts",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/docker-compose.txt",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/docker-compose.xml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/docker-compose.zip",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/phpinfo.cfg",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/phpinfo.conf",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/phpinfo.gz",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/phpinfo.tar",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/phpinfo.tar.gz",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/admin/phpinfo.zip",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/administrator.cfg",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/administrator.conf",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/administrator.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/backup.cfg",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/backup.conf",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/backup.crt",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/backup.inc",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/backup.ini",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/backup.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/backup.txt",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/backup.xml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/backup.yaml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/backup.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 2,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/docker-compose.cfg",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/docker-compose.conf",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/docker-compose.crt",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/docker-compose.gz",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/docker-compose.inc",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/docker-compose.ini",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/docker-compose.js",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/docker-compose.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/docker-compose.log",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/docker-compose.map",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/docker-compose.md",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/docker-compose.php",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/docker-compose.py",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/docker-compose.rb",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/docker-compose.tar",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/docker-compose.tar.gz",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/docker-compose.ts",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/docker-compose.txt",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/docker-compose.xml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/docker-compose.zip",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/index.php/v1/config/application",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/v1/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": null,
+      "occurrences": 1,
+      "headers": {}
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/api/v2/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": null,
+      "occurrences": 1,
+      "headers": {}
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/app/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 2,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/app/config.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/app/config/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 3,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/app/settings.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/application-dev.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 3,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/application/config/constants.php/",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 2,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/azure-pipelines.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/backend/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 2,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/backup.7z",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/backup.bz2",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/backup.lz4",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/backup.lzma",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/backup.rar",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/backup.xz",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/backup.zst",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/backup/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/backup/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/backup/jenkinsFile",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/backup/server.xml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/bin/config.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/bkp/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/blog/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 3,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/bootstrap.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/build.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/build.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/build_docker.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/builds.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/cache/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/cache/debug.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/client/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/cloudflare.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/common.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/conf.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 5,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/config.json.cfm",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/config.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 3,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/config.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/config/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/config/_profiler/phpinfo",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/config/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 6,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/config/constants.php/",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/config/database.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/config/linusadmin-phpinfo.php",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/config/old_phpinfo.php",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/config/phpinfo",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/config/setup.php",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/config/xampp/phpinfo",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/configuration/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/configure.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/conta/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/core/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/cron.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/customer/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/dashboard/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/dashboard/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/database.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/debug.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/demo.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/deploy/_profiler/phpinfo",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/deploy/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": null,
+      "occurrences": 1,
+      "headers": {}
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/deploy/linusadmin-phpinfo.php",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/deploy/old_phpinfo.php",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/deploy/phpinfo",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/deploy/xampp/phpinfo",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 3,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/deployment/_profiler/phpinfo",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/deployment/linusadmin-phpinfo.php",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/deployment/old_phpinfo.php",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/deployment/phpinfo",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/deployment/xampp/phpinfo",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/dev.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/dev/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/docker-compose.dev.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/docker-compose.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/docker-compose.override.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/docker-compose.prod.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/docker-compose.staging.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/docker-compose.test.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/docker.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/docker_run.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/docs/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 3,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/downloads/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/internal/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": null,
+      "occurrences": 1,
+      "headers": {}
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/login.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/login/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 3,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/mail.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/mailer.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/main.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/main/resources/bootstrap.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/mc/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": null,
+      "occurrences": 1,
+      "headers": {}
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/media/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/members/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/minio/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": null,
+      "occurrences": 1,
+      "headers": {}
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/node_modules/aws-sdk/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/painel/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/phpinfo.conf",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/phpinfo.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/portal/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/private/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/private/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 2,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/products/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/profile/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/project/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/projeto/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/public/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/public/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/resources/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/resources/bootstrap.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/run.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/server.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/server/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 2,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/services/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/services/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 2,
+      "headers": {
+        "accept-charset": "utf-8",
+        "accept-encoding": "gzip",
+        "connection": "close",
+        "host": "ec2-18-140-47-62.ap-southeast-1.compute.amazonaws.com",
+        "user-agent": "Mozilla/5.0 (Linux; Android 7.1.1; 1607-A01 Build/NMF26F; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/66.0.3359.126 MQQBrowser/6.2 TBS/044807 Mobile Safari/537.36 MMWEBID/2867 MicroMessenger/7.0.6.1460(0x27000634) Process/tools NetType/WIFI Language/zh_CN"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/settings.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/settings.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/settings/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/settings/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/sh.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/shell.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/site/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/site/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/smtp.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/src/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 2,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/src/config.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/src/main/resources/bootstrap.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/src/settings.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/start.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/startup.sh",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/static/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 3,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/swarm/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/temp/debug.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/tmp/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/tmp/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/tmp/debug.properties",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/user/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/v1/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": null,
+      "occurrences": 1,
+      "headers": {}
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/v2/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": null,
+      "occurrences": 1,
+      "headers": {}
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/vendor/.gitlab-ci.yml",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/vendor/api-config.ini",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/vendor/jenkinsFile",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/vendor/server.xml",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "HIGH",
+      "method": "GET",
+      "url": "/web/config.json",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 3,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    }
+  ]
+}

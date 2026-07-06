@@ -1,0 +1,44 @@
+{
+  "note": "Bắn lại 16 request status-200 trong waf_malicious.json (detector ĐÃ bắt nhưng WAF vẫn allow). Soi response upstream.",
+  "critical_leaks_detected_but_allowed": [
+    {
+      "endpoint": "GET /config.yaml",
+      "waf": "recon-path, action=ALLOW",
+      "leak": "db_password (marker __V23_CONFIG_LEAK__), app config"
+    },
+    {
+      "endpoint": "GET /.htaccess",
+      "waf": "recon-path, action=ALLOW",
+      "leak": "DB_HOST + DB_PASS=wafhack2026_staging (comment), rewrite rules"
+    },
+    {
+      "endpoint": "GET /backup.sql.bak",
+      "waf": "recon-path, action=ALLOW",
+      "leak": "FULL users table dump: username + bcrypt password_hash + balance (admin 99999, alice 10000)"
+    },
+    {
+      "endpoint": "GET /openapi.yaml",
+      "waf": "recon-path, action=ALLOW",
+      "leak": "toàn bộ API schema (bề mặt tấn công)"
+    }
+  ],
+  "root_cause": "recon-path detector CHỈ chấm ~25 điểm < ngưỡng chặn (30/70) → action=allow. WAF PHÁT HIỆN recon nhưng KHÔNG chặn → file nhạy cảm (tồn tại thật) bị serve.",
+  "canary_ok": [
+    {
+      "endpoint": "GET /wp-admin",
+      "note": "canary honeypot __CANARY_HIT__ — bẫy, không phải leak thật"
+    }
+  ],
+  "not_executed": [
+    {
+      "endpoint": "POST /api/feedback @(7+7) / {#helper id/}",
+      "note": "SSTI phản chiếu nhưng KHÔNG thực thi (echo @(7+7), không ra 49) → không RCE, nhưng WAF vẫn nên chặn payload"
+    }
+  ],
+  "reflection_low": [
+    {
+      "endpoint": "/api/notifications/stream?message=169.254...",
+      "note": "chỉ echo string vào SSE, không thật sự fetch → không phải SSRF"
+    }
+  ]
+}
