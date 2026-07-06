@@ -4065,7 +4065,7 @@ const CLASS_DESCRIPTIONS = {
   header_injection: 'CRLF / X-Forwarded-Host poisoning / method+URL override bypasses.',
   body_abuse: 'Oversize body, deep JSON nesting, prototype pollution, mass-assignment, XXE.',
   recon: 'Recon path probes (`/.env`, `/wp-admin`, actuators) + scanner user-agents (sqlmap, nikto, …).',
-  brute_force: 'Login-failure rate cap; default 10/min per IP.',
+  brute_force: 'Login & OTP brute force — per-IP, per-user (spraying), per-device axes + OTP spray (many sessions, one code) / grind. Fleet-aware.',
   command_injection: 'Shell-meta payloads + Log4Shell / JNDI lookups.',
   template_injection: 'Server-side template injection (Jinja2, Twig, Mako, Freemarker, Velocity, SpEL, Handlebars).',
   nosql_injection: 'MongoDB-flavour operator injection (`?param[$ne]=foo`, `{$where:…}`).',

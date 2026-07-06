@@ -40,6 +40,20 @@ use super::{Detector, Signal};
 /// other bounded per-key maps in this crate.
 const FLEET_CACHE_CAP: usize = 4096;
 
+/// BF-OTP-P1 (2026-07-06) — OTP / second-factor brute-force thresholds.
+/// Hardcoded like `user_threshold` / `device_threshold` (no new config, by
+/// owner directive). See `plans/issues/FEAT-otp-token-bruteforce-detection-2026-07.md`.
+///
+/// Axis B (spray): distinct identities (`login_token`) submitting the *same*
+/// `otp_code` within the window. Fires above this — the characteristic
+/// fixed-code spray that is **IP-independent** and survives IP rotation.
+const OTP_SPRAY_THRESHOLD: u32 = 20;
+/// Axis A (grind): distinct `otp_code` guesses per identity within the window.
+const OTP_GRIND_THRESHOLD: u32 = 10;
+/// Score both OTP axes emit — below `scores::brute_force::DEFAULT` (50) so an
+/// OTP hit compounds via the risk pipeline rather than blocking on one request.
+const OTP_SCORE: u32 = 40;
+
 /// Brute-force detector. Stateful — owns three counter maps.
 pub struct BruteForceDetector {
     /// Number of POSTs in `window` from one IP that fires.
@@ -86,6 +100,14 @@ pub struct BruteForceDetector {
     /// `inspect`. `Arc` so spawned tasks can own a handle. Bounded at
     /// [`FLEET_CACHE_CAP`].
     fleet_counts: Arc<Mutex<HashMap<String, (u64, u64)>>>,
+    /// BF-OTP-P1 — Axis B (OTP spray). `code_hash` → distinct
+    /// `(identity_hash, Instant)` observed in `window`. Fires when the
+    /// distinct-identity count for one code crosses [`OTP_SPRAY_THRESHOLD`].
+    otp_code_state: Mutex<HashMap<String, Vec<(String, Instant)>>>,
+    /// BF-OTP-P1 — Axis A (OTP grind). `identity_hash` → distinct
+    /// `(code_hash, Instant)` observed in `window`. Fires when the
+    /// distinct-code count for one identity crosses [`OTP_GRIND_THRESHOLD`].
+    otp_token_state: Mutex<HashMap<String, Vec<(String, Instant)>>>,
 }
 
 impl Default for BruteForceDetector {
@@ -118,6 +140,8 @@ impl BruteForceDetector {
             fleet_scope: AtomicBool::new(false),
             fleet_warned: AtomicBool::new(false),
             fleet_counts: Arc::new(Mutex::new(HashMap::new())),
+            otp_code_state: Mutex::new(HashMap::new()),
+            otp_token_state: Mutex::new(HashMap::new()),
         }
     }
 
@@ -231,6 +255,39 @@ impl BruteForceDetector {
         let distinct_ips: HashSet<IpAddr> =
             entry.iter().map(|(ip, _)| *ip).collect();
         (distinct_ips.len() as u32 > self.device_threshold, newly_distinct)
+    }
+
+    /// BF-OTP-P1 — Axis B (OTP spray). Record that `identity_hash` submitted
+    /// `code_hash` and return whether the distinct-identity count for this code
+    /// crosses [`OTP_SPRAY_THRESHOLD`] within `window`. Distinct identities are
+    /// deduped so one session retrying the same code doesn't inflate the count.
+    /// IP is never consulted — this axis is deliberately IP-independent.
+    fn record_otp_spray_and_check(&self, code_hash: &str, identity_hash: &str) -> (bool, bool) {
+        // Key on the code, count DISTINCT identities (one session retrying the
+        // same code doesn't inflate). IP is never consulted → IP-independent.
+        record_distinct_windowed(
+            &self.otp_code_state,
+            self.window,
+            code_hash,
+            identity_hash,
+            OTP_SPRAY_THRESHOLD,
+        )
+    }
+
+    /// BF-OTP-P1 — Axis A (OTP grind). Record that `identity_hash` guessed
+    /// `code_hash` and return whether the distinct-code count for this identity
+    /// crosses [`OTP_GRIND_THRESHOLD`] within `window`. Distinct codes are
+    /// deduped so a flaky client double-submitting one code doesn't inflate.
+    fn record_otp_grind_and_check(&self, identity_hash: &str, code_hash: &str) -> (bool, bool) {
+        // Key on the identity, count DISTINCT codes (a flaky client re-submitting
+        // one code doesn't inflate).
+        record_distinct_windowed(
+            &self.otp_token_state,
+            self.window,
+            identity_hash,
+            code_hash,
+            OTP_GRIND_THRESHOLD,
+        )
     }
 
     /// AC-P2-b — the sync, request-path half of the fleet channel.
@@ -363,7 +420,11 @@ impl Detector for BruteForceDetector {
         // header OR a method that typically carries credentials
         // (POST / PUT / PATCH) counts.
         let path = req.uri.path();
-        if !is_auth_path(path) {
+        // BF-OTP-P1 (2026-07-06) — inspect login paths AND OTP / second-factor
+        // verify paths. The OTP axes below only run on OTP paths.
+        let auth_path = is_auth_path(path);
+        let otp_path = is_otp_path(path);
+        if !auth_path && !otp_path {
             return Vec::new();
         }
         let has_auth_header = req.headers.contains_key(http::header::AUTHORIZATION);
@@ -427,6 +488,40 @@ impl Detector for BruteForceDetector {
             None => false,
         };
 
+        // ---- OTP axes (spray + grind), OTP paths only ---------
+        // Axis B (spray): distinct identities submitting the SAME code.
+        // Axis A (grind): distinct codes per identity. The identity is the
+        // pre-auth `login_token` (→ session cookie → bearer); the `otp_code`
+        // is the GUESS and is NEVER used as the identity. Both need an
+        // identity AND a code — otherwise only the per-IP axis applies.
+        let mut otp_spray_fired = false;
+        let mut otp_grind_fired = false;
+        let mut otp_code_field = None;
+        let mut otp_identity_field = None;
+        if otp_path {
+            if let (Some(identity), Some(code)) =
+                (extract_otp_identity(req), extract_otp_code(req))
+            {
+                let id_hash = short_hash(&identity);
+                let code_hash = short_hash(&code);
+                // Axis B (spray): local OR fleet — under `count_scope: fleet` a
+                // spray load-balanced across nodes trips the shared counter while
+                // every node's local count stays under threshold (IP-rotation
+                // resilience). `fleet_check` no-ops in per_node scope.
+                let (spray_local, spray_new) =
+                    self.record_otp_spray_and_check(&code_hash, &id_hash);
+                otp_spray_fired = spray_local
+                    || self.fleet_check("otp_spray", &code_hash, spray_new, OTP_SPRAY_THRESHOLD);
+                // Axis A (grind): same seam, keyed on the identity.
+                let (grind_local, grind_new) =
+                    self.record_otp_grind_and_check(&id_hash, &code_hash);
+                otp_grind_fired = grind_local
+                    || self.fleet_check("otp_grind", &id_hash, grind_new, OTP_GRIND_THRESHOLD);
+                otp_code_field = Some(code_hash);
+                otp_identity_field = Some(id_hash);
+            }
+        }
+
         // Stack signals so an attack matching multiple axes
         // accumulates score. Each axis emits with its own tag so
         // the audit log shows which axis caught the attack.
@@ -456,6 +551,29 @@ impl Detector for BruteForceDetector {
                     // audit field — full string is in the audit
                     // event's optional fields blob.
                     field: format!("device:{}", &fp[..fp.len().min(16)]),
+                });
+            }
+        }
+        // OTP spray (Axis B) — the primary, IP-independent signal. Field
+        // carries the code HASH (never the plaintext OTP) so ops can cluster
+        // a confirmed spray without leaking the guessed value.
+        if otp_spray_fired {
+            if let Some(code_hash) = &otp_code_field {
+                signals.push(Signal {
+                    score: OTP_SCORE,
+                    tag: "brute_force_otp_spray".into(),
+                    field: format!("otp_spray:code={code_hash}"),
+                });
+            }
+        }
+        // OTP grind (Axis A) — one identity, many codes. Field carries the
+        // identity HASH (the login_token is a secret; never echo it raw).
+        if otp_grind_fired {
+            if let Some(id_hash) = &otp_identity_field {
+                signals.push(Signal {
+                    score: OTP_SCORE,
+                    tag: "brute_force_otp".into(),
+                    field: format!("otp:id={id_hash}"),
                 });
             }
         }
@@ -570,6 +688,172 @@ fn is_auth_path(path: &str) -> bool {
             | "/session"
             | "/sessions"
     )
+}
+
+/// BF-OTP-P1 (2026-07-06) — OTP / second-factor verify routes across the
+/// hackathon corpus. Exact-path match (trailing-slash trimmed, lowercased) —
+/// NOT substring, so `/verify-email` never trips `/verify`. Substring matching
+/// on an additive-score gate would risk false positives on business routes.
+fn is_otp_path(path: &str) -> bool {
+    let p = path.trim_end_matches('/').to_ascii_lowercase();
+    matches!(
+        p.as_str(),
+        "/otp"
+            | "/api/otp"
+            | "/verify-otp"
+            | "/otp/verify"
+            | "/2fa"
+            | "/2fa/verify"
+            | "/api/2fa/verify"
+            | "/mfa"
+            | "/mfa/verify"
+            | "/verify"
+            | "/challenge/verify"
+            | "/api/auth/verify"
+            | "/totp"
+            | "/api/totp"
+    )
+}
+
+/// BF-OTP-P1 — extract the pre-auth IDENTITY an OTP submission belongs to, in
+/// order: body `login_token` (JSON or form) → `sid`/`session` cookie →
+/// `Authorization: Bearer <token>`. This is the tracking key for both OTP axes.
+/// Returns `None` when nothing identifies the session (then only per-IP applies).
+/// NEVER returns the `otp_code` — the guess must not become the identity.
+fn extract_otp_identity(req: &RequestView<'_>) -> Option<String> {
+    // 1. Body `login_token` (the openapi target's field).
+    let body = req.body.peek(8 * 1024);
+    if let Ok(text) = std::str::from_utf8(body) {
+        if let Some(v) = json_str_field(text, "\"login_token\"") {
+            return Some(v);
+        }
+        for pair in text.split('&') {
+            if let Some(val) = pair.strip_prefix("login_token=") {
+                if !val.is_empty() {
+                    return Some(val.to_string());
+                }
+            }
+        }
+    }
+    // 2. Session cookie (`sid` is what /otp sets on success; `session` fallback).
+    if let Some(cookie) = req
+        .headers
+        .get(http::header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+    {
+        for part in cookie.split(';') {
+            let part = part.trim();
+            for k in &["sid=", "session="] {
+                if let Some(val) = part.strip_prefix(k) {
+                    if !val.is_empty() {
+                        return Some(val.to_string());
+                    }
+                }
+            }
+        }
+    }
+    // 3. Bearer token.
+    if let Some(auth) = req
+        .headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    {
+        if let Some(tok) = auth
+            .strip_prefix("Bearer ")
+            .or_else(|| auth.strip_prefix("bearer "))
+        {
+            let tok = tok.trim();
+            if !tok.is_empty() {
+                return Some(tok.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// BF-OTP-P1 — extract the OTP GUESS (`otp_code` / `code` / `otp`) from the
+/// body. Deliberately does NOT read `token` (that collides with `login_token`).
+/// Returns the raw wire string; the caller hashes it before use.
+fn extract_otp_code(req: &RequestView<'_>) -> Option<String> {
+    let body = req.body.peek(8 * 1024);
+    if body.is_empty() {
+        return None;
+    }
+    let text = std::str::from_utf8(body).ok()?;
+    for key in &["\"otp_code\"", "\"code\"", "\"otp\""] {
+        if let Some(v) = json_str_field(text, key) {
+            return Some(v);
+        }
+    }
+    for pair in text.split('&') {
+        for k in &["otp_code=", "code=", "otp="] {
+            if let Some(val) = pair.strip_prefix(k) {
+                if !val.is_empty() {
+                    return Some(val.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Pull a JSON string value for `quoted_key` (e.g. `"\"otp_code\""`) with a
+/// cheap substring scan — no full parse, since attacker bodies may be malformed.
+fn json_str_field(text: &str, quoted_key: &str) -> Option<String> {
+    let idx = text.find(quoted_key)?;
+    let tail = &text[idx + quoted_key.len()..];
+    let tail = tail.trim_start_matches(|c: char| c.is_whitespace() || c == ':' || c == '"');
+    let end = tail.find('"')?;
+    let v = &tail[..end];
+    if !v.is_empty() && v.len() < 256 {
+        Some(v.to_string())
+    } else {
+        None
+    }
+}
+
+/// Shared body for both OTP axes: in a windowed distinct-member map, record
+/// `member` under `key`, prune the window, and return whether the distinct-
+/// member count crosses `threshold`. Deduping `member` gives distinct-count
+/// (not raw-attempt) semantics, which is what kills the retry/typo false
+/// positives. Bounded per key at `threshold * 2` like the other axes.
+///
+/// Returns `(fired, newly_distinct)`: `fired` when the local distinct count
+/// crosses `threshold`; `newly_distinct` when this is the first time this node
+/// saw `member` under `key` in the window (the event the fleet channel
+/// contributes upstream, mirroring the per-user/per-device axes).
+fn record_distinct_windowed(
+    map: &Mutex<HashMap<String, Vec<(String, Instant)>>>,
+    window: Duration,
+    key: &str,
+    member: &str,
+    threshold: u32,
+) -> (bool, bool) {
+    let now = Instant::now();
+    let cutoff = now.checked_sub(window).unwrap_or(now);
+    let mut state = map.lock().expect("otp distinct-map poisoned");
+    let entry = state.entry(key.to_string()).or_default();
+    entry.retain(|(_, t)| *t >= cutoff);
+    let newly_distinct = !entry.iter().any(|(m, _)| m == member);
+    if newly_distinct {
+        entry.push((member.to_string(), now));
+    }
+    let cap = (threshold * 2).max(20) as usize;
+    if entry.len() > cap {
+        let drop_n = entry.len() - cap;
+        entry.drain(0..drop_n);
+    }
+    let distinct: HashSet<&str> = entry.iter().map(|(m, _)| m.as_str()).collect();
+    (distinct.len() as u32 > threshold, newly_distinct)
+}
+
+/// Stable non-cryptographic short hash. Used to key the OTP maps and to fill
+/// audit fields without retaining the plaintext `otp_code` / `login_token`.
+fn short_hash(s: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    format!("{:016x}", h.finish())
 }
 
 #[cfg(test)]
@@ -1202,6 +1486,337 @@ mod tests {
         assert!(
             s.iter().any(|sig| sig.tag == "brute_force_device"),
             "fleet device count 6 must trip while local counts are 3+3: {s:?}",
+        );
+    }
+
+    // ---- BF-OTP-P1 (2026-07-06) — OTP / second-factor brute-force axes ----
+
+    fn otp_body(login_token: &str, code: &str) -> BodyPeek {
+        BodyPeek::new(
+            format!(r#"{{"login_token":"{login_token}","otp_code":"{code}"}}"#).into_bytes(),
+            None,
+            false,
+        )
+    }
+
+    // --- pure extractor tests ---
+
+    #[test]
+    fn extract_otp_identity_from_json_login_token() {
+        let body = otp_body("tok-abc", "123456");
+        let (m, u, h, _) = make_req(http::Method::POST, "/otp");
+        let v = view_with_body(&m, &u, &h, &body, "30.0.0.1:443");
+        assert_eq!(extract_otp_identity(&v).as_deref(), Some("tok-abc"));
+    }
+
+    #[test]
+    fn extract_otp_identity_from_form_login_token() {
+        let body = BodyPeek::new(b"login_token=tok-form&otp_code=123456".to_vec(), None, false);
+        let (m, u, h, _) = make_req(http::Method::POST, "/otp");
+        let v = view_with_body(&m, &u, &h, &body, "30.0.0.2:443");
+        assert_eq!(extract_otp_identity(&v).as_deref(), Some("tok-form"));
+    }
+
+    #[test]
+    fn extract_otp_identity_from_cookie_when_no_body_token() {
+        let mut h = http::HeaderMap::new();
+        h.insert(http::header::COOKIE, "sid=sess-xyz; other=1".parse().unwrap());
+        let body = BodyPeek::new(br#"{"otp_code":"123456"}"#.to_vec(), None, false);
+        let (m, u, _, _) = make_req(http::Method::POST, "/otp");
+        let v = view_with_body(&m, &u, &h, &body, "30.0.0.3:443");
+        assert_eq!(extract_otp_identity(&v).as_deref(), Some("sess-xyz"));
+    }
+
+    #[test]
+    fn extract_otp_identity_from_bearer_when_no_body_or_cookie() {
+        let mut h = http::HeaderMap::new();
+        h.insert(http::header::AUTHORIZATION, "Bearer beartok".parse().unwrap());
+        let body = BodyPeek::new(br#"{"otp_code":"123456"}"#.to_vec(), None, false);
+        let (m, u, _, _) = make_req(http::Method::POST, "/otp");
+        let v = view_with_body(&m, &u, &h, &body, "30.0.0.4:443");
+        assert_eq!(extract_otp_identity(&v).as_deref(), Some("beartok"));
+    }
+
+    #[test]
+    fn extract_otp_code_from_json_and_form() {
+        let (m, u, h, _) = make_req(http::Method::POST, "/otp");
+        let j = otp_body("t", "000090");
+        assert_eq!(
+            extract_otp_code(&view_with_body(&m, &u, &h, &j, "30.0.0.5:443")).as_deref(),
+            Some("000090"),
+        );
+        let f = BodyPeek::new(b"login_token=t&otp_code=000091".to_vec(), None, false);
+        assert_eq!(
+            extract_otp_code(&view_with_body(&m, &u, &h, &f, "30.0.0.6:443")).as_deref(),
+            Some("000091"),
+        );
+    }
+
+    /// Load-bearing correctness property: identity (`login_token`) and code
+    /// (`otp_code`) are SEPARATE extractions. Keying the per-session axis on the
+    /// code would make the detector count every guess as a new "identity" and
+    /// never fire the spray. They must never be equal for a real submission.
+    #[test]
+    fn never_keys_identity_on_otp_code() {
+        let body = otp_body("the-token", "000090");
+        let (m, u, h, _) = make_req(http::Method::POST, "/otp");
+        let v = view_with_body(&m, &u, &h, &body, "30.0.0.7:443");
+        assert_eq!(extract_otp_identity(&v).as_deref(), Some("the-token"));
+        assert_eq!(extract_otp_code(&v).as_deref(), Some("000090"));
+        assert_ne!(extract_otp_identity(&v), extract_otp_code(&v));
+    }
+
+    #[test]
+    fn otp_path_aliases_match_and_negatives_dont() {
+        for p in [
+            "/otp", "/api/otp", "/verify-otp", "/2fa", "/2fa/verify", "/mfa", "/verify",
+            "/challenge/verify", "/totp", "/api/totp",
+        ] {
+            assert!(is_otp_path(p), "{p} should be an OTP path");
+        }
+        for p in ["/verify-email", "/api/profile", "/login", "/otpx", "/verifyotp"] {
+            assert!(!is_otp_path(p), "{p} should NOT be an OTP path");
+        }
+    }
+
+    // --- Axis B: spray (distinct tokens, same code) ---
+
+    #[test]
+    fn otp_spray_fires_above_threshold() {
+        let d = BruteForceDetector::default();
+        let (m, u, h, _) = make_req(http::Method::POST, "/otp");
+        // 20 distinct tokens, same code — at threshold, silent.
+        for i in 0..20 {
+            let body = otp_body(&format!("tok{i}"), "000090");
+            let s = d.inspect(&view_with_body(&m, &u, &h, &body, "31.0.0.1:443"));
+            assert!(
+                !s.iter().any(|x| x.tag == "brute_force_otp_spray"),
+                "under spray threshold at {i} tokens",
+            );
+        }
+        // 21st distinct token → > 20 → fires.
+        let body = otp_body("tok20", "000090");
+        let s = d.inspect(&view_with_body(&m, &u, &h, &body, "31.0.0.1:443"));
+        assert!(
+            s.iter().any(|x| x.tag == "brute_force_otp_spray"),
+            "21 distinct tokens on one code must fire spray: {s:?}",
+        );
+    }
+
+    #[test]
+    fn otp_spray_is_ip_independent() {
+        let d = BruteForceDetector::default();
+        let (m, u, h, _) = make_req(http::Method::POST, "/otp");
+        let mut fired = false;
+        // 21 distinct tokens, same code, each from a DIFFERENT IP.
+        for i in 0..21 {
+            let body = otp_body(&format!("rtok{i}"), "555555");
+            let ip = format!("32.0.{}.{}:443", i / 250, i % 250);
+            let s = d.inspect(&view_with_body(&m, &u, &h, &body, &ip));
+            if s.iter().any(|x| x.tag == "brute_force_otp_spray") {
+                fired = true;
+            }
+        }
+        assert!(fired, "spray must fire on distinct-token/same-code across rotating IPs");
+    }
+
+    #[test]
+    fn otp_spray_dedupes_repeated_identity() {
+        let d = BruteForceDetector::default();
+        let (m, u, h, _) = make_req(http::Method::POST, "/otp");
+        // ONE token retries the same code 50× — distinct-identity count = 1.
+        let body = otp_body("solo", "000090");
+        for _ in 0..50 {
+            let s = d.inspect(&view_with_body(&m, &u, &h, &body, "33.0.0.1:443"));
+            assert!(
+                !s.iter().any(|x| x.tag == "brute_force_otp_spray"),
+                "a single token must never trip the spray axis",
+            );
+        }
+    }
+
+    // --- Axis A: grind (distinct codes, same token) ---
+
+    #[test]
+    fn otp_grind_fires_above_threshold() {
+        let d = BruteForceDetector::default();
+        let (m, u, h, _) = make_req(http::Method::POST, "/otp");
+        // one token, 10 distinct codes — at threshold, silent.
+        for i in 0..10 {
+            let body = otp_body("grindtok", &format!("{i:06}"));
+            let s = d.inspect(&view_with_body(&m, &u, &h, &body, "34.0.0.1:443"));
+            assert!(
+                !s.iter().any(|x| x.tag == "brute_force_otp"),
+                "under grind threshold at {i} codes",
+            );
+        }
+        // 11th distinct code → > 10 → fires.
+        let body = otp_body("grindtok", "000099");
+        let s = d.inspect(&view_with_body(&m, &u, &h, &body, "34.0.0.1:443"));
+        assert!(
+            s.iter().any(|x| x.tag == "brute_force_otp"),
+            "11 distinct codes on one token must fire grind: {s:?}",
+        );
+    }
+
+    #[test]
+    fn otp_grind_dedupes_repeated_code() {
+        let d = BruteForceDetector::default();
+        let (m, u, h, _) = make_req(http::Method::POST, "/otp");
+        // one token submits the SAME code 30× — distinct-code count = 1.
+        let body = otp_body("typotok", "123456");
+        for _ in 0..30 {
+            let s = d.inspect(&view_with_body(&m, &u, &h, &body, "35.0.0.1:443"));
+            assert!(
+                !s.iter().any(|x| x.tag == "brute_force_otp"),
+                "repeated identical code must not trip the grind axis",
+            );
+        }
+    }
+
+    // --- false-positive guards (the owner directive) ---
+
+    #[test]
+    fn distinct_codes_across_many_tokens_no_spray() {
+        let d = BruteForceDetector::default();
+        let (m, u, h, _) = make_req(http::Method::POST, "/otp");
+        // 50 distinct tokens each with a DISTINCT code — the legit shape.
+        for i in 0..50 {
+            let body = otp_body(&format!("legit{i}"), &format!("{:06}", 100000 + i));
+            let s = d.inspect(&view_with_body(&m, &u, &h, &body, "36.0.0.1:443"));
+            assert!(
+                s.iter().all(|x| x.tag != "brute_force_otp_spray"),
+                "distinct codes must never cluster into a spray",
+            );
+        }
+    }
+
+    #[test]
+    fn non_otp_path_emits_no_otp_signal() {
+        let d = BruteForceDetector::default();
+        let (m, u, h, _) = make_req(http::Method::POST, "/api/profile");
+        for i in 0..30 {
+            let body = otp_body(&format!("t{i}"), "000090");
+            let s = d.inspect(&view_with_body(&m, &u, &h, &body, "37.0.0.1:443"));
+            assert!(
+                s.iter().all(|x| !x.tag.starts_with("brute_force_otp")),
+                "no OTP signals off OTP paths",
+            );
+        }
+    }
+
+    #[test]
+    fn per_ip_axis_fires_on_otp_path() {
+        // default per-IP threshold 10 — 11+ from one IP fires classic brute_force.
+        let d = BruteForceDetector::default();
+        let (m, u, h, _) = make_req(http::Method::POST, "/otp");
+        let mut fired = false;
+        for i in 0..12 {
+            let body = otp_body(&format!("iptok{i}"), &format!("{i:06}"));
+            let s = d.inspect(&view_with_body(&m, &u, &h, &body, "38.0.0.1:443"));
+            if s.iter().any(|x| x.tag == "brute_force") {
+                fired = true;
+            }
+        }
+        assert!(fired, "per-IP axis must fire on /otp once the path is recognized");
+    }
+
+    #[test]
+    fn otp_spray_signal_field_has_no_plaintext_code() {
+        let d = BruteForceDetector::default();
+        let (m, u, h, _) = make_req(http::Method::POST, "/otp");
+        let mut field = None;
+        for i in 0..22 {
+            let body = otp_body(&format!("htok{i}"), "000090");
+            let s = d.inspect(&view_with_body(&m, &u, &h, &body, "39.0.0.1:443"));
+            if let Some(sig) = s.iter().find(|x| x.tag == "brute_force_otp_spray") {
+                field = Some(sig.field.clone());
+            }
+        }
+        let field = field.expect("spray must have fired within 22 tokens");
+        assert!(
+            !field.contains("000090"),
+            "audit field must not leak the plaintext OTP: {field}",
+        );
+    }
+
+    // ---- BF-OTP-P2 — fleet aggregation of the OTP spray axis ----
+
+    fn otp_fleet_detector(backend: &Arc<FleetMock>) -> BruteForceDetector {
+        let d = BruteForceDetector::default(); // spray threshold 20
+        d.set_count_scope(BruteForceCountScope::Fleet);
+        d.install_fleet_backend(backend.clone());
+        d
+    }
+
+    /// IP-rotating spray load-balanced across nodes: 11 tokens hit node1, 10 hit
+    /// node2 (each node local ≤ 20, silent), but the shared fleet counter reaches
+    /// 21 and the spray axis fires — the exact threat the S-Tester report warned
+    /// about (rotate IPs / spread across the fleet to dilute per-node counts).
+    #[tokio::test]
+    async fn otp_spray_fleet_aggregates_across_two_nodes() {
+        let backend = Arc::new(FleetMock::new());
+        let node1 = otp_fleet_detector(&backend);
+        let node2 = otp_fleet_detector(&backend);
+        let (m, u, h, _) = make_req(http::Method::POST, "/otp");
+        let cache_key = format!("otp_spray:{}", short_hash("000090"));
+
+        // node1: 11 distinct tokens, same code — local 11 ≤ 20, silent.
+        for i in 0..11 {
+            let body = otp_body(&format!("ftok{i}"), "000090");
+            let s = node1.inspect(&view_with_body(&m, &u, &h, &body, "41.0.0.1:443"));
+            assert!(
+                !s.iter().any(|x| x.tag == "brute_force_otp_spray"),
+                "node1 local must stay under threshold at {i}",
+            );
+        }
+        // Wait on the spray-specific counter (the grind axis also writes its own
+        // per-identity keys, so `backend.total()` isn't spray-only here).
+        wait_until("node1's 11 spray contributions to land", || {
+            node1.fleet_cached(&cache_key).unwrap_or(0) >= 11
+        })
+        .await;
+
+        // node2: 10 more distinct tokens — local 10 ≤ 20, fleet total reaches 21.
+        for i in 11..21 {
+            let body = otp_body(&format!("ftok{i}"), "000090");
+            let _ = node2.inspect(&view_with_body(&m, &u, &h, &body, "41.0.0.2:443"));
+        }
+        wait_until("node2's fleet cache to reach 21", || {
+            node2.fleet_cached(&cache_key).unwrap_or(0) >= 21
+        })
+        .await;
+
+        // A repeat token (NOT newly distinct — no backend write) now sees the
+        // cached fleet count 21 > 20 → fires, though node2's local count is 10.
+        let body = otp_body("ftok11", "000090");
+        let s = node2.inspect(&view_with_body(&m, &u, &h, &body, "41.0.0.2:443"));
+        assert!(
+            s.iter().any(|x| x.tag == "brute_force_otp_spray"),
+            "fleet count 21 must trip the spray axis while local counts are 11+10: {s:?}",
+        );
+    }
+
+    /// Backend errors fail safe to the per-node count — no panic, no stall, and
+    /// the local spray axis still fires at its own threshold.
+    #[tokio::test]
+    async fn otp_spray_fleet_backend_error_falls_back_to_per_node() {
+        let backend = Arc::new(FleetMock::new_failing());
+        let node = otp_fleet_detector(&backend);
+        let (m, u, h, _) = make_req(http::Method::POST, "/otp");
+        // 20 distinct tokens — under local threshold, errors swallowed.
+        for i in 0..20 {
+            let body = otp_body(&format!("etok{i}"), "000090");
+            let s = node.inspect(&view_with_body(&m, &u, &h, &body, "42.0.0.1:443"));
+            assert!(!s.iter().any(|x| x.tag == "brute_force_otp_spray"));
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        // 21st distinct token crosses the LOCAL threshold — detection intact.
+        let body = otp_body("etok20", "000090");
+        let s = node.inspect(&view_with_body(&m, &u, &h, &body, "42.0.0.1:443"));
+        assert!(
+            s.iter().any(|x| x.tag == "brute_force_otp_spray"),
+            "local axis must still fire on backend failure: {s:?}",
         );
     }
 }

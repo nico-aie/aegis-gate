@@ -1,6 +1,9 @@
 # FEAT — Egress & internal-traffic visibility (design-first)
 
-> **Type:** FEAT (committee round-2 🟡4) · **Status:** 🔄 EG-1 ✅ REVIEWED & SIGNED OFF 2026-07-05 (decisions in design doc §6) — EG-2/EG-3 UNLOCKED; next = EG-2 T4 error-leak detector
+> **Type:** FEAT (committee round-2 🟡4) · **Status:** ✅ COMPLETE 2026-07-05 — EG-1 signed off; EG-2
+> T4/T5/T2/T3 detectors shipped on `feat/eg2-egress-observability` as **default-OFF, observability-only**
+> (audit rows, no risk-score impact — owner call). EG-3 Internal Flows page **dropped** (duplicated
+> Scaling/Upstreams). Open thread: EG-2 detectors default-OFF pending FP tuning.
 > **Track ID prefix:** `EG-<1–3>` · Largest and least-defined round-2 item — do last; EG-1 is a
 > design doc, not code → [`DESIGN-EG1-egress-response-inspection-2026-07.md`](../future/round-2-improvement/DESIGN-EG1-egress-response-inspection-2026-07.md).
 
@@ -92,9 +95,30 @@ EG-2 must converge with it, not build a second scanner:
 - [x] EG-1 design doc reviewed by owner (2026-07-05); committee framing agreed; decisions:
       T4→T5→T2/T3 order, T2/T3 v1 = PAN+secret markers only, own "Internal Flows" page,
       propagation-lag via config-version field on fleet snapshot.
-- [ ] EG-2: response-path detectors live in log-only with bench evidence; risk-model integration.
-- [ ] EG-2: converged with the shipped Response Filtering path — single shared `dlp::scan()` (no double
-      body pass), observe-before-redact ordering, and an explicit `max_scan_bytes`/content-type-gate
-      decision recorded (see EG-2 §"Coordination with the shipped Response Filtering surface").
-- [ ] EG-3: internal-flows page live from existing signals.
-- [ ] Documented boundary: origin-initiated egress explicitly out of scope with integration guidance.
+- [x] EG-2: response-path detectors live — ✅ 2026-07-05 (branch `feat/eg2-egress-observability`).
+      **Owner override (2026-07-05): observability-only — the detectors emit Detection audit rows
+      (visible in Live Feed / Audit) but do NOT feed the risk score** (a response-side detector
+      bumping risk that then blocks a *future* request was "hard to explain"). All three default-OFF:
+      - **T4 error-leak** (`detectors::egress_leak`): 5xx text/json stack-trace / debug-banner /
+        internal-IP detection, reusing the exact `response_filter` scrub patterns via new
+        `has_stack_trace`/`has_internal_ip` oracles (observe + redact can't drift). Observe-before-
+        redact at the buffered body-scrub site; stateless `scan()` → per-leak Detection audit only.
+      - **T5 egress-volume** (`detectors::egress_volume`): per-IP sliding-window bytes-out (size-only,
+        no body access) with a **read-only** volume-AND-elevated-risk FP guard (never raises risk);
+        Allow-gated outcome hook (Content-Length size); audit only.
+      - **T2/T3 sensitive-data** (`detectors::egress_sensitive`): content-type-gated, size-capped,
+        1-in-N-sampled `dlp::scan()` (v1 scope PAN-density + secret markers; PII deferred); audit only.
+- [x] EG-2: converged with the shipped Response Filtering path — observe-before-redact ordering
+      confirmed; `max_scan_bytes` decision recorded → **cap only the EG-2 read, leave the shipped
+      `redact_dlp` rung full-body and unchanged** (no behavior change to the default-ON scrubber).
+      Content-type gate applies to the EG-2 read only. NB: v1 runs T2/T3 as its own capped+sampled
+      `dlp::scan()` (the shipped path calls `dlp::redact()`, not `scan()`, so there is no existing
+      `scan()` to piggyback yet); the double body pass is bounded by the cap + sampling. A future
+      refactor can fold redact to reuse the scan match set for a single pass.
+- [~] EG-3: internal-flows page — **DROPPED (owner decision 2026-07-05).** Built then reverted: the 4
+      cards duplicated the existing **Scaling** (L2 cluster + L3 state backend) and **Upstreams**
+      (zone health) pages; only the config-plane propagation-lag view was net-new, not enough to
+      justify a page. The `/api/config/applied` endpoint was reverted with it. Revisit only if a
+      propagation-lag view is specifically wanted (candidate: fold into the Scaling page).
+- [x] Documented boundary: origin-initiated egress explicitly out of scope with integration guidance
+      (EG-1 §1; `docs/security/egress-observability.md`).
