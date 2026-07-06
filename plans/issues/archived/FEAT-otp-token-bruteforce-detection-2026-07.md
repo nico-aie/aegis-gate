@@ -1,7 +1,8 @@
 # FEAT — OTP / second-factor brute-force detection
 
-**Status:** IMPLEMENTED (P1+P2+P3) on `feat/otp-bruteforce-detection`, 2026-07-06 — TDD,
-workspace green. Awaiting review/merge.
+**Status:** ✅ COMPLETE & MERGED to develop 2026-07-06 (PR #168, commit ff410deb; merge
+d9e80386) — TDD, workspace green. Deferred: live `/otp` smoke against a running server
+(enforcement path unit/workspace-verified only).
 **Author:** planning pass 2026-07-06
 **Area:** `crates/aegis-security/src/detectors/brute_force.rs`, config + reload wiring
 **Evidence:** `tests/s-tester/reports/OTP_bruteforce_report.md` (Round-2 BTC logs, 514 `/otp` events)
