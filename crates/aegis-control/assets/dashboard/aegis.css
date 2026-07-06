@@ -488,6 +488,42 @@ button { font-family: inherit; }
   font-weight: 700; font-size: 10px;
 }
 .user-chip .name { font-size: 12px; font-weight: 500; }
+.user-chip.open { border-color: var(--hairline-strong); }
+
+/* Account menu — popover anchored under the topbar chip (identity,
+   My Account, Sign out). Theme-token driven so it tracks dark/light/paper. */
+.account-wrap { position: relative; display: inline-flex; }
+.account-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 220px;
+  background: var(--surface-1);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  z-index: 900;
+  overflow: hidden;
+  animation: modalFadeIn 100ms ease-out;
+}
+.account-menu-head {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface-2);
+}
+.account-menu-item {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  background: none; border: none;
+  color: var(--ink);
+  font-size: 12px; font-weight: 500; text-align: left;
+  cursor: pointer;
+}
+.account-menu-item svg { width: 14px; height: 14px; opacity: 0.85; }
+.account-menu-item:hover { background: var(--surface-2); }
+.account-menu-item.danger { color: var(--down); }
+.account-menu-item.danger:hover { background: var(--surface-2); }
 
 /* ===== Sidebar ===== */
 .sidebar {
