@@ -8093,7 +8093,8 @@ function PageSettings() {
           read-only today; mutation surfaces (terminate, toggle,
           update) ship in a follow-up once the audit-mutated
           handlers are wired. */}
-      <SettingsAccountCard />
+      {/* Self-service password change moved to the topbar account menu
+          (Change password → modal); the old SettingsAccountCard was removed. */}
       <SettingsBreakGlassCard />
       <SettingsIntegrationsCard />
       <SettingsCertsCard />
@@ -8242,82 +8243,6 @@ function ResponseFilterCard() {
   );
 }
 
-// AM-P2d — self-service "My Account" card: rotate your own password. Verifies
-// the current password server-side (unlike an admin reset) and signs out your
-// other sessions on success. To re-enroll a new authenticator, sign out and
-// use the login page's 2FA setup; a lost device is recovered by another admin
-// via Users → Reset 2FA.
-function SettingsAccountCard() {
-  const [cur, setCur] = useStateP('');
-  const [next, setNext] = useStateP('');
-  const [confirm, setConfirm] = useStateP('');
-  const [busy, setBusy] = useStateP(false);
-  const [notice, setNotice] = useStateP(null); // { ok, text }
-
-  const newOk = next.length >= 12;
-  const matchOk = next === confirm;
-  const canSubmit = cur.length > 0 && newOk && matchOk && next !== cur && !busy;
-
-  async function submit(e) {
-    e.preventDefault();
-    setBusy(true); setNotice(null);
-    const res = await window.selfChangePassword(cur, next);
-    setBusy(false);
-    const ok = res.status >= 200 && res.status < 300;
-    const text = ok
-      ? (res.message || 'Password changed.')
-      : (res.message || res.reason || `Change failed (HTTP ${res.status})`);
-    setNotice({ ok, text });
-    if (window.aegisToast) window.aegisToast(text, ok ? 'ok' : 'err');
-    if (ok) { setCur(''); setNext(''); setConfirm(''); }
-  }
-
-  return (
-    <div className="card" style={{ padding: 12, marginBottom: 12 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-        <window.I.Shield />
-        <strong style={{ fontSize: 13 }}>My Account</strong>
-        <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>· change your password</span>
-      </div>
-      {notice && (
-        <div style={{
-          padding: '8px 10px', marginBottom: 8, fontSize: 12, borderRadius: 6,
-          display: 'flex', alignItems: 'center', gap: 8,
-          border: `1px solid var(--${notice.ok ? 'ok' : 'danger'})`,
-          background: 'var(--surface-2)',
-        }}>
-          <span style={{ color: `var(--${notice.ok ? 'ok' : 'danger'})`, display: 'inline-flex' }}>
-            {notice.ok ? <window.I.Check /> : <window.I.Ban />}
-          </span>
-          <span style={{ color: 'var(--ink)' }}>{notice.text}</span>
-        </div>
-      )}
-      <form onSubmit={submit} style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--ink-dim)' }}>
-          Current password
-          <input type="password" value={cur} autoComplete="current-password"
-            onChange={e => setCur(e.target.value)} style={{ padding: '6px 8px' }} />
-        </label>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--ink-dim)' }}>
-          New password
-          <input type="password" value={next} autoComplete="new-password" placeholder="≥ 12 characters"
-            onChange={e => setNext(e.target.value)} style={{ padding: '6px 8px' }} />
-        </label>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--ink-dim)' }}>
-          Confirm new
-          <input type="password" value={confirm} autoComplete="new-password"
-            onChange={e => setConfirm(e.target.value)} style={{ padding: '6px 8px' }} />
-        </label>
-        <button type="submit" className="btn primary" disabled={!canSubmit}>Change password</button>
-        <span style={{ fontSize: 11, color: 'var(--warn)' }}>
-          {next && !newOk ? 'New password must be ≥ 12 characters'
-            : confirm && !matchOk ? 'Passwords don’t match'
-            : next && next === cur ? 'New password must differ from current' : ''}
-        </span>
-      </form>
-    </div>
-  );
-}
 
 // Active admin sessions — moved from Settings to the Users page (identity /
 // access surface). Read-only today; per-session revoke ships with the
@@ -12227,7 +12152,7 @@ function PageUsers() {
 
       <div className="card" style={{ padding: '8px 12px', marginBottom: 8, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', gap: 8, alignItems: 'center' }}>
         <window.I.Info />
-        <span>All admins are equal-privilege — any admin can manage accounts, and every change is audit-chained. You can’t remove the last admin. Manage your <em>own</em> account from <a href="#/settings" style={{ color: 'var(--accent)' }}>Settings</a>.</span>
+        <span>All admins are equal-privilege — any admin can manage accounts, and every change is audit-chained. You can’t remove the last admin. Change your <em>own</em> password from the account menu (top-right).</span>
       </div>
 
       {notice && (
@@ -12302,7 +12227,7 @@ function PageUsers() {
                   </td>
                   <td style={{ padding: '8px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
                     {acct.is_self ? (
-                      <a href="#/settings" style={{ fontSize: 11, color: 'var(--accent)' }}>Manage in Settings →</a>
+                      <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>Use the account menu (top-right) →</span>
                     ) : pwEdit && pwEdit.username === acct.username ? (
                       <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
                         <input type="password" autoFocus value={pwEdit.value} placeholder="new ≥12 char pw"

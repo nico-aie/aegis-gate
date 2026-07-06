@@ -1,5 +1,5 @@
 /* global React, ReactDOM */
-const { useState, useEffect } = React;
+const { useState, useEffect, useRef } = React;
 
 // ============== Sidebar nav model ==============
 //
@@ -107,6 +107,99 @@ const splitHashRoute = (raw) => {
     : { path: raw.slice(0, q), query: raw.slice(q) };
 };
 
+// ============== Account password modal ==============
+//
+// AM-P2d follow-up — self-service password change lifted out of the
+// Settings "My Account" card into a modal reachable from the topbar
+// account menu (the discoverable, GitHub/Google-style home). Shares the
+// exact server contract as the Settings card: `window.selfChangePassword`
+// verifies the CURRENT password server-side (unlike an admin reset) and
+// signs out your other sessions on success. The Settings card stays as a
+// deep-linkable fallback (`#/settings`) — both call the same endpoint.
+function AccountPasswordModal({ onClose }) {
+  const [cur, setCur] = useState('');
+  const [next, setNext] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState(null); // { ok, text }
+
+  const newOk = next.length >= 12;
+  const matchOk = next === confirm;
+  const canSubmit = cur.length > 0 && newOk && matchOk && next !== cur && !busy;
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!canSubmit) return;
+    setBusy(true); setNotice(null);
+    const res = await window.selfChangePassword(cur, next);
+    setBusy(false);
+    const ok = res.status >= 200 && res.status < 300;
+    const text = ok
+      ? (res.message || 'Password changed. Your other sessions were signed out.')
+      : (res.message || res.reason || `Change failed (HTTP ${res.status})`);
+    setNotice({ ok, text });
+    if (window.aegisToast) window.aegisToast(text, ok ? 'ok' : 'err');
+    if (ok) { setCur(''); setNext(''); setConfirm(''); }
+  }
+
+  const hint = next && !newOk ? 'New password must be ≥ 12 characters'
+    : confirm && !matchOk ? 'Passwords don’t match'
+      : next && next === cur ? 'New password must differ from current' : '';
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 440 }}>
+        <div className="modal-head">
+          <div className="modal-title">
+            <span style={{ display: 'inline-flex', verticalAlign: 'middle', marginRight: 6 }}><window.I.Shield /></span>
+            Change password
+          </div>
+          <button className="btn btn-sm" onClick={onClose} aria-label="Close">×</button>
+        </div>
+        <form onSubmit={submit}>
+          <div className="modal-body">
+            {notice && (
+              <div style={{
+                padding: '8px 10px', marginBottom: 12, fontSize: 12, borderRadius: 6,
+                display: 'flex', alignItems: 'center', gap: 8,
+                border: `1px solid var(--${notice.ok ? 'ok' : 'danger'})`,
+                background: 'var(--surface-2)',
+              }}>
+                <span style={{ color: `var(--${notice.ok ? 'ok' : 'danger'})`, display: 'inline-flex' }}>
+                  {notice.ok ? <window.I.Check /> : <window.I.Ban />}
+                </span>
+                <span style={{ color: 'var(--ink)' }}>{notice.text}</span>
+              </div>
+            )}
+            <div className="form-row">
+              <label>Current password</label>
+              <input className="ip" type="password" value={cur} autoComplete="current-password"
+                onChange={e => setCur(e.target.value)} autoFocus />
+            </div>
+            <div className="form-row">
+              <label>New password</label>
+              <input className="ip" type="password" value={next} autoComplete="new-password"
+                placeholder="≥ 12 characters" onChange={e => setNext(e.target.value)} />
+            </div>
+            <div className="form-row">
+              <label>Confirm new password</label>
+              <input className="ip" type="password" value={confirm} autoComplete="new-password"
+                onChange={e => setConfirm(e.target.value)} />
+            </div>
+            {hint && <div className="form-hint warn">{hint}</div>}
+          </div>
+          <div className="modal-foot">
+            <button type="button" className="btn" onClick={onClose}>Cancel</button>
+            <button type="submit" className="btn primary" disabled={!canSubmit}>
+              {busy ? 'Changing…' : 'Change password'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // ============== TopBar ==============
 //
 // HU-T2 — wired to real data instead of hardcoded "v1.4.2 · 5 nodes
@@ -134,6 +227,37 @@ function TopBar() {
     const t = setTimeout(() => setDrainArmed(false), 5000);
     return () => clearTimeout(t);
   }, [drainArmed]);
+  // Account menu — the topbar chip is now a clickable popover (identity,
+  // My Account, Sign out). Close on outside-click or Esc so it behaves like
+  // every other app's account menu.
+  const [acctMenu, setAcctMenu] = useState(false);
+  const [pwModal, setPwModal] = useState(false);
+  const acctRef = useRef(null);
+  useEffect(() => {
+    if (!acctMenu) return;
+    const onDoc = (ev) => { if (acctRef.current && !acctRef.current.contains(ev.target)) setAcctMenu(false); };
+    const onKey = (ev) => { if (ev.key === 'Escape') setAcctMenu(false); };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); };
+  }, [acctMenu]);
+  async function doLogout() {
+    // CQF-T1 — POSTs /admin/logout with CSRF; handler returns 204 + Set-Cookie
+    // clearing aegis_session + aegis_csrf. Always navigate away afterwards —
+    // even on network failure, abandoning the session UI is the safe move.
+    try {
+      const r = await window.adminLogout();
+      if (r.status === 204 || r.status === 200) {
+        window.aegisToast && window.aegisToast('Signed out', 'ok');
+      } else {
+        window.aegisToast && window.aegisToast(`Logout returned ${r.status}`, 'warn');
+      }
+    } catch (e) {
+      window.aegisToast && window.aegisToast(`Logout error: ${e.message || e}`, 'err');
+    } finally {
+      location.href = '/admin/login';
+    }
+  }
   const version = status.data?.version || '—';
   const env = (status.data?.environment || 'unknown').toLowerCase();
   const peers = cluster.data?.peers || [];
@@ -238,12 +362,37 @@ function TopBar() {
           );
         })()}
         <ThemeToggle />
-        <div className="user-chip">
-          <div className="avatar">AD</div>
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <span style={{ fontSize: 12, color: 'var(--ink)', fontWeight: 600, lineHeight: 1.2 }}>admin</span>
-            <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>SUPER · TOTP</span>
-          </div>
+        <div className="account-wrap" ref={acctRef}>
+          <button
+            type="button"
+            className={`user-chip${acctMenu ? ' open' : ''}`}
+            aria-haspopup="menu"
+            aria-expanded={acctMenu}
+            title="Account"
+            onClick={() => setAcctMenu(v => !v)}
+          >
+            <div className="avatar">AD</div>
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <span style={{ fontSize: 12, color: 'var(--ink)', fontWeight: 600, lineHeight: 1.2 }}>admin</span>
+              <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>SUPER · TOTP</span>
+            </div>
+          </button>
+          {acctMenu && (
+            <div className="account-menu" role="menu">
+              <div className="account-menu-head">
+                <div style={{ fontSize: 12, color: 'var(--ink)', fontWeight: 600 }}>admin</div>
+                <div style={{ fontSize: 10, color: 'var(--ink-dim)', marginTop: 2 }}>SUPER · TOTP enrolled</div>
+              </div>
+              <button type="button" className="account-menu-item" role="menuitem"
+                onClick={() => { setAcctMenu(false); setPwModal(true); }}>
+                <window.I.Shield /> Change password
+              </button>
+              <button type="button" className="account-menu-item danger" role="menuitem"
+                onClick={() => { setAcctMenu(false); doLogout(); }}>
+                <window.I.LogOut /> Sign out
+              </button>
+            </div>
+          )}
         </div>
         {/* CQF-T14 → FIX-topbar-drain (2026-07-02) — TopBar drain toggle.
             The old button had two defects: (1) it treated the raw fetch
@@ -313,33 +462,11 @@ function TopBar() {
         >
           {isDraining ? <window.I.Play /> : <window.I.Pause />}
         </button>
-        {/* CQF-T1 — operator logout. POSTs /admin/logout with CSRF; handler returns
-            204 + Set-Cookie clearing both aegis_session and aegis_csrf. We
-            redirect to the login screen so the next mutation has no auth state
-            to lean on. */}
-        <button
-          className="icon-btn"
-          title="Sign out"
-          onClick={async () => {
-            try {
-              const r = await window.adminLogout();
-              if (r.status === 204 || r.status === 200) {
-                window.aegisToast && window.aegisToast('Signed out', 'ok');
-              } else {
-                window.aegisToast && window.aegisToast(`Logout returned ${r.status}`, 'warn');
-              }
-            } catch (e) {
-              window.aegisToast && window.aegisToast(`Logout error: ${e.message || e}`, 'err');
-            } finally {
-              // Always navigate away — even when the network call fails the
-              // safest thing is to abandon the session UI.
-              location.href = '/admin/login';
-            }
-          }}
-        >
-          <window.I.LogOut />
-        </button>
+        {/* CQF-T1 — operator logout folded into the account menu (Sign out).
+            The POST /admin/logout + redirect logic now lives in `doLogout`,
+            shared by that menu item. */}
       </div>
+      {pwModal && <AccountPasswordModal onClose={() => setPwModal(false)} />}
     </div>
   );
 }
