@@ -1,6 +1,9 @@
 # Brute Force & Credential Stuffing Detection
 
-> **Status:** Partial — `BruteForce` is a `DetectorClass` + admin-API surface; the detection itself is delivered through `velocity.rs` (login-failure counter). No dedicated `detectors/brute_force.rs`.
+> **Status:** Implemented — `detectors/brute_force.rs` runs per-IP, per-user
+> (password-spraying), and per-device axes on login paths, plus **OTP-spray** and
+> **OTP-grind** axes on second-factor paths (BF-OTP, 2026-07-06). Counts are
+> per-node by default and fleet-aggregable via `detectors.brute_force.count_scope: fleet`.
 >
 > See [`../../../plans/plan.md`](../../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
 
@@ -30,6 +33,25 @@ One password, many usernames — typical of credential spraying. Track unique (p
 
 - Attempts faster than a human can type (<500ms apart) are bot-like
 - Attempts spread evenly across accounts suggest automation
+
+### OTP / second-factor brute force (BF-OTP)
+
+Two request-path axes gate the OTP verify step (`/otp`, `/api/otp`, `/2fa/verify`,
+`/mfa/verify`, `/challenge/verify`, `/totp`, … — exact-path allowlist). The identity is the
+pre-auth `login_token` (→ `sid`/`session` cookie → `Bearer`); the `otp_code` is the guess
+and is **never** used as the identity.
+
+- **OTP spray (primary, IP-independent)** — many distinct sessions submitting the *same*
+  `otp_code`. This is the fixed-code spray shape (bet that some account's code is `X`) that
+  survives IP rotation: it keys on the code and counts **distinct identities**. Fires above
+  **20** distinct identities / window → `brute_force_otp_spray`.
+- **OTP grind** — one session (`login_token`) trying many distinct codes. Keys on the
+  identity, counts **distinct codes**. Fires above **10** / window → `brute_force_otp`.
+
+Both emit **score 40**, dedupe repeats to distinct-count semantics (killing retry/typo
+false positives), hash the `otp_code` before use (never logged in plaintext), and aggregate
+fleet-wide under `count_scope: fleet`. Thresholds are hardcoded constants (no per-detector
+config). Design + evidence: `plans/issues/FEAT-otp-token-bruteforce-detection-2026-07.md`.
 
 ## Identifying failed auth
 
