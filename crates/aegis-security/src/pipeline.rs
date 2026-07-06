@@ -251,6 +251,12 @@ impl SecurityPipeline for Pipeline {
             if masked != *working {
                 working = std::borrow::Cow::Owned(masked);
             }
+            // RF-3 (2026-07-06) — internal hostnames + infra DSNs, sibling of
+            // the IP mask under the same toggle.
+            let masked_hosts = crate::response_filter::mask_internal_hostnames(&working);
+            if masked_hosts != *working {
+                working = std::borrow::Cow::Owned(masked_hosts);
+            }
         }
         if cfg.redact_dlp {
             let redacted = crate::dlp::redact(&working);
