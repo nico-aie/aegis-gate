@@ -8,6 +8,12 @@
 replayed and the WAF passed to the origin. **Zero-FP discipline throughout** — every signature added
 here must be a token that does not occur in valid traffic, or be scoped/scored so it cannot over-block.
 
+> **Status (2026-07-06):**
+> - **SG-1 SSRF — SHIPPED & MERGED** (PR #170): plain-URL internal-host patterns (14 misses).
+> - **SG-2 NoSQL escaped-quote — SHIPPED** (`feat/sg2-sg3-nosql-jsrce`): shared `json_unescape()` + unescaped-body scan.
+> - **SG-3 JS-RCE vocab — SHIPPED (partial)** (same branch): `child_process`/`execSync`/`process.mainModule`/`__proto__`/`constructor:constructor` in cmdi, caught on JSON/text/form/query. **Multipart delivery NOT covered** — the id-1 payload is `multipart/form-data`, which `body_is_scannable()` excludes; enabling multipart globally broadens FP for every detector (file uploads), so it's a **separate FP-sensitive decision**, deliberately not bundled. Owner call pending.
+> - **SG-4 CRLF — ASSESSED, not implemented.** hyper parses/re-serializes inbound framing and splits/rejects the raw `\r\n` **before** any detector runs (see [[project_hyper_normalizes_framing]]), so the injected header is already a separate header by inspection time and the encoded `%0d%0a` form is *already* caught by `header_injection`. Residual value is the output-side CR/LF strip on forward/reflect (defense-in-depth); low priority given hyper's normalization. Left as an optional follow-up.
+
 > ⚠️ **Framing note.** In the report all 18 show a non-`allow` `waf_status` (401/403/400/404) — but that
 > is the **cumulative IP-risk gate or the upstream** reacting, *not* the content detector. The relevant
 > detector (`ssrf` / `nosql` / `header_injection` / `command_injection`) contributed **no signal**. With a
