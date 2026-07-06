@@ -197,6 +197,41 @@ pub fn mask_internal_ips(text: &str) -> String {
         .to_string()
 }
 
+/// Infra connection-string DSNs (`redis://…`, `postgres://user:pass@…`).
+/// Masked whole — the scheme + creds + host are all internal-disclosure.
+static INFRA_DSN_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)\b(?:rediss?|mongodb(?:\+srv)?|postgres(?:ql)?|mysql|amqps?)://[^\s"'<>]+"#)
+        .unwrap()
+});
+
+/// Internal service-discovery hostnames: any FQDN carrying an `internal` or
+/// `svc` label (`db.internal.novabet.local`, `x.svc.cluster.local`). The
+/// interior `.internal.`/`.svc.` label is the signature — it does not occur
+/// in public FQDNs, so `api.example.com` and the bare-`.local` filename
+/// `app.local.js` are not matched.
+static INTERNAL_HOST_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:internal|svc)(?:\.[a-z0-9-]+)*\b").unwrap()
+});
+
+/// Bare `*.cluster.local` (K8s) without an `svc` label.
+static CLUSTER_LOCAL_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.cluster\.local\b").unwrap()
+});
+
+/// RF-3 (2026-07-06 S-Tester) — mask internal service-discovery hostnames
+/// and infra connection-string DSNs, the sibling of [`mask_internal_ips`]
+/// (which only masks IP literals). The `SUSPICIOUS_200` leaks disclosed
+/// `db.internal.novabet.local` / `redis.internal.novabet.local:6379` which
+/// no rung touched. Scoped to `internal`/`svc` labels + `.cluster.local` +
+/// infra DSN schemes — all non-publicly-routable, so FP≈0. Public FQDNs
+/// (`api.example.com`) and bare-`.local` mDNS filenames (`app.local.js`) are
+/// intentionally NOT matched.
+pub fn mask_internal_hostnames(text: &str) -> String {
+    let a = INFRA_DSN_PATTERN.replace_all(text, "[INTERNAL]");
+    let b = INTERNAL_HOST_PATTERN.replace_all(&a, "[INTERNAL]");
+    CLUSTER_LOCAL_PATTERN.replace_all(&b, "[INTERNAL]").to_string()
+}
+
 /// 2026-05-18 F-CRITICAL-013 §5.7 sub-fix (JSON field masking).
 /// Recursively replaces values of fields whose names match
 /// `field_names` (case-insensitive) with `replacement`. Pure
@@ -259,6 +294,40 @@ pub fn filter_chunk(chunk: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // RF-3 (2026-07-06 S-Tester) — internal-hostname masking.
+    #[test]
+    fn rf3_masks_internal_service_hostnames() {
+        for host in [
+            "db.internal.novabet.local",
+            "redis.internal.novabet.local",
+            "kubernetes.default.svc.cluster.local",
+        ] {
+            let out = mask_internal_hostnames(&format!("connect to {host} now"));
+            assert!(!out.contains(host), "internal host leaked: {out}");
+            assert!(out.contains("[INTERNAL]"), "no mask marker: {out}");
+        }
+    }
+
+    #[test]
+    fn rf3_masks_host_with_port_preserving_port() {
+        let out = mask_internal_hostnames("redis.internal.novabet.local:6379");
+        assert!(!out.contains("redis.internal.novabet.local"), "host leaked: {out}");
+    }
+
+    #[test]
+    fn rf3_masks_infra_dsn() {
+        let out = mask_internal_hostnames("redis://cache.internal.svc:6379/0");
+        assert!(out.contains("[INTERNAL]"), "infra DSN must mask: {out}");
+    }
+
+    #[test]
+    fn rf3_public_hostname_untouched() {
+        // Public FQDNs and bare-`.local` filenames must pass through.
+        for s in ["GET https://api.example.com/v1", "load /static/app.local.js"] {
+            assert_eq!(mask_internal_hostnames(s), s, "public host masked: {s}");
+        }
+    }
 
     // Header tests.
     #[test]
