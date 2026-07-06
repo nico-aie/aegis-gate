@@ -1250,11 +1250,17 @@ function PageLiveFeed() {
   // node id instead of the ambiguous word "local" (which reads as a
   // mystery under a "NODE: WAF-2" scope pill — the waf-2 confusion).
   const selfNode = window.useSelfNode ? window.useSelfNode() : null;
-  // Show node attribution when there's a fleet to attribute to (or the
-  // operator scoped explicitly / rows carry a stamp).
+  // Show node attribution only when it actually disambiguates: a real
+  // fleet (>1 roster node), an explicit node scope, or >1 distinct
+  // origin in the buffer. In a single-node deployment every row carries
+  // the same stamp (e.g. `waf-1`), so the column is pure noise — hide it
+  // here and keep the attribution in the detail drawer (RequestDetail).
+  const distinctNodes = new Set(
+    events.map(e => e.node || selfNode).filter(Boolean)
+  );
   const showNodeCol = fleetNodes.length > 1
     || scopeNode !== 'all'
-    || events.some(e => e.node);
+    || distinctNodes.size > 1;
   const [filterAction, setFilterAction] = useStateP('all');
   const [filterTier, setFilterTier] = useStateP('all');
   const [search, setSearch] = useStateP('');
