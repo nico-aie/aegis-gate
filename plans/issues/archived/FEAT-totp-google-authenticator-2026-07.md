@@ -1,6 +1,6 @@
 # FEAT — TOTP with Google Authenticator: first-login enrollment + enforced login code
 
-> **Type:** FEAT (round-3, owner ask 2026-07-05) · **Status:** ☐ In progress · **Branch:** `feat/2fa`
+> **Type:** FEAT (round-3, owner ask 2026-07-05) · **Status:** ✅ COMPLETE & MERGED to develop (PR #167 `feat/2fa`) — owner-confirmed done 2026-07-06; live acceptance smoke deferred · **Branch:** `feat/2fa`
 > **Track ID prefix:** `TOTP-<1–4>` · **Derives from:**
 > [`../future/round-2-improvement/FEAT-2fa-enforcement-2026-07.md`](../future/round-2-improvement/FEAT-2fa-enforcement-2026-07.md)
 > (TF-1 / TF-1a / TF-4) and

@@ -1,6 +1,6 @@
 # FEAT — Recon detection hardening + canary-path seeding (implementation)
 
-> **Type:** FEAT (from round-2 IMPROVE) · **Status:** 🟢 All code shipped — Wave A + RC-2 + RC-4 + follow-ups MERGED to develop 2026-07-05 (PRs #157–165). Only the **corpus-gated Wave B validation** remains (RC-2 zero-FP gate, RC-3 corpus re-validation, 263-path committee evidence) — blocked on the S-Tester's FP-baseline corpus (separate task). · **Owner: Nico**
+> **Type:** FEAT (from round-2 IMPROVE) · **Status:** ✅ COMPLETE & MERGED to develop 2026-07-05 (PRs #157–165) — owner-confirmed done 2026-07-06. Corpus-gated Wave B validation (RC-2 zero-FP gate, RC-3 corpus re-validation, 263-path committee evidence) is tracked separately, blocked on the S-Tester's FP-baseline corpus — NOT part of this plan's remaining scope. · **Owner: Nico**
 > **Track ID prefix:** `RC-<1–5>` · **Source / verification record:**
 > [IMPROVE-recon-detection-and-canary-2026-07.md](../future/round-2-improvement/IMPROVE-recon-detection-and-canary-2026-07.md)
 > — **read its §1 before touching code**: the l-tester report's headline (263 recon paths pass from
