@@ -1,0 +1,452 @@
+{
+  "severity": "LOW",
+  "note": "Recon path WAF MISS — mức LOW. Distinct URL, đã đọc & phân loại theo nội dung lộ nếu file bị serve.",
+  "total_distinct": 34,
+  "total_requests": 47,
+  "records": [
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/.cache/",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/.env-example",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 3,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/.env-sample",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 3,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/.env_sample",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 2,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/.well-known/",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 2,
+      "headers": {
+        "host": "ec2-18-140-47-62.ap-southeast-1.compute.amazonaws.com"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/.well-known/about.php",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "host": "ec2-18-140-47-62.ap-southeast-1.compute.amazonaws.com"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/.well-known/apple-app-site-association",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/.well-known/assetlinks.json",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/.well-known/jwks.json",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/.well-known/openid-configuration",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/api/backup.js",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/api/backup.md",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/api/backup.php",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/api/backup.py",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/api/backup.rb",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/api/backup.ts",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/backup",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 2,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/backup.php",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/backup/asdf.php",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/backup/infos.php",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/backup/php.ini",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/backup/php.php",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/backup/phpversion.php",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/backup/settings.php",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/backup/temp.php",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/backup/time.php",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/backups",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept-encoding": "gzip",
+        "connection": "close",
+        "host": "127.0.0.1:8080",
+        "user-agent": "Go-http-client/1.1"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/bin/",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/env/bin/activate",
+      "type": "secret_file",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/wp-content",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept-encoding": "gzip",
+        "connection": "close",
+        "host": "127.0.0.1:8080",
+        "user-agent": "Go-http-client/1.1"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/wp-content/",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 2,
+      "headers": {
+        "host": "ec2-18-140-47-62.ap-southeast-1.compute.amazonaws.com"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/wp-content/index.php",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 2,
+      "headers": {
+        "host": "ec2-18-140-47-62.ap-southeast-1.compute.amazonaws.com"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/wp-content/uploads",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 1,
+      "headers": {
+        "accept-encoding": "gzip",
+        "connection": "close",
+        "host": "127.0.0.1:8080",
+        "user-agent": "Go-http-client/1.1"
+      }
+    },
+    {
+      "severity": "LOW",
+      "method": "GET",
+      "url": "/wp-content/uploads/",
+      "type": "scanner",
+      "waf_status": 404,
+      "round1_rule_id": "risk-score",
+      "occurrences": 5,
+      "headers": {
+        "accept": "*/*",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    }
+  ]
+}

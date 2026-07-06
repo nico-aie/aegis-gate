@@ -25,6 +25,28 @@ static SSRF_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)(?:https?://0x[0-9a-f]+)",
         r"(?i)(?:https?://\d{8,10})",
         r"(?i)(?:https?://0[0-7]+\.)",
+        // SG-1 (2026-07-06 S-Tester) — internal-host SSRF in PLAIN URL form
+        // (no userinfo `@`). Pre-fix these three shapes matched no pattern;
+        // all 14 `MISSED_attacks_serious` SSRF payloads arrive as a JSON
+        // body `email`/`url` value at `PUT /api/profile` /
+        // `POST /api/integrations/preview`.
+        //
+        // (a) Full loopback `127.0.0.0/8` shorthand — `127.1`, `127.0.1`
+        //     resolve to 127.0.0.1 via inet_aton. `\b` bounds it so
+        //     `127degrees.com` (no dotted-octet after 127) doesn't match.
+        //     FP≈0: `127.x` never appears in a valid public URL value.
+        r"(?i)https?://127(?:\.\d{1,3}){1,3}\b",
+        // (b) Internal service-discovery TLDs in a plain URL (lifted out of
+        //     the userinfo-only branch below). `.svc`/`.cluster.local` are
+        //     K8s-internal, `.internal` is cloud-internal, `.local` is mDNS
+        //     — none are publicly routable.
+        r"(?i)https?://[a-z0-9.-]+\.(?:internal|local|svc|cluster\.local)\b",
+        // (c) Single-label host + internal-infrastructure port. Public URLs
+        //     use multi-label FQDNs on 80/443; a bare single label
+        //     (`redis`, `database`, `internal-service`) on a service port is
+        //     anomalous. `[a-z0-9-]+` matches ONE label only (a dot ends it),
+        //     so `api.example.com:8080` does NOT match.
+        r"(?i)https?://[a-z0-9-]+:(?:22|3306|5432|6379|9200|9300|27017|11211|2379|5601|15672|8080|9000)\b",
         // GAP-004 (Run-5, 2026-05-09) — SSRF via URL-userinfo.
         // The `://[^@/]*@` shape catches http://user@host/,
         // http://user:pass@host/, etc. Some URL parsers split on
@@ -327,6 +349,47 @@ mod tests {
     // forms must NOT FP. The pattern only matches the documented
     // internal target prefixes (127, 10, 169.254, 192.168, 172.16-31,
     // 0) in dotted-decimal, plus their hex-colon equivalents.
+    // SG-1 (2026-07-06 S-Tester `MISSED_attacks_serious`) — internal-host
+    // SSRF in PLAIN URL form (no userinfo `@`). Pre-fix these matched NO
+    // pattern: short-loopback `127.1`, single-label internal host + infra
+    // port (`redis:6379`), and internal-TLD outside the `@` branch
+    // (`…svc.cluster.local`). All arrive in a JSON body `email`/`url` field.
+    positive!(ssrf_loopback_short_127_1,   "/proxy?url=http://127.1/");
+    positive!(ssrf_loopback_short_127_0_1, "/proxy?url=http://127.0.1/");
+    positive!(ssrf_singlelabel_redis,      "/proxy?url=http://redis:6379/");
+    positive!(ssrf_singlelabel_database,   "/proxy?url=http://database:3306/");
+    positive!(ssrf_singlelabel_es,         "/proxy?url=http://elasticsearch:9200/");
+    positive!(ssrf_singlelabel_internal_svc_port, "/proxy?url=http://internal-service:8080/");
+    positive!(ssrf_internal_tld_k8s,
+        "/proxy?url=http://kubernetes.default.svc.cluster.local/");
+
+    #[test]
+    fn ssrf_body_internal_hosts_all_fire() {
+        // The 14 `MISSED_attacks_serious` SSRF payloads land in a JSON body
+        // (`PUT /api/profile` email, `POST /api/integrations/preview` url).
+        for body in [
+            r#"{"email":"http://127.1","display_name":"x"}"#,
+            r#"{"email":"http://127.0.1","display_name":"x"}"#,
+            r#"{"email":"http://internal-service:8080","display_name":"x"}"#,
+            r#"{"email":"http://database:3306","display_name":"x"}"#,
+            r#"{"email":"http://redis:6379","display_name":"x"}"#,
+            r#"{"email":"http://elasticsearch:9200","display_name":"x"}"#,
+            r#"{"email":"http://kubernetes.default.svc.cluster.local","display_name":"x"}"#,
+            r#"{"url":"http://127.1"}"#,
+            r#"{"url":"http://redis:6379"}"#,
+        ] {
+            assert!(!ssrf_body_json(body).is_empty(), "body must SSRF: {body}");
+        }
+    }
+
+    // SG-1 FP guards — the new patterns must NOT fire on public URLs.
+    // A multi-label FQDN carrying a port is ordinary (`api.example.com:8080`);
+    // pattern #3 only matches SINGLE-label hosts. A public host on a
+    // non-infra port is fine. `127degrees.com` is not loopback.
+    negative!(clean_fqdn_with_port,      "/proxy?url=http://api.example.com:8080/v1");
+    negative!(clean_fqdn_https_port,     "/proxy?url=https://cdn.example.com:8443/asset.js");
+    negative!(clean_host_word_127,       "/proxy?url=http://127degrees.com/");
+    negative!(clean_singlelabel_web_port, "/proxy?url=http://example:443/");
     negative!(clean_public_ipv6,         "/proxy?url=http://[2001:db8::1]/");
     negative!(clean_ipv4_mapped_public,  "/proxy?url=http://[::ffff:8.8.8.8]/dns");
     negative!(clean_ipv4_mapped_172_32,  "/proxy?url=http://[::ffff:172.32.0.1]/");  // 172.32 is outside RFC 1918
