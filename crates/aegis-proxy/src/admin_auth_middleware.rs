@@ -78,8 +78,12 @@ pub enum Admit {
 }
 
 /// 2026-05-17 F-CRITICAL-002 + 004 + 005 — primary gate.
-pub async fn admit(
-    req: &Request<hyper::body::Incoming>,
+///
+/// Generic over the body type (TOTP-6): the gate only reads
+/// method/path/headers, and `B: ()` lets unit tests drive the full
+/// admit path without faking a hyper `Incoming`.
+pub async fn admit<B>(
+    req: &Request<B>,
     peer: SocketAddr,
     cfg: &WafConfig,
     auth_sessions: &Arc<AuthSessionStore>,
@@ -166,7 +170,36 @@ pub async fn admit(
         return Admit::Authenticated(id);
     }
 
-    if let Some(id) = try_session_auth(req, cfg, auth_sessions).await {
+    if let Some((id, totp_verified)) = try_session_auth(req, cfg, auth_sessions).await {
+        // TOTP-2 (TF-1) — enrollment-only sessions. A login that passed
+        // the password check but has no enrolled second factor (under
+        // `require_totp`) carries `totp_verified=false`; it may reach
+        // ONLY the TOTP enroll/confirm endpoints until a code from the
+        // authenticator app confirms enrollment. Everything else on the
+        // admin surface is denied — this is what makes "password alone
+        // never grants admin access" hold.
+        if !totp_verified && !is_enrollment_allowed(method, path) {
+            tracing::warn!(
+                actor = %id.actor,
+                method = %method,
+                path = %path,
+                "admin: enrollment-only session attempted a non-enrollment endpoint",
+            );
+            // TOTP-6 — a human navigating in a tab gets bounced to the
+            // login page (which hosts the QR enrollment flow) exactly
+            // like an unauthenticated navigation; only programmatic
+            // fetches see the JSON 403.
+            if wants_html_navigation(req) {
+                let next = request_path_with_query(req);
+                return Admit::Denied(login_redirect_response(&next));
+            }
+            return Admit::Denied(deny_response(
+                StatusCode::FORBIDDEN,
+                "totp_enrollment_required",
+                "this session requires TOTP enrollment — \
+                 POST /api/admin/totp/enroll then /api/admin/totp/confirm",
+            ));
+        }
         // Step 7 — CSRF on state-changing methods.
         // Browser-initiated reporting endpoints (CSP `report-uri`) are
         // exempt: the browser sends these automatically and never adds the
@@ -328,9 +361,13 @@ fn is_open_endpoint(method: &Method, path: &str, peer: &SocketAddr) -> bool {
         // which crash-loops liveness and pins startup un-ready. Health
         // probes expose no sensitive data (see `health.rs`), so the
         // whole namespace is open + future-proofed for new probes.
+        // `/login` — TOTP-7 convenience alias (303 → /admin/login). Open
+        // for the same reason the login page is: gating it would send
+        // the operator through /admin/login?next=%2Flogin and back to a
+        // 404 after signing in.
         return matches!(
             path,
-            "/readyz" | "/metrics" | "/admin/login" | "/admin/login.js"
+            "/readyz" | "/metrics" | "/login" | "/admin/login" | "/admin/login.js"
         ) || path == "/healthz"
             || path.starts_with("/healthz/")
             || path.starts_with("/dashboard")
@@ -355,6 +392,16 @@ fn is_csrf_exempt(path: &str) -> bool {
     matches!(path, "/api/csp/report")
 }
 
+/// TOTP-2 (TF-1) — the ONLY endpoints an enrollment-only session
+/// (`totp_verified=false`) may reach. Login/logout/health/static assets
+/// are open endpoints and never consult this. Kept as a tight literal
+/// match — new admin surfaces must NOT leak into the pre-enrollment
+/// state by default.
+fn is_enrollment_allowed(method: &Method, path: &str) -> bool {
+    *method == Method::POST
+        && matches!(path, "/api/admin/totp/enroll" | "/api/admin/totp/confirm")
+}
+
 fn requires_write_scope(method: &Method) -> bool {
     matches!(
         *method,
@@ -362,8 +409,8 @@ fn requires_write_scope(method: &Method) -> bool {
     )
 }
 
-fn try_bearer_auth(
-    req: &Request<hyper::body::Incoming>,
+fn try_bearer_auth<B>(
+    req: &Request<B>,
     cfg: &WafConfig,
 ) -> Option<Identity> {
     let header = req.headers().get("authorization")?.to_str().ok()?;
@@ -387,29 +434,34 @@ fn try_bearer_auth(
     None
 }
 
-async fn try_session_auth(
-    req: &Request<hyper::body::Incoming>,
+/// Validate the session cookie. Returns the identity plus the record's
+/// `totp_verified` flag so `admit` can hold enrollment-only sessions to
+/// the TOTP surface (TOTP-2).
+async fn try_session_auth<B>(
+    req: &Request<B>,
     _cfg: &WafConfig,
     sessions: &Arc<AuthSessionStore>,
-) -> Option<Identity> {
+) -> Option<(Identity, bool)> {
     let cookie = extract_cookie(req, "aegis_session")?;
     let record = sessions.validate(cookie).await?;
-    let _ = record; // SessionRecord doesn't carry user_id yet
-    // Single-admin model: every session belongs to "admin" until
-    // RBAC lands. When multi-user auth ships, SessionRecord will
-    // gain a `user_id` field and this hard-coded literal goes
-    // away.
-    Some(Identity {
-        actor: "admin".into(),
-        scopes: Scopes::FULL,
-        is_service_account: false,
-    })
+    // TOTP-1 (TF-4) — the session record carries the account it was
+    // issued to (multi-admin model); the audit chain's `actor` is that
+    // username. Pre-multi-account records serde-default to `admin`.
+    let totp_verified = record.totp_verified;
+    Some((
+        Identity {
+            actor: record.user,
+            scopes: Scopes::FULL,
+            is_service_account: false,
+        },
+        totp_verified,
+    ))
 }
 
 /// Extract a named cookie value from the Cookie header. RFC 6265
 /// minimal parser — pairs are `name=value` separated by `; `.
-fn extract_cookie<'a>(
-    req: &'a Request<hyper::body::Incoming>,
+fn extract_cookie<'a, B>(
+    req: &'a Request<B>,
     name: &str,
 ) -> Option<&'a str> {
     let header = req.headers().get(hyper::header::COOKIE)?;
@@ -488,6 +540,18 @@ mod tests {
     }
 
     #[test]
+    fn login_alias_is_open() {
+        // TOTP-7 — `GET /login` is a convenience alias that 303s to
+        // /admin/login. It must be OPEN: if it required auth, the gate
+        // would redirect to /admin/login?next=%2Flogin and the operator
+        // would land back on /login → JSON 404 after signing in.
+        let p = remote_peer();
+        assert!(is_open_endpoint(&Method::GET, "/login", &p));
+        // Only the GET alias — no POST surface at the alias path.
+        assert!(!is_open_endpoint(&Method::POST, "/login", &p));
+    }
+
+    #[test]
     fn dashboard_assets_are_open() {
         let p = remote_peer();
         assert!(is_open_endpoint(&Method::GET, "/dashboard", &p));
@@ -518,6 +582,24 @@ mod tests {
         assert!(!is_open_endpoint(&Method::PUT, "/api/detectors", &p));
         assert!(!is_open_endpoint(&Method::POST, "/api/rules", &p));
         assert!(!is_open_endpoint(&Method::DELETE, "/api/rules/abc", &p));
+    }
+
+    #[test]
+    fn enrollment_only_sessions_reach_only_the_totp_surface() {
+        // TOTP-2 (TF-1) — a session issued in the enrollment_required
+        // state (totp_verified=false) may reach ONLY the TOTP
+        // enroll/confirm endpoints; everything else on the admin surface
+        // is denied until the second factor is confirmed. (Login/logout/
+        // health/static are open endpoints and never get here.)
+        assert!(is_enrollment_allowed(&Method::POST, "/api/admin/totp/enroll"));
+        assert!(is_enrollment_allowed(&Method::POST, "/api/admin/totp/confirm"));
+        // Nothing else unlocks.
+        assert!(!is_enrollment_allowed(&Method::GET, "/api/stats"));
+        assert!(!is_enrollment_allowed(&Method::GET, "/api/admin/sessions"));
+        assert!(!is_enrollment_allowed(&Method::PUT, "/api/detectors"));
+        assert!(!is_enrollment_allowed(&Method::POST, "/api/rules"));
+        assert!(!is_enrollment_allowed(&Method::GET, "/api/admin/totp/enroll"));
+        assert!(!is_enrollment_allowed(&Method::DELETE, "/api/admin/totp/enroll"));
     }
 
     #[test]
@@ -615,5 +697,140 @@ mod tests {
     fn request_path_preserves_query() {
         let r = req(Method::GET, "/dashboard/rules?filter=ai", &[]);
         assert_eq!(request_path_with_query(&r), "/dashboard/rules?filter=ai");
+    }
+
+    // ---- TOTP-6 — enrollment-only sessions in a browser -----------------
+    //
+    // A session that passed the password check but hasn't confirmed its
+    // factor is enrollment-only. When such a session NAVIGATES (GET /,
+    // Accept: text/html) it must be bounced to /admin/login — the page
+    // that hosts the QR flow — not shown the raw JSON 403 that fetch()
+    // clients get. Mirrors the existing unauthenticated-navigation
+    // redirect (`wants_html_navigation`).
+
+    async fn enrollment_only_fixture() -> (
+        Arc<AuthSessionStore>,
+        aegis_core::config::WafConfig,
+        String,
+    ) {
+        let key = [7u8; 32];
+        let sessions = Arc::new(AuthSessionStore::new(key));
+        let (_, cookie) = sessions
+            .create_for_user("liud", "127.0.0.1", "ua", false)
+            .await
+            .expect("session create");
+        let cfg = aegis_core::load_config_str(
+            r#"
+listeners:
+  data: [{ bind: "0.0.0.0:443" }]
+  admin: { bind: "127.0.0.1:9443" }
+routes:
+  - { id: catch-all, path: "/", upstream: api }
+upstreams:
+  api: { members: [{ addr: "127.0.0.1:3000" }] }
+state: { backend: in_memory }
+"#,
+        )
+        .expect("minimal cfg parses");
+        (sessions, cfg, cookie)
+    }
+
+    #[tokio::test]
+    async fn enrollment_only_browser_navigation_redirects_to_login() {
+        let (sessions, cfg, cookie) = enrollment_only_fixture().await;
+        let r = req(
+            Method::GET,
+            "/",
+            &[
+                ("cookie", &format!("aegis_session={cookie}")),
+                ("accept", "text/html,application/xhtml+xml"),
+                ("sec-fetch-dest", "document"),
+            ],
+        );
+        match admit(&r, loopback_peer(), &cfg, &sessions).await {
+            Admit::Denied(resp) => {
+                assert_eq!(
+                    resp.status(),
+                    StatusCode::SEE_OTHER,
+                    "browser navigation must redirect, not dump JSON",
+                );
+                let loc = resp
+                    .headers()
+                    .get(hyper::header::LOCATION)
+                    .and_then(|h| h.to_str().ok())
+                    .unwrap_or("");
+                assert!(
+                    loc.starts_with("/admin/login"),
+                    "redirect must land on the login page (QR flow host): {loc}",
+                );
+            }
+            _ => panic!("enrollment-only navigation must be Denied(redirect)"),
+        }
+    }
+
+    #[tokio::test]
+    async fn enrollment_only_api_fetch_still_gets_json_403() {
+        let (sessions, cfg, cookie) = enrollment_only_fixture().await;
+        let r = req(
+            Method::GET,
+            "/api/stats",
+            &[
+                ("cookie", &format!("aegis_session={cookie}")),
+                ("accept", "application/json"),
+            ],
+        );
+        match admit(&r, loopback_peer(), &cfg, &sessions).await {
+            Admit::Denied(resp) => {
+                assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+                assert_eq!(
+                    resp.headers()
+                        .get("x-waf-rule-id")
+                        .and_then(|h| h.to_str().ok()),
+                    Some("totp_enrollment_required"),
+                );
+            }
+            _ => panic!("enrollment-only API fetch must stay a JSON 403"),
+        }
+    }
+
+    #[tokio::test]
+    async fn enrollment_only_session_reaches_the_enroll_endpoint() {
+        let (sessions, cfg, cookie) = enrollment_only_fixture().await;
+        let r = req(
+            Method::POST,
+            "/api/admin/totp/enroll",
+            &[
+                ("cookie", &format!("aegis_session={cookie}; aegis_csrf=tok")),
+                ("x-csrf-token", "tok"),
+            ],
+        );
+        match admit(&r, loopback_peer(), &cfg, &sessions).await {
+            Admit::Authenticated(id) => assert_eq!(id.actor, "liud"),
+            _ => panic!("the enroll endpoint must admit enrollment-only sessions"),
+        }
+    }
+
+    #[tokio::test]
+    async fn fully_verified_session_navigates_without_redirect() {
+        let (sessions, cfg, _) = enrollment_only_fixture().await;
+        let (_, cookie) = sessions
+            .create_for_user("liud", "127.0.0.1", "ua", true)
+            .await
+            .expect("session create");
+        let r = req(
+            Method::GET,
+            "/",
+            &[
+                ("cookie", &format!("aegis_session={cookie}")),
+                ("accept", "text/html"),
+            ],
+        );
+        assert!(
+            matches!(
+                admit(&r, loopback_peer(), &cfg, &sessions).await,
+                Admit::Authenticated(_),
+            ),
+            "verified sessions must not be redirected",
+        );
     }
 }

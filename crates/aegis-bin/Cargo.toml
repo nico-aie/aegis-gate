@@ -117,6 +117,11 @@ tracing-subscriber.workspace = true
 blake3.workspace = true
 base32.workspace = true
 uuid.workspace = true
+# AM-0c — echo-suppressed password entry for `waf admin set-password` /
+# `create-account`. Disables terminal echo on a TTY and reads piped input
+# unchanged (the prod path — `deploy/create-admin.sh` pipes the password),
+# so interactive use no longer leaks the password to the screen / scrollback.
+rpassword = "7"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 core_affinity = { version = "0.8", optional = true }

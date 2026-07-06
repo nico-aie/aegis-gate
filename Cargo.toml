@@ -57,6 +57,12 @@ uuid = { version = "1", features = ["v4"] }
 # real encode/decode.
 base32 = "0.5"
 
+# TOTP-3 (TF-1a) — server-side QR rendering for Google Authenticator
+# enrollment. Pure-Rust, rendered as an inline SVG string (svg renderer
+# only; the `image` raster feature stays off) so the admin box never
+# calls an external QR service.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+
 # TLS
 rustls = "0.23"
 tokio-rustls = "0.26"

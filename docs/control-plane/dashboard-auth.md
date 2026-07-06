@@ -327,3 +327,17 @@ SSO / RBAC federation is out of scope — not on any v1 milestone.
 - `crates/aegis-control/src/admin_auth/totp.rs` — RFC 6238
 - `crates/aegis-control/src/admin_auth/mtls.rs` — rustls client cert
 - `crates/aegis-control/src/admin_auth/mod.rs` — axum tower layer
+
+## Runtime account management (AM-P2)
+
+Multi-admin accounts are runtime-editable — no YAML edit or restart. A
+`StateBackend`-backed overlay (`control:waf:admin:accounts`, mirroring the TOTP
+enrollment store) is consulted by `AdminDirectory::resolve` ahead of the YAML
+seed: a live record wins, a tombstone hides a seeded account. Create/reset/
+delete flow through `aegis_control::api::admin_accounts`; the dashboard's
+**Users** page + **Settings → My Account** drive them.
+
+- `crates/aegis-control/src/admin_auth/account_store.rs` — runtime account store
+- `crates/aegis-control/src/api/admin_accounts.rs` — list/create/reset/delete + self password change (guards: last-admin, no-self-target, current-password verify)
+- `crates/aegis-proxy/src/admin_accounts.rs` — `/api/admin/accounts*` + `/api/admin/self/password` handlers
+- Equal-privilege v1 (no RBAC); see `plans/issues/FEAT-admin-account-management-ui-2026-07.md`. Full operator guide: `deploy/ADMIN-ACCOUNTS.md` §7.

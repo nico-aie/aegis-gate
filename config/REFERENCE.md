@@ -703,25 +703,34 @@ Dashboard authentication, CSRF, session cookies, optional mTLS.
 
 | Field | Default | Notes |
 |---|---|---|
-| `dashboard_auth.users[]` | empty | `{ user, password_hash, totp_secret_b32 }` |
+| `dashboard_auth.accounts[]` | empty | Named admin accounts: `{ username, password_hash_ref, totp_secret_b32?, totp_enabled? }` (TOTP-1; all equal-privilege). Legacy top-level `password_hash_ref`/`totp_*` remain a single-admin shorthand (folded to one `admin` account); setting **both** is rejected at validation |
+| `dashboard_auth.require_totp` | **`true`** | TOTP-2 — a password alone never grants admin access. Un-enrolled accounts land in a TOTP-enrollment-only session (`POST /api/admin/totp/enroll` → scan QR with Google Authenticator → `/confirm`). Dev/CI opt out explicitly (boot warns) |
 | `dashboard_auth.ip_allowlist[]` | empty (allow-all) | CIDRs of operator subnets |
 | `dashboard_auth.csrf_secret_ref` | inline placeholder | Use `${secret:*}` in prod |
 | `dashboard_auth.max_request_body_bytes` | `1 MiB` | Per-request cap on the admin plane |
-| `dashboard_auth.session_idle_seconds` | `3600` | Session-cookie TTL |
 | `dashboard_auth.allow_ca_upload` | `false` | Capability gate for all browser-driven cert mutation (downstream CA bundle, **and** the Zero Trust upstream identity / backend-CA trust-bundle uploads) |
 
 ```yaml
 admin:
   bind: 10.0.0.5:9443
   dashboard_auth:
-    users:
-      - user: admin
-        password_hash: "${secret:vault:secret/aegis/admin#hash}"
-        totp_secret_b32: "${secret:vault:secret/aegis/admin#totp}"
+    require_totp: true          # default — shown for explicitness
+    accounts:
+      - username: alice
+        password_hash_ref: "${secret:vault:secret/aegis/alice#hash}"
+        # totp_secret_b32 optional — omit to enroll via QR at first login;
+        # runtime enrollment persists to the shared state backend
+        # (control:waf:admin:totp — fleet-wide on Redis)
+      - username: bob
+        password_hash_ref: "${secret:vault:secret/aegis/bob#hash}"
+        totp_secret_b32: "${secret:vault:secret/aegis/bob#totp}"
+        totp_enabled: true
     ip_allowlist:
       - 10.0.0.0/8
     csrf_secret_ref: "${secret:vault:secret/aegis/csrf#value}"
 ```
+
+Mint accounts with `waf admin create-account --username alice [--with-totp]`.
 
 Deep-dive: [`docs/control-plane/dashboard-auth.md`](../docs/control-plane/dashboard-auth.md).
 

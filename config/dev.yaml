@@ -498,7 +498,20 @@ admin:
   #       key_ref:   "config/certs/dev.key"
   #       hosts:     ["localhost", "127.0.0.1"]
   dashboard_auth:
-    password_hash_ref: '$argon2id$v=19$m=19456,t=2,p=1$DfRgVNq6Cb+eN3BEMmExAQ$69SVZBNpMFjN4evfN8g+U5jnmP56Gwx3AGaZFr32ZzY'
+    # TOTP-1 — migrated from the legacy top-level password_hash_ref to the
+    # multi-account block (setting both is rejected at validation).
+    # `admin` keeps the old dev password (aegis-test-1234).
+    accounts:
+      - username: "test_deploy"
+        password_hash_ref: "$argon2id$v=19$m=19456,t=2,p=1$kGElctF9TJ+sX+QqiNW56g$H7DjH2NbtOzQ/DlsFEzIf/IrU/A9gLPdidvFq3LZuDQ"
+      - username: "admin"
+        password_hash_ref: '$argon2id$v=19$m=19456,t=2,p=1$DfRgVNq6Cb+eN3BEMmExAQ$69SVZBNpMFjN4evfN8g+U5jnmP56Gwx3AGaZFr32ZzY'
+      - username: "liud"
+        password_hash_ref: '$argon2id$v=19$m=19456,t=2,p=1$Ov/TRnp+SGWOLqRmBHsEtg$WfUQd3992PP8QWXw81pTC95vSTFmdUkXnZz2Dm/8h1o'
+      - username: "shu"
+        password_hash_ref: '$argon2id$v=19$m=19456,t=2,p=1$E2Ce3J4PTgGvSTagfgVHsg$lkwxMjVV2VVhFd1KHCT+lWt5LkmLawjqmAQ4tJQxke8'
+      - username: "btc"
+        password_hash_ref: '$argon2id$v=19$m=19456,t=2,p=1$8hsSTNQjQ/W01b/soxYvng$0rJ6uIl7Y8F/HJiIk0CW3moqNanhBAz5MFIv/PkjJa0'
     csrf_secret_ref:   "test-csrf-secret-do-not-use-in-production-32b"
     # Dev-only — enable the in-console WAF-identity / backend-CA / trust-bundle
     # upload controls on the Zero Trust page. Default false (GitOps-managed
@@ -510,7 +523,12 @@ admin:
     ip_allowlist:
       - "127.0.0.1/32"
       - "::1/128"
-    totp_enabled: false
+    # TOTP-2 (TF-1) — enforcement ON to exercise the first-login QR
+    # enrollment flow in dev (every account without an enrolled factor —
+    # including `admin` — lands on the enrollment page at next login).
+    # Flip back to `false` if password-only admin logins are needed for
+    # bench/e2e scripts.
+    require_totp: true
     login_rate_limit:
       per_ip:
         limit: 100              # loose so the API smoke can run repeatedly

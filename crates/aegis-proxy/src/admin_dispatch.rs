@@ -55,6 +55,13 @@ use crate::admin_mutate::{
 };
 use crate::responses::{json_body_response, json_response};
 
+/// AM-P2b — a `/api/admin/accounts/{user}` path segment must be a single
+/// username, not a nested path, so `{user}/password` can't be misread as
+/// user = `x/password`.
+fn is_account_segment(seg: &str) -> bool {
+    !seg.is_empty() && !seg.contains('/')
+}
+
 pub(crate) async fn handle_admin_request(
     req: hyper::Request<hyper::body::Incoming>,
     peer: std::net::SocketAddr,
@@ -83,6 +90,10 @@ pub(crate) async fn handle_admin_request(
     if method == hyper::Method::GET && path == "/admin/login" {
         return crate::admin_login::handle_admin_login_page();
     }
+    // TOTP-7 — `/login` guess-path alias → the real login page.
+    if method == hyper::Method::GET && path == "/login" {
+        return crate::admin_login::handle_login_alias();
+    }
     if method == hyper::Method::GET && path == "/admin/login.js" {
         return crate::admin_login::handle_admin_login_js();
     }
@@ -108,6 +119,67 @@ pub(crate) async fn handle_admin_request(
     // drains).
     if method == hyper::Method::GET && path == "/api/node/drain" {
         return handle_node_drain_get(readiness, services);
+    }
+
+    // TOTP-3 (TF-1a) — Google Authenticator enrollment. Session-gated by
+    // the upstream middleware; these two are also the ONLY endpoints an
+    // enrollment-only session (require_totp, no factor yet) may reach.
+    if method == hyper::Method::POST && path == "/api/admin/totp/enroll" {
+        return crate::admin_totp::handle_totp_enroll(req, peer, cfg, services).await;
+    }
+    if method == hyper::Method::POST && path == "/api/admin/totp/confirm" {
+        return crate::admin_totp::handle_totp_confirm(req, peer, services).await;
+    }
+
+    // AM-P2b — admin account management. Session-gated + CSRF + write scope by
+    // the upstream middleware; the acting admin is the injected `x-aegis-actor`.
+    // Equal-privilege v1 (any admin manages accounts); the last-admin / no-self
+    // guards live in `aegis_control::api::admin_accounts`.
+    // AM-P2d — self-service: rotate your own password (verifies the current
+    // one; keeps this session, revokes your others).
+    if method == hyper::Method::POST && path == "/api/admin/self/password" {
+        return crate::admin_accounts::handle_self_password(req, peer, services).await;
+    }
+    if path == "/api/admin/accounts" {
+        if method == hyper::Method::GET {
+            let actor = req
+                .headers()
+                .get("x-aegis-actor")
+                .and_then(|h| h.to_str().ok())
+                .unwrap_or("admin")
+                .to_string();
+            return crate::admin_accounts::handle_accounts_list(&actor, services).await;
+        }
+        if method == hyper::Method::POST {
+            return crate::admin_accounts::handle_accounts_create(req, peer, services).await;
+        }
+    }
+    if let Some(rest) = path.strip_prefix("/api/admin/accounts/") {
+        // `{user}` | `{user}/password` | `{user}/totp/reset`
+        if method == hyper::Method::POST {
+            if let Some(user) = rest.strip_suffix("/password") {
+                if is_account_segment(user) {
+                    let user = user.to_string();
+                    return crate::admin_accounts::handle_account_reset_password(
+                        req, peer, &user, services,
+                    )
+                    .await;
+                }
+            }
+            if let Some(user) = rest.strip_suffix("/totp/reset") {
+                if is_account_segment(user) {
+                    let user = user.to_string();
+                    return crate::admin_accounts::handle_account_reset_totp(
+                        req, peer, &user, services,
+                    )
+                    .await;
+                }
+            }
+        }
+        if method == hyper::Method::DELETE && is_account_segment(rest) {
+            let user = rest.to_string();
+            return crate::admin_accounts::handle_account_delete(req, peer, &user, services).await;
+        }
     }
 
     // external interop contract control plane .

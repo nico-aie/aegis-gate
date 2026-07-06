@@ -1974,6 +1974,9 @@ impl BootstrapConfig {
         // session. Previously this was only a `warn!` at the accept loop
         // (fail-open). Fail closed at config-load instead.
         validate_admin_csrf_secret(&self.admin.dashboard_auth)?;
+        // TOTP-1 (TF-4) — multi-admin `accounts` sanity: reject the
+        // ambiguous legacy+accounts combination and malformed usernames.
+        validate_admin_accounts(&self.admin.dashboard_auth)?;
         // P7: load_mode thresholds + hysteresis must be coherent.
         self.load_mode.validate()?;
         // Layer-1: runtime sizing constraints (workers >= 2, sane
@@ -2152,7 +2155,13 @@ impl RuntimeConfig {
 /// secret is empty. A short-but-non-empty secret is not a known constant, so
 /// it stays a runtime `warn!` (see `accept.rs`) rather than a hard fail.
 pub(crate) fn validate_admin_csrf_secret(auth: &DashboardAuthConfig) -> crate::Result<()> {
-    let login_enabled = !auth.password_hash_ref.trim().is_empty();
+    // TOTP-1: login is also reachable when any `accounts` entry carries a
+    // password hash — the accounts path must not dodge CTL-02.
+    let login_enabled = !auth.password_hash_ref.trim().is_empty()
+        || auth
+            .accounts
+            .iter()
+            .any(|a| !a.password_hash_ref.trim().is_empty());
     if login_enabled && auth.csrf_secret_ref.trim().is_empty() {
         return Err(crate::error::WafError::Config(
             "admin.dashboard_auth.csrf_secret is empty while admin login is enabled \
@@ -2161,6 +2170,67 @@ pub(crate) fn validate_admin_csrf_secret(auth: &DashboardAuthConfig) -> crate::R
              csrf_secret, identical on every node (use a ${secret:...} ref in prod)."
                 .into(),
         ));
+    }
+    Ok(())
+}
+
+/// TOTP-1 (TF-4) — sanity for the multi-admin `accounts` block. Rejects the
+/// ambiguous legacy+accounts combination (which identity set is live?),
+/// empty usernames, and duplicate usernames (the login lookup would only
+/// ever resolve the first, silently orphaning the second).
+/// AM-0d — admin usernames must be safe identifiers. The username lands in
+/// an HTTP header (`x-aegis-actor`, injected by the trusted edge), a Redis
+/// hash field (`control:waf:admin:*`), and audit rows. A value carrying
+/// CR/LF or other non-header-safe bytes silently no-ops
+/// `HeaderValue::from_str` at the injection site, so `actor_from` falls back
+/// to the literal `"admin"` — misrouting that operator's TOTP enroll/confirm
+/// (and audit attribution) to the wrong account. Restrict to
+/// `[A-Za-z0-9_.-]`, 1–64 chars, and fail closed at boot. Reused by the
+/// runtime account-create API (AM-P2b) so the two paths can't diverge.
+pub fn is_valid_admin_username(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
+pub(crate) fn validate_admin_accounts(auth: &DashboardAuthConfig) -> crate::Result<()> {
+    if auth.accounts.is_empty() {
+        return Ok(());
+    }
+    let legacy_set = !auth.password_hash_ref.trim().is_empty()
+        || !auth.totp_secret_b32.trim().is_empty()
+        || auth.totp_enabled;
+    if legacy_set {
+        return Err(crate::error::WafError::Config(
+            "admin.dashboard_auth sets BOTH the legacy single-admin fields \
+             (password_hash / totp_secret_b32 / totp_enabled) and `accounts` — \
+             ambiguous. Move the legacy admin into an `accounts:` entry \
+             (username: admin) and clear the top-level fields."
+                .into(),
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for account in &auth.accounts {
+        let name = account.username.as_str();
+        if name.trim().is_empty() {
+            return Err(crate::error::WafError::Config(
+                "admin.dashboard_auth.accounts entry has an empty username".into(),
+            ));
+        }
+        // AM-0d — reject non-header-safe / non-identifier usernames at boot.
+        if !is_valid_admin_username(name) {
+            return Err(crate::error::WafError::Config(format!(
+                "admin.dashboard_auth.accounts username `{name}` is invalid — \
+                 use 1–64 characters of [A-Za-z0-9_.-]",
+            )));
+        }
+        if !seen.insert(name) {
+            return Err(crate::error::WafError::Config(format!(
+                "admin.dashboard_auth.accounts has duplicate username `{name}`",
+            )));
+        }
     }
     Ok(())
 }
@@ -2201,6 +2271,217 @@ mod admin_csrf_secret_tests {
     fn allows_real_secret_with_login_enabled() {
         let cfg = auth("$argon2id$hash", "test-csrf-secret-do-not-use-in-production-32b");
         assert!(validate_admin_csrf_secret(&cfg).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod admin_accounts_tests {
+    // TOTP-1 (TF-4) — multi-admin `accounts:` block.
+    // plans/issues/FEAT-totp-google-authenticator-2026-07.md: legacy
+    // top-level password_hash_ref/totp_secret_b32 stay as a single-admin
+    // shorthand (synthesized to one `admin` account at load); setting BOTH
+    // the legacy fields and `accounts` is ambiguous and must be rejected.
+    use super::*;
+
+    fn parse(yaml: &str) -> DashboardAuthConfig {
+        serde_yaml::from_str(yaml).expect("dashboard_auth yaml must parse")
+    }
+
+    #[test]
+    fn accounts_block_parses_with_per_account_totp() {
+        let cfg = parse(
+            r#"
+csrf_secret_ref: "test-csrf-secret-do-not-use-in-production-32b"
+accounts:
+  - username: alice
+    password_hash_ref: "$argon2id$alice-hash"
+  - username: bob
+    password_hash_ref: "$argon2id$bob-hash"
+    totp_secret_b32: "JBSWY3DPEHPK3PXP"
+    totp_enabled: true
+"#,
+        );
+        assert_eq!(cfg.accounts.len(), 2);
+        assert_eq!(cfg.accounts[0].username, "alice");
+        assert!(!cfg.accounts[0].totp_enabled);
+        assert!(cfg.accounts[1].totp_enabled);
+        assert_eq!(cfg.accounts[1].totp_secret_b32, "JBSWY3DPEHPK3PXP");
+        assert!(validate_admin_accounts(&cfg).is_ok());
+    }
+
+    #[test]
+    fn legacy_fields_synthesize_a_single_admin_account() {
+        let cfg = parse(
+            r#"
+password_hash_ref: "$argon2id$legacy-hash"
+csrf_secret_ref: "test-csrf-secret-do-not-use-in-production-32b"
+totp_enabled: true
+totp_secret_b32: "JBSWY3DPEHPK3PXP"
+"#,
+        );
+        let eff = cfg.effective_accounts();
+        assert_eq!(eff.len(), 1, "legacy shorthand → exactly one account");
+        assert_eq!(eff[0].username, "admin");
+        assert_eq!(eff[0].password_hash_ref, "$argon2id$legacy-hash");
+        assert!(eff[0].totp_enabled);
+        assert_eq!(eff[0].totp_secret_b32, "JBSWY3DPEHPK3PXP");
+    }
+
+    #[test]
+    fn accounts_win_when_only_accounts_are_set() {
+        let cfg = parse(
+            r#"
+csrf_secret_ref: "test-csrf-secret-do-not-use-in-production-32b"
+accounts:
+  - username: alice
+    password_hash_ref: "$argon2id$alice-hash"
+"#,
+        );
+        let eff = cfg.effective_accounts();
+        assert_eq!(eff.len(), 1);
+        assert_eq!(eff[0].username, "alice");
+    }
+
+    #[test]
+    fn rejects_legacy_and_accounts_both_set() {
+        let cfg = parse(
+            r#"
+password_hash_ref: "$argon2id$legacy-hash"
+csrf_secret_ref: "test-csrf-secret-do-not-use-in-production-32b"
+accounts:
+  - username: alice
+    password_hash_ref: "$argon2id$alice-hash"
+"#,
+        );
+        assert!(
+            validate_admin_accounts(&cfg).is_err(),
+            "legacy password_hash_ref + accounts is ambiguous — must be rejected",
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_usernames() {
+        let cfg = parse(
+            r#"
+csrf_secret_ref: "test-csrf-secret-do-not-use-in-production-32b"
+accounts:
+  - username: alice
+    password_hash_ref: "$argon2id$a"
+  - username: alice
+    password_hash_ref: "$argon2id$b"
+"#,
+        );
+        assert!(validate_admin_accounts(&cfg).is_err());
+    }
+
+    #[test]
+    fn rejects_empty_username() {
+        let cfg = parse(
+            r#"
+csrf_secret_ref: "test-csrf-secret-do-not-use-in-production-32b"
+accounts:
+  - username: ""
+    password_hash_ref: "$argon2id$a"
+"#,
+        );
+        assert!(validate_admin_accounts(&cfg).is_err());
+    }
+
+    #[test]
+    fn rejects_non_identifier_usernames() {
+        // AM-0d — CR/LF and other non-header-safe usernames silently no-op
+        // the `x-aegis-actor` header injection → actor falls back to "admin"
+        // → misrouted TOTP enroll/confirm. Reject them at boot instead.
+        let too_long = "x".repeat(65);
+        for bad in [
+            "ali ce",       // space
+            "alice\n",      // LF (the header-injection footgun)
+            "a\rb",         // CR
+            "admin!",       // punctuation
+            "user@host",    // @
+            "na\u{00ef}ve", // non-ASCII
+            too_long.as_str(),
+        ] {
+            let cfg = DashboardAuthConfig {
+                accounts: vec![AdminAccountConfig {
+                    username: bad.to_string(),
+                    password_hash_ref: "$argon2id$a".into(),
+                    totp_secret_b32: String::new(),
+                    totp_enabled: false,
+                }],
+                csrf_secret_ref: "test-csrf-secret-do-not-use-in-production-32b".into(),
+                ..DashboardAuthConfig::default()
+            };
+            assert!(
+                validate_admin_accounts(&cfg).is_err(),
+                "username {bad:?} must be rejected",
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_identifier_usernames() {
+        let max_len = "x".repeat(64);
+        for ok in ["alice", "bob_1", "svc.deploy", "a-b", "ADMIN", max_len.as_str()] {
+            let cfg = DashboardAuthConfig {
+                accounts: vec![AdminAccountConfig {
+                    username: ok.to_string(),
+                    password_hash_ref: "$argon2id$a".into(),
+                    totp_secret_b32: String::new(),
+                    totp_enabled: false,
+                }],
+                csrf_secret_ref: "test-csrf-secret-do-not-use-in-production-32b".into(),
+                ..DashboardAuthConfig::default()
+            };
+            assert!(
+                validate_admin_accounts(&cfg).is_ok(),
+                "username {ok:?} must be accepted",
+            );
+        }
+    }
+
+    #[test]
+    fn empty_config_has_no_effective_accounts() {
+        // No legacy hash, no accounts ⇒ login disabled (existing
+        // empty-password behaviour is preserved).
+        let cfg = DashboardAuthConfig::default();
+        assert!(cfg.effective_accounts().is_empty());
+        assert!(validate_admin_accounts(&cfg).is_ok());
+    }
+
+    #[test]
+    fn require_totp_defaults_to_true() {
+        // TOTP-2 (TF-1) — enforcement is the DEFAULT; dev/CI opt out
+        // loudly with an explicit `require_totp: false`.
+        assert!(DashboardAuthConfig::default().require_totp);
+        let cfg = parse(
+            r#"
+csrf_secret_ref: "test-csrf-secret-do-not-use-in-production-32b"
+"#,
+        );
+        assert!(cfg.require_totp, "omitted require_totp must default to enforced");
+        let cfg = parse(
+            r#"
+csrf_secret_ref: "test-csrf-secret-do-not-use-in-production-32b"
+require_totp: false
+"#,
+        );
+        assert!(!cfg.require_totp);
+    }
+
+    #[test]
+    fn csrf_validation_fires_when_accounts_enable_login() {
+        // CTL-02 must keep holding on the accounts path: any account
+        // with a password hash means login is reachable, so an empty
+        // csrf secret is still a boot error.
+        let cfg = parse(
+            r#"
+accounts:
+  - username: alice
+    password_hash_ref: "$argon2id$alice-hash"
+"#,
+        );
+        assert!(validate_admin_csrf_secret(&cfg).is_err());
     }
 }
 
@@ -6164,6 +6445,68 @@ pub struct DashboardAuthConfig {
     /// streaming cap) and tracked as a follow-up.
     #[serde(default = "default_admin_max_body_bytes")]
     pub max_request_body_bytes: u64,
+    /// TOTP-1 (TF-4, 2026-07-05) — multiple named admin accounts, each
+    /// with its own password hash + TOTP state (equal privilege — no
+    /// RBAC; see `plans/issues/FEAT-totp-google-authenticator-2026-07.md`).
+    /// The legacy top-level `password_hash_ref`/`totp_*` fields remain a
+    /// single-admin shorthand: at load they synthesize one account named
+    /// `admin` (see [`DashboardAuthConfig::effective_accounts`]). Setting
+    /// BOTH the legacy fields and `accounts` is rejected at validation —
+    /// ambiguous configs must not guess.
+    #[serde(default)]
+    pub accounts: Vec<AdminAccountConfig>,
+    /// TOTP-2 (TF-1, 2026-07-05) — **default `true`**: a password alone
+    /// never grants admin access. An account without an enrolled factor
+    /// gets an enrollment-only session (TOTP enroll/confirm surface,
+    /// nothing else) until it confirms a code from its authenticator
+    /// app. Global policy — applies to every account. Dev/CI/bench opt
+    /// out with an explicit `require_totp: false` (boot warns).
+    #[serde(default = "default_require_totp")]
+    pub require_totp: bool,
+}
+
+fn default_require_totp() -> bool {
+    true
+}
+
+/// One named admin account (TOTP-1 / TF-4). All accounts are
+/// equal-privilege admins; authorization tiers are the RBAC track's
+/// problem, not this struct's.
+#[derive(Clone, Debug, Deserialize)]
+pub struct AdminAccountConfig {
+    pub username: String,
+    /// argon2id hash (mint via `waf admin set-password` /
+    /// `waf admin create-account`).
+    pub password_hash_ref: String,
+    /// RFC 4648 base32 TOTP secret — same semantics as the legacy
+    /// top-level `totp_secret_b32`. Empty when the account enrolls at
+    /// first login instead (runtime store overlay).
+    #[serde(default)]
+    pub totp_secret_b32: String,
+    #[serde(default)]
+    pub totp_enabled: bool,
+}
+
+impl DashboardAuthConfig {
+    /// The account set the auth runtime boots from. `accounts` wins when
+    /// present; otherwise a non-empty legacy `password_hash_ref` (or a
+    /// legacy TOTP secret) synthesizes the single account `admin` so
+    /// existing YAMLs keep booting unchanged. Empty ⇒ login disabled
+    /// (existing behaviour for the empty-password default).
+    pub fn effective_accounts(&self) -> Vec<AdminAccountConfig> {
+        if !self.accounts.is_empty() {
+            return self.accounts.clone();
+        }
+        if self.password_hash_ref.trim().is_empty() && self.totp_secret_b32.trim().is_empty() {
+            return Vec::new();
+        }
+        vec![AdminAccountConfig {
+            username: "admin".into(),
+            password_hash_ref: self.password_hash_ref.clone(),
+            totp_secret_b32: self.totp_secret_b32.clone(),
+            totp_enabled: self.totp_enabled,
+        }]
+    }
 }
 
 fn default_session_idle() -> Duration {
@@ -6198,6 +6541,8 @@ impl Default for DashboardAuthConfig {
             lockout: LockoutConfig::default(),
             allow_ca_upload: false,
             max_request_body_bytes: default_admin_max_body_bytes(),
+            accounts: Vec::new(),
+            require_totp: default_require_totp(),
         }
     }
 }
@@ -6878,12 +7223,21 @@ path: /var/log/waf/audit.jsonl
                 cfg.risk.trust_recovery.is_some(),
                 "dev config must enable trust recovery (P6)",
             );
+            // TOTP-1 — dev.yaml migrated from the legacy top-level
+            // password_hash_ref to the multi-admin `accounts:` block.
+            let accounts = cfg.admin.dashboard_auth.effective_accounts();
             assert!(
-                cfg.admin.dashboard_auth.password_hash_ref
-                    .starts_with("$argon2id$"),
-                "admin password must be a real argon2id hash, \
-                 not a `${{secret:env:…}}` reference",
+                !accounts.is_empty(),
+                "dev config must declare at least one admin account",
             );
+            for account in &accounts {
+                assert!(
+                    account.password_hash_ref.starts_with("$argon2id$"),
+                    "admin password for `{}` must be a real argon2id hash, \
+                     not a `${{secret:env:…}}` reference",
+                    account.username,
+                );
+            }
         }
     }
 

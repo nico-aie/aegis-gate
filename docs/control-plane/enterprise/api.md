@@ -167,6 +167,7 @@ GET    /api/whitelist/{id}/bypasses?window=24h
 ```
 POST   /api/admin/password
 POST   /api/admin/totp/enroll
+POST   /api/admin/totp/confirm
 POST   /api/admin/totp/reset
 GET    /api/admin/sessions
 DELETE /api/admin/sessions/{id}

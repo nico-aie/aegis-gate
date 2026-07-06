@@ -1,5 +1,6 @@
 pub mod about;
 pub mod admin;
+pub mod admin_accounts;
 pub mod ai_reload;
 pub mod ai_threshold;
 pub mod ai_toggle;
@@ -32,6 +33,7 @@ pub mod simulator;
 pub mod state;
 pub mod stats;
 pub mod tiers;
+pub mod totp_enrollment;
 pub mod tracking;
 pub mod upstreams;
 pub mod upstreams_config;

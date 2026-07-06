@@ -23,13 +23,18 @@
       border-radius: 12px;
       border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
       min-width: 320px;
-      max-width: 360px;
+      max-width: 380px;
       width: 100%;
       box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
     }
     .login-card h1 {
       margin: 0 0 0.25rem;
       font-size: 1.4rem;
+      letter-spacing: 0.01em;
+    }
+    .login-card h2 {
+      margin: 0 0 0.25rem;
+      font-size: 1.15rem;
       letter-spacing: 0.01em;
     }
     .login-card .subtitle {
@@ -57,7 +62,7 @@
       outline: none;
       border-color: var(--accent, #f4c430);
     }
-    .login-card button {
+    .login-card button[type="submit"] {
       width: 100%;
       padding: 0.7rem;
       margin-top: 1.25rem;
@@ -85,6 +90,168 @@
       font-size: 0.75rem;
       text-align: center;
     }
+    .login-card .hint {
+      color: var(--fg-muted, #999);
+      font-size: 0.78rem;
+      line-height: 1.45;
+      margin: 0.75rem 0 0;
+    }
+    .linklike {
+      background: none;
+      border: none;
+      color: var(--fg-muted, #999);
+      font-size: 0.82rem;
+      cursor: pointer;
+      padding: 0;
+      margin-top: 1rem;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    .linklike:hover { color: var(--fg, #f0f0f0); }
+
+    /* One-time-code inputs: big, centered, spaced digits. */
+    input.code-input {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 1.45rem;
+      letter-spacing: 0.45em;
+      text-align: center;
+      padding: 0.6rem 0.4rem 0.6rem 0.85rem; /* left pad rebalances letter-spacing */
+    }
+
+    /* ---- TOTP-10/11 — two-step OTP dialog ----------------------------- */
+    /* The dialog card carries BOTH classes (`login-card otp-card`) so
+       every `.login-card input/button/error` rule above applies inside
+       the dialog too — TOTP-11 fixed the unstyled white input + tiny
+       Verify button that came from scoping the design system to a class
+       the dialog didn't have. `.otp-card` only holds dialog overrides. */
+    #otp-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.6);
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+      z-index: 10;
+    }
+    #otp-modal.open { display: flex; }
+    .otp-card {
+      max-width: 340px;
+      min-width: 0;
+      text-align: center;
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+      animation: otp-pop 160ms ease-out;
+    }
+    @keyframes otp-pop {
+      from { opacity: 0; transform: translateY(10px) scale(0.98); }
+      to   { opacity: 1; transform: none; }
+    }
+    .otp-card .subtitle { margin-bottom: 1.35rem; }
+    .otp-card .error { margin-top: 1rem; }
+    .otp-card #otp-back { margin-top: 1.15rem; }
+    .otp-badge {
+      width: 44px;
+      height: 44px;
+      margin: 0 auto 0.85rem;
+      border-radius: 50%;
+      background: rgba(244, 196, 48, 0.12);
+      border: 1px solid rgba(244, 196, 48, 0.35);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.2rem;
+    }
+
+    /* ---- TOTP-5/10 — first-login enrollment surface ------------------- */
+    #enroll-section { display: none; }
+    #enroll-steps {
+      list-style: none;
+      counter-reset: step;
+      margin: 0 0 1rem;
+      padding: 0;
+    }
+    #enroll-steps li {
+      counter-increment: step;
+      display: flex;
+      align-items: baseline;
+      gap: 0.6rem;
+      font-size: 0.85rem;
+      color: var(--fg-muted, #aaa);
+      margin: 0.45rem 0;
+      line-height: 1.4;
+    }
+    #enroll-steps li::before {
+      content: counter(step);
+      flex: none;
+      width: 1.35rem;
+      height: 1.35rem;
+      border-radius: 50%;
+      background: rgba(244, 196, 48, 0.14);
+      border: 1px solid rgba(244, 196, 48, 0.4);
+      color: var(--accent, #f4c430);
+      font-size: 0.72rem;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transform: translateY(0.15rem);
+    }
+    #enroll-qr {
+      display: flex;
+      justify-content: center;
+      background: #fff;            /* QR needs light background to scan */
+      border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+      border-radius: 10px;
+      padding: 0.65rem;
+      margin: 0.25rem 0 1rem;
+    }
+    #enroll-qr svg {
+      width: 208px;
+      height: 208px;
+      display: block;
+    }
+    .secret-row {
+      display: flex;
+      gap: 0.5rem;
+      align-items: stretch;
+      margin: 0.35rem 0 0;
+    }
+    #enroll-secret {
+      flex: 1;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.72rem;
+      word-break: break-all;
+      background: var(--surface-2, #111);
+      border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+      border-radius: 6px;
+      padding: 0.5rem 0.6rem;
+      user-select: all;
+    }
+    #enroll-copy {
+      flex: none;
+      background: var(--surface-2, #111);
+      color: var(--fg-muted, #bbb);
+      border: 1px solid var(--border, rgba(255, 255, 255, 0.18));
+      border-radius: 6px;
+      font-size: 0.75rem;
+      padding: 0 0.7rem;
+      cursor: pointer;
+    }
+    #enroll-copy:hover {
+      color: var(--fg, #f0f0f0);
+      border-color: var(--accent, #f4c430);
+    }
+    details.manual-key { margin-top: 0.35rem; }
+    details.manual-key summary {
+      font-size: 0.78rem;
+      color: var(--fg-muted, #999);
+      cursor: pointer;
+    }
+    .divider {
+      border: none;
+      border-top: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+      margin: 1.15rem 0;
+    }
   </style>
 </head>
 <body>
@@ -98,9 +265,66 @@
       <input id="login-password" name="password" type="password" required autocomplete="current-password">
       <button type="submit" id="login-submit">Sign in</button>
       <div class="error" id="login-error" role="alert" aria-live="polite"></div>
+      <p class="hint">
+        Two-factor authentication is required for every account —
+        you'll be asked for your authenticator code (or guided through
+        setup on your first sign-in).
+      </p>
     </form>
+
+    <!-- TOTP-5/10 — first-login enrollment: shown when the server answers
+         enrollment_required (password OK, no factor enrolled yet). -->
+    <div id="enroll-section">
+      <h1>Set up two-factor</h1>
+      <p class="subtitle">Protect <b id="enroll-user">your account</b> with an authenticator app.</p>
+      <ol id="enroll-steps">
+        <li>Open <b>Google Authenticator</b> (or Authy / 1Password) on your phone.</li>
+        <li>Tap <b>+</b> and scan this QR code.</li>
+        <li>Enter the 6-digit code the app shows to activate.</li>
+      </ol>
+      <div id="enroll-qr" aria-label="TOTP enrollment QR code"></div>
+      <details class="manual-key">
+        <summary>Can't scan? Enter the setup key manually</summary>
+        <div class="secret-row">
+          <div id="enroll-secret"></div>
+          <button id="enroll-copy" type="button" title="Copy setup key">Copy</button>
+        </div>
+        <p class="hint">Choose "time-based" if the app asks for the key type.</p>
+      </details>
+      <hr class="divider">
+      <form id="enroll-form">
+        <label for="enroll-code">Code from the app</label>
+        <input id="enroll-code" name="code" class="code-input" inputmode="numeric"
+               pattern="[0-9]*" maxlength="8" required autocomplete="one-time-code"
+               placeholder="••••••">
+        <button type="submit" id="enroll-submit">Verify &amp; activate</button>
+        <div class="error" id="enroll-error" role="alert" aria-live="polite"></div>
+      </form>
+    </div>
+
     <div class="footer">aegis-gate · admin</div>
   </div>
+
+  <!-- TOTP-10 — step 2: OTP dialog, opened after the password step. -->
+  <div id="otp-modal" role="dialog" aria-modal="true" aria-labelledby="otp-title">
+    <div class="login-card otp-card">
+      <div class="otp-badge">🔐</div>
+      <h2 id="otp-title">Two-step verification</h2>
+      <p class="subtitle">
+        Enter the 6-digit code from your authenticator app
+        for <b id="otp-user"></b>.
+      </p>
+      <form id="otp-form">
+        <input id="otp-code" name="totp_code" class="code-input" inputmode="numeric"
+               pattern="[0-9]*" maxlength="8" autocomplete="one-time-code"
+               placeholder="••••••" aria-label="Authenticator code">
+        <button type="submit" id="otp-submit">Verify</button>
+        <div class="error" id="otp-error" role="alert" aria-live="polite"></div>
+      </form>
+      <button id="otp-back" type="button" class="linklike">← Back to password</button>
+    </div>
+  </div>
+
   <script src="/admin/login.js"></script>
 </body>
 </html>

@@ -4435,7 +4435,7 @@ async fn drain_auth_ok(
         Some(sid) => services.auth_sessions.validate(sid).await.is_some(),
         None => false,
     };
-    let no_admin_configured = services.admin_identity.password_hash.is_empty();
+    let no_admin_configured = !services.admin_directory.login_enabled();
     let token_ok = match std::env::var("AEGIS_DRAIN_TOKEN").ok() {
         Some(expected) if !expected.is_empty() => req
             .headers()

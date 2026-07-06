@@ -23,6 +23,8 @@ nodes via docker compose) before touching VMs, see
 
 | File | Purpose |
 |---|---|
+| `ADMIN-ACCOUNTS.md` | **Admin accounts + mandatory 2FA (TOTP)** — create accounts with `create-admin.sh`, first-login Google Authenticator QR enrollment, config reference, troubleshooting |
+| `create-admin.sh` | **One-command admin creation** — silent password prompt → argon2id hash → inserts the `accounts:` entry → validates (auto-restore on failure) |
 | `STAGING-BENCHMARK.md` | **Single-Linux-host staging deploy** — Docker infra + native WAF, mechanical step-by-step (Verify / Expected pairs), AI-assistant-driveable |
 | `GUIDE.md` | **Production deploy** — multi-node, image, Helm, config plane |
 | `HACKATHON-FLEET.md` | **Multi-node fleet sim (generic)** — infra host (Redis + multi-protocol mock + SigNoz + **HAProxy L4/TPROXY** LB) + N WAF nodes at the TLS edge; TPROXY return-routing, per-node config, per-protocol verification, LB-options appendix |

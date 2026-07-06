@@ -56,7 +56,23 @@ pub struct LoginResponse {
 #[derive(Clone, Debug)]
 pub enum LoginOutcome {
     /// Auth succeeded. The proxy emits 200 + the two cookies.
+    /// `user` is the authenticated account name (TOTP-1: multi-account —
+    /// the auditor must record WHICH admin logged in, not a hard-coded
+    /// `admin`).
     Ok {
+        user: String,
+        session_cookie: String,
+        csrf_cookie: String,
+        body: String,
+    },
+    /// TOTP-2 (TF-1) — password verified but `require_totp` is on and
+    /// the account has no enrolled factor. The session issued here is
+    /// NOT `totp_verified`; the admin middleware restricts it to the
+    /// TOTP enroll/confirm surface until a code from the authenticator
+    /// app confirms enrollment. Proxy emits 200 + both cookies with the
+    /// `enrollment_required` body so the login page can route to setup.
+    EnrollmentRequired {
+        user: String,
         session_cookie: String,
         csrf_cookie: String,
         body: String,
@@ -129,6 +145,215 @@ pub struct AdminIdentity {
     pub totp_replay_guard: std::sync::Arc<crate::admin_auth::totp::TotpReplayGuard>,
 }
 
+/// TOTP-1 (TF-4) — the set of named admin accounts the login handler
+/// resolves against. Replaces the single hard-coded `AdminIdentity` in
+/// the auth runtime; each account keeps its own password hash, TOTP
+/// state, and replay guard. All accounts are equal-privilege (no RBAC —
+/// `plans/issues/FEAT-totp-google-authenticator-2026-07.md`).
+#[derive(Clone, Debug, Default)]
+pub struct AdminDirectory {
+    accounts: Vec<std::sync::Arc<AdminIdentity>>,
+    /// TOTP-2 (TF-1) — global enforcement policy: when `true` a correct
+    /// password on an un-enrolled account yields an enrollment-only
+    /// session, never a full one. `new()`/`single()`/`default()` leave
+    /// it `false` (test/legacy shorthand); production boots read the
+    /// config default (`true`) via [`AdminDirectory::from_config`].
+    require_totp: bool,
+    /// TOTP-3 (TF-1a) — runtime enrollment overlay. When wired, an
+    /// account's effective TOTP state is the store's confirmed factor
+    /// (if any) over the YAML-configured one — web enrollment without a
+    /// YAML edit, fleet-wide on a shared backend.
+    totp_store: Option<std::sync::Arc<crate::admin_auth::totp_store::TotpEnrollmentStore>>,
+    /// AM-P2a — runtime account overlay. When wired, `resolve` checks this
+    /// store first: a record overlays the YAML seed by username, and a
+    /// tombstone hides a YAML-seeded account. Runtime accounts created here
+    /// don't exist in `accounts`, so they're materialised into stable
+    /// `Arc<AdminIdentity>` values cached in `runtime_cache` (below) — a
+    /// fresh identity per request would reset the per-account TOTP replay
+    /// guard and defeat replay protection.
+    account_store: Option<std::sync::Arc<crate::admin_auth::account_store::AdminAccountStore>>,
+    /// AM-P2a — stable materialised identities for store-backed accounts,
+    /// keyed by username. Rebuilt only when the account's password hash
+    /// changes (which forces a re-login anyway), so the replay guard stays
+    /// stable across a login session's requests.
+    runtime_cache: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<AdminIdentity>>>,
+    >,
+}
+
+impl AdminDirectory {
+    pub fn new(accounts: Vec<std::sync::Arc<AdminIdentity>>) -> Self {
+        Self { accounts, ..Default::default() }
+    }
+
+    /// Wrap one identity — the single-admin shorthand (tests + legacy
+    /// boot paths).
+    pub fn single(identity: AdminIdentity) -> Self {
+        Self {
+            accounts: vec![std::sync::Arc::new(identity)],
+            ..Default::default()
+        }
+    }
+
+    /// Wire the TOTP-3 runtime enrollment overlay (builder-style).
+    pub fn with_totp_store(
+        mut self,
+        store: std::sync::Arc<crate::admin_auth::totp_store::TotpEnrollmentStore>,
+    ) -> Self {
+        self.totp_store = Some(store);
+        self
+    }
+
+    /// AM-P2a — wire the runtime account overlay (builder-style).
+    pub fn with_account_store(
+        mut self,
+        store: std::sync::Arc<crate::admin_auth::account_store::AdminAccountStore>,
+    ) -> Self {
+        self.account_store = Some(store);
+        self
+    }
+
+    /// The wired runtime account store, if any (used by the account-mgmt
+    /// API to persist create/reset/delete).
+    pub fn account_store(
+        &self,
+    ) -> Option<&std::sync::Arc<crate::admin_auth::account_store::AdminAccountStore>> {
+        self.account_store.as_ref()
+    }
+
+    /// The account's effective `(totp_enabled, secret_b32)`: the runtime
+    /// store's confirmed factor wins over the YAML bootstrap state. An
+    /// enrolled factor is honoured even under `require_totp: false` —
+    /// enrollment is a promise to that operator, not something the
+    /// global policy silently disables.
+    pub async fn effective_totp(&self, account: &AdminIdentity) -> (bool, String) {
+        if let Some(store) = &self.totp_store {
+            if let Some(active) = store.active(&account.user).await {
+                if active.enabled {
+                    return (true, active.secret_b32);
+                }
+            }
+        }
+        (account.totp_enabled, account.totp_secret_b32.clone())
+    }
+
+    /// Set the TF-1 enforcement policy (builder-style, used by tests
+    /// and `from_config`).
+    pub fn with_require_totp(mut self, require_totp: bool) -> Self {
+        self.require_totp = require_totp;
+        self
+    }
+
+    pub fn require_totp(&self) -> bool {
+        self.require_totp
+    }
+
+    /// Build from the YAML account set (legacy fields already folded in
+    /// by [`aegis_core::config::DashboardAuthConfig::effective_accounts`]).
+    /// One fresh replay guard per account — counter monotonicity is a
+    /// per-principal contract.
+    pub fn from_config(auth: &aegis_core::config::DashboardAuthConfig) -> Self {
+        let accounts = auth
+            .effective_accounts()
+            .into_iter()
+            .map(|a| {
+                std::sync::Arc::new(AdminIdentity {
+                    user: a.username,
+                    password_hash: a.password_hash_ref,
+                    totp_secret_b32: a.totp_secret_b32,
+                    totp_enabled: a.totp_enabled,
+                    ..AdminIdentity::default()
+                })
+            })
+            .collect();
+        Self {
+            accounts,
+            require_totp: auth.require_totp,
+            ..Default::default()
+        }
+    }
+
+    /// Resolve a submitted username to an owned identity.
+    ///
+    /// AM-P2a — the runtime account store (when wired) overlays the YAML
+    /// seed: a live store record wins; a tombstone (or a disabled record)
+    /// hides a YAML-seeded account (→ `None`, login denied). Falling through
+    /// to the YAML set uses the same constant-time per-name compare (no early
+    /// exit) so response time doesn't leak how much of a username prefix
+    /// matched; the miss path still runs `dummy_verify` in `authenticate`.
+    ///
+    /// Returns an owned `Arc` (runtime accounts aren't in `self.accounts`);
+    /// store-backed identities are materialised through `runtime_cache` so
+    /// their per-account replay guard is stable across requests.
+    pub async fn resolve(&self, user: &str) -> Option<std::sync::Arc<AdminIdentity>> {
+        if let Some(store) = &self.account_store {
+            if let Some(rec) = store.get(user).await {
+                if !rec.is_active() {
+                    return None; // tombstone / disabled hides the YAML seed too
+                }
+                return Some(self.materialize_runtime(&rec));
+            }
+        }
+        let mut found: Option<std::sync::Arc<AdminIdentity>> = None;
+        for account in &self.accounts {
+            if ct_eq_names(&account.user, user) {
+                found = Some(std::sync::Arc::clone(account));
+            }
+        }
+        found
+    }
+
+    /// AM-P2a — build (or reuse) a stable identity for a store-backed
+    /// account. Cached by username; rebuilt only when the password hash
+    /// changes so the replay guard survives across a login session. Runtime
+    /// accounts start with no YAML TOTP fields — `effective_totp` overlays
+    /// the `TotpEnrollmentStore` factor exactly as for a seeded account.
+    fn materialize_runtime(
+        &self,
+        rec: &crate::admin_auth::account_store::RuntimeAccount,
+    ) -> std::sync::Arc<AdminIdentity> {
+        let mut cache = self.runtime_cache.lock().unwrap();
+        if let Some(existing) = cache.get(&rec.username) {
+            if existing.password_hash == rec.password_hash {
+                return std::sync::Arc::clone(existing);
+            }
+        }
+        let identity = std::sync::Arc::new(AdminIdentity {
+            user: rec.username.clone(),
+            password_hash: rec.password_hash.clone(),
+            totp_secret_b32: String::new(),
+            totp_enabled: false,
+            ..AdminIdentity::default()
+        });
+        cache.insert(rec.username.clone(), std::sync::Arc::clone(&identity));
+        identity
+    }
+
+    pub fn accounts(&self) -> &[std::sync::Arc<AdminIdentity>] {
+        &self.accounts
+    }
+
+    /// True when at least one account has a password hash — i.e. login
+    /// is reachable at all (drain-token fallback logic keys off this).
+    /// AM-P2a — a wired runtime account store also counts: an all-runtime
+    /// admin set (no YAML seed) still means login is reachable.
+    pub fn login_enabled(&self) -> bool {
+        self.account_store.is_some()
+            || self.accounts.iter().any(|a| !a.password_hash.trim().is_empty())
+    }
+}
+
+/// Branch-free equal-length compare, same shape as `totp::ct_eq_str` —
+/// usernames aren't secret, but the resolve scan must not leak match
+/// position via timing.
+fn ct_eq_names(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 /// Authenticate one POST /admin/login attempt.
 ///
 /// Side-effects on success:
@@ -146,7 +371,7 @@ pub struct AdminIdentity {
 #[allow(clippy::too_many_arguments)]
 pub async fn authenticate(
     body: &str,
-    admin: &AdminIdentity,
+    directory: &AdminDirectory,
     rate_limiter: &LoginRateLimiter,
     sessions: &AuthSessionStore,
     dashboard_sessions: &DashboardSessionStore,
@@ -192,19 +417,68 @@ pub async fn authenticate(
         }
     }
 
-    // 2. Verify password. Unknown-user path runs dummy_verify so
-    //    response time doesn't leak account existence.
-    let ok = if req.user == admin.user {
-        verify_password(&admin.password_hash, &req.password)
-    } else {
-        dummy_verify(&req.password);
-        false
+    // 2. Resolve the account (TOTP-1: N named admins) and verify the
+    //    password. Unknown-user path runs dummy_verify so response time
+    //    doesn't leak account existence — same property as the old
+    //    single-admin compare, now per directory entry.
+    let admin = match directory.resolve(&req.user).await {
+        Some(account) => account,
+        None => {
+            dummy_verify(&req.password);
+            rate_limiter.record_failure(ip, &req.user);
+            return LoginOutcome::Unauthorized {
+                body: error_body("invalid_credentials", "user or password incorrect"),
+            };
+        }
     };
 
-    if !ok {
+    if !verify_password(&admin.password_hash, &req.password) {
         rate_limiter.record_failure(ip, &req.user);
         return LoginOutcome::Unauthorized {
             body: error_body("invalid_credentials", "user or password incorrect"),
+        };
+    }
+
+    // 2a. TOTP-2 (TF-1) — enforcement. Password verified, but the policy
+    //     says a password alone never grants admin access and this
+    //     account has no enrolled factor: issue an ENROLLMENT-ONLY
+    //     session (totp_verified=false — the middleware restricts it to
+    //     POST /api/admin/totp/enroll|confirm) instead of a full one.
+    //     Counts as a rate-limit success: the password WAS right, and a
+    //     legitimate first login must not accrue failure strikes.
+    // Effective TOTP state: the runtime enrollment overlay (TOTP-3)
+    // wins over the YAML bootstrap fields.
+    let (totp_enabled, totp_secret_b32) = directory.effective_totp(&admin).await;
+
+    if directory.require_totp() && !totp_enabled {
+        rate_limiter.record_success(ip, &req.user);
+        let (session_cookie, csrf_cookie) = match issue_session(
+            sessions,
+            dashboard_sessions,
+            &admin.user,
+            ip,
+            user_agent,
+            session_idle_seconds,
+            false,
+        )
+        .await
+        {
+            Ok(pair) => pair,
+            Err(outcome) => return outcome,
+        };
+        let body = serde_json::json!({
+            "ok": true,
+            "enrollment_required": true,
+            "user": admin.user,
+            "message": "TOTP enrollment required: POST /api/admin/totp/enroll, scan the QR \
+                        with an authenticator app (Google Authenticator, Authy, …), then \
+                        POST /api/admin/totp/confirm with a generated code",
+        });
+        return LoginOutcome::EnrollmentRequired {
+            user: admin.user.clone(),
+            session_cookie,
+            csrf_cookie,
+            body: body.to_string(),
         };
     }
 
@@ -217,7 +491,7 @@ pub async fn authenticate(
     //     for repeated TOTP failures stays the same as repeated
     //     password failures — both feed `rate_limiter::record_failure`
     //     so the lockout threshold counts them together.
-    if admin.totp_enabled {
+    if totp_enabled {
         use crate::admin_auth::totp;
 
         let code = match req.totp_code.as_deref() {
@@ -232,7 +506,7 @@ pub async fn authenticate(
 
         let secret_bytes = match base32::decode(
             base32::Alphabet::Rfc4648 { padding: false },
-            &admin.totp_secret_b32,
+            &totp_secret_b32,
         ) {
             Some(b) if !b.is_empty() => b,
             _ => {
@@ -271,22 +545,70 @@ pub async fn authenticate(
         }
     }
 
-    // 3. Success — issue session + CSRF cookies.
+    // 3. Success — issue session + CSRF cookies. The session is bound to
+    //    the resolved account (TOTP-1) and marked fully verified: the
+    //    auth policy is satisfied (TOTP checked above when enabled; no
+    //    second factor demanded otherwise).
     rate_limiter.record_success(ip, &req.user);
-    // R-1 (2026-06-19): if the session record can't be persisted (read-only /
-    // down shared backend), FAIL the login with 503 rather than handing back a
-    // cookie for a session that was never stored — that produced the silent
-    // 200→401 admin lockout during the Redis hijack.
-    let (session_id, signed_session_value) = match sessions.create(ip, user_agent).await {
+    let (session_cookie, csrf_cookie) = match issue_session(
+        sessions,
+        dashboard_sessions,
+        &admin.user,
+        ip,
+        user_agent,
+        session_idle_seconds,
+        true,
+    )
+    .await
+    {
+        Ok(pair) => pair,
+        Err(outcome) => return outcome,
+    };
+
+    let body = LoginResponse {
+        ok: true,
+        user: req.user.clone(),
+        session_idle_seconds,
+    };
+    LoginOutcome::Ok {
+        user: admin.user.clone(),
+        session_cookie,
+        csrf_cookie,
+        body: serde_json::to_string(&body).unwrap_or_else(|_| "{}".into()),
+    }
+}
+
+/// Issue a session + CSRF cookie pair for `user` and mirror the record
+/// into the dashboard sessions view. Shared by the full-login and the
+/// TOTP-2 enrollment-required paths — the ONLY difference between them
+/// is the `totp_verified` flag on the record.
+///
+/// R-1 (2026-06-19): a failed session-store write (read-only / down
+/// shared backend) returns the 503 `StoreUnavailable` outcome rather
+/// than handing back a cookie for a session that was never stored (the
+/// silent 200→401 lockout from the Redis-hijack incident).
+async fn issue_session(
+    sessions: &AuthSessionStore,
+    dashboard_sessions: &DashboardSessionStore,
+    user: &str,
+    ip: &str,
+    user_agent: &str,
+    session_idle_seconds: u64,
+    totp_verified: bool,
+) -> Result<(String, String), LoginOutcome> {
+    let (session_id, signed_session_value) = match sessions
+        .create_for_user(user, ip, user_agent, totp_verified)
+        .await
+    {
         Ok(pair) => pair,
         Err(e) => {
             tracing::error!(error = %e, ip, "admin login: session store write failed — returning 503");
-            return LoginOutcome::StoreUnavailable {
+            return Err(LoginOutcome::StoreUnavailable {
                 body: error_body(
                     "session_store_unavailable",
                     "session could not be persisted; please retry",
                 ),
-            };
+            });
         }
     };
     let session_cookie = format_cookie(
@@ -308,17 +630,7 @@ pub async fn authenticate(
         current: true,
     });
     dashboard_sessions.mark_current(&session_id);
-
-    let body = LoginResponse {
-        ok: true,
-        user: req.user.clone(),
-        session_idle_seconds,
-    };
-    LoginOutcome::Ok {
-        session_cookie,
-        csrf_cookie,
-        body: serde_json::to_string(&body).unwrap_or_else(|_| "{}".into()),
-    }
+    Ok((session_cookie, csrf_cookie))
 }
 
 /// Process a `POST /admin/logout`. Reads the session cookie,
@@ -398,16 +710,16 @@ mod tests {
     use crate::admin_auth::password::hash_password;
 
     fn fixtures() -> (
-        AdminIdentity,
+        AdminDirectory,
         Arc<LoginRateLimiter>,
         Arc<AuthSessionStore>,
         Arc<DashboardSessionStore>,
     ) {
-        let admin = AdminIdentity {
+        let admin = AdminDirectory::single(AdminIdentity {
             user: "admin".into(),
             password_hash: hash_password("aegis-test-1234").unwrap(),
             ..AdminIdentity::default()
-        };
+        });
         let rl = Arc::new(LoginRateLimiter::new(Default::default()));
         let key = derive_session_key("test-csrf-secret-32b");
         let sessions = Arc::new(AuthSessionStore::new(key));
@@ -417,6 +729,85 @@ mod tests {
 
     fn ok_body() -> String {
         serde_json::json!({"user":"admin","password":"aegis-test-1234"}).to_string()
+    }
+
+    // ---- AM-P2a: runtime account-store overlay ------------------------------
+
+    #[tokio::test]
+    async fn runtime_account_overlays_and_can_log_in() {
+        use crate::admin_auth::account_store::AdminAccountStore;
+        let store = Arc::new(AdminAccountStore::in_memory());
+        store
+            .upsert("carol", &hash_password("carol-pw-123456").unwrap())
+            .await
+            .unwrap();
+        // No YAML seed — only the runtime store.
+        let dir = AdminDirectory::new(vec![]).with_account_store(Arc::clone(&store));
+
+        let id = dir.resolve("carol").await.expect("runtime account resolves");
+        assert_eq!(id.user, "carol");
+
+        let rl = Arc::new(LoginRateLimiter::new(Default::default()));
+        let sessions = Arc::new(AuthSessionStore::new(derive_session_key("test-csrf-secret-32b")));
+        let dashboard = Arc::new(DashboardSessionStore::new());
+        let out = authenticate(
+            &serde_json::json!({"user":"carol","password":"carol-pw-123456"}).to_string(),
+            &dir,
+            &rl,
+            &sessions,
+            &dashboard,
+            "1.2.3.4",
+            "ua",
+            1800,
+        )
+        .await;
+        assert!(matches!(out, LoginOutcome::Ok { .. }), "got {out:?}");
+    }
+
+    #[tokio::test]
+    async fn tombstone_hides_a_yaml_seeded_account() {
+        use crate::admin_auth::account_store::AdminAccountStore;
+        let store = Arc::new(AdminAccountStore::in_memory());
+        let dir = AdminDirectory::single(AdminIdentity {
+            user: "admin".into(),
+            password_hash: hash_password("aegis-test-1234").unwrap(),
+            ..AdminIdentity::default()
+        })
+        .with_account_store(Arc::clone(&store));
+
+        assert!(
+            dir.resolve("admin").await.is_some(),
+            "seeded admin resolves before tombstone",
+        );
+        store.tombstone("admin").await.unwrap();
+        assert!(
+            dir.resolve("admin").await.is_none(),
+            "tombstone must hide the YAML-seeded admin (login denied)",
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_identity_is_stable_until_password_changes() {
+        // The materialised identity (and its per-account replay guard) must be
+        // reused across requests, else replay protection resets every login.
+        use crate::admin_auth::account_store::AdminAccountStore;
+        let store = Arc::new(AdminAccountStore::in_memory());
+        store.upsert("dave", "$argon2id$h1").await.unwrap();
+        let dir = AdminDirectory::new(vec![]).with_account_store(Arc::clone(&store));
+
+        let a = dir.resolve("dave").await.unwrap();
+        let b = dir.resolve("dave").await.unwrap();
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "same password → cached identity (stable replay guard)",
+        );
+
+        store.set_password("dave", "$argon2id$h2").await.unwrap();
+        let c = dir.resolve("dave").await.unwrap();
+        assert!(
+            !Arc::ptr_eq(&a, &c),
+            "password change → rebuilt identity",
+        );
     }
 
     // R-1 (2026-06-19) — correct credentials but a read-only/down session
@@ -505,7 +896,7 @@ mod tests {
             1800,
         ).await;
         let (session, csrf, body) = match outcome {
-            LoginOutcome::Ok { session_cookie, csrf_cookie, body } => {
+            LoginOutcome::Ok { session_cookie, csrf_cookie, body, .. } => {
                 (session_cookie, csrf_cookie, body)
             }
             other => panic!("expected Ok, got {other:?}"),
@@ -697,14 +1088,14 @@ mod tests {
     /// that survives round-trip through real base32.
     const TEST_TOTP_SECRET_B32: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
-    fn totp_admin() -> AdminIdentity {
-        AdminIdentity {
+    fn totp_admin() -> AdminDirectory {
+        AdminDirectory::single(AdminIdentity {
             user: "admin".into(),
             password_hash: hash_password("aegis-test-1234").unwrap(),
             totp_secret_b32: TEST_TOTP_SECRET_B32.into(),
             totp_enabled: true,
             ..AdminIdentity::default()
-        }
+        })
     }
 
     fn current_totp_code(secret_b32: &str) -> String {
@@ -756,7 +1147,7 @@ mod tests {
     async fn login_with_totp_enabled_accepts_current_code() {
         let (_, rl, ss, ds) = fixtures();
         let admin = totp_admin();
-        let code = current_totp_code(&admin.totp_secret_b32);
+        let code = current_totp_code(&admin.accounts()[0].totp_secret_b32);
         let body = serde_json::json!({
             "user":"admin",
             "password":"aegis-test-1234",
@@ -773,7 +1164,7 @@ mod tests {
     async fn login_with_totp_disabled_ignores_totp_code() {
         // TOTP disabled — extra `totp_code` field is harmless.
         let (admin, rl, ss, ds) = fixtures();
-        assert!(!admin.totp_enabled);
+        assert!(!admin.accounts()[0].totp_enabled);
         let body = serde_json::json!({
             "user":"admin",
             "password":"aegis-test-1234",
@@ -790,13 +1181,13 @@ mod tests {
         // Unauthorized as any other failure (no info leak); server
         // side a tracing::error! fires for setup-time debugging.
         let (_, rl, ss, ds) = fixtures();
-        let admin = AdminIdentity {
+        let admin = AdminDirectory::single(AdminIdentity {
             user: "admin".into(),
             password_hash: hash_password("aegis-test-1234").unwrap(),
             totp_secret_b32: "this is not base32!!!".into(),
             totp_enabled: true,
             ..AdminIdentity::default()
-        };
+        });
         let body = serde_json::json!({
             "user":"admin",
             "password":"aegis-test-1234",
@@ -804,5 +1195,285 @@ mod tests {
         }).to_string();
         let outcome = authenticate(&body, &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800).await;
         assert!(matches!(outcome, LoginOutcome::Unauthorized { .. }));
+    }
+
+    // ---- TOTP-1 (TF-4) — multiple admin accounts ------------------------
+    //
+    // plans/issues/FEAT-totp-google-authenticator-2026-07.md — each admin
+    // authenticates against its OWN password + TOTP state; unknown users
+    // keep the dummy_verify no-leak property; lockout counters partition
+    // per (ip, user) so locking alice never locks bob.
+
+    fn two_account_directory() -> AdminDirectory {
+        AdminDirectory::new(vec![
+            Arc::new(AdminIdentity {
+                user: "alice".into(),
+                password_hash: hash_password("alice-pw-1234").unwrap(),
+                ..AdminIdentity::default()
+            }),
+            Arc::new(AdminIdentity {
+                user: "bob".into(),
+                password_hash: hash_password("bob-pw-5678").unwrap(),
+                totp_secret_b32: TEST_TOTP_SECRET_B32.into(),
+                totp_enabled: true,
+                ..AdminIdentity::default()
+            }),
+        ])
+    }
+
+    fn login_body(user: &str, password: &str) -> String {
+        serde_json::json!({"user": user, "password": password}).to_string()
+    }
+
+    #[tokio::test]
+    async fn each_account_logs_in_with_own_password() {
+        let (_, rl, ss, ds) = fixtures();
+        let dir = two_account_directory();
+        let outcome = authenticate(
+            &login_body("alice", "alice-pw-1234"),
+            &dir, &rl, &ss, &ds, "127.0.0.1", "ua", 1800,
+        ).await;
+        assert!(matches!(outcome, LoginOutcome::Ok { .. }), "alice: {outcome:?}");
+
+        // bob has TOTP enrolled — password + current code required.
+        let code = current_totp_code(TEST_TOTP_SECRET_B32);
+        let body = serde_json::json!({
+            "user": "bob", "password": "bob-pw-5678", "totp_code": code,
+        }).to_string();
+        let outcome = authenticate(&body, &dir, &rl, &ss, &ds, "127.0.0.1", "ua", 1800).await;
+        assert!(matches!(outcome, LoginOutcome::Ok { .. }), "bob: {outcome:?}");
+    }
+
+    #[tokio::test]
+    async fn cross_account_password_is_rejected() {
+        let (_, rl, ss, ds) = fixtures();
+        let dir = two_account_directory();
+        // alice's password against bob's account must never admit.
+        let outcome = authenticate(
+            &login_body("bob", "alice-pw-1234"),
+            &dir, &rl, &ss, &ds, "127.0.0.1", "ua", 1800,
+        ).await;
+        assert!(matches!(outcome, LoginOutcome::Unauthorized { .. }));
+    }
+
+    #[tokio::test]
+    async fn per_account_totp_only_where_enrolled() {
+        let (_, rl, ss, ds) = fixtures();
+        let dir = two_account_directory();
+        // bob (enrolled) without a code → rejected.
+        let outcome = authenticate(
+            &login_body("bob", "bob-pw-5678"),
+            &dir, &rl, &ss, &ds, "127.0.0.1", "ua", 1800,
+        ).await;
+        assert!(
+            matches!(outcome, LoginOutcome::Unauthorized { .. }),
+            "bob without TOTP code must reject: {outcome:?}",
+        );
+        // alice (not enrolled) logs in without any code.
+        let outcome = authenticate(
+            &login_body("alice", "alice-pw-1234"),
+            &dir, &rl, &ss, &ds, "10.0.0.2", "ua", 1800,
+        ).await;
+        assert!(matches!(outcome, LoginOutcome::Ok { .. }));
+    }
+
+    #[tokio::test]
+    async fn unknown_user_in_directory_does_not_leak_existence() {
+        let (_, rl, ss, ds) = fixtures();
+        let dir = two_account_directory();
+        let outcome = authenticate(
+            &login_body("ghost", "whatever-pw"),
+            &dir, &rl, &ss, &ds, "127.0.0.1", "ua", 1800,
+        ).await;
+        match outcome {
+            LoginOutcome::Unauthorized { body } => {
+                let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+                assert_eq!(v["reason"], "invalid_credentials");
+            }
+            other => panic!("expected Unauthorized, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn lockout_on_one_account_does_not_lock_the_other() {
+        let (_, rl, ss, ds) = fixtures();
+        let dir = two_account_directory();
+        // Default lockout_threshold = 10; spread across IPs so the
+        // per-IP limiter doesn't fire first (mirrors
+        // login_lockout_after_user_threshold above).
+        for i in 0..10 {
+            let ip = format!("10.1.0.{i}");
+            let _ = authenticate(
+                &login_body("alice", "wrong-pw"),
+                &dir, &rl, &ss, &ds, &ip, "ua", 1800,
+            ).await;
+        }
+        let alice_next = authenticate(
+            &login_body("alice", "alice-pw-1234"),
+            &dir, &rl, &ss, &ds, "10.1.0.99", "ua", 1800,
+        ).await;
+        assert!(
+            matches!(alice_next, LoginOutcome::RateLimited { locked_out: true, .. }),
+            "alice must be locked out: {alice_next:?}",
+        );
+        // bob is untouched.
+        let code = current_totp_code(TEST_TOTP_SECRET_B32);
+        let body = serde_json::json!({
+            "user": "bob", "password": "bob-pw-5678", "totp_code": code,
+        }).to_string();
+        let bob = authenticate(&body, &dir, &rl, &ss, &ds, "10.1.0.100", "ua", 1800).await;
+        assert!(
+            matches!(bob, LoginOutcome::Ok { .. }),
+            "lockout on alice must not lock bob: {bob:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn session_record_carries_the_authenticated_username() {
+        let (_, rl, ss, ds) = fixtures();
+        let dir = two_account_directory();
+        let outcome = authenticate(
+            &login_body("alice", "alice-pw-1234"),
+            &dir, &rl, &ss, &ds, "127.0.0.1", "ua", 1800,
+        ).await;
+        let session_value = match outcome {
+            LoginOutcome::Ok { session_cookie, .. } => session_cookie
+                .strip_prefix("aegis_session=")
+                .and_then(|rest| rest.split(';').next())
+                .unwrap()
+                .to_string(),
+            other => panic!("expected Ok, got {other:?}"),
+        };
+        let record = ss.validate(&session_value).await.expect("session must validate");
+        assert_eq!(record.user, "alice", "audit identity must be per-account");
+    }
+
+    // ---- TOTP-2 (TF-1) — require_totp enforcement -----------------------
+    //
+    // A password alone must never grant admin access. With enforcement on
+    // (the production config default) an un-enrolled account's correct
+    // password yields an ENROLLMENT-ONLY session (totp_verified=false —
+    // the middleware restricts it to the TOTP enroll/confirm surface),
+    // never a full session.
+
+    fn cookie_value(cookie: &str) -> String {
+        cookie
+            .strip_prefix("aegis_session=")
+            .and_then(|rest| rest.split(';').next())
+            .unwrap()
+            .to_string()
+    }
+
+    fn enforced_unenrolled_directory() -> AdminDirectory {
+        AdminDirectory::new(vec![Arc::new(AdminIdentity {
+            user: "alice".into(),
+            password_hash: hash_password("alice-pw-1234").unwrap(),
+            ..AdminIdentity::default()
+        })])
+        .with_require_totp(true)
+    }
+
+    #[tokio::test]
+    async fn require_totp_password_only_login_yields_enrollment_only_session() {
+        let (_, rl, ss, ds) = fixtures();
+        let dir = enforced_unenrolled_directory();
+        let outcome = authenticate(
+            &login_body("alice", "alice-pw-1234"),
+            &dir, &rl, &ss, &ds, "127.0.0.1", "ua", 1800,
+        ).await;
+        let (session_cookie, body) = match outcome {
+            LoginOutcome::EnrollmentRequired { session_cookie, body, .. } => {
+                (session_cookie, body)
+            }
+            other => panic!("expected EnrollmentRequired, got {other:?}"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["enrollment_required"], true);
+        assert_eq!(v["user"], "alice");
+        // The session exists but is NOT second-factor verified — the
+        // middleware keys the enrollment-only restriction off this flag.
+        let record = ss
+            .validate(&cookie_value(&session_cookie))
+            .await
+            .expect("enrollment session must validate");
+        assert!(!record.totp_verified, "enrollment session must not be totp_verified");
+        assert_eq!(record.user, "alice");
+    }
+
+    #[tokio::test]
+    async fn require_totp_wrong_password_still_unauthorized_not_enrollment() {
+        // Enforcement must not turn a WRONG password into an enrollment
+        // session — password verification stays the first gate.
+        let (_, rl, ss, ds) = fixtures();
+        let dir = enforced_unenrolled_directory();
+        let outcome = authenticate(
+            &login_body("alice", "wrong-pw"),
+            &dir, &rl, &ss, &ds, "127.0.0.1", "ua", 1800,
+        ).await;
+        assert!(matches!(outcome, LoginOutcome::Unauthorized { .. }));
+    }
+
+    #[tokio::test]
+    async fn require_totp_enrolled_account_stays_strict_and_fully_verified() {
+        let (_, rl, ss, ds) = fixtures();
+        let dir = AdminDirectory::new(vec![Arc::new(AdminIdentity {
+            user: "bob".into(),
+            password_hash: hash_password("bob-pw-5678").unwrap(),
+            totp_secret_b32: TEST_TOTP_SECRET_B32.into(),
+            totp_enabled: true,
+            ..AdminIdentity::default()
+        })])
+        .with_require_totp(true);
+        // Without a code → plain Unauthorized (never enrollment — the
+        // account IS enrolled).
+        let outcome = authenticate(
+            &login_body("bob", "bob-pw-5678"),
+            &dir, &rl, &ss, &ds, "127.0.0.1", "ua", 1800,
+        ).await;
+        assert!(matches!(outcome, LoginOutcome::Unauthorized { .. }));
+        // With the app code → full, totp_verified session.
+        let code = current_totp_code(TEST_TOTP_SECRET_B32);
+        let body = serde_json::json!({
+            "user": "bob", "password": "bob-pw-5678", "totp_code": code,
+        }).to_string();
+        let outcome = authenticate(&body, &dir, &rl, &ss, &ds, "10.0.0.3", "ua", 1800).await;
+        let session_cookie = match outcome {
+            LoginOutcome::Ok { session_cookie, .. } => session_cookie,
+            other => panic!("expected Ok, got {other:?}"),
+        };
+        let record = ss
+            .validate(&cookie_value(&session_cookie))
+            .await
+            .expect("session must validate");
+        assert!(record.totp_verified, "full login must be second-factor verified");
+    }
+
+    #[tokio::test]
+    async fn require_totp_false_preserves_password_only_login() {
+        // Explicit opt-out (dev/CI) — today's behaviour, fully verified
+        // session (the policy is satisfied because there is no policy).
+        let (_, rl, ss, ds) = fixtures();
+        let dir = AdminDirectory::new(vec![Arc::new(AdminIdentity {
+            user: "alice".into(),
+            password_hash: hash_password("alice-pw-1234").unwrap(),
+            ..AdminIdentity::default()
+        })])
+        .with_require_totp(false);
+        let outcome = authenticate(
+            &login_body("alice", "alice-pw-1234"),
+            &dir, &rl, &ss, &ds, "127.0.0.1", "ua", 1800,
+        ).await;
+        let session_cookie = match outcome {
+            LoginOutcome::Ok { session_cookie, .. } => session_cookie,
+            other => panic!("expected Ok, got {other:?}"),
+        };
+        let record = ss
+            .validate(&cookie_value(&session_cookie))
+            .await
+            .expect("session must validate");
+        assert!(
+            record.totp_verified,
+            "opt-out sessions must be fully admitted (not enrollment-locked)",
+        );
     }
 }
