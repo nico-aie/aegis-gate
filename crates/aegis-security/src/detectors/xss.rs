@@ -36,16 +36,33 @@ static XSS_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)expression\s*\(",
         r#"(?i)url\s*\(\s*['"]?\s*javascript:"#,
         r"(?i)data\s*:\s*text/html",
-        r"(?i)&#x?[0-9a-f]+;",
-        r"(?i)alert\s*\(",
-        r"(?i)prompt\s*\(",
-        r"(?i)confirm\s*\(",
+        // FP-2026-07-07 (XS-1): the bare numeric-entity pattern
+        // `(?i)&#x?[0-9a-f]+;` matched EVERY inert entity — `&#39;`
+        // (apostrophe), `&#169;` (©), `&#160;` (nbsp) — saturating rich
+        // product/localised text (alibaba/virginatlantic/target) with
+        // 70-point blocks. Narrowed to only the entities that encode the
+        // markup-critical angle brackets `<`/`>` (decimal 60/62, hex 3c/3e,
+        // leading-zeros tolerated). This still catches the double-URL-encoded
+        // entity-XSS evasion (`%26%23x3c;script…` → `&#x3c;script…`, which
+        // `normalize_for_detection` does NOT compose past url-decode, so the
+        // literal `&#x3c;` is the only signal) while dropping benign entities.
+        r"(?i)&#(?:0*6[02]|x0*3[ce]);",
+        // FP-2026-07-07 (XS-3): `alert(`/`prompt(`/`confirm(`/`eval(` now
+        // require a word boundary and NO leading space — real payloads are
+        // `alert(1)` (boundary, no space); English UI copy `Confirm (…)` and
+        // substrings `retrieval(` no longer trip.
+        r"(?i)\balert\(",
+        r"(?i)\bprompt\(",
+        r"(?i)\bconfirm\(",
         r"(?i)document\.(?:cookie|write|location|domain)",
         r"(?i)window\.(?:location|open|eval)",
-        r"(?i)eval\s*\(",
+        r"(?i)\beval\(",
         r"(?i)setTimeout\s*\(",
         r"(?i)setInterval\s*\(",
-        r#"(?i)Function\s*\("#,
+        // FP-2026-07-07 (XS-2): case-SENSITIVE — the `Function()` constructor
+        // is capital-F; benign lowercase `function(` in embedded/serialised
+        // JS is not an injection sink and no longer matches.
+        r#"Function\s*\("#,
         r"(?i)\.innerHTML\s*=",
         r"(?i)\.outerHTML\s*=",
         r"(?i)fromCharCode\s*\(",
@@ -119,7 +136,7 @@ impl Detector for XssDetector {
         // (form-urlencoded/text-plain single huge high-entropy value). The
         // blob coincidentally matches tag/handler/`javascript:` shapes and
         // drove the xss benign blocks. Mirrors the cmdi/sqli body gate.
-        if !body.is_empty() && !super::form_body_is_opaque_beacon(req.headers, body) {
+        if !body.is_empty() && !super::body_is_opaque(req.headers, body) {
             // AC-P1-d — parity with sqli's body posture: structured-text
             // bodies the origin will parse (`body_is_scannable`: JSON /
             // form / XML / text) get the full multi-variant decode so
@@ -398,6 +415,34 @@ mod tests {
         // `&copy;` decodes to nothing in our narrow table; even if
         // it did, the result wouldn't match XSS patterns.
         "/?q=Copyright+&copy;+2026");
+
+    // ---- FP-2026-07-07 (S/L-Tester benign-block reduction) ----
+    //
+    // XS-1: a BARE numeric HTML entity (`&#39;` apostrophe, `&#169;`
+    // copyright, `&#8217;` curly-quote) is inert — it decodes to a
+    // printable char, not markup. Rich e-commerce/product/localised text
+    // is saturated with them (alibaba/virginatlantic/target) and each was
+    // a 70-point block. Real entity-encoded XSS (`&#x3c;script`) still
+    // fires: it decodes to `<script`, which pattern #1 catches (see the
+    // xss_entity_numeric_* positives above, which stay green via decode).
+    negative!(clean_numeric_entity_apostrophe, "/?q=Tom%26%2339;s+Diner");
+    negative!(clean_numeric_entity_copyright, "/?desc=Rock+%26%23169;+2024");
+    negative!(clean_numeric_entity_hex_nbsp, "/?t=a%26%23xa0;b");
+    // …but angle-bracket entities (the real evasion) still fire.
+    positive!(xss_entity_decimal_angle, "/?q=%26%2360;script%26%2362;");
+
+    // XS-2: `Function(` was case-insensitive, so benign lowercase
+    // `function(` in any embedded/serialised JS snippet blocked. The
+    // `Function()` constructor abuse (capital F) still fires.
+    negative!(clean_lowercase_function, "/?code=function(x)%7Breturn+x*2%7D");
+
+    // XS-3: the JS-call tokens `alert(`/`prompt(`/`confirm(`/`eval(`
+    // tolerated a space and had no word boundary, so English UI copy
+    // (`Confirm (your order)`) and substrings (`retrieval(`) blocked.
+    // Real payloads are `alert(1)` — boundary + no space.
+    negative!(clean_confirm_english_copy, "/?msg=Confirm+(your+order)+now");
+    negative!(clean_alert_english_copy, "/?msg=Alert+(weather+advisory)");
+    negative!(clean_retrieval_substring, "/?q=fast+data+retrieval(mode)");
 
     // 2026-05-22 — the `cookie` header is no longer scanned for XSS
     // (server-set, not a reflected vector). A cookie value carrying

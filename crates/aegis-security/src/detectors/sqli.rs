@@ -7,12 +7,15 @@ use super::{Detector, Signal};
 /// SQL injection detector.
 pub struct SqliDetector;
 
-static SQLI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+// FP-2026-07-07 (SQ-2) — two tiers. HIGH patterns are unambiguous SQLi and
+// block on a single hit (score 70). AMBIGUOUS patterns (function-name-only and
+// clause-bridge shapes) collide with benign analytics / GraphQL / YQL, so they
+// block ONLY when corroborated by a SQL line-comment (`--`) in the same field;
+// a lone benign `concat(` / `char(` / `SELECT…FROM` emits no signal at all.
+static SQLI_HIGH: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
         r"(?i)(?:UNION\s+(?:ALL\s+)?SELECT)",
-        r"(?i)(?:SELECT\s+.+\s+FROM\s+)",
         r"(?i)(?:INSERT\s+INTO\s+)",
-        r"(?i)(?:UPDATE\s+.+\s+SET\s+)",
         r"(?i)(?:DELETE\s+FROM\s+)",
         r"(?i)(?:DROP\s+TABLE\s+)",
         r"(?i)(?:ALTER\s+TABLE\s+)",
@@ -26,29 +29,51 @@ static SQLI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // comment SQLi breaks out of a quoted string (`admin'--`, `' OR
         // 1=1--`); numeric injections are caught by the OR/UNION rules
         // regardless of the trailing `--`.
-        r"(?i)(?:'[^']*--)",
-        r"(?i)(?:/\*.*\*/)",
+        // FP-2026-07-07 (SQ-1): bound the gap. The unbounded `'[^']*--`
+        // matched an apostrophe early in a value and a `--` far later
+        // (contractions + a dashed separator in the same JSON/query field).
+        // Real breakout comments are short (`admin'--`, `' OR 1=1--`).
+        r"(?i)(?:'[^']{0,32}--)",
+        // FP-2026-07-07 (SQ-1): bounded, non-greedy. A long benign C-style
+        // comment block (license header / doc block > 64 chars) no longer
+        // matches; the short evasion `/**/` and MySQL `/*!…*/` still fire.
+        r"(?i)(?:/\*.{0,64}?\*/)",
         r"(?i)(?:WAITFOR\s+DELAY)",
-        r"(?i)(?:BENCHMARK\s*\()",
-        r"(?i)(?:SLEEP\s*\()",
+        // SQ-2 (2026-07-07): a time/heavy function in an injection context — a
+        // SQL boolean operator, statement boundary, or closing paren directly
+        // before it — is high-confidence blind SQLi (`1 AND SLEEP(5)`,
+        // `1) OR BENCHMARK(…)`, `;SLEEP(5)`). The BARE `sleep(`/`benchmark(`
+        // (benign analytics) stays AMBIGUOUS below.
+        r"(?i)(?:\bAND\b|\bOR\b|;|\))\s*(?:SLEEP|BENCHMARK|PG_SLEEP)\s*\(",
         r"(?i)(?:LOAD_FILE\s*\()",
         r"(?i)(?:INTO\s+(?:OUT|DUMP)FILE)",
-        r"(?i)(?:EXEC(?:UTE)?\s+)",
         r"(?i)(?:xp_cmdshell)",
         r"(?i)(?:information_schema)",
         r"(?i)(?:sys\.(?:objects|columns|tables))",
-        // 2026-05-24 (FP fix) — REMOVED `0x[0-9a-f]{8,}`. It matched any
-        // 8+ hex run after `0x`, false-positiving on GPU device ids
-        // (`0x0000C0DE` in Chromium UMA telemetry), content hashes, and
-        // tokens. Real hex-encoding SQLi (`0x4142…`) is almost always
-        // paired with UNION/SELECT/CHAR, which the other rules catch.
-        r"(?i)(?:CHAR\s*\(\s*\d+\s*\))",
-        r"(?i)(?:CONCAT\s*\()",
         r"(?i)(?:GROUP\s+BY\s+.+\s+HAVING)",
-        r"(?i)(?:ORDER\s+BY\s+\d+)",
         r"(?i)(?:CASE\s+WHEN\s+)",
         r"(?i)(?:EXTRACTVALUE\s*\()",
         r"(?i)(?:UPDATEXML\s*\()",
+    ]
+    .iter()
+    .map(|p| Regex::new(p).unwrap())
+    .collect()
+});
+
+// AMBIGUOUS — function-name-only + clause-bridge shapes. These are the sqli FP
+// drivers (YQL `SELECT…FROM…ORDER BY`, analytics `concat(`/`char(`/`sleep(`).
+// 2026-05-24: `0x[0-9a-f]{8,}` was already removed (GPU-id FP). Block only with
+// a `--` corroborator (see `check_patterns`).
+static SQLI_AMBIGUOUS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    [
+        r"(?i)(?:SELECT\s+.+\s+FROM\s+)",
+        r"(?i)(?:UPDATE\s+.+\s+SET\s+)",
+        r"(?i)(?:BENCHMARK\s*\()",
+        r"(?i)(?:SLEEP\s*\()",
+        r"(?i)(?:EXEC(?:UTE)?\s+)",
+        r"(?i)(?:CHAR\s*\(\s*\d+\s*\))",
+        r"(?i)(?:CONCAT\s*\()",
+        r"(?i)(?:ORDER\s+BY\s+\d+)",
     ]
     .iter()
     .map(|p| Regex::new(p).unwrap())
@@ -84,7 +109,7 @@ impl Detector for SqliDetector {
             // S2 (2026-06-18) — skip bot-management sensor beacons posted
             // as form-urlencoded/text-plain (single huge high-entropy
             // value); they coincidentally match injection shapes.
-            if !body.is_empty() && !super::form_body_is_opaque_beacon(req.headers, body) {
+            if !body.is_empty() && !super::body_is_opaque(req.headers, body) {
                 for variant in super::normalize_for_detection(body) {
                     check_patterns(&variant, "body", &mut signals);
                     if !signals.is_empty() {
@@ -106,15 +131,19 @@ impl Detector for SqliDetector {
 }
 
 fn check_patterns(input: &str, field: &str, signals: &mut Vec<Signal>) {
-    for re in SQLI_PATTERNS.iter() {
-        if re.is_match(input) {
-            signals.push(Signal {
-                score: super::scores::sqli::SQLI,
-                tag: "sqli".into(),
-                field: field.into(),
-            });
-            return; // One signal per field is enough.
-        }
+    // HIGH — unambiguous SQLi, single-hit block.
+    let hit = SQLI_HIGH.iter().any(|re| re.is_match(input))
+        // AMBIGUOUS — only with a SQL line-comment corroborator in the same
+        // field. `--` is the discriminator: a benign `concat(a,b)` / YQL
+        // `SELECT…FROM` carries none, a real `1 ORDER BY 5--` does. (The
+        // quoted-comment `'…--` form is already a HIGH pattern.)
+        || (input.contains("--") && SQLI_AMBIGUOUS.iter().any(|re| re.is_match(input)));
+    if hit {
+        signals.push(Signal {
+            score: super::scores::sqli::SQLI,
+            tag: "sqli".into(),
+            field: field.into(),
+        });
     }
 }
 
@@ -168,26 +197,33 @@ mod tests {
     positive_test!(sqli_or_1_eq_1, "/?id=1+OR+1=1");
     positive_test!(sqli_single_quote_or, "/?id='+OR+'1'='1");
     positive_test!(sqli_drop_table, "/?q=';+DROP+TABLE+users");
-    positive_test!(sqli_select_from, "/?q=SELECT+name+FROM+users");
+    // SQ-2 (2026-07-07): `SELECT…FROM` / `UPDATE…SET` are AMBIGUOUS — the
+    // realistic injection forms carry a `--` comment or a `';` stacked query,
+    // so they still block; a bare `SELECT name FROM users` (analytics/YQL) no
+    // longer does (see clean_select_from / clean_yql_select).
+    positive_test!(sqli_select_from, "/?q=SELECT+name+FROM+users--");
     positive_test!(sqli_insert_into, "/?q=INSERT+INTO+logs+VALUES(1)");
-    positive_test!(sqli_update_set, "/?q=UPDATE+users+SET+admin=1");
+    positive_test!(sqli_update_set, "/?q=1';UPDATE+users+SET+admin=1--");
     positive_test!(sqli_delete_from, "/?q=DELETE+FROM+sessions");
     positive_test!(sqli_alter_table, "/?q=ALTER+TABLE+users+ADD+col+INT");
     positive_test!(sqli_comment, "/?id=1'--");
     positive_test!(sqli_c_comment, "/?id=1/**/");
     positive_test!(sqli_waitfor, "/?id=1;WAITFOR+DELAY+'0:0:5'");
-    positive_test!(sqli_benchmark, "/?id=BENCHMARK(1000,MD5('a'))");
-    positive_test!(sqli_sleep, "/?id=SLEEP(5)");
+    // SQ-2: BENCHMARK/SLEEP/CHAR/CONCAT/EXEC/ORDER BY are AMBIGUOUS — the
+    // realistic time-based / union / stacked forms carry a quote-comment or
+    // `--`, so they still block; the bare function call no longer does.
+    positive_test!(sqli_benchmark, "/?id=1'+AND+BENCHMARK(1000000,MD5(1))--");
+    positive_test!(sqli_sleep, "/?id=1'+AND+SLEEP(5)--");
     positive_test!(sqli_load_file, "/?id=LOAD_FILE('/etc/passwd')");
     positive_test!(sqli_into_outfile, "/?q=INTO+OUTFILE+'/tmp/out'");
-    positive_test!(sqli_exec, "/?q=EXEC+sp_help");
+    positive_test!(sqli_exec, "/?q=1';EXEC+sp_help--");
     positive_test!(sqli_xp_cmdshell, "/?q=xp_cmdshell+'dir'");
     positive_test!(sqli_information_schema, "/?q=information_schema.tables");
     positive_test!(sqli_sys_objects, "/?q=sys.objects");
-    positive_test!(sqli_char_func, "/?q=CHAR(65)");
-    positive_test!(sqli_concat, "/?q=CONCAT('a','b')");
+    positive_test!(sqli_char_func, "/?q=1+UNION+SELECT+CHAR(65)--");
+    positive_test!(sqli_concat, "/?q=1+UNION+SELECT+CONCAT(u,p)--");
     positive_test!(sqli_group_by_having, "/?q=GROUP+BY+id+HAVING+1=1");
-    positive_test!(sqli_order_by_num, "/?q=ORDER+BY+5");
+    positive_test!(sqli_order_by_num, "/?q=1+ORDER+BY+5--");
     positive_test!(sqli_case_when, "/?q=CASE+WHEN+1=1+THEN+1");
     positive_test!(sqli_extractvalue, "/?q=EXTRACTVALUE(1,1)");
     positive_test!(sqli_updatexml, "/?q=UPDATEXML(1,1,1)");
@@ -270,6 +306,30 @@ mod tests {
     // `0x…` hex run (GPU id / hash / token) is no longer flagged.
     negative_test!(clean_hex_blob, "/sync?gpu=0x0000C0DE");
     negative_test!(clean_hash_param, "/t?sig=0xdeadbeefcafebabe");
+
+    // FP-2026-07-07 (SQ-2) — function-name / clause-bridge patterns are now
+    // AMBIGUOUS: they block only when corroborated by a SQL line-comment
+    // (`--`) in the same field, so a benign standalone `concat(` / `char(` /
+    // `sleep(` / `SELECT…FROM` (analytics, GraphQL, YQL) emits NO signal.
+    negative_test!(clean_concat_func,   "/?q=CONCAT(first_name,last_name)");
+    negative_test!(clean_char_func,     "/?q=CHAR(65)");
+    negative_test!(clean_sleep_func,    "/?wait=sleep(100)");
+    negative_test!(clean_order_by_num,  "/?p=ORDER+BY+2");
+    negative_test!(clean_select_from,   "/?q=SELECT+title+FROM+catalog");
+    negative_test!(clean_yql_select,    "/v2/public/yql?q=SELECT+*+FROM+weather+ORDER+BY+1");
+    negative_test!(clean_exec_verb,     "/?q=EXEC+the+report");
+    negative_test!(clean_benchmark,     "/?score=BENCHMARK(fast)");
+
+    // FP-2026-07-07 (SQ-1) — bound the two greedy comment regexes.
+    // A benign apostrophe (contraction/possessive) far from a later `--`
+    // must not bridge into a string-breakout match; real breakout comments
+    // (`admin'--`, `' OR 1=1--`) are short and still fire.
+    negative_test!(clean_apostrophe_far_from_dashes,
+        "/?comment=it%27s+a+long+benign+note+ending+in+a+dashed+separator+line+--");
+    // A long C-style comment block (license header / doc block > 64 chars)
+    // must not match; the short evasion `/**/` and `/*!…*/` still fire.
+    negative_test!(clean_long_c_comment_block,
+        "/?css=/*+long+license+header+block+that+exceeds+sixty+four+characters+of+comment+text+here+*/");
 
     // 2026-06-17 — the detector inspects an ORIGIN-FORM target (path+query);
     // the WAF strips the reconstructed `scheme://host` before detectors run.

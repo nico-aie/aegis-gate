@@ -132,7 +132,7 @@ impl Detector for SsrfDetector {
         // (form-urlencoded/text-plain single huge high-entropy value). The
         // blob coincidentally matches internal-host/userinfo URL shapes.
         // Mirrors the cmdi/sqli body gate.
-        if !body.is_empty() && !super::form_body_is_opaque_beacon(req.headers, body) {
+        if !body.is_empty() && !super::body_is_opaque(req.headers, body) {
             check_ssrf(&super::url_decode(body), "body", &mut signals);
         }
 
@@ -294,6 +294,24 @@ mod tests {
         // The parser-confusion attack must still fire: real host is internal.
         let body = r#"{"u":"http://evil.com@169.254.169.254/latest/meta-data/"}"#;
         assert!(!ssrf_body_json(body).is_empty(), "userinfo to metadata IP must SSRF");
+    }
+
+    #[test]
+    fn ssrf_high_entropy_replay_body_is_skipped() {
+        // FP-G1-b — a session-replay/telemetry JSON dominated by an encoded
+        // blob that coincidentally contains an internal-host URL substring is
+        // not a real SSRF sink (the origin will not fetch a URL buried in a
+        // base64 replay blob). The whole-body entropy gate skips it.
+        let blob: String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+            .chars()
+            .cycle()
+            .take(900)
+            .collect();
+        let body = format!(r#"{{"replay":"{blob}","evt":"http://169.254.169.254/latest/"}}"#);
+        assert!(
+            ssrf_body_json(&body).is_empty(),
+            "high-entropy replay body must be skipped",
+        );
     }
     // BYPASS-03f (Run-6 l-tester cross-check, 2026-05-09) —
     // IPv4-mapped IPv6 SSRF. Browsers resolve `[::ffff:127.0.0.1]`

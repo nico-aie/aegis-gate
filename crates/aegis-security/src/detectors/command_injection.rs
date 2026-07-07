@@ -88,11 +88,28 @@ static CMDI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     // ever match AFTER a shell metacharacter (`;`, `|`, `&&`, `$(`, backtick)
     // via the patterns below, so adding read/recon commands (type/dir/more/…)
     // can't FP on bare query values like `?type=user` or `?dir=asc`.
-    const CMD: &str = r"whoami|id|uname|cat|ls|nc\b|ncat|netcat|curl|wget|sh\b|bash|zsh|ksh|dash|cmd\.exe|powershell|python|perl|ruby|php|nslookup|ping|rm\b|mv\b|chmod|chown|nc\.exe|sleep\b|timeout\b|more\b|less\b|head\b|tail\b|tr\b|tee\b|dd\b|env\b|xxd|base64|type\b|dir\b|systeminfo|tasklist|ipconfig|ifconfig|findstr|certutil|netstat|hostname|net\b|reg\b|ver\b";
-    // Shell-arg context the command must be followed by (whitespace,
-    // path `/`, `$` IFS-evasion, end, or another separator) — NOT `=`
-    // (`;cat=…`) or a word char (`category`).
+    // FP-2026-07-07 (CI-1) — the command alternation is split by signal
+    // strength. HIGH_CMD tokens are non-English exec/recon binaries: after a
+    // shell metacharacter they are command execution regardless of what
+    // follows, so they fire on a bare arg boundary (`|whoami`, `&&ipconfig`).
+    // AMBIG_CMD tokens are also common English / e-commerce facet words
+    // (`id`, `cat`, `ls`, `dir`, `ping`, `sleep`, …) — `filter=running|id`,
+    // `sort=price|asc|dir` are benign — so they fire ONLY with a real argument
+    // tail (`AMBIG_ARG`: a flag / path / word / `$IFS`), never on a bare
+    // list separator or end-of-value.
+    const HIGH_CMD: &str = r"whoami|uname|nc\b|ncat|netcat|curl|wget|sh\b|bash|zsh|ksh|dash|cmd\.exe|powershell|nc\.exe|chmod|chown|nslookup|xxd|base64|systeminfo|tasklist|ipconfig|ifconfig|findstr|certutil|netstat|hostname";
+    const AMBIG_CMD: &str = r"id|cat|ls|python|perl|ruby|php|ping|rm\b|mv\b|sleep\b|timeout\b|more\b|less\b|head\b|tail\b|tr\b|tee\b|dd\b|env\b|type\b|dir\b|net\b|reg\b|ver\b";
+    // Combined set for the subshell / backtick forms, where the paired
+    // delimiters (`$(…)`, `` `…` ``) ARE the shell context — `$(id)` /
+    // `` `id` `` is execution, so the full command set applies there.
+    let cmd_all = format!("{HIGH_CMD}|{AMBIG_CMD}");
+    // Loose arg boundary for HIGH_CMD (whitespace, path, IFS, separator, end)
+    // — NOT `=` (`;cat=…`) or a word char (`category`).
     const ARG: &str = r"(?:[\s/;|&$]|$)";
+    // Strict arg tail for AMBIG_CMD: a genuine command argument (flag / path /
+    // word / quote / `$IFS`) must follow — a bare `|`, `;`, `&`, or end does
+    // NOT count, so pipe-delimited facet lists don't fire.
+    const AMBIG_ARG: &str = r#"(?:\s+[-/\w'"~.]|/[\w.~]|\$\{?IFS)"#;
 
     // Command-substitution + separator forms — ALL require a real shell
     // command inside/after the metacharacter.
@@ -111,11 +128,17 @@ static CMDI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     //     `${jndi:…}` stays in LOG4SHELL_PATTERNS; SSTI `${…}` is the
     //     template_injection detector's job.
     let mut pats: Vec<String> = vec![
-        format!(r"(?i)\$\([^)]*(?:{CMD})(?:[\s/;|&$][^)]*)?\)"),
-        format!(r"(?i)`[^`]*(?:{CMD})(?:[\s/;|&$][^`]*)?`"),
-        format!(r"(?i)\|\s*(?:{CMD}){ARG}"),
-        format!(r"(?i);\s*(?:{CMD}){ARG}"),
-        format!(r"(?i)(?:&&|\|\|)\s*(?:{CMD}){ARG}"),
+        // Subshell / backtick — full command set (delimiters are the context).
+        format!(r"(?i)\$\([^)]*(?:{cmd_all})(?:[\s/;|&$][^)]*)?\)"),
+        format!(r"(?i)`[^`]*(?:{cmd_all})(?:[\s/;|&$][^`]*)?`"),
+        // Pipe / `;` / chain — HIGH_CMD fires on a bare arg boundary.
+        format!(r"(?i)\|\s*(?:{HIGH_CMD}){ARG}"),
+        format!(r"(?i);\s*(?:{HIGH_CMD}){ARG}"),
+        format!(r"(?i)(?:&&|\|\|)\s*(?:{HIGH_CMD}){ARG}"),
+        // Pipe / `;` / chain — AMBIG_CMD requires a real argument tail.
+        format!(r"(?i)\|\s*(?:{AMBIG_CMD}){AMBIG_ARG}"),
+        format!(r"(?i);\s*(?:{AMBIG_CMD}){AMBIG_ARG}"),
+        format!(r"(?i)(?:&&|\|\|)\s*(?:{AMBIG_CMD}){AMBIG_ARG}"),
     ];
     // Literal patterns (no command-alternation reuse).
     for p in [
@@ -143,7 +166,13 @@ static CMDI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // $IFS is a bash-only token absent from valid input — unlike the
         // ad-tech `${UUID}`/`${AUCTION_PRICE}` macros that forced removal of
         // the generic `${VAR}` pattern, so this is safe to add standalone.
-        r"(?i)\$\{?IFS\}?",
+        // FP-2026-07-07 (CI-3): require a non-identifier boundary after `$IFS`
+        // so a benign identifier (`$IFSomething`, `$IFSConfig`) does not
+        // match. Rust's regex has no lookahead, so this is spelled as two
+        // alternatives: the braced `${IFS}` form, or bare `$IFS` followed by a
+        // non-alphanumeric char / end-of-input. `cat$IFS/etc/passwd`,
+        // `cat$IFS$9`, `ls$IFS-la` all still fire.
+        r"(?i)\$\{IFS\}|\$IFS(?:[^a-z0-9]|$)",
         // CR-1 companion — read-command + system path reached via a shell
         // separator (space, tab, `<` redirect). Generalises the literal
         // `cat /etc/passwd` to /etc//proc//root//var/log/ and more read
@@ -154,7 +183,12 @@ static CMDI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // Bare `id` is excluded from the alternation (it collides with
         // `{id,name}`-shaped template/format lists); the exec-oriented
         // commands here don't.
-        r"(?i)\{(?:whoami|cat|ls|nc|ncat|curl|wget|chmod|bash|sh|nslookup|ping)\b,[^}]*\}",
+        // FP-2026-07-07 (CI-2): require a `/` or whitespace inside the braces.
+        // Real brace-expansion RCE targets a path/URL (`{cat,/etc/passwd}`,
+        // `{curl,http://evil/x}`); minified GraphQL / JS object-literal field
+        // lists (`{ls,name}`, `{ping,latency,id}`) have neither and no longer
+        // match.
+        r"(?i)\{(?:whoami|cat|ls|nc|ncat|curl|wget|chmod|bash|sh|nslookup|ping)\b,[^}]*[/\s][^}]*\}",
         // CR-3 (2026-07-06) — scripting-interpreter execution flags. The flag
         // (`-c`/`-e`/`-r`/`-ne`) disambiguates execution from a filename
         // (`index.php`) or param (`?python=3`).
@@ -210,7 +244,7 @@ impl Detector for CommandInjectionDetector {
             // as form-urlencoded/text-plain (single huge high-entropy
             // value); after hex/URL decode they coincidentally match the
             // shell-command shapes and drove the cmdi benign blocks.
-            if !body.is_empty() && !super::form_body_is_opaque_beacon(req.headers, body) {
+            if !body.is_empty() && !super::body_is_opaque(req.headers, body) {
                 for variant in super::normalize_for_detection(body) {
                     check(&variant, "body", &mut signals);
                     if !signals.is_empty() {
@@ -395,7 +429,9 @@ mod tests {
     positive!(cmdi_powershell_enc,       "/run?cmd=powershell%20-enc%20ZQBjAGgA");
     // --- 2026 — Windows recon commands after a metacharacter ---
     positive!(cmdi_semicolon_type_winini, "/run?p=x;type%20C:\\windows\\win.ini");
-    positive!(cmdi_pipe_dir,             "/run?p=x|dir");
+    // CI-1 (2026-07-07): a bare `|dir` is a benign facet value; real recon
+    // carries an argument (`dir /s`, `dir C:\`), which still fires.
+    positive!(cmdi_pipe_dir,             "/run?p=x|dir%20/s");
     positive!(cmdi_amp_systeminfo,       "/run?p=x&&systeminfo");
     positive!(cmdi_pipe_ipconfig,        "/run?p=x|ipconfig");
 
@@ -470,6 +506,15 @@ mod tests {
     // CR FP guards — must NOT fire.
     negative!(clean_cat_path_segment,    "/api/cat/etc/list");   // path, not `cat<sep>/etc`
     negative!(clean_category_brace,      "/list?x={name,value}"); // brace list, no command
+    // FP-2026-07-07 (CI-2): minified GraphQL / JS object-literal field lists
+    // (`{ping,latency,id}`, `{ls,name}`) collided with the brace-expansion
+    // pattern. Real brace-expansion RCE targets a path/URL, so require a
+    // `/` or whitespace inside the braces — GraphQL selections have neither.
+    negative!(clean_graphql_brace_ping,  "/gql?q={ping,latency,id}");
+    negative!(clean_graphql_brace_ls,    "/api?fields={ls,name,sh}");
+    // FP-2026-07-07 (CI-3): `$IFS` must carry a non-identifier boundary so a
+    // benign identifier like `$IFSomething` / `$IFSConfig` does not match.
+    negative!(clean_ifs_identifier,      "/api?v=%24IFSomething");
     negative!(clean_python_version,      "/api?python=3.11");     // no exec flag
     negative!(clean_php_page,            "/shop/index.php?p=1");  // php without exec flag
     negative!(clean_node_path,           "/node_modules/react");  // node without ` -e`
@@ -521,6 +566,17 @@ mod tests {
     negative!(cmdi_category_word,        "/shop;category=shoes");
     // ...but a real `;cat /etc/passwd` (space-arg) still fires.
     positive!(cmdi_semicolon_cat_arg,    "/run?cmd=x;cat%20/etc/passwd");
+
+    // FP-2026-07-07 (CI-1) — pipe/`;`/chain-delimited facet & option lists.
+    // The ambiguous English-word command tokens (`id`, `cat`, `ls`, `dir`,
+    // `ping`, `sleep`, …) are exactly the e-commerce facet/sort vocabulary
+    // (nike/kohl's/skyscanner). They now require a real argument tail after
+    // the token, so a bare `…|id` / `…|dir` list value no longer fires; a
+    // real `;cat /etc/passwd` / `|dir /s` (arg present) still does.
+    negative!(cmdi_facet_pipe_id,        "/list?filter=running|training|id");
+    negative!(cmdi_facet_pipe_dir,       "/sort?x=price|asc|dir");
+    negative!(cmdi_facet_pipe_cat,       "/nav?tabs=home|cat|sale");
+    negative!(cmdi_facet_pipe_less,      "/opt?v=less|more|all");
 
     // 2026-05-22 (legit-dataset FP fix) — high-entropy ad-tech telemetry
     // blobs (Moat/Celtra `/pixel.gif`) contain random paired backticks /

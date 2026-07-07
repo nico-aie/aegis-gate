@@ -1004,27 +1004,36 @@ pub(crate) async fn handle_data_request_inner(
         "tier",
         aegis_security::detectors::tier_str(tier),
     );
-    let _shed_guard = if let Some(shedder) = upstream_ctx.load_shedder.get() {
-        if !shedder.should_admit(&tier) {
-            // §5.5 — the reject path stays cheap: a small fixed 503, no
-            // detector/body/audit-heavy work, so shedding never adds load.
-            let resp = Response::builder()
-                .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
-                .header("retry-after", "1")
-                .header("content-type", "application/json")
-                .body(crate::body::full(Bytes::from(
-                    serde_json::json!({
-                        "error": "load_shed",
-                        "tier": aegis_security::detectors::tier_str(tier),
-                        "retry_after_seconds": 1,
-                    })
-                    .to_string(),
-                )))
-                .unwrap();
-            return (resp, DecisionTag::circuit_breaker("load_shed").with_tier(tier));
+    let _shed_guard = if upstream_ctx
+        .load_shed_enabled
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        if let Some(shedder) = upstream_ctx.load_shedder.get() {
+            if !shedder.should_admit(&tier) {
+                // §5.5 — the reject path stays cheap: a small fixed 503, no
+                // detector/body/audit-heavy work, so shedding never adds load.
+                let resp = Response::builder()
+                    .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
+                    .header("retry-after", "1")
+                    .header("content-type", "application/json")
+                    .body(crate::body::full(Bytes::from(
+                        serde_json::json!({
+                            "error": "load_shed",
+                            "tier": aegis_security::detectors::tier_str(tier),
+                            "retry_after_seconds": 1,
+                        })
+                        .to_string(),
+                    )))
+                    .unwrap();
+                return (resp, DecisionTag::circuit_breaker("load_shed").with_tier(tier));
+            }
+            Some(shedder.admit_guard())
+        } else {
+            None
         }
-        Some(shedder.admit_guard())
     } else {
+        // Load shedding disabled at runtime (PUT /api/gates/shed) — admit
+        // unconditionally; the shedder machinery idles.
         None
     };
 

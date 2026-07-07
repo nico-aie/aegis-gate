@@ -4592,9 +4592,42 @@ function DetectorMaskCard() {
 // backend never makes a healthy WAF shed). Tunables live in the
 // `load_shedder:` config block; see docs/data-plane/adaptive-load-shedding.md.
 function LoadShedGateCard() {
+  // 2026-07-07 — runtime on/off. Audit-mutated PUT /api/gates/shed;
+  // hot-applied (no restart) + persisted to load_shedder.enabled so it
+  // survives restart and converges fleet-wide. When OFF, every request is
+  // admitted; the Gradient2 machinery idles.
+  const api = window.useApi
+    ? window.useApi('/api/gates/shed', { intervalMs: 15000, fallback: { enabled: true } })
+    : { data: { enabled: true } };
+  const enabled = api.data?.enabled === true;
+  const [busy, setBusy] = useStateP(false);
+
+  async function toggle() {
+    if (busy) return;
+    setBusy(true);
+    const next = !enabled;
+    try {
+      const r = await window.csrfMutate('/api/gates/shed', {
+        method: 'PUT',
+        body: JSON.stringify({ enabled: next }),
+      });
+      if (r && r.ok) {
+        window.aegisToast(`Load shedding ${next ? 'enabled' : 'disabled'}`, 'ok');
+        api.reload && api.reload();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
+        window.aegisToast(`Load-shed toggle failed: ${msg}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`Load-shed error: ${e.message || e}`, 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div data-component="load-shed-gate-card" className="card" style={{ marginBottom: 12, padding: 0 }}>
-      <div className="card-head" style={{ padding: 12 }}>
+      <div className="card-head" style={{ padding: 12, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
         <div>
           <div className="card-title">
             Availability gate · load_shed
@@ -4610,6 +4643,19 @@ function LoadShedGateCard() {
             auto-tuned limit. It appears in Attack distribution because the
             aggregator buckets every block by <code>rule_id</code>.
           </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+          <span className={`pill ${enabled ? 'ok' : 'warn'}`} style={{ fontSize: 10 }}>
+            {enabled ? 'ON' : 'OFF'}
+          </span>
+          <div
+            className={`toggle ${enabled ? 'on' : ''}`}
+            onClick={busy ? undefined : toggle}
+            title={enabled
+              ? 'Load shedding is ON — lower tiers shed with 503 when concurrency exceeds the adaptive limit. Click to disable.'
+              : 'Load shedding is OFF — every request is admitted regardless of concurrency. Click to enable.'}
+            style={{ cursor: busy ? 'wait' : 'pointer' }}
+          />
         </div>
       </div>
 
@@ -4634,9 +4680,10 @@ function LoadShedGateCard() {
           The limit auto-tunes from <strong style={{ color: 'var(--ink)' }}>WAF-inspection
           latency only</strong> — the upstream round-trip is excluded, so a slow
           or jittery backend never makes a healthy WAF shed traffic it could
-          serve. Tune via the <code>load_shedder:</code> block
-          (<code>enabled</code> / <code>initial_limit</code> / <code>min_limit</code>)
-          in your config profile.
+          serve. Toggle <code>enabled</code> with the switch above (audit-mutated
+          <code>PUT /api/gates/shed</code>, hot-applied + persisted); the limit
+          knobs (<code>initial_limit</code> / <code>min_limit</code>) are set in
+          the <code>load_shedder:</code> config block.
         </div>
       </div>
     </div>

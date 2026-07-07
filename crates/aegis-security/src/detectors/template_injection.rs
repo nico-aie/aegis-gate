@@ -112,7 +112,7 @@ impl Detector for TemplateInjectionDetector {
         // huge high-entropy value) that coincidentally match template
         // directives; they drove the template benign blocks.
         let body = std::str::from_utf8(req.body.peek(8192)).unwrap_or("");
-        if !body.is_empty() && !super::form_body_is_opaque_beacon(req.headers, body) {
+        if !body.is_empty() && !super::body_is_opaque(req.headers, body) {
             let decoded_body = super::url_decode(body);
             check(body, "body", &mut signals);
             check(&decoded_body, "body", &mut signals);
@@ -294,6 +294,16 @@ mod tests {
             body_view("application/x-www-form-urlencoded", "name=alice&tpl=#set(x=1)");
         let req = make_view(&m, &u, &h, &b);
         assert!(!d.inspect(&req).is_empty(), "real SSTI in normal form must fire");
+    }
+
+    #[test]
+    fn opaque_binary_body_with_coincidental_ssti_is_skipped() {
+        // FP-G1-a — a binary upload (PDF/octet-stream) whose bytes happen to
+        // contain a `${…}`/`{{…}}` sequence is not a template sink.
+        let d = TemplateInjectionDetector;
+        let (m, u, h, b) = body_view("application/pdf", "%PDF-1.5 ... ${7*7} ... stream");
+        let req = make_view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).is_empty(), "opaque binary body must be skipped");
     }
 
     // Negative — plain XML (no xsl: namespace) must NOT trip XSLT.

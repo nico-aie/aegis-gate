@@ -105,19 +105,30 @@ const MASS_ASSIGN_ROLE_KEYS: &str =
     "role|access_level|accessLevel|user_level|userLevel";
 /// Escalating role values. Longer alternatives first so `administrator`
 /// wins over the `admin` prefix; each is `\b`-bounded at the call site.
+///
+/// FP-2026-07-07 (MA-2): `owner`, `system`, `sa` REMOVED — `{"role":"owner"}`
+/// is the standard doc/workspace owner role and `{"role":"system"}` is the
+/// LLM/chat-message shape; both are benign echoes, not privilege escalation.
+/// The retained set still covers admin/root/superuser escalation.
 const MASS_ASSIGN_ROLE_VALUES: &str =
-    "administrator|superadmin|super_admin|superuser|sysadmin|admin|root|owner|system|sa";
-/// Credential / token / financial / authz-collection keys — never expected
-/// from an end-user write body regardless of value, so name-presence is the
+    "administrator|superadmin|super_admin|superuser|sysadmin|admin|root";
+/// Financial / authz-collection / password-hash keys — never expected from
+/// an end-user write body regardless of value, so name-presence is the
 /// signal (`scope` deliberately absent).
+///
+/// FP-2026-07-07 (MA-1): the credential/token keys (`api_key`, `apiKey`,
+/// `api_token`, `apiToken`, `access_token`, `accessToken`, `refresh_token`,
+/// `refreshToken`) were REMOVED from this body/form surface. Legit clients
+/// echo them constantly (OAuth refresh, SDK init, session bootstrap) — the
+/// same argument the query surface already made (see `MASS_ASSIGN_QUERY_KEYS`
+/// note above). A stolen-token-in-write-body is an authz/gateway concern, not
+/// mass-assignment. `password_hash`/`passwordHash` stays (never benign).
 const MASS_ASSIGN_NAME_KEYS: &str = concat!(
     "permissions|privileges|grants",
     "|",
     "balance|account_balance|accountBalance|credit",
     "|",
-    "password_hash|passwordHash|api_key|apiKey|api_token|apiToken",
-    "|",
-    "access_token|accessToken|refresh_token|refreshToken",
+    "password_hash|passwordHash",
 );
 
 /// JSON FLAG shape: `"is_admin"\s*:\s*<truthy>`. `"is_admin":false`/`:0`
@@ -653,10 +664,9 @@ mod tests {
     mass_assign!(ma_balance,           r#"{"balance":99999999}"#);
     mass_assign!(ma_account_balance,   r#"{"account_balance":1000}"#);
     mass_assign!(ma_password_hash,     r#"{"password_hash":"$2b$..."}"#);
-    mass_assign!(ma_api_key,           r#"{"api_key":"sk-..."}"#);
-    mass_assign!(ma_api_token,         r#"{"api_token":"tk-..."}"#);
-    mass_assign!(ma_access_token,      r#"{"access_token":"..."}"#);
-    mass_assign!(ma_refresh_token,     r#"{"refresh_token":"..."}"#);
+    // FP-2026-07-07 (MA-1): api_key/api_token/access_token/refresh_token
+    // NAME matching dropped from the body surface — now asserted clean in
+    // the ma_clean block below (ma_clean_*_body).
     mass_assign!(ma_permissions,       r#"{"permissions":["*"]}"#);
     mass_assign!(ma_privileges,        r#"{"privileges":["root"]}"#);
     mass_assign!(ma_grants,            r#"{"grants":["root"]}"#);
@@ -703,6 +713,25 @@ mod tests {
     ma_clean!(ma_clean_scope_openid,   r#"{"scope":"openid profile email"}"#);
     ma_clean!(ma_clean_scope_read,     r#"{"scope":"read"}"#);
     ma_clean!(ma_clean_access_level_user, r#"{"access_level":"user"}"#);
+
+    // ---- FP-2026-07-07 (MA-1) — credential/token field NAMES in a write
+    // body are an authz/gateway concern, not classic mass-assignment. They
+    // are echoed constantly by legit OAuth refresh / SDK-init / session
+    // bootstrap payloads (instagram/semrush/sephora), each a 60-pt block.
+    // Dropped from the JSON/form NAME set. `password_hash` stays (never a
+    // benign write body); `permissions`/`balance` stay.
+    ma_clean!(ma_clean_access_token_body,  r#"{"access_token":"..."}"#);
+    ma_clean!(ma_clean_refresh_token_body, r#"{"refresh_token":"..."}"#);
+    ma_clean!(ma_clean_api_key_body,       r#"{"api_key":"sk-..."}"#);
+    ma_clean!(ma_clean_api_token_body,     r#"{"api_token":"tk-..."}"#);
+    ma_clean!(ma_clean_accesstoken_camel,  r#"{"accessToken":"..."}"#);
+
+    // ---- FP-2026-07-07 (MA-2) — `owner`/`system`/`sa` dropped from the
+    // escalating role-value set. `{"role":"owner"}` is the standard doc/
+    // workspace owner role (wetransfer/office-clipchamp/roughtrade) and
+    // `{"role":"system"}` is the ubiquitous LLM/chat-message shape.
+    ma_clean!(ma_clean_role_owner,   r#"{"role":"owner"}"#);
+    ma_clean!(ma_clean_role_system,  r#"{"role":"system","content":"hi"}"#);
 
     // ---- Positive: XXE external-entity decls ----
     macro_rules! xxe {
@@ -1009,12 +1038,31 @@ mod tests {
     s1_query_clean!(s1_query_verified,       "/profile?verified=true");
     s1_query_clean!(s1_query_email_verified, "/profile?email_verified=true");
 
-    /// The body surfaces keep the FULL key set — a credential/token
-    /// *field* in a write body is still the real mass-assignment shape.
+    /// FP-2026-07-07 (MA-1): credential/token field NAMES no longer flag on
+    /// the body/form surfaces (authz/gateway concern, ubiquitous benign
+    /// echo). A privilege-COLLECTION field (`permissions`) in a write body IS
+    /// still the real mass-assignment shape and stays flagged.
     #[test]
-    fn s1_body_access_token_still_flagged() {
+    fn s1_body_access_token_no_longer_flagged() {
         let d = BodyAbuseDetector::default();
         let body = br#"{"name":"alice","access_token":"stolen"}"#;
+        let (m, u, h, b) = build_view(
+            http::Method::POST,
+            "/api/users",
+            Some("application/json"),
+            body,
+        );
+        let req = view(&m, &u, &h, &b);
+        assert!(
+            !d.inspect(&req).iter().any(|s| s.tag == "mass_assignment"),
+            "access_token field name must not flag on the body surface",
+        );
+    }
+
+    #[test]
+    fn s1_body_permissions_still_flagged() {
+        let d = BodyAbuseDetector::default();
+        let body = br#"{"name":"alice","permissions":["*"]}"#;
         let (m, u, h, b) = build_view(
             http::Method::POST,
             "/api/users",
@@ -1026,7 +1074,7 @@ mod tests {
     }
 
     #[test]
-    fn s1_form_body_api_key_still_flagged() {
+    fn s1_form_body_api_key_no_longer_flagged() {
         let d = BodyAbuseDetector::default();
         let body = b"username=bob&api_key=sk_live_abcd";
         let (m, u, h, b) = build_view(
@@ -1036,7 +1084,10 @@ mod tests {
             body,
         );
         let req = view(&m, &u, &h, &b);
-        assert_mass_assign(&d.inspect(&req), "body");
+        assert!(
+            !d.inspect(&req).iter().any(|s| s.tag == "mass_assignment"),
+            "api_key field name must not flag on the form-body surface",
+        );
     }
 
     // ---- Form-encoded body surface ----
@@ -1190,7 +1241,10 @@ mod tests {
     }
 
     #[test]
-    fn s2_json_apikey_camelcase_flagged() {
+    fn s2_json_apikey_camelcase_no_longer_flagged() {
+        // FP-2026-07-07 (MA-1): `apiKey` (a credential field NAME) is a
+        // ubiquitous benign write-body echo, not mass-assignment. Dropped
+        // from the body NAME set.
         let d = BodyAbuseDetector::default();
         let body = br#"{"name":"alice","apiKey":"sk_live_abcd"}"#;
         let (m, u, h, b) = build_view(
@@ -1200,7 +1254,10 @@ mod tests {
             body,
         );
         let req = view(&m, &u, &h, &b);
-        assert_mass_assign(&d.inspect(&req), "body");
+        assert!(
+            !d.inspect(&req).iter().any(|s| s.tag == "mass_assignment"),
+            "apiKey field name must not flag on the body surface",
+        );
     }
 
     #[test]

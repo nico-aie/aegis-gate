@@ -366,6 +366,9 @@ pub(crate) async fn handle_admin_request(
     if method == hyper::Method::PUT && path == "/api/gates/bots" {
         return crate::admin_mutate::handle_bots_put(req, services).await;
     }
+    if method == hyper::Method::PUT && path == "/api/gates/shed" {
+        return crate::admin_mutate::handle_shed_put(req, services).await;
+    }
     if method == hyper::Method::PUT && path == "/api/gates/strikes" {
         return crate::admin_mutate::handle_strikes_put(req, services).await;
     }

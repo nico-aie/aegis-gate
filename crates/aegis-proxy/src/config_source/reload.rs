@@ -562,6 +562,8 @@ pub struct FoldedReloadTargets {
     pub canary_paths: Option<aegis_security::detectors::canary::CanaryPaths>,
     /// Bot-classifier gate toggle (shared `AtomicBool`).
     pub bots_enabled: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Load-shedder on/off toggle (shared `AtomicBool`).
+    pub load_shed_enabled: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// AC-P2-b — the chain-resident brute-force detector, so a reload
     /// re-derives its `count_scope` (fleet vs per-node).
     pub brute_force: Option<Arc<aegis_security::detectors::brute_force::BruteForceDetector>>,
@@ -595,6 +597,7 @@ pub async fn apply_folded_stores(new_cfg: &WafConfig, t: &FoldedReloadTargets) {
     let _ = apply_cfg_change_to_ddos(new_cfg, t.ddos.as_ref());
     let _ = apply_cfg_change_to_risk(new_cfg, t.risk.as_ref(), t.canary_paths.as_ref());
     let _ = apply_cfg_change_to_bots(new_cfg, t.bots_enabled.as_ref());
+    let _ = apply_cfg_change_to_shed(new_cfg, t.load_shed_enabled.as_ref());
     let _ = apply_cfg_change_to_brute_force(new_cfg, t.brute_force.as_ref());
 }
 
@@ -704,6 +707,26 @@ pub fn apply_cfg_change_to_bots(
         return GateReloadOutcome::NoHandle;
     };
     toggle.store(new_cfg.bots.enabled, std::sync::atomic::Ordering::Relaxed);
+    GateReloadOutcome::Applied
+}
+
+/// 2026-07-07 — re-derive the load-shedder on/off toggle from
+/// `new_cfg.load_shedder.enabled` (shared `AtomicBool` read by the data
+/// plane before consulting the shedder), so a cluster-wide flip from
+/// `PUT /api/gates/shed` converges on every node and survives restart.
+/// The shedder's Gradient2 limits (`initial_limit` / `min_limit`) are fixed
+/// at boot — only the enable toggle is hot-reloadable.
+pub fn apply_cfg_change_to_shed(
+    new_cfg: &WafConfig,
+    load_shed_enabled: Option<&Arc<std::sync::atomic::AtomicBool>>,
+) -> GateReloadOutcome {
+    let Some(toggle) = load_shed_enabled else {
+        return GateReloadOutcome::NoHandle;
+    };
+    toggle.store(
+        new_cfg.load_shedder.enabled,
+        std::sync::atomic::Ordering::Relaxed,
+    );
     GateReloadOutcome::Applied
 }
 
@@ -1909,6 +1932,35 @@ bots:
         assert!(
             !toggle.load(std::sync::atomic::Ordering::Relaxed),
             "bots toggle re-derived from doc → off",
+        );
+    }
+
+    #[test]
+    fn shed_readback_flips_toggle() {
+        // Converged doc disables the load shedder — the shared toggle the
+        // data plane reads must flip off (this is the fleet-convergence /
+        // durability path for PUT /api/gates/shed).
+        let doc = parse(&format!(
+            "{}\nload_shedder:\n  enabled: false\n",
+            gate_yaml(true, true, true)
+        ));
+        let toggle = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        assert_eq!(
+            apply_cfg_change_to_shed(&doc, Some(&toggle)),
+            GateReloadOutcome::Applied,
+        );
+        assert!(
+            !toggle.load(std::sync::atomic::Ordering::Relaxed),
+            "load-shed toggle re-derived from doc → off",
+        );
+    }
+
+    #[test]
+    fn shed_readback_no_handle_is_noop() {
+        let doc = parse(&gate_yaml(true, true, true));
+        assert_eq!(
+            apply_cfg_change_to_shed(&doc, None),
+            GateReloadOutcome::NoHandle,
         );
     }
 

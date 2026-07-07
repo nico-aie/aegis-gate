@@ -357,6 +357,12 @@ pub struct DashboardServices {
     /// in `spawn_*`; the proxy boot path (`accept.rs`) overrides it
     /// with the shared handle.
     pub bots_enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// 2026-07-07 — gate-style on/off for the adaptive load shedder. Same
+    /// `Arc<AtomicBool>` the data plane reads via
+    /// `ProxyContext.load_shed_enabled`; the audit-mutated
+    /// `PUT /api/gates/shed` flips it. Defaults to a fresh `true` Arc in
+    /// `spawn_*`; the proxy boot path overrides it with the shared handle.
+    pub load_shed_enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// MTLS-T7 — live, mutable allowed-SAN list. The boot path
     /// seeds it from `cfg.tls.client_auth.allowed_sans`; the
     /// audit-mutated `PUT/DELETE /api/mtls/sans` handlers update
@@ -775,6 +781,12 @@ impl DashboardServices {
                 // ProxyContext handle seeded from config.
                 bots_enabled: std::sync::Arc::new(
                     std::sync::atomic::AtomicBool::new(false),
+                ),
+                // 2026-07-07 — default-on (matches cfg.load_shedder.enabled
+                // default); the proxy boot path overrides with the shared
+                // ProxyContext handle seeded from config.
+                load_shed_enabled: std::sync::Arc::new(
+                    std::sync::atomic::AtomicBool::new(true),
                 ),
                 // MTLS-T7 — wired by the proxy boot path. Until then
                 // identity extraction skips the allowlist gate.

@@ -100,9 +100,13 @@ impl Detector for JwtInspectionDetector {
             }
         }
 
-        // Cookie: name=<jwt>; … — scan every cookie value, not just a
-        // hardcoded `sid` (the corpus's name): matching on the JWT
-        // SHAPE rather than the cookie name avoids fixture-coupling.
+        // Cookie: name=<jwt>; … — scan values under an AUTH-related cookie
+        // name only. FP-2026-07-07 (JWT-2): the earlier shape-only scan (any
+        // cookie value) misparsed Adobe Target `mbox` / Adobe Analytics `s_vi`
+        // / Tealeaf visitor cookies as JWTs — the entire target/ulta FP. A
+        // session-forgery attack targets the app's OWN auth cookie, which
+        // carries an auth-shaped name; a value under `mbox`/`_ga` is not a
+        // credential the app trusts, so skipping it loses no real coverage.
         if budget > 0 {
             if let Some(cookie) = req
                 .headers
@@ -113,13 +117,11 @@ impl Detector for JwtInspectionDetector {
                     if budget == 0 {
                         break;
                     }
-                    let value = pair
-                        .trim()
-                        .split_once('=')
-                        .map(|(_, v)| v)
-                        .unwrap_or("")
-                        .trim();
-                    if is_jwt_shaped(value) {
+                    let Some((name, value)) = pair.trim().split_once('=') else {
+                        continue;
+                    };
+                    let value = value.trim();
+                    if cookie_name_is_auth(name.trim()) && is_jwt_shaped(value) {
                         self.inspect_token(value, now, &mut signals);
                         budget -= 1;
                     }
@@ -166,6 +168,21 @@ fn is_b64url(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
 }
 
+/// FP-2026-07-07 (JWT-2) — the cookie name looks like it carries an auth
+/// token, so its value is worth JWT-scanning. Generic (not a hardcoded corpus
+/// name): matches the substrings real JWT cookies use (`token`, `jwt`, `auth`,
+/// `bearer`) plus a small set of exact session-cookie names. Deliberately does
+/// NOT match analytics/visitor cookies (`mbox`, `s_vi`, `_ga`, `visid_incap`),
+/// which were the target/ulta misparse FP source.
+fn cookie_name_is_auth(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.contains("token")
+        || n.contains("jwt")
+        || n.contains("auth")
+        || n.contains("bearer")
+        || matches!(n.as_str(), "sid" | "sess" | "session" | "sso" | "access")
+}
+
 impl JwtInspectionDetector {
     /// Decode + inspect a single JWT-shaped token. Silent on any
     /// decode/parse failure — a token we can't read is not our signal
@@ -178,6 +195,20 @@ impl JwtInspectionDetector {
             return;
         }
         let Some(header) = decode_json_object(header_part) else {
+            return;
+        };
+        // FP-2026-07-07 (JWT-1) — structural well-formedness gate. A real JWT
+        // header ALWAYS carries a string `alg`, and a real JWT ALWAYS has a
+        // JSON claims payload. A base64 analytics/session cookie misparsed as a
+        // JWT (the target/ulta FP: Adobe `mbox`/`s_vi`, Tealeaf) satisfies
+        // neither reliably — its second segment is opaque, not base64url→JSON.
+        // Requiring both filters the misparse while every genuine JWT attack
+        // (alg-none, x5c, kid, jku, time-forged — all of which carry a JSON
+        // payload) is unaffected.
+        if header.get("alg").and_then(|v| v.as_str()).is_none() {
+            return;
+        }
+        let Some(payload) = decode_json_object(payload_part) else {
             return;
         };
 
@@ -241,28 +272,26 @@ impl JwtInspectionDetector {
             }
         }
 
-        // Payload-side rules — decode once, then run time + role checks.
-        if let Some(payload) = decode_json_object(payload_part) {
-            // RULE jwt_time_forged — hand-edited time claims.
-            if time_claims_forged(&payload, now) {
-                signals.push(Signal {
-                    score: scores::jwt_inspection::TIME_FORGED,
-                    tag: "jwt_time_forged".into(),
-                    field: "jwt:exp".into(),
-                });
-            }
+        // Payload-side rules — `payload` decoded once at the top (JWT-1 gate).
+        // RULE jwt_time_forged — hand-edited time claims.
+        if time_claims_forged(&payload, now) {
+            signals.push(Signal {
+                score: scores::jwt_inspection::TIME_FORGED,
+                tag: "jwt_time_forged".into(),
+                field: "jwt:exp".into(),
+            });
+        }
 
-            // RULE jwt_role_priv — opt-in privileged-role heuristic.
-            // Observe-only (low score, never single-blocks). Off by
-            // default because a legit admin claims `role:admin` every
-            // request.
-            if self.flag_privileged_roles && claims_privileged_role(&payload) {
-                signals.push(Signal {
-                    score: scores::jwt_inspection::ROLE_PRIV,
-                    tag: "jwt_role_priv".into(),
-                    field: "jwt:role".into(),
-                });
-            }
+        // RULE jwt_role_priv — opt-in privileged-role heuristic.
+        // Observe-only (low score, never single-blocks). Off by
+        // default because a legit admin claims `role:admin` every
+        // request.
+        if self.flag_privileged_roles && claims_privileged_role(&payload) {
+            signals.push(Signal {
+                score: scores::jwt_inspection::ROLE_PRIV,
+                tag: "jwt_role_priv".into(),
+                field: "jwt:role".into(),
+            });
         }
     }
 
@@ -499,6 +528,71 @@ mod tests {
 
     fn has_tag(signals: &[Signal], tag: &str) -> bool {
         signals.iter().any(|s| s.tag == tag)
+    }
+
+    /// Run the detector with the token under an explicit cookie NAME.
+    fn signals_for_named_cookie(name: &str, token: &str) -> Vec<Signal> {
+        let mut h = http::HeaderMap::new();
+        h.insert("cookie", format!("{name}={token}").parse().unwrap());
+        let m = http::Method::GET;
+        let u: http::Uri = "/".parse().unwrap();
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        JwtInspectionDetector::new(vec![], false).inspect(&req)
+    }
+
+    // ---- FP-2026-07-07 — JWT misparse hardening (JWT-1 + JWT-2) --------
+
+    #[test]
+    fn misparse_garbage_payload_not_flagged() {
+        // JWT-1: a base64 cookie whose FIRST segment coincidentally decodes to
+        // a JSON header (`{"alg":"none"}`) but whose payload segment is opaque
+        // (not base64url→JSON) is NOT a JWT. A real unsigned JWT always carries
+        // a JSON claims payload, so requiring it filters the misparse without
+        // losing the real alg-none attack.
+        let enc = |s: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s);
+        let token = format!("{}.AAAA.sig", enc(r#"{"alg":"none"}"#));
+        assert!(
+            !has_tag(&signals_for_cookie(&token), "jwt_alg_none"),
+            "misparsed base64 with opaque payload must not flag",
+        );
+    }
+
+    #[test]
+    fn misparse_header_without_alg_not_flagged() {
+        // JWT-1: a JSON object header with no `alg` field is not a JWT header.
+        let token = tok2(r#"{"foo":"bar"}"#, r#"{"user":"a"}"#);
+        assert!(
+            signals_for_cookie(&token).is_empty(),
+            "header lacking `alg` must not be treated as a JWT",
+        );
+    }
+
+    #[test]
+    fn adobe_analytics_cookie_name_is_skipped() {
+        // JWT-2: analytics/visitor cookies (Adobe Target `mbox`, Adobe
+        // Analytics `s_vi`, Tealeaf) misparse as JWTs — these were the target/
+        // ulta FP sites. Their names are not auth-related, so their values are
+        // not JWT-scanned even when structurally well-formed.
+        let alg_none = tok(r#"{"alg":"none","typ":"JWT"}"#);
+        for name in ["mbox", "s_vi", "at_check", "_ga", "visid_incap_123"] {
+            assert!(
+                signals_for_named_cookie(name, &alg_none).is_empty(),
+                "non-auth cookie `{name}` must not be JWT-scanned",
+            );
+        }
+    }
+
+    #[test]
+    fn auth_cookie_names_still_scanned() {
+        // JWT-2 must keep scanning genuine auth-token cookies.
+        let alg_none = tok(r#"{"alg":"none","typ":"JWT"}"#);
+        for name in ["sid", "session", "access_token", "id_token", "jwt", "authToken"] {
+            assert!(
+                has_tag(&signals_for_named_cookie(name, &alg_none), "jwt_alg_none"),
+                "auth cookie `{name}` must still be JWT-scanned",
+            );
+        }
     }
 
     // ---- jwt_alg_none -----------------------------------------------

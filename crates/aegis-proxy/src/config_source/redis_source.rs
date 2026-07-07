@@ -125,6 +125,8 @@ pub struct ApplyTargets {
     pub canary_paths: Option<aegis_security::detectors::canary::CanaryPaths>,
     /// Bot-classifier gate toggle (shared `AtomicBool`).
     pub bots_enabled: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Load-shedder on/off toggle (shared `AtomicBool`).
+    pub load_shed_enabled: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// AC-P2-b — the chain-resident brute-force detector, so a converged
     /// `count_scope` change re-derives on every node.
     pub brute_force: Option<Arc<aegis_security::detectors::brute_force::BruteForceDetector>>,
@@ -462,6 +464,9 @@ async fn apply_and_swap(
         targets.canary_paths.as_ref(),
     );
     let _ = reload::apply_cfg_change_to_bots(new_cfg, targets.bots_enabled.as_ref());
+    // 2026-07-07 — converge the load-shed on/off toggle so a dashboard
+    // PUT /api/gates/shed applies on every node, not just the PUT handler.
+    let _ = reload::apply_cfg_change_to_shed(new_cfg, targets.load_shed_enabled.as_ref());
     // AC-P2-b — re-derive the brute-force count scope (fleet vs per-node)
     // so a converged scope flip applies on every node, not just the one
     // that handled the PUT.
@@ -1001,6 +1006,7 @@ mod tests {
             risk: None,
             canary_paths: None,
             bots_enabled: None,
+            load_shed_enabled: None,
             brute_force: None,
         };
 
