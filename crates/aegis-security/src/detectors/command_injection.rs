@@ -143,7 +143,13 @@ static CMDI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // $IFS is a bash-only token absent from valid input — unlike the
         // ad-tech `${UUID}`/`${AUCTION_PRICE}` macros that forced removal of
         // the generic `${VAR}` pattern, so this is safe to add standalone.
-        r"(?i)\$\{?IFS\}?",
+        // FP-2026-07-07 (CI-3): require a non-identifier boundary after `$IFS`
+        // so a benign identifier (`$IFSomething`, `$IFSConfig`) does not
+        // match. Rust's regex has no lookahead, so this is spelled as two
+        // alternatives: the braced `${IFS}` form, or bare `$IFS` followed by a
+        // non-alphanumeric char / end-of-input. `cat$IFS/etc/passwd`,
+        // `cat$IFS$9`, `ls$IFS-la` all still fire.
+        r"(?i)\$\{IFS\}|\$IFS(?:[^a-z0-9]|$)",
         // CR-1 companion — read-command + system path reached via a shell
         // separator (space, tab, `<` redirect). Generalises the literal
         // `cat /etc/passwd` to /etc//proc//root//var/log/ and more read
@@ -154,7 +160,12 @@ static CMDI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // Bare `id` is excluded from the alternation (it collides with
         // `{id,name}`-shaped template/format lists); the exec-oriented
         // commands here don't.
-        r"(?i)\{(?:whoami|cat|ls|nc|ncat|curl|wget|chmod|bash|sh|nslookup|ping)\b,[^}]*\}",
+        // FP-2026-07-07 (CI-2): require a `/` or whitespace inside the braces.
+        // Real brace-expansion RCE targets a path/URL (`{cat,/etc/passwd}`,
+        // `{curl,http://evil/x}`); minified GraphQL / JS object-literal field
+        // lists (`{ls,name}`, `{ping,latency,id}`) have neither and no longer
+        // match.
+        r"(?i)\{(?:whoami|cat|ls|nc|ncat|curl|wget|chmod|bash|sh|nslookup|ping)\b,[^}]*[/\s][^}]*\}",
         // CR-3 (2026-07-06) — scripting-interpreter execution flags. The flag
         // (`-c`/`-e`/`-r`/`-ne`) disambiguates execution from a filename
         // (`index.php`) or param (`?python=3`).
@@ -470,6 +481,15 @@ mod tests {
     // CR FP guards — must NOT fire.
     negative!(clean_cat_path_segment,    "/api/cat/etc/list");   // path, not `cat<sep>/etc`
     negative!(clean_category_brace,      "/list?x={name,value}"); // brace list, no command
+    // FP-2026-07-07 (CI-2): minified GraphQL / JS object-literal field lists
+    // (`{ping,latency,id}`, `{ls,name}`) collided with the brace-expansion
+    // pattern. Real brace-expansion RCE targets a path/URL, so require a
+    // `/` or whitespace inside the braces — GraphQL selections have neither.
+    negative!(clean_graphql_brace_ping,  "/gql?q={ping,latency,id}");
+    negative!(clean_graphql_brace_ls,    "/api?fields={ls,name,sh}");
+    // FP-2026-07-07 (CI-3): `$IFS` must carry a non-identifier boundary so a
+    // benign identifier like `$IFSomething` / `$IFSConfig` does not match.
+    negative!(clean_ifs_identifier,      "/api?v=%24IFSomething");
     negative!(clean_python_version,      "/api?python=3.11");     // no exec flag
     negative!(clean_php_page,            "/shop/index.php?p=1");  // php without exec flag
     negative!(clean_node_path,           "/node_modules/react");  // node without ` -e`

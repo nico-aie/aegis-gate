@@ -26,8 +26,15 @@ static SQLI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // comment SQLi breaks out of a quoted string (`admin'--`, `' OR
         // 1=1--`); numeric injections are caught by the OR/UNION rules
         // regardless of the trailing `--`.
-        r"(?i)(?:'[^']*--)",
-        r"(?i)(?:/\*.*\*/)",
+        // FP-2026-07-07 (SQ-1): bound the gap. The unbounded `'[^']*--`
+        // matched an apostrophe early in a value and a `--` far later
+        // (contractions + a dashed separator in the same JSON/query field).
+        // Real breakout comments are short (`admin'--`, `' OR 1=1--`).
+        r"(?i)(?:'[^']{0,32}--)",
+        // FP-2026-07-07 (SQ-1): bounded, non-greedy. A long benign C-style
+        // comment block (license header / doc block > 64 chars) no longer
+        // matches; the short evasion `/**/` and MySQL `/*!…*/` still fire.
+        r"(?i)(?:/\*.{0,64}?\*/)",
         r"(?i)(?:WAITFOR\s+DELAY)",
         r"(?i)(?:BENCHMARK\s*\()",
         r"(?i)(?:SLEEP\s*\()",
@@ -270,6 +277,17 @@ mod tests {
     // `0x…` hex run (GPU id / hash / token) is no longer flagged.
     negative_test!(clean_hex_blob, "/sync?gpu=0x0000C0DE");
     negative_test!(clean_hash_param, "/t?sig=0xdeadbeefcafebabe");
+
+    // FP-2026-07-07 (SQ-1) — bound the two greedy comment regexes.
+    // A benign apostrophe (contraction/possessive) far from a later `--`
+    // must not bridge into a string-breakout match; real breakout comments
+    // (`admin'--`, `' OR 1=1--`) are short and still fire.
+    negative_test!(clean_apostrophe_far_from_dashes,
+        "/?comment=it%27s+a+long+benign+note+ending+in+a+dashed+separator+line+--");
+    // A long C-style comment block (license header / doc block > 64 chars)
+    // must not match; the short evasion `/**/` and `/*!…*/` still fire.
+    negative_test!(clean_long_c_comment_block,
+        "/?css=/*+long+license+header+block+that+exceeds+sixty+four+characters+of+comment+text+here+*/");
 
     // 2026-06-17 — the detector inspects an ORIGIN-FORM target (path+query);
     // the WAF strips the reconstructed `scheme://host` before detectors run.
