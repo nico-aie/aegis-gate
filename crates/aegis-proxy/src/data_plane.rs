@@ -3298,7 +3298,11 @@ pub(crate) async fn forward_allow_to_upstream(
             // sampling waits until the client risk band is reachable here.
             // Observability only: one Detection audit row per hit, no risk
             // impact.
-            if let Some(sd) = &ctx.egress_sensitive {
+            if ctx
+                .egress_observe_enabled
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+              if let Some(sd) = &ctx.egress_sensitive {
                 let ct = parts_out
                     .headers
                     .get(hyper::header::CONTENT_TYPE)
@@ -3338,6 +3342,7 @@ pub(crate) async fn forward_allow_to_upstream(
                     };
                     bus.emit(ev);
                 }
+              }
             }
             // Pipeline::on_body_frame ignores rctx + route in the
             // shipping impl, but the trait sig requires both. Build

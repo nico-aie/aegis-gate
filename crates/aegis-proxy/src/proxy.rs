@@ -270,6 +270,14 @@ pub struct ProxyContext {
     /// per-IP risk delta into the `RiskTracker`.
     pub egress_sensitive:
         Option<Arc<aegis_security::detectors::egress_sensitive::SensitiveDataDetector>>,
+    /// EG-2 T2/T3 observe gate (2026-07-07). The `egress_sensitive`
+    /// detector is always constructed; this shared `AtomicBool` — read at
+    /// the body-scrub site before `observe(...)` runs — decides whether the
+    /// observability rung fires. `DashboardServices` holds a clone that the
+    /// audit-mutated `PUT /api/gates/egress` flips, so the observe rung
+    /// hot-applies with no restart. Observability only: audit rows, never
+    /// risk/block. Initialised from `cfg.detectors.egress_sensitive.enabled`.
+    pub egress_observe_enabled: Arc<std::sync::atomic::AtomicBool>,
     /// 2026-05-21 — gate-style on/off for the bot classifier
     /// (`cfg.bots.enabled`). The listener reads this before
     /// classifying; `false` skips classification and leaves
@@ -415,13 +423,21 @@ impl ProxyContext {
                     aegis_security::detectors::egress_volume::EgressVolumeTracker::new(),
                 )
             }),
-            // EG-2 T2/T3 — construct only when opted in; carries the default
-            // 64 KiB cap, 1-in-8 sampling, and PAN-density threshold.
-            egress_sensitive: cfg.detectors.egress_sensitive.enabled.then(|| {
-                Arc::new(
-                    aegis_security::detectors::egress_sensitive::SensitiveDataDetector::new(),
-                )
-            }),
+            // EG-2 T2/T3 — always constructed (cheap; carries the default
+            // 64 KiB cap, 1-in-8 sampling, PAN-density threshold) so the
+            // observe rung can be hot-toggled at runtime via the
+            // `egress_observe_enabled` gate below (PUT /api/gates/egress).
+            // The gate — not construction — decides whether `observe(...)`
+            // runs, mirroring `bots_enabled` / `load_shed_enabled`.
+            egress_sensitive: Some(Arc::new(
+                aegis_security::detectors::egress_sensitive::SensitiveDataDetector::new(),
+            )),
+            // EG-2 observe gate — response sensitive-data observability
+            // (default OFF, from config). Observability only: audit rows,
+            // never risk/block. Hot-flipped by PUT /api/gates/egress.
+            egress_observe_enabled: Arc::new(std::sync::atomic::AtomicBool::new(
+                cfg.detectors.egress_sensitive.enabled,
+            )),
             bots_enabled: Arc::new(std::sync::atomic::AtomicBool::new(
                 cfg.bots.enabled,
             )),

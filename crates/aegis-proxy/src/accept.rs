@@ -1212,6 +1212,9 @@ pub(crate) async fn admin_accept_loop(
     // listener reads from `ProxyContext.bots_enabled`.
     services.bots_enabled = upstream_ctx.bots_enabled.clone();
     services.load_shed_enabled = upstream_ctx.load_shed_enabled.clone();
+    // EG-2 observe gate — share the data plane's atomic so PUT
+    // /api/gates/egress hot-flips the live observe rung.
+    services.egress_observe_enabled = upstream_ctx.egress_observe_enabled.clone();
     // MTLS-T7 — Allowed SAN allowlist. Seeded from
     // `cfg.tls.client_auth.allowed_sans` (empty when client-auth
     // is disabled or no SANs were configured). The store is hot-

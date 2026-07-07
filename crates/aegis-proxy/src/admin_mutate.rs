@@ -3933,6 +3933,121 @@ pub(crate) async fn handle_shed_put(
     }
 }
 
+/// 2026-07-07 — `PUT /api/gates/egress`. Audit-mutated on/off for the EG-2
+/// response sensitive-data OBSERVE rung (`detectors.egress_sensitive`). Body:
+/// `{"enabled": true|false}`. Hot-applies by flipping the shared `AtomicBool`
+/// the data plane reads before running `observe(...)` (no restart) and
+/// persists `detectors.egress_sensitive.enabled` to the config doc so the
+/// toggle survives restart. Observability ONLY: turning it on emits Detection
+/// audit rows (visible in Live Feed / Audit) — it never feeds risk or blocks.
+pub(crate) async fn handle_egress_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+    use std::sync::atomic::Ordering;
+
+    let pre = mutation_preamble(&req, "egress-gate-put");
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+
+    #[derive(serde::Deserialize)]
+    struct Body {
+        enabled: bool,
+    }
+    let parsed: Body = match serde_json::from_str(if body_str.is_empty() { "{}" } else { body_str })
+    {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(format!(
+                    "expected {{\"enabled\": true|false}}: {e}"
+                )),
+            )
+        }
+    };
+
+    let current = services.egress_observe_enabled.load(Ordering::Relaxed);
+    let next = parsed.enabled;
+    let before = serde_json::json!({ "enabled": current });
+    let after = serde_json::json!({ "enabled": next });
+    let (store, base_blob, expected) = match load_active_config_doc(services).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let new_blob = match patch_egress(&base_blob, next) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
+    };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
+    }
+
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        client_ip: &pre.client_ip,
+        resource: "/api/gates/egress",
+        action: "egress_observe_set",
+        reason: "operator toggled the egress sensitive-data observe rung",
+    };
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
+    let toggle = services.egress_observe_enabled.clone();
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            let res = store_for_apply
+                .activate(expected, blob, &actor, "toggle egress observe rung")
+                .await;
+            if let Ok(crate::config_source::config_store::Activate::Applied { .. }) = &res {
+                toggle.store(next, Ordering::Relaxed);
+            }
+            res
+        })
+        .await;
+    match outcome {
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "enabled": next,
+                    "version": version,
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
+        Err(e) => mutation_error_response(e),
+    }
+}
+
 pub(crate) async fn handle_risk_reset(
     req: hyper::Request<hyper::body::Incoming>,
     ip_segment: &str,
@@ -7031,6 +7146,19 @@ fn patch_shed(base: &str, enabled: bool) -> Result<String, String> {
         .map_err(|e| format!("re-serialize config: {e}"))
 }
 
+/// Patch `detectors.egress_sensitive.enabled` for the `PUT /api/gates/egress`
+/// observe toggle. Only the on/off flag is written; the detector's cap /
+/// sampling / density knobs stay at their code defaults. Observability only —
+/// this rung emits audit rows, never risk/block.
+fn patch_egress(base: &str, enabled: bool) -> Result<String, String> {
+    let mut root = yaml_root(base)?;
+    let detectors = yaml_submap(&mut root, "detectors")?;
+    let egress = yaml_submap(detectors, "egress_sensitive")?;
+    egress.insert(yaml_str("enabled"), yaml_bool(enabled));
+    serde_yaml::to_string(&serde_yaml::Value::Mapping(root))
+        .map_err(|e| format!("re-serialize config: {e}"))
+}
+
 /// Patch `risk.canary_paths` to the supplied (already-normalized) set.
 fn patch_canary_paths(base: &str, paths: &[String]) -> Result<String, String> {
     let mut root = yaml_root(base)?;
@@ -7248,6 +7376,36 @@ mod gate_toggle_patch_tests {
 
         let on = patch_shed(&off, true).unwrap();
         assert!(aegis_core::load_config_str(&on).unwrap().load_shedder.enabled);
+    }
+
+    #[test]
+    fn patch_egress_persists_observe_toggle() {
+        // PUT /api/gates/egress must persist into detectors.egress_sensitive
+        // so the observe rung survives restart and reads back through
+        // cfg.detectors.egress_sensitive.enabled.
+        let on = patch_egress(BASE, true).unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&on).unwrap();
+        assert_eq!(
+            parsed["detectors"]["egress_sensitive"]["enabled"].as_bool(),
+            Some(true)
+        );
+        assert_loads(&on);
+        assert!(
+            aegis_core::load_config_str(&on)
+                .unwrap()
+                .detectors
+                .egress_sensitive
+                .enabled
+        );
+
+        let off = patch_egress(&on, false).unwrap();
+        assert!(
+            !aegis_core::load_config_str(&off)
+                .unwrap()
+                .detectors
+                .egress_sensitive
+                .enabled
+        );
     }
 }
 

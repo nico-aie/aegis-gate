@@ -8140,6 +8140,8 @@ function PageSettings() {
 
       <ResponseFilterCard />
 
+      <EgressObserveCard />
+
       {/* M004 (2026-05-07) — surface backend data already returned
           by /api/admin/sessions, /api/admin/break-glass,
           /api/integrations, /api/certs. All four cards are
@@ -8240,7 +8242,7 @@ function ResponseFilterCard() {
     {
       key: 'redact_dlp',
       label: 'Redact DLP payloads',
-      desc: 'Credit cards (Luhn), SSN, IBAN, email, AWS/GitHub/Stripe/Slack tokens',
+      desc: 'Structural secrets (env/JSON/YAML key=value) → [REDACTED]; cards (Luhn), SSN, IBAN, AWS/GitHub/Stripe/Slack tokens, SSH keys, password hashes; internal hostnames/DSNs → [INTERNAL]',
     },
     {
       key: 'strip_response_headers',
@@ -8291,6 +8293,88 @@ function ResponseFilterCard() {
             </div>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+
+// 2026-07-07 — Response / egress OBSERVABILITY, the sibling surface to
+// Response Filtering above. Where Response Filtering *mitigates* (silently
+// rewrites the body, default-ON), this OBSERVES: it emits one Detection
+// audit row per sensitive marker leaving in a response body, visible in Live
+// Feed — but never rewrites, never feeds risk, never blocks. Deliberately NOT
+// a row in the Base detector mask (that mask is request-side, risk-feeding,
+// blockable); egress detectors are response-side + observe-only, so they get
+// their own toggle here. Runtime on/off via audit-mutated PUT /api/gates/egress
+// (hot-applied + persisted to detectors.egress_sensitive.enabled). Default OFF.
+function EgressObserveCard() {
+  const api = window.useApi
+    ? window.useApi('/api/gates/egress', { intervalMs: 15000, fallback: { enabled: false } })
+    : { data: { enabled: false } };
+  const enabled = api.data?.enabled === true;
+  const [busy, setBusy] = useStateP(false);
+
+  async function toggle() {
+    if (busy) return;
+    setBusy(true);
+    const next = !enabled;
+    try {
+      const r = await window.csrfMutate('/api/gates/egress', {
+        method: 'PUT',
+        body: JSON.stringify({ enabled: next }),
+      });
+      if (r && r.ok) {
+        window.aegisToast(`Egress observability ${next ? 'enabled' : 'disabled'}`, 'ok');
+        api.reload && api.reload();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
+        window.aegisToast(`Egress toggle failed: ${msg}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`Egress toggle error: ${e.message || e}`, 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div data-component="egress-observe-card" className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+        <div>
+          <div className="card-title">
+            Response Observability
+            <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 600, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, padding: '2px 6px', borderRadius: 4, background: 'var(--surface-active)' }}>
+              observe only
+            </span>
+          </div>
+          <div className="card-sub">
+            The observe twin of Response Filtering above. Logs a Detection row
+            in Live Feed for each secret marker / card-PAN sweep leaving in a
+            response body — it never rewrites, never feeds risk, never blocks.
+            Audit-mutated <code>PUT /api/gates/egress</code>; hot-applied.
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+          <span className={`pill ${enabled ? 'ok' : 'neutral'}`} style={{ fontSize: 10 }}>
+            {enabled ? 'ON' : 'OFF'}
+          </span>
+          <div
+            className={`toggle ${enabled ? 'on' : ''}`}
+            onClick={busy ? undefined : toggle}
+            title={enabled
+              ? 'Egress observability is ON — sensitive markers in response bodies emit a Detection audit row. Click to disable.'
+              : 'Egress observability is OFF — no response-body observe rows. Click to enable (observe only; no block).'}
+            style={{ cursor: busy ? 'wait' : 'pointer' }}
+          />
+        </div>
+      </div>
+      <div style={{ borderTop: '1px solid var(--hairline)', paddingTop: 10, fontSize: 11, color: 'var(--ink-mute)' }}>
+        Content-type-gated (text / JSON / CSV), 64 KiB scan cap, 1-in-8 sampled.
+        v1 scope: secret markers (AWS / GitHub / Stripe / Slack / PEM / JWT /
+        env) + card-PAN sweeps. Separate from the Base detector mask on the
+        Detectors page — those are request-side and blockable; this is response
+        -side and observe-only.
       </div>
     </div>
   );
