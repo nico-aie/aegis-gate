@@ -91,7 +91,7 @@ impl Detector for SqliDetector {
             // S2 (2026-06-18) — skip bot-management sensor beacons posted
             // as form-urlencoded/text-plain (single huge high-entropy
             // value); they coincidentally match injection shapes.
-            if !body.is_empty() && !super::form_body_is_opaque_beacon(req.headers, body) {
+            if !body.is_empty() && !super::body_is_opaque(req.headers, body) {
                 for variant in super::normalize_for_detection(body) {
                     check_patterns(&variant, "body", &mut signals);
                     if !signals.is_empty() {

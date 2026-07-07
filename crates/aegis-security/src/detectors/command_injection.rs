@@ -221,7 +221,7 @@ impl Detector for CommandInjectionDetector {
             // as form-urlencoded/text-plain (single huge high-entropy
             // value); after hex/URL decode they coincidentally match the
             // shell-command shapes and drove the cmdi benign blocks.
-            if !body.is_empty() && !super::form_body_is_opaque_beacon(req.headers, body) {
+            if !body.is_empty() && !super::body_is_opaque(req.headers, body) {
                 for variant in super::normalize_for_detection(body) {
                     check(&variant, "body", &mut signals);
                     if !signals.is_empty() {

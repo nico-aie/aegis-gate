@@ -549,6 +549,87 @@ pub(crate) fn form_body_is_opaque_beacon(headers: &http::HeaderMap, body: &str) 
         && shannon_entropy(longest) >= BEACON_MIN_ENTROPY_BITS
 }
 
+/// FP-G1 (2026-07-07 `_FP_ANALYSIS_SUMMARY`): a body the content detectors
+/// should NOT scan because it is opaque telemetry / session-replay / binary
+/// rather than parseable injection surface. This is the shared gate the
+/// content detectors (sqli / cmdi / xss / ssrf / template) call instead of
+/// `form_body_is_opaque_beacon` alone. It unions three skip conditions:
+///
+/// 1. **G1-a — opaque/binary content-type** (`content_type_is_opaque`): a
+///    body the origin parses as a PDF / image / archive / protobuf / gRPC /
+///    octet-stream is not a text-injection sink for its SQL/shell/template
+///    engine. FP≈0, zero recall loss.
+/// 2. **beacon** — the existing single-dominant high-entropy blob
+///    (`form_body_is_opaque_beacon`), form-urlencoded / text-plain only.
+/// 3. **G1-b — whole-body high-entropy telemetry** (`body_is_high_entropy`):
+///    multi-field base64 / session-replay bodies (incl. `application/json`)
+///    that the beacon gate's single-blob-dominance requirement misses. Guarded
+///    by the `has_high_signal_injection_shape` fast-path so a padded real
+///    payload is still scanned. Threshold is conservative (well above readable
+///    JSON/text) and should be re-tuned against the captured telemetry corpus.
+pub(crate) fn body_is_opaque(headers: &http::HeaderMap, body: &str) -> bool {
+    content_type_is_opaque(headers)
+        || form_body_is_opaque_beacon(headers, body)
+        || body_is_high_entropy(body)
+}
+
+/// G1-a — the declared content-type is a binary / opaque media type the origin
+/// will not interpret as text. None of these overlap `body_is_scannable`'s
+/// text/JSON/XML/form allowlist.
+pub(crate) fn content_type_is_opaque(headers: &http::HeaderMap) -> bool {
+    let Some(ct) = headers
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    let ct = ct.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    if ct.starts_with("image/")
+        || ct.starts_with("video/")
+        || ct.starts_with("audio/")
+        || ct.starts_with("font/")
+    {
+        return true;
+    }
+    matches!(
+        ct.as_str(),
+        "application/octet-stream"
+            | "application/pdf"
+            | "application/zip"
+            | "application/gzip"
+            | "application/x-gzip"
+            | "application/wasm"
+            | "application/grpc"
+            | "application/grpc-web"
+            | "application/grpc-web+proto"
+            | "application/protobuf"
+            | "application/x-protobuf"
+            | "application/vnd.google.protobuf"
+            | "application/x-font-ttf"
+            | "application/x-font-woff"
+    )
+}
+
+/// G1-b — the whole body is high-entropy (base64 / obfuscated session-replay /
+/// telemetry) above a length floor, and carries no high-signal injection
+/// shape. Readable JSON / form / text sits at ~4.0–4.6 bits/char; base64 and
+/// encrypted blobs sit ~5.5–6.0. The threshold is set above readable text so a
+/// normal payload — even one carrying a genuine readable injection, which
+/// lowers the average — is NOT skipped; only bodies overwhelmingly made of
+/// encoded bytes are. `has_high_signal_injection_shape` keeps the padded-real-
+/// payload fast-path.
+pub(crate) fn body_is_high_entropy(body: &str) -> bool {
+    const MIN_LEN: usize = 512;
+    const MIN_ENTROPY_BITS: f32 = 5.0;
+    if body.len() < MIN_LEN {
+        return false;
+    }
+    if has_high_signal_injection_shape(body) {
+        return false;
+    }
+    shannon_entropy(body) >= MIN_ENTROPY_BITS
+}
+
 /// Detector trait — each OWASP detector implements this.
 pub trait Detector: Send + Sync {
     fn id(&self) -> &'static str;
@@ -974,6 +1055,83 @@ mod tests {
         let body = format!("notes={}", "a".repeat(320));
         let h = headers_ct("application/x-www-form-urlencoded");
         assert!(!form_body_is_opaque_beacon(&h, &body));
+    }
+
+    // ===== FP-G1 (2026-07-07) — shared opaque-body gate =====
+
+    #[test]
+    fn opaque_ct_binary_types_are_skipped() {
+        // G1-a: a body the origin parses as PDF/image/protobuf/octet-stream
+        // is not a text-injection sink, regardless of content.
+        for ct in [
+            "application/pdf",
+            "application/octet-stream",
+            "image/png",
+            "video/mp4",
+            "audio/mpeg",
+            "font/woff2",
+            "application/grpc-web+proto",
+            "application/x-protobuf",
+            "application/zip",
+        ] {
+            let h = headers_ct(ct);
+            assert!(content_type_is_opaque(&h), "{ct} must be opaque");
+            assert!(body_is_opaque(&h, "any body content"), "{ct} body must skip");
+        }
+    }
+
+    #[test]
+    fn scannable_ct_is_not_opaque_by_type() {
+        // The text/JSON/XML/form allowlist must never be treated as opaque
+        // purely by content-type.
+        for ct in [
+            "application/json",
+            "text/plain",
+            "text/html",
+            "application/xml",
+            "application/x-www-form-urlencoded",
+            "application/ld+json",
+        ] {
+            let h = headers_ct(ct);
+            assert!(!content_type_is_opaque(&h), "{ct} must NOT be opaque by type");
+        }
+    }
+
+    #[test]
+    fn json_high_entropy_replay_body_is_opaque() {
+        // G1-b: a session-replay / telemetry JSON dominated by base64 blobs
+        // (which the single-blob beacon gate misses for application/json) is
+        // skipped by the whole-body entropy check.
+        let blob1 = high_entropy_blob();
+        let blob2 = high_entropy_blob();
+        let body = format!("{{\"e\":\"{blob1}\",\"r\":\"{blob2}\"}}");
+        let h = headers_ct("application/json");
+        // beacon gate alone does NOT catch this (not form/text, no single blob)
+        assert!(!form_body_is_opaque_beacon(&h, &body));
+        // …but the shared gate does.
+        assert!(body_is_opaque(&h, &body), "high-entropy JSON replay must skip");
+    }
+
+    #[test]
+    fn readable_json_stays_scannable_even_with_ids() {
+        // A normal readable JSON (English + a couple of ids/hashes) sits well
+        // below the entropy floor, so it is NOT skipped and stays scannable —
+        // FN-safety: a genuine injection here is not hidden by the gate.
+        let body = r#"{"name":"Alice Nguyen","email":"alice@example.com","city":"München","order_id":"a1b2c3d4e5","note":"please deliver before noon on Tuesday","sku":"SKU-100294","qty":3,"comment":"gift wrap the blue one and include a card"}"#;
+        let h = headers_ct("application/json");
+        assert!(!body_is_high_entropy(body), "readable JSON must stay scannable");
+        assert!(!body_is_opaque(&h, body), "readable JSON must stay scannable");
+    }
+
+    #[test]
+    fn high_entropy_body_with_injection_shape_stays_scannable() {
+        // FN-safety: a padded high-entropy body that still carries a
+        // high-signal injection shape keeps the fast-path and is scanned.
+        let body = format!("{}UNION SELECT password FROM users", high_entropy_blob());
+        assert!(
+            !body_is_high_entropy(&body),
+            "high-signal shape must keep the body scannable",
+        );
     }
 
     #[test]

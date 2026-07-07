@@ -136,7 +136,7 @@ impl Detector for XssDetector {
         // (form-urlencoded/text-plain single huge high-entropy value). The
         // blob coincidentally matches tag/handler/`javascript:` shapes and
         // drove the xss benign blocks. Mirrors the cmdi/sqli body gate.
-        if !body.is_empty() && !super::form_body_is_opaque_beacon(req.headers, body) {
+        if !body.is_empty() && !super::body_is_opaque(req.headers, body) {
             // AC-P1-d — parity with sqli's body posture: structured-text
             // bodies the origin will parse (`body_is_scannable`: JSON /
             // form / XML / text) get the full multi-variant decode so

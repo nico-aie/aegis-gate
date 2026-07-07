@@ -223,10 +223,16 @@ threshold; several should **warn**, not block. MA-1/MA-2 (shipped) already cover
 ---
 
 ## Suggested ship order (updated 2026-07-07)
-1. ✅ **Phase 1 batch — SHIPPED (unmerged):** MA-1, MA-2, SQ-1, CI-2, CI-3, XS-1, XS-2, XS-3. All surgical,
-   green, no owner adjudication. → measure the S/L-Tester delta.
-2. **FP-G1-a + G1-b (NEW, highest ROI):** shared binary-magic skip + generalised replay-beacon gate in
-   `detectors/mod.rs`. ~46% of FP, near-zero recall loss, one change. **Recommended next.**
-3. **Group 3 JWT parser tightening:** ~360 FP across 2 sites, cheap and high-confidence.
+1. ✅ **Phase 1 batch — SHIPPED (develop `62fa91b2`):** MA-1, MA-2, SQ-1, CI-2, CI-3, XS-1, XS-2, XS-3.
+2. ✅ **FP-G1-a + G1-b — SHIPPED (develop):** shared `body_is_opaque(headers, body)` in `detectors/mod.rs`
+   = opaque/binary content-type skip (`content_type_is_opaque`: pdf/image/video/audio/font/octet-stream/
+   protobuf/grpc/zip/wasm) **+** whole-body high-entropy skip (`body_is_high_entropy`: ≥512 bytes, ≥5.0
+   bits/char, guarded by the `has_high_signal_injection_shape` fast-path). Wired into sqli, cmdi, xss, ssrf,
+   template (replacing the bare `form_body_is_opaque_beacon` call). RED-then-GREEN: template skips an opaque
+   PDF body with a stray `${7*7}`; ssrf skips a high-entropy JSON replay with a coincidental metadata-IP URL;
+   readable JSON (even with ids) and injection-shaped bodies stay scannable (FN-safety tests). Workspace green.
+   **Note:** the ≥5.0-bit entropy floor is conservative but should be re-tuned against the captured telemetry
+   corpus when available.
+3. **Group 3 JWT parser tightening:** ~360 FP across 2 sites, cheap and high-confidence. **Recommended next.**
 4. **Phase 2:** SQ-2 then CI-1 — each with its owner decision on the breaking positive.
-5. **G1-c allowlist / Group 2 / Group 4 / Phase 3:** only the residual the corpus still shows after 2–4.
+5. **G1-c allowlist / Group 2 / Group 4 / Phase 3:** only the residual the corpus still shows after 3–4.
