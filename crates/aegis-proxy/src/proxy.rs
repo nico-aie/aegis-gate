@@ -192,6 +192,14 @@ pub struct ProxyContext {
     /// configs short-circuit to "always admit". See
     /// `crates/aegis-proxy/src/shed.rs` for the algorithm.
     pub load_shedder: std::sync::OnceLock<Arc<crate::shed::LoadShedder>>,
+    /// 2026-07-07 — runtime on/off for the load shedder (`cfg.load_shedder
+    /// .enabled`). The shedder itself is installed unconditionally so the
+    /// gate can be hot-flipped without a restart; the data plane reads this
+    /// atomic before consulting `load_shedder`. `DashboardServices` holds a
+    /// clone that the audit-mutated `PUT /api/gates/shed` flips, and the
+    /// config watcher re-derives it on a converged doc change (via
+    /// `apply_cfg_change_to_shed`). `false` → every request is admitted.
+    pub load_shed_enabled: Arc<std::sync::atomic::AtomicBool>,
     /// 2026-05-17 F-CRITICAL-001 (control audit) — live operator rule
     /// set. Same `Arc<RuleSet>` that `DashboardServices.active_ruleset`
     /// points at (and that the Pipeline's `rules_arc()` returns), so
@@ -416,6 +424,9 @@ impl ProxyContext {
             }),
             bots_enabled: Arc::new(std::sync::atomic::AtomicBool::new(
                 cfg.bots.enabled,
+            )),
+            load_shed_enabled: Arc::new(std::sync::atomic::AtomicBool::new(
+                cfg.load_shedder.enabled,
             )),
             streaming_permits: Arc::new(tokio::sync::Semaphore::new(
                 cfg.streaming.max_concurrent,

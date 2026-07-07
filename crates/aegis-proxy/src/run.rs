@@ -1087,7 +1087,13 @@ pub async fn run(
     // lower tiers shed in priority order when the in-flight count
     // exceeds the Gradient2-adapted limit. Boot log surfaces the
     // initial knobs so operators see the gate is active.
-    if cfg.load_shedder.enabled {
+    // 2026-07-07 — the shedder runtime is installed UNCONDITIONALLY so
+    // `enabled` can be hot-flipped from the dashboard (PUT /api/gates/shed)
+    // without a restart. Enforcement is gated at the data plane by the
+    // `upstream_ctx.load_shed_enabled` atomic (initialised from
+    // `cfg.load_shedder.enabled`); when off, every request is admitted and
+    // the Gradient2 machinery simply idles.
+    {
         let shedder = Arc::new(crate::shed::LoadShedder::new(
             cfg.load_shedder.initial_limit,
             cfg.load_shedder.min_limit,
@@ -1096,13 +1102,12 @@ pub async fn run(
             tracing::warn!("load_shedder: already installed; skipping");
         } else {
             tracing::info!(
+                enabled = cfg.load_shedder.enabled,
                 initial_limit = cfg.load_shedder.initial_limit,
                 min_limit = cfg.load_shedder.min_limit,
-                "load_shedder: runtime installed (Gradient2 adaptive concurrency)",
+                "load_shedder: runtime installed; enabled is hot-flippable via PUT /api/gates/shed",
             );
         }
-    } else {
-        tracing::info!("load_shedder: cfg.load_shedder.enabled = false — gate not installed");
     }
 
     // 2026-05-19 — DDoS runtime is now installed unconditionally so
@@ -1532,6 +1537,8 @@ pub async fn run(
             risk: Some(risk.clone()),
             canary_paths: Some(canary_paths.clone()),
             bots_enabled: Some(upstream_ctx.bots_enabled.clone()),
+            // 2026-07-07 — converge the load-shed on/off toggle fleet-wide.
+            load_shed_enabled: Some(upstream_ctx.load_shed_enabled.clone()),
             // AC-P2-b — converge `count_scope` fleet-wide on doc swap.
             brute_force: Some(brute_force.clone()),
         };
