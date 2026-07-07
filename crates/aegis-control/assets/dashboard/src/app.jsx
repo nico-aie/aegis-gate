@@ -19,7 +19,10 @@ const NAV = [
   { group: 'Security Ops', items: [
     { id: 'overview',      label: 'Overview',         icon: <window.I.Shield />,   badge: null },
     { id: 'live',          label: 'Live Feed',        icon: <window.I.Activity />, badge: 'LIVE', tone: 'live' },
-    { id: 'incidents',     label: 'Incidents',        icon: <window.I.Siren />,    badge: null },
+    // 2026-07-07 — the standalone Incidents page was retired. Its
+    // read-only twin already lived on Health & SLOs ("Active alerts",
+    // same /api/incidents source); the actionable ack/snooze/resolve
+    // queue moved there too. `#/incidents` now redirects to `#/health`.
     { id: 'investigation', label: 'Investigation',    icon: <window.I.Search />,   badge: null },
     { id: 'top-attackers', label: 'Top Attackers',    icon: <window.I.Siren />,    badge: null },
     // 2026-05-10 — Threat Intel sidebar entry retired. Backend
@@ -91,6 +94,10 @@ const ROUTE_REDIRECTS = {
   // Old bookmarks / the prior sidebar route land on Overview, where the
   // "Open Copilot" button pops the widget.
   'copilot': 'overview',
+  // 2026-07-07 — Incidents page retired; its actionable queue folded
+  // into Health & SLOs. Old bookmarks + the notification bell land on
+  // the "Active alerts" card there (#/health).
+  'incidents': 'health',
 };
 
 // 2026-05-07 — H002 fix. `location.hash.slice(2)` returns
@@ -329,8 +336,10 @@ function TopBar() {
           // to IncidentTracker via /api/incidents), so a resolved alert
           // never cleared the badge. Counting enriched incidents with
           // status `firing` (acked/snoozed/resolved excluded) keeps the
-          // badge in lock-step with the Incidents page. Falls back to
+          // badge in lock-step with the Active-alerts card. Falls back to
           // `raw_alerts.firing` when the SLO engine isn't wired (tests).
+          // 2026-07-07 — the bell now deep-links to Health & SLOs
+          // (#/health#active-alerts) where the actionable queue lives.
           const incidentsApi = window.useIncidentsApi();
           const list = incidentsApi.data?.incidents;
           const firing = Array.isArray(list)
@@ -341,7 +350,16 @@ function TopBar() {
               className="icon-btn"
               title={firing > 0 ? `${firing} firing alert${firing === 1 ? '' : 's'}` : 'No firing alerts'}
               style={{ position: 'relative' }}
-              onClick={() => { location.hash = '#/incidents'; }}
+              onClick={() => {
+                location.hash = '#/health';
+                // Best-effort scroll to the Active-alerts card once the
+                // Health page mounts. Hash routing can't carry a second
+                // fragment, so nudge the element into view after a tick.
+                setTimeout(() => {
+                  const el = document.getElementById('active-alerts');
+                  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }, 60);
+              }}
             >
               <window.I.Bell />
               {firing > 0 && (
@@ -770,7 +788,7 @@ function App() {
   switch (route) {
     case 'overview':         page = <window.PageOverview />; break;
     case 'live':             page = <window.PageLiveFeed />; break;
-    case 'incidents':        page = <window.PageIncidents />; break;
+    // 'incidents' route retired 2026-07-07 → redirected to 'health'.
     case 'investigation':    page = <window.PageInvestigation />; break;
     case 'top-attackers':    page = <window.PageTopAttackers />; break;
     // Attack-Analytics merged into Investigation (2026-05-03).
