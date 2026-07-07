@@ -3361,6 +3361,7 @@ pub(crate) async fn forward_allow_to_upstream(
                 .pipeline
                 .on_body_frame(&body_bytes, &rctx_for_filter, &route_ctx)
                 .await;
+            let body_len_before = body_bytes.len();
             let final_bytes = match action {
                 aegis_core::pipeline::OutboundAction::PassThrough => body_bytes,
                 aegis_core::pipeline::OutboundAction::Rewrite(new_bytes) => {
@@ -3370,6 +3371,46 @@ pub(crate) async fn forward_allow_to_upstream(
                     if let Ok(v) = HeaderValue::from_str(&new_bytes.len().to_string()) {
                         parts_out.headers.insert(CONTENT_LENGTH, v);
                     }
+                    // Response-filter signal (2026-07-07) — the redact /
+                    // scrub / mask rungs actually rewrote this body. Emit
+                    // one Detection audit row so operators can SEE that a
+                    // response was scrubbed (the rung is otherwise silent).
+                    // Observability only: `action: "redact"`, no risk feed,
+                    // no block — the mitigation already happened. Byte delta
+                    // is a safe, value-free signal (never the secret itself).
+                    let ev = aegis_core::audit::AuditEvent {
+                        schema_version: 1,
+                        ts: chrono::Utc::now(),
+                        request_id: blake3::hash(
+                            format!(
+                                "{}:{}",
+                                peer_ip,
+                                chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+                            )
+                            .as_bytes(),
+                        )
+                        .to_hex()
+                        .to_string(),
+                        class: aegis_core::audit::AuditClass::Detection,
+                        tenant_id: None,
+                        tier: None,
+                        action: "redact".into(),
+                        reason: "response body scrubbed by response filter".into(),
+                        client_ip: peer_ip.to_string(),
+                        route_id: None,
+                        rule_id: Some("response_filter".into()),
+                        risk_score: None,
+                        method: Some(method.to_string()),
+                        path: Some(path.clone()),
+                        mode: None,
+                        fields: serde_json::json!({
+                            "path": path,
+                            "method": method.to_string(),
+                            "bytes_before": body_len_before,
+                            "bytes_after": new_bytes.len(),
+                        }),
+                    };
+                    bus.emit(ev);
                     new_bytes
                 }
                 aegis_core::pipeline::OutboundAction::Abort { reason } => {
