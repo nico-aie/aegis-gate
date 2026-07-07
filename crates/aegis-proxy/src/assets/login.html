@@ -7,7 +7,12 @@
   <link rel="stylesheet" href="/dashboard/assets/aegis.css">
   <style>
     html, body {
-      min-height: 100vh;
+      /* aegis.css renders `body { zoom: var(--app-zoom) }` (1.1×) for
+         readability; `zoom` scales `vh` too, so a bare `100vh` renders at
+         110vh and pushes a stray scrollbar + empty space below the card.
+         Divide by the zoom factor to land back at exactly one viewport —
+         same pattern as the app shell's `height: calc(100vh / …)`. */
+      min-height: calc(100vh / var(--app-zoom, 1));
     }
     body {
       display: flex;
@@ -15,6 +20,9 @@
       justify-content: center;
       padding: 2rem;
       margin: 0;
+      /* Fold the 2rem padding into the min-height above (content-box would
+         add it on top → another overflow). */
+      box-sizing: border-box;
     }
     .login-card {
       background: var(--surface-1, #1a1a1a);
