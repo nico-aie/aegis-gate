@@ -197,7 +197,7 @@ sensor shape but miss: (a) **binary/opaque content types** the origin won't pars
   identity-shaped) first, and only add a **narrow, per-(host,path)** allowlist if the corpus still shows a
   concentrated collector after G1-a/b. Whatever is skipped must `log()` so it isn't a silent blind spot.
 
-### Group 3 — over-greedy JWT parser (**360 FP, only 2 sites, cheapest win**) · **do next**
+### Group 3 — over-greedy JWT parser (**360 FP, only 2 sites**) · ✅ **SHIPPED (develop)**
 `jwt-alg-none` (208) + `jwt-time-forged` (152) are almost entirely **one site each** (target, ulta):
 base64 session/visitor cookies parsed as JWTs. Fix in `jwt_inspection.rs`: only treat a token as a JWT when
 it is **3 dot-separated parts that base64-decode to JSON with a standard header (`alg`/`typ`) + claims**, and
@@ -233,6 +233,13 @@ threshold; several should **warn**, not block. MA-1/MA-2 (shipped) already cover
    readable JSON (even with ids) and injection-shaped bodies stay scannable (FN-safety tests). Workspace green.
    **Note:** the ≥5.0-bit entropy floor is conservative but should be re-tuned against the captured telemetry
    corpus when available.
-3. **Group 3 JWT parser tightening:** ~360 FP across 2 sites, cheap and high-confidence. **Recommended next.**
-4. **Phase 2:** SQ-2 then CI-1 — each with its owner decision on the breaking positive.
+3. ✅ **Group 3 JWT parser tightening — SHIPPED (develop):** `jwt_inspection.rs` — **JWT-1** structural gate
+   (a token fires only when its header carries a string `alg` AND its payload decodes to a JSON object; a
+   misparsed base64 cookie satisfies neither), and **JWT-2** auth-cookie-name gate (`cookie_name_is_auth`:
+   only cookies whose name contains `token`/`jwt`/`auth`/`bearer` or is exactly `sid`/`sess`/`session`/`sso`/
+   `access` are JWT-scanned — Adobe Target `mbox`, Adobe Analytics `s_vi`, Tealeaf visitor cookies are no
+   longer misparsed). Authorization: Bearer path unchanged. RED-then-GREEN; all real detections (alg-none,
+   x5c, kid, jku, time-forged) preserved. Suite green (75 pass).
+4. **Phase 2 (OWNER DECISION PENDING):** SQ-2 then CI-1 — recall-affecting tiering, each breaks a documented
+   positive (`cmdi_pipe_dir`; the three bare-token sqli positives). Hold for sign-off before reducing detection.
 5. **G1-c allowlist / Group 2 / Group 4 / Phase 3:** only the residual the corpus still shows after 3–4.
