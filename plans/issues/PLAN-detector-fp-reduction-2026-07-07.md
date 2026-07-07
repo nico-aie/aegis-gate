@@ -1,6 +1,14 @@
 # PLAN — Content-detector false-positive reduction (S/L-Tester 2026-07-07)
 
-> **Type:** PLAN (detector FP-reduction) · **Status:** 🟡 Phase 1 SHIPPED (unmerged) · drafted 2026-07-07
+> **Type:** PLAN (detector FP-reduction) · **Status:** 🟢 Phases 1–2 + FP-G1 + Group-3 JWT SHIPPED to develop · drafted 2026-07-07
+>
+> **Shipped to develop (2026-07-07), 4 commits:** `62fa91b2` Phase 1 · `f32a21d2` FP-G1 body gate · `131343e1`
+> JWT Group-3 · `eadee817` Phase 2 tiering. `cargo test -p aegis-security` 2190 pass, 0 warnings; workspace
+> green modulo the pre-existing macOS FSEvents supervisor flake. **Remaining (all gated on an S/L-Tester
+> re-run to measure the delta):** G1-c endpoint allowlist, Group 2 (ssrf/redirect/traversal/CRLF context
+> scoping), Group 4 (nosql `$type` allowlist, method-override, body-size/depth route limits, AI threshold),
+> MA-3, SQ-3 YQL scope, CI-4, XS-4/XS-5. Recommend re-running the benign corpus against develop before
+> starting any of these — several may already be resolved by FP-G1.
 >
 > **Progress (2026-07-07):** **Phase 1 complete & green** on the working tree (`cargo test -p aegis-security --lib` = 2167 pass; workspace green modulo the known macOS FSEvents supervisor flake, verified pre-existing on clean baseline). Shipped surgical tightenings: **XS-1** (numeric-entity narrowed to angle-brackets only — full removal would have dropped the double-URL-encoded entity-XSS catch, since `normalize_for_detection` does not compose url→entity decode), **XS-2** (`Function(` case-sensitive), **XS-3** (`\balert(`/`\bprompt(`/`\bconfirm(`/`\beval(` boundary+no-space), **MA-1** (credential/token key-NAMES dropped from body/form surface), **MA-2** (`owner`/`system`/`sa` dropped from escalating role values), **SQ-1** (bounded `'[^']{0,32}--` + bounded non-greedy `/\*.{0,64}?\*/`), **CI-2** (brace-expansion requires an inner path/space), **CI-3** (`$IFS` non-identifier boundary, lookahead-free two-alternative form). Each has RED-then-GREEN negative fixtures; stale positives converted with rationale. **Phase 2 (SQ-2 tiering, CI-1 CMD tiering) and Phase 3 not started.** See §7 for a higher-leverage structural finding surfaced by the second report.
 > **Track ID prefixes:** `MA-<n>` (mass-assignment) · `SQ-<n>` (sqli) · `CI-<n>` (command-injection) · `XS-<n>` (xss)
