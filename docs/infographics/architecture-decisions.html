@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aegis-Gate — Architecture Decision Record</title>
+<style>
+  :root{
+    --bg:#0b0f17; --bg2:#111726; --panel:#151c2c; --panel2:#1b2436;
+    --ink:#e8edf6; --muted:#9aa7bd; --faint:#67748c; --line:#26304a;
+    --blue:#4f8cff; --cyan:#36cfd1; --green:#36d399; --amber:#f5a524;
+    --orange:#ff8a3d; --red:#f4525f; --purple:#a779ff; --pink:#ff6fae;
+    --shadow:0 6px 24px rgba(0,0,0,.35);
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#16203a 0%,var(--bg) 55%);
+    color:var(--ink);font-family:var(--sans);line-height:1.55;-webkit-font-smoothing:antialiased}
+  a{color:var(--blue);text-decoration:none}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 22px}
+
+  header.hero{padding:56px 0 30px;border-bottom:1px solid var(--line)}
+  .badge{display:inline-flex;align-items:center;gap:8px;font:600 12px/1 var(--sans);
+    letter-spacing:.12em;text-transform:uppercase;color:var(--cyan);
+    background:rgba(54,207,209,.08);border:1px solid rgba(54,207,209,.25);
+    padding:7px 12px;border-radius:999px}
+  h1{font-size:40px;line-height:1.1;margin:18px 0 8px;letter-spacing:-.02em}
+  .sub{color:var(--muted);font-size:17px;max-width:720px}
+  .hero .meta{margin-top:18px;color:var(--faint);font-size:13px;font-family:var(--mono)}
+  .hero .how{margin-top:20px;display:flex;gap:14px;flex-wrap:wrap}
+  .how .chip{font:600 12.5px/1 var(--sans);color:var(--muted);background:var(--panel);
+    border:1px solid var(--line);border-radius:8px;padding:9px 12px}
+  .how .chip b{color:var(--ink)}
+
+  nav.toc{position:sticky;top:0;z-index:20;background:rgba(11,15,23,.82);
+    backdrop-filter:blur(10px);border-bottom:1px solid var(--line);padding:12px 0}
+  nav.toc .wrap{display:flex;flex-wrap:wrap;gap:8px}
+  nav.toc a{font-size:12.5px;color:var(--muted);border:1px solid var(--line);
+    padding:6px 11px;border-radius:8px;background:var(--panel);transition:.15s}
+  nav.toc a:hover{color:var(--ink);border-color:var(--blue);background:var(--panel2)}
+
+  section{padding:50px 0;border-bottom:1px solid var(--line)}
+  .eyebrow{font:700 12px/1 var(--sans);letter-spacing:.14em;text-transform:uppercase;
+    color:var(--faint);margin-bottom:10px}
+  h2{font-size:27px;margin:0 0 10px;letter-spacing:-.01em}
+  .lead{color:var(--muted);font-size:16px;max-width:780px;margin:0 0 26px}
+
+  .card{background:linear-gradient(180deg,var(--panel) 0%,var(--bg2) 100%);
+    border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);overflow:hidden}
+  .card.pad{padding:22px}
+  figure{margin:0}
+  figcaption{color:var(--faint);font-size:12.5px;font-family:var(--mono);
+    padding:10px 16px;border-top:1px solid var(--line);background:rgba(0,0,0,.18)}
+  svg{display:block;width:100%;height:auto}
+
+  /* decision cards */
+  .adr{border:1px solid var(--line);border-radius:14px;background:var(--panel);
+    margin:16px 0;overflow:hidden}
+  .adr>.head{display:flex;align-items:flex-start;gap:14px;padding:18px 20px 14px;
+    border-bottom:1px solid var(--line);background:linear-gradient(180deg,var(--panel2),var(--panel))}
+  .adr .num{font:800 13px/1 var(--mono);color:var(--bg);background:var(--cyan);
+    padding:7px 9px;border-radius:8px;white-space:nowrap;margin-top:2px}
+  .adr .htext h3{margin:0 0 4px;font-size:18px;letter-spacing:-.01em}
+  .adr .htext .decides{color:var(--muted);font-size:14px}
+  .adr .htext .decides b{color:var(--ink)}
+  .adr .body{padding:16px 20px 20px;display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:760px){.adr .body{grid-template-columns:1fr}}
+  .adr .body .full{grid-column:1/-1}
+  .blk{border-left:3px solid var(--line);padding:2px 0 2px 14px}
+  .blk .k{font:700 11px/1 var(--sans);letter-spacing:.1em;text-transform:uppercase;
+    margin-bottom:7px;display:block}
+  .blk p{margin:0;font-size:14.3px;color:var(--muted)}
+  .blk p+p{margin-top:8px}
+  .blk code{font-family:var(--mono);font-size:12.5px;color:var(--ink);
+    background:rgba(255,255,255,.04);padding:1px 5px;border-radius:5px}
+  .blk.why{border-left-color:var(--green)} .blk.why .k{color:var(--green)}
+  .blk.trade{border-left-color:var(--amber)} .blk.trade .k{color:var(--amber)}
+  .blk.alt{border-left-color:var(--purple)} .blk.alt .k{color:var(--purple)}
+  .blk.ctx{border-left-color:var(--blue)} .blk.ctx .k{color:var(--blue)}
+
+  .tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+  .tag{font-family:var(--mono);font-size:11px;padding:3px 8px;border-radius:6px;
+    border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:820px){.grid2{grid-template-columns:1fr}}
+
+  .note{display:flex;gap:12px;background:var(--panel2);border:1px solid var(--line);
+    border-left:3px solid var(--blue);border-radius:10px;padding:14px 16px;margin-top:18px;
+    font-size:14.5px;color:var(--muted)}
+  .note b{color:var(--ink)}
+  .note.warn{border-left-color:var(--amber)}
+
+  table.ledger{width:100%;border-collapse:collapse;font-size:13.5px}
+  table.ledger th,table.ledger td{text-align:left;padding:11px 12px;border-bottom:1px solid var(--line);
+    vertical-align:top}
+  table.ledger th{color:var(--faint);font:700 11.5px/1 var(--sans);letter-spacing:.08em;
+    text-transform:uppercase;background:rgba(0,0,0,.18)}
+  table.ledger td b{color:var(--ink)}
+  table.ledger td.t{color:var(--amber)}
+  .scrollx{overflow-x:auto}
+  .svgwrap{padding:18px 14px}
+
+  footer{padding:40px 0 70px;color:var(--faint);font-size:13px}
+  footer code{font-family:var(--mono);color:var(--muted)}
+  ::-webkit-scrollbar{height:9px;width:9px}
+  ::-webkit-scrollbar-thumb{background:#283450;border-radius:9px}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="badge">● Aegis-Gate &nbsp;·&nbsp; Architecture Decision Record</span>
+    <h1>Why Aegis-Gate is built the way it is</h1>
+    <p class="sub">The load-bearing technical decisions behind the WAF — the <b>context</b> that forced each choice, the <b>reasoning</b>, the <b>trade-offs we knowingly accepted</b>, and the alternatives we rejected.</p>
+    <div class="how">
+      <span class="chip"><b>Read as:</b> one decision per card</span>
+      <span class="chip"><b>Each card:</b> Context · Decision · Why · Trade-off · Rejected</span>
+      <span class="chip"><b>Jump to</b> the ledger for the one-line summary</span>
+    </div>
+    <div class="meta">sources: Architecture.md · docs/architecture/{scaling-model,storage-and-contract,protocols}.md · docs/FEATURES.md · Cargo workspace · config/profiles/</div>
+  </div>
+</header>
+
+<nav class="toc">
+  <div class="wrap">
+    <a href="#foundations">1 · Foundations</a>
+    <a href="#config">2 · Config &amp; state</a>
+    <a href="#scaling">3 · Scaling</a>
+    <a href="#security">4 · Security engine</a>
+    <a href="#ops">5 · Operations &amp; trust</a>
+    <a href="#ledger">6 · Decision ledger</a>
+  </div>
+</nav>
+
+<!-- ============ 1. FOUNDATIONS ============ -->
+<section id="foundations">
+  <div class="wrap">
+    <div class="eyebrow">01 — The substrate</div>
+    <h2>Foundations: language, runtime, and shape</h2>
+    <p class="lead">These four choices are the hardest to reverse, so they carried the most scrutiny. Everything else is downstream of them. The through-line: a security appliance sits on the hot path of every request, so <b>predictable tail latency</b> and <b>a small, auditable trust surface</b> win over developer convenience.</p>
+
+    <div class="card">
+      <div class="svgwrap scrollx">
+      <svg viewBox="0 0 1040 420" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+        <defs>
+          <marker id="ar" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#67748c"/></marker>
+        </defs>
+        <!-- internet -->
+        <rect x="40" y="180" width="150" height="52" rx="10" fill="#1b2436" stroke="#26304a"/>
+        <text x="115" y="205" text-anchor="middle" fill="#e8edf6" font-size="13" font-weight="700">Internet</text>
+        <text x="115" y="222" text-anchor="middle" fill="#9aa7bd" font-size="11">clients · bots · APIs</text>
+        <line x1="190" y1="206" x2="232" y2="206" stroke="#67748c" stroke-width="2" marker-end="url(#ar)"/>
+
+        <!-- one binary boundary -->
+        <rect x="240" y="40" width="560" height="340" rx="16" fill="none" stroke="#4f8cff" stroke-dasharray="5 5" stroke-width="1.5"/>
+        <text x="252" y="30" fill="#4f8cff" font-size="12" font-weight="700" font-family="ui-monospace,Menlo,monospace">one ./waf binary · one process</text>
+
+        <!-- data plane -->
+        <rect x="262" y="60" width="516" height="150" rx="12" fill="#131b2b" stroke="#26304a" stroke-width="1"/>
+        <rect x="262" y="60" width="6" height="150" fill="#36d399"/>
+        <text x="284" y="84" fill="#36d399" font-size="12" font-weight="700" font-family="ui-monospace,Menlo,monospace">DATA PLANE · public listeners</text>
+        <text x="284" y="106" fill="#9aa7bd" font-size="12">TLS → protocol → admission → route → security pipeline → upstream</text>
+        <rect x="284" y="122" width="150" height="34" rx="7" fill="#1b2436" stroke="#26304a"/><text x="359" y="144" text-anchor="middle" fill="#e8edf6" font-size="11.5">inspect &amp; forward</text>
+        <rect x="446" y="122" width="150" height="34" rx="7" fill="#1b2436" stroke="#26304a"/><text x="521" y="144" text-anchor="middle" fill="#e8edf6" font-size="11.5">detectors · risk · rate-limit</text>
+        <rect x="608" y="122" width="150" height="34" rx="7" fill="#1b2436" stroke="#26304a"/><text x="683" y="144" text-anchor="middle" fill="#e8edf6" font-size="11.5">LB · health · retry</text>
+        <text x="284" y="184" fill="#67748c" font-size="11" font-family="ui-monospace,Menlo,monospace">no locks on the hot path · async on tokio</text>
+
+        <!-- control plane -->
+        <rect x="262" y="228" width="516" height="130" rx="12" fill="#131b2b" stroke="#26304a"/>
+        <rect x="262" y="228" width="6" height="130" fill="#f5a524"/>
+        <text x="284" y="252" fill="#f5a524" font-size="12" font-weight="700" font-family="ui-monospace,Menlo,monospace">CONTROL PLANE · admin listener (loopback)</text>
+        <text x="284" y="274" fill="#9aa7bd" font-size="12">dashboard SPA · admin API · audit chain · /metrics · /healthz</text>
+        <rect x="284" y="290" width="228" height="46" rx="7" fill="#1b2436" stroke="#26304a"/><text x="398" y="312" text-anchor="middle" fill="#e8edf6" font-size="11.5">argon2id · HMAC session · CSRF</text><text x="398" y="328" text-anchor="middle" fill="#67748c" font-size="10.5">TOTP · IP-allow · optional mTLS</text>
+        <rect x="524" y="290" width="228" height="46" rx="7" fill="#1b2436" stroke="#26304a"/><text x="638" y="312" text-anchor="middle" fill="#e8edf6" font-size="11.5">audit-mutated CRUD</text><text x="638" y="328" text-anchor="middle" fill="#67748c" font-size="10.5">every change is logged</text>
+
+        <!-- shared seam -->
+        <rect x="404" y="205" width="232" height="26" rx="8" fill="#20283c" stroke="#4f8cff" stroke-width="1.2"/>
+        <text x="520" y="222" text-anchor="middle" fill="#8fb4ff" font-size="11" font-family="ui-monospace,Menlo,monospace">shared seam: ArcSwap&lt;WafConfig&gt; + state handle</text>
+
+        <!-- upstream -->
+        <rect x="850" y="120" width="150" height="52" rx="10" fill="#1b2436" stroke="#26304a"/>
+        <text x="925" y="145" text-anchor="middle" fill="#e8edf6" font-size="13" font-weight="700">Backend pools</text>
+        <text x="925" y="162" text-anchor="middle" fill="#9aa7bd" font-size="11">mTLS · health · LB</text>
+        <line x1="800" y1="146" x2="848" y2="146" stroke="#67748c" stroke-width="2" marker-end="url(#ar)"/>
+      </svg>
+      </div>
+      <figcaption>The security invariant: two planes, one process, bound to distinct addresses — sharing nothing on the hot path except an <code>ArcSwap&lt;WafConfig&gt;</code> and the state-backend handle.</figcaption>
+    </div>
+
+    <!-- ADR 01 -->
+    <div class="adr">
+      <div class="head">
+        <span class="num">ADR&#8209;01</span>
+        <div class="htext">
+          <h3>Rust, compiled to a single static binary</h3>
+          <div class="decides"><b>Decision:</b> the whole gateway is one Rust workspace shipping <code>./waf</code> — a single distroless-friendly binary, no runtime, no interpreter, no sidecar.</div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="blk ctx"><span class="k">Context</span><p>The WAF is inline on every request. A GC pause or a memory-safety bug here is a production incident or a fresh attack surface — on the very box meant to stop attacks.</p></div>
+        <div class="blk why"><span class="k">Why</span><p>Memory safety <i>without</i> a garbage collector gives predictable p99 with no stop-the-world pauses. A single ~70&nbsp;MB binary deploys as a minimal distroless image, shrinking both the supply-chain and the runtime attack surface. Zero-cost abstractions keep the hot path allocation-light.</p></div>
+        <div class="blk trade"><span class="k">Trade-off accepted</span><p>Slower iteration and long compile times versus Go/Python; a smaller hiring pool. We treat the compile cost as bought-and-paid-for safety, and lean on the type system to make whole classes of bugs unrepresentable.</p></div>
+        <div class="blk alt"><span class="k">Rejected</span><p><b>Go</b> — GC tail-latency jitter on the hot path. <b>C/C++</b> — the performance is there but the memory-safety risk is exactly what a security product cannot carry. <b>Envoy/nginx + Lua/WASM plugins</b> — inheriting a large codebase we don't control and a plugin sandbox tax.</p></div>
+      </div>
+    </div>
+
+    <!-- ADR 02 -->
+    <div class="adr">
+      <div class="head">
+        <span class="num">ADR&#8209;02</span>
+        <div class="htext">
+          <h3>Async on tokio + hyper 1.x, TLS on rustls</h3>
+          <div class="decides"><b>Decision:</b> one multi-threaded tokio runtime, <code>hyper 1.x</code> for HTTP, <code>rustls</code> for TLS (with an optional <code>aws-lc-rs</code> FIPS provider).</div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="blk ctx"><span class="k">Context</span><p>A WAF must hold tens of thousands of concurrent, mostly-idle connections (keep-alive, WebSocket, slow clients) while inspecting each one.</p></div>
+        <div class="blk why"><span class="k">Why</span><p>Async I/O carries huge connection counts on a bounded thread pool — a thread-per-connection model would collapse. hyper 1.x is the mature, spec-correct HTTP core; rustls is memory-safe TLS with no OpenSSL CVE tail, and swaps to a FIPS-validated crypto provider by feature flag for regulated tenants.</p></div>
+        <div class="blk trade"><span class="k">Trade-off accepted</span><p>Async Rust is genuinely harder to write and reason about (lifetimes across <code>.await</code>, pinning). The tokio worker pool is <b>fixed at boot</b> — it cannot be resized live (see ADR-08), so worker-count changes need a restart.</p></div>
+        <div class="blk alt"><span class="k">Rejected</span><p><b>Thread-per-connection</b> (simpler, but won't scale to WAF connection counts). <b>OpenSSL</b> (mature, but a recurring CVE surface and FFI risk we didn't want under the security boundary).</p></div>
+      </div>
+    </div>
+
+    <!-- ADR 03 -->
+    <div class="adr">
+      <div class="head">
+        <span class="num">ADR&#8209;03</span>
+        <div class="htext">
+          <h3>Five-crate workspace, planes split at the crate boundary</h3>
+          <div class="decides"><b>Decision:</b> <code>aegis-core</code> (shared traits/config) · <code>aegis-proxy</code> (data plane) · <code>aegis-security</code> (detectors/risk) · <code>aegis-control</code> (admin/audit) · <code>aegis-bin</code> (CLI wiring).</div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="blk why"><span class="k">Why</span><p>The data-plane / control-plane isolation (ADR-04) is enforced by the compiler, not by convention: <code>aegis-proxy</code> cannot casually reach into admin internals because the dependency edge doesn't exist. Crate boundaries also parallelize builds and keep the hot-path crate free of admin-only dependencies.</p></div>
+        <div class="blk trade"><span class="k">Trade-off accepted</span><p>Shared types must be hoisted into <code>aegis-core</code> and trait-abstracted, which is more ceremony than a single crate. Cross-crate refactors touch more files.</p></div>
+        <div class="blk ctx"><span class="k">Context</span><p>Feature flags (Redis, AI/ONNX, FIPS, OTel, cloud secrets) live per-crate, so a minimal single-node build pulls none of the heavy optional dependency trees.</p></div>
+        <div class="blk alt"><span class="k">Rejected</span><p><b>Single mega-crate</b> — the original conceptual layout; abandoned because nothing stopped the data plane from importing admin code, weakening the isolation invariant.</p></div>
+      </div>
+    </div>
+
+    <!-- ADR 04 -->
+    <div class="adr">
+      <div class="head">
+        <span class="num">ADR&#8209;04</span>
+        <div class="htext">
+          <h3>Two planes, one process — share nothing on the hot path</h3>
+          <div class="decides"><b>Decision:</b> data plane and control plane bind distinct addresses (admin on loopback by default) and share only an <code>ArcSwap&lt;WafConfig&gt;</code> and the state handle.</div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="blk why"><span class="k">Why</span><p>Blast-radius containment. A bug or compromise reached through a public listener does not trivially reach the dashboard, the audit chain, or the admin credentials — they're on a separate listener with their own auth stack. Keeping both in one process (rather than two services) avoids an inter-process trust boundary and keeps deployment to a single artifact.</p></div>
+        <div class="blk trade"><span class="k">Trade-off accepted</span><p>One process means a hard crash takes both planes down together (mitigated by HA replicas, ADR-09). The shared config seam is a deliberate, tiny, read-only coupling — we accept it rather than duplicate config state.</p></div>
+        <div class="blk ctx"><span class="k">Context</span><p>The admin plane defaults to loopback + IP-allowlist at accept time, so it isn't publicly reachable unless an operator explicitly exposes it.</p></div>
+        <div class="blk alt"><span class="k">Rejected</span><p><b>Two separate services</b> — cleaner isolation on paper, but adds an IPC channel, a second deploy unit, and a new authenticated surface between them.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 2. CONFIG & STATE ============ -->
+<section id="config">
+  <div class="wrap">
+    <div class="eyebrow">02 — Truth, and where it lives</div>
+    <h2>Configuration &amp; state: one truth per data class</h2>
+    <p class="lead">A WAF holds three very different kinds of data — a rarely-changing config, fast-moving shared counters, and an append-only audit trail. Forcing them into one store would compromise all three. So we split by data class, and each split is a deliberate consistency-vs-latency-vs-durability call.</p>
+
+    <div class="card">
+      <div class="svgwrap scrollx">
+      <svg viewBox="0 0 1040 300" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+        <!-- hot state -->
+        <rect x="30" y="40" width="316" height="220" rx="14" fill="#131b2b" stroke="#26304a"/>
+        <rect x="30" y="40" width="316" height="6" fill="#f4525f"/>
+        <text x="50" y="72" fill="#f4525f" font-size="13" font-weight="700" font-family="ui-monospace,Menlo,monospace">HOT STATE</text>
+        <text x="50" y="94" fill="#e8edf6" font-size="13" font-weight="700">Redis (in-memory for dev)</text>
+        <text x="50" y="120" fill="#9aa7bd" font-size="12">rate-limit windows · risk scores</text>
+        <text x="50" y="138" fill="#9aa7bd" font-size="12">auto-block flags · nonces · leases</text>
+        <line x1="50" y1="156" x2="326" y2="156" stroke="#26304a"/>
+        <text x="50" y="180" fill="#67748c" font-size="11.5">latency ~1 ms · shared across N nodes</text>
+        <text x="50" y="200" fill="#67748c" font-size="11.5">volatile <tspan fill="#f4525f">by design</tspan> — everything here</text>
+        <text x="50" y="216" fill="#67748c" font-size="11.5">is cleared by <tspan fill="#e8edf6" font-family="ui-monospace,Menlo,monospace">/reset_state</tspan></text>
+        <text x="50" y="240" fill="#67748c" font-size="11.5">behind one <tspan fill="#e8edf6" font-family="ui-monospace,Menlo,monospace">StateBackend</tspan> trait</text>
+
+        <!-- config plane -->
+        <rect x="362" y="40" width="316" height="220" rx="14" fill="#131b2b" stroke="#26304a"/>
+        <rect x="362" y="40" width="316" height="6" fill="#4f8cff"/>
+        <text x="382" y="72" fill="#4f8cff" font-size="13" font-weight="700" font-family="ui-monospace,Menlo,monospace">CONFIG / CONTROL</text>
+        <text x="382" y="94" fill="#e8edf6" font-size="13" font-weight="700">Local YAML + Redis config doc</text>
+        <text x="382" y="120" fill="#9aa7bd" font-size="12">routes · rules · detectors · tiers</text>
+        <text x="382" y="138" fill="#9aa7bd" font-size="12">versioned JSON, CAS-activated</text>
+        <line x1="382" y1="156" x2="658" y2="156" stroke="#26304a"/>
+        <text x="382" y="180" fill="#67748c" font-size="11.5">strong consistency · changes rarely</text>
+        <text x="382" y="200" fill="#67748c" font-size="11.5">every node converges in ~3 s +</text>
+        <text x="382" y="216" fill="#67748c" font-size="11.5">survives leader failover</text>
+        <text x="382" y="240" fill="#67748c" font-size="11.5">held live in <tspan fill="#e8edf6" font-family="ui-monospace,Menlo,monospace">ArcSwap&lt;WafConfig&gt;</tspan></text>
+
+        <!-- audit -->
+        <rect x="694" y="40" width="316" height="220" rx="14" fill="#131b2b" stroke="#26304a"/>
+        <rect x="694" y="40" width="316" height="6" fill="#36d399"/>
+        <text x="714" y="72" fill="#36d399" font-size="13" font-weight="700" font-family="ui-monospace,Menlo,monospace">AUDIT TRAIL</text>
+        <text x="714" y="94" fill="#e8edf6" font-size="13" font-weight="700">Local disk (JSONL)</text>
+        <text x="714" y="120" fill="#9aa7bd" font-size="12">contract sink: fixed 8-field schema</text>
+        <text x="714" y="138" fill="#9aa7bd" font-size="12">forensic sink: SHA-256 hash chain</text>
+        <line x1="714" y1="156" x2="990" y2="156" stroke="#26304a"/>
+        <text x="714" y="180" fill="#67748c" font-size="11.5">append-only · strict ordering</text>
+        <text x="714" y="200" fill="#67748c" font-size="11.5">persistent · <tspan fill="#f5a524">per-node by default</tspan></text>
+        <text x="714" y="216" fill="#67748c" font-size="11.5">fan out to SIEM for a</text>
+        <text x="714" y="232" fill="#67748c" font-size="11.5">cluster-wide timeline</text>
+      </svg>
+      </div>
+      <figcaption>Three tiers, three invariants. Hot state trades durability for sub-ms shared writes; config trades write-frequency for strong cross-node consistency; audit trades shareability for append-only, ordered durability.</figcaption>
+    </div>
+
+    <!-- ADR 05 -->
+    <div class="adr">
+      <div class="head">
+        <span class="num">ADR&#8209;05</span>
+        <div class="htext">
+          <h3>Lock-free hot reload via <code>ArcSwap&lt;WafConfig&gt;</code></h3>
+          <div class="decides"><b>Decision:</b> config compiles into one immutable <code>WafConfig</code> published through an atomic pointer swap; readers on the hot path never take a lock.</div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="blk why"><span class="k">Why</span><p>Routes, rules, certs, secrets, and detector toggles all change at runtime with <b>zero downtime and zero dropped connections</b>. Each request grabs the current config with an atomic load — no mutex, no reader-writer contention under load. Crucially, an update is <b>validated and compiled before</b> the swap: a bad config is rejected and the running one is preserved, with a dashboard banner and an audit event.</p></div>
+        <div class="blk trade"><span class="k">Trade-off accepted</span><p>Granularity is the <i>whole</i> config — the swap replaces everything atomically, not a single key. Requests in flight during a swap may briefly observe the previous config (acceptable: each request is internally consistent). Subsystems that cache compiled state (route trie, rule tree, cert store) must subscribe to the reload event and rebuild their indices off the hot path.</p></div>
+        <div class="blk alt"><span class="k">Rejected</span><p><b>Mutex-guarded config</b> — reader contention on every request. <b>Restart-to-reload</b> — drops connections and fails the zero-downtime requirement.</p></div>
+      </div>
+    </div>
+
+    <!-- ADR 06 -->
+    <div class="adr">
+      <div class="head">
+        <span class="num">ADR&#8209;06</span>
+        <div class="htext">
+          <h3>State behind one <code>StateBackend</code> trait — in-memory default, Redis for clusters</h3>
+          <div class="decides"><b>Decision:</b> all shared state (counters, risk, auto-blocks, nonces, leases) sits behind a single trait; the default build is in-memory, Redis is a feature-gated implementation, and a reconciling wrapper falls back to local on outage.</div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="blk why"><span class="k">Why</span><p>A single-node dev box needs zero infrastructure — in-memory DashMap gives sub-microsecond ops and no Redis to run. The same binary scales out by pointing <code>state.backend</code> at Redis, which aggregates counters across the fleet (an attacker hitting node A then node B accumulates <i>one</i> risk score, not two). The <code>Reconciling</code> wrapper keeps the WAF serving during a Redis partition by falling back to local counters and reconciling on heal — split-brain-safe rather than fail-closed.</p></div>
+        <div class="blk trade"><span class="k">Trade-off accepted</span><p>Backend choice is <b>boot-time only</b> — cutting Redis over live without losing counters is hard enough that we made restart the safe default. Local fallback means counters can briefly diverge during a partition (we chose availability over strict global accuracy for rate-limit state).</p></div>
+        <div class="blk ctx"><span class="k">Context</span><p>Redis is <i>only</i> a counter-sharing layer — <b>never</b> a config source. Everything in it is ephemeral and swept by the interop contract's <code>/__waf_control/reset_state</code>.</p></div>
+        <div class="blk alt"><span class="k">Rejected</span><p><b>Redis-always</b> — forces infra on trivial deploys. <b>Raft/embedded consensus</b> for counters — far too heavy for volatile rate-limit data.</p></div>
+      </div>
+    </div>
+
+    <!-- ADR 06B -->
+    <div class="adr">
+      <div class="head">
+        <span class="num">ADR&#8209;06B</span>
+        <div class="htext">
+          <h3>Config plane: a versioned Redis doc by default, optional <b>etcd</b> for consensus-grade clusters</h3>
+          <div class="decides"><b>Decision:</b> fleet-wide config edits propagate as one versioned document activated by compare-and-set; the store sits behind a narrow <code>ConfigBackend</code>/<code>ConfigWatch</code> seam, so it is <code>shared_state</code> (Redis) by default and can be pointed at native <b>etcd</b> (<code>config_plane.store: etcd</code>, <code>etcd_config</code> feature) for Txn/Watch/Lease + Raft durability.</div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="blk why"><span class="k">Why</span><p>A console edit on one node must converge on every peer and <b>survive a leader failover</b>. The CAS-versioned doc gives optimistic concurrency plus per-version rollback snapshots without standing up a second system for the common case. But Redis durability is best-effort — so clusters that need <b>consensus-grade</b> config durability and <i>native</i> watch/lease (instead of polling) can relocate <b>only the config plane</b> to etcd, whose cost is fine for low-write config data, while the ephemeral hot path (counters, cache, leases) stays on Redis. Because the plane lives behind the <code>ConfigBackend</code> seam, switching stores swaps an <i>implementor</i>, not the ~15 call sites; a one-shot <code>waf migrate-config-plane</code> handles the cutover with a documented rollback.</p></div>
+        <div class="blk trade"><span class="k">Trade-off accepted</span><p>Two config-plane backends to maintain and test. etcd is <b>off by default</b> so the shipped binary keeps its one-dependency (Redis-only) constraint — meaning etcd's stronger durability is opt-in and operators must run the migration tool to adopt it. Config and hot state now potentially live in two different stores, which operators must reason about.</p></div>
+        <div class="blk alt"><span class="k">Rejected / history</span><p>An earlier etcd <b>config <i>source</i></b> (<code>AEGIS_CONFIG_SOURCE=etcd</code>) was <b>removed</b> in 2026-05-28 as redundant with file delivery + the Redis config plane, and a maintenance multiplier (every reload path had to be mirrored into it). The re-introduction (H2b) is deliberately scoped to the config <i>plane store</i> behind the <code>ConfigBackend</code> seam — not a parallel source. <span style="color:var(--faint)">(The unrelated <code>etcd</code> service-discovery feature is just an upstream-pool member poller.)</span></p></div>
+      </div>
+    </div>
+
+    <!-- ADR 07 -->
+    <div class="adr">
+      <div class="head">
+        <span class="num">ADR&#8209;07</span>
+        <div class="htext">
+          <h3>Dual audit sinks: a contract-locked file + a forensic hash chain</h3>
+          <div class="decides"><b>Decision:</b> one minimal append-only JSONL file with a fixed schema (the benchmarked contract), running alongside a daily-rotated, SHA-256 hash-chained forensic log with optional SIEM fan-out.</div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="blk why"><span class="k">Why</span><p>Two audiences, two shapes. The interop contract demands a single JSONL file with exactly 8 fields at a known path — so the benchmarker can correlate <code>X-WAF-Request-Id</code> to an audit line. Operators need something richer: tamper-evidence (<code>hash = sha256(prev_hash ‖ event)</code>), rotation, retention, and forwarding. Splitting them keeps the contract file rigid while the forensic chain evolves freely; both subscribe to one in-process audit bus, and the data plane never blocks on disk.</p></div>
+        <div class="blk trade"><span class="k">Trade-off accepted</span><p>Hash chains are <b>per-node</b> — there is no single cluster-global tamper-evident timeline out of the box. For multi-node forensics we lean on a central SIEM (Kafka/Splunk sink) as the source of truth rather than building cross-node witness exchange now.</p></div>
+        <div class="blk alt"><span class="k">Rejected</span><p><b>One do-everything sink</b> — either too rigid for operators or too loose for the contract. <b>Central DB sink (Postgres/ClickHouse)</b> — deferred until a customer needs cluster-wide queries without an external SIEM.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 3. SCALING ============ -->
+<section id="scaling">
+  <div class="wrap">
+    <div class="eyebrow">03 — Three independent axes</div>
+    <h2>Scaling: make each axis explicit, own none of the orchestration</h2>
+    <p class="lead">A single box scales up only to one CPU and one NIC; past that you scale <i>out</i>, and any state shared between requests has to live somewhere both boxes see. We modeled that as three orthogonal layers and — importantly — drew a hard line around what the WAF refuses to own.</p>
+
+    <div class="grid2">
+      <div class="card pad">
+        <div class="tags"><span class="tag" style="border-color:#4f8cff;color:#8fb4ff">L1 · in-node</span></div>
+        <h3 style="margin:10px 0 6px;font-size:16px">tokio workers + CPU affinity</h3>
+        <p style="color:var(--muted);font-size:14px;margin:0">Higher single-box throughput. Each request lives on one worker; CPU-bound detector chains benefit up to the logical-CPU count. <b>Restart-only</b> — tokio can't resize a live runtime, so the dashboard shows the sizing but offers no slider.</p>
+      </div>
+      <div class="card pad">
+        <div class="tags"><span class="tag" style="border-color:#36d399;color:#7ee2bd">L2 · across nodes</span></div>
+        <h3 style="margin:10px 0 6px;font-size:16px">HA cluster behind one VIP</h3>
+        <p style="color:var(--muted);font-size:14px;margin:0">Redundancy + horizontal capacity. Every node runs the full stack; an external LB spreads traffic. The console shows the roster and the one safe write — <b>drain this node</b> — but never add/remove-peer.</p>
+      </div>
+    </div>
+    <div style="height:18px"></div>
+
+    <!-- ADR 08 -->
+    <div class="adr">
+      <div class="head">
+        <span class="num">ADR&#8209;08</span>
+        <div class="htext">
+          <h3>Three-layer scaling model — and the WAF stays out of orchestration</h3>
+          <div class="decides"><b>Decision:</b> scale on three explicit, independent axes (in-node workers · cross-node HA · shared Redis state); the WAF exposes visibility and a drain button, but topology (peer add/remove, autoscaling) belongs to the orchestrator.</div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="blk why"><span class="k">Why</span><p>The three axes don't substitute for each other, so making them separate lets an operator pick a point on each independently (e.g. a 2-node cluster with one worker each and an in-memory backend is a valid low-complexity topology). Refusing to own topology keeps the WAF from re-implementing Kubernetes' <code>HorizontalPodAutoscaler</code> — and avoids the leader-election + quorum machinery that a peer-write API would require, which would itself become a split-brain risk.</p></div>
+        <div class="blk trade"><span class="k">Trade-off accepted</span><p>Worker resize and state-backend swap are both restart-only; there's no in-WAF autoscaler. Operators must run an orchestrator (k8s/Helm/Nomad) to get elasticity — we consider that the correct division of labor, not a gap.</p></div>
+        <div class="blk ctx"><span class="k">Context</span><p>All three layers surface on one <b>Scaling</b> dashboard page so an operator can verify each without touching config files or <code>redis-cli</code>.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 4. SECURITY ENGINE ============ -->
+<section id="security">
+  <div class="wrap">
+    <div class="eyebrow">04 — The decision path</div>
+    <h2>Security engine: cheap filters first, expensive judgment last</h2>
+    <p class="lead">Every request runs an ordered pipeline where earlier, cheaper stages can short-circuit later, costlier ones — and the <b>failure mode of each stage is resolved by the route's tier</b>, centrally, so no individual stage has to know how important it is.</p>
+
+    <div class="card">
+      <div class="svgwrap scrollx">
+      <svg viewBox="0 0 1040 260" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+        <defs><marker id="ar2" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#67748c"/></marker></defs>
+        <text x="30" y="30" fill="#67748c" font-size="11.5" font-family="ui-monospace,Menlo,monospace">cheap · deterministic  ───────────────────────────────────────────────►  expensive · probabilistic</text>
+        <!-- stages -->
+        <g>
+          <rect x="30"  y="48" width="150" height="58" rx="9" fill="#131b2b" stroke="#26304a"/><rect x="30" y="48" width="150" height="4" fill="#4f8cff"/><text x="105" y="74" text-anchor="middle" fill="#e8edf6" font-size="12" font-weight="700">Traffic gates</text><text x="105" y="92" text-anchor="middle" fill="#9aa7bd" font-size="10.5">IP · rate · DDoS</text>
+          <rect x="196" y="48" width="150" height="58" rx="9" fill="#131b2b" stroke="#26304a"/><rect x="196" y="48" width="150" height="4" fill="#36cfd1"/><text x="271" y="74" text-anchor="middle" fill="#e8edf6" font-size="12" font-weight="700">Fingerprint</text><text x="271" y="92" text-anchor="middle" fill="#9aa7bd" font-size="10.5">JA4 · h2 · UA</text>
+          <rect x="362" y="48" width="150" height="58" rx="9" fill="#131b2b" stroke="#26304a"/><rect x="362" y="48" width="150" height="4" fill="#36d399"/><text x="437" y="74" text-anchor="middle" fill="#e8edf6" font-size="12" font-weight="700">Rules</text><text x="437" y="92" text-anchor="middle" fill="#9aa7bd" font-size="10.5">priority · scope</text>
+          <rect x="528" y="48" width="150" height="58" rx="9" fill="#131b2b" stroke="#26304a"/><rect x="528" y="48" width="150" height="4" fill="#f5a524"/><text x="603" y="74" text-anchor="middle" fill="#e8edf6" font-size="12" font-weight="700">OWASP detectors</text><text x="603" y="92" text-anchor="middle" fill="#9aa7bd" font-size="10.5">sqli · xss · …</text>
+          <rect x="694" y="48" width="150" height="58" rx="9" fill="#131b2b" stroke="#26304a"/><rect x="694" y="48" width="150" height="4" fill="#a779ff"/><text x="769" y="74" text-anchor="middle" fill="#e8edf6" font-size="12" font-weight="700">AI classifier</text><text x="769" y="92" text-anchor="middle" fill="#9aa7bd" font-size="10.5">ONNX · ~0.5 ms</text>
+          <rect x="860" y="48" width="150" height="58" rx="9" fill="#131b2b" stroke="#26304a"/><rect x="860" y="48" width="150" height="4" fill="#f4525f"/><text x="935" y="74" text-anchor="middle" fill="#e8edf6" font-size="12" font-weight="700">Risk → verdict</text><text x="935" y="92" text-anchor="middle" fill="#9aa7bd" font-size="10.5">allow/challenge/block</text>
+        </g>
+        <line x1="180" y1="77" x2="194" y2="77" stroke="#67748c" stroke-width="2" marker-end="url(#ar2)"/>
+        <line x1="346" y1="77" x2="360" y2="77" stroke="#67748c" stroke-width="2" marker-end="url(#ar2)"/>
+        <line x1="512" y1="77" x2="526" y2="77" stroke="#67748c" stroke-width="2" marker-end="url(#ar2)"/>
+        <line x1="678" y1="77" x2="692" y2="77" stroke="#67748c" stroke-width="2" marker-end="url(#ar2)"/>
+        <line x1="844" y1="77" x2="858" y2="77" stroke="#67748c" stroke-width="2" marker-end="url(#ar2)"/>
+        <!-- short circuit -->
+        <path d="M105,106 C105,150 935,150 935,124" fill="none" stroke="#f4525f" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#ar2)"/>
+        <text x="520" y="170" text-anchor="middle" fill="#f4525f" font-size="11">any stage may short-circuit straight to a verdict — the cheapest block never pays for the AI</text>
+        <!-- fail modes -->
+        <rect x="30" y="196" width="470" height="46" rx="9" fill="#161d10" stroke="#2a3a1e"/><text x="46" y="216" fill="#e8edf6" font-size="12" font-weight="700">CRITICAL routes</text><text x="46" y="233" fill="#9aa7bd" font-size="11">any stage failure → 503 + audit + alert (fail-closed) · never load-shed</text>
+        <rect x="516" y="196" width="494" height="46" rx="9" fill="#1a1410" stroke="#3a2a1e"/><text x="532" y="216" fill="#e8edf6" font-size="12" font-weight="700">Other tiers</text><text x="532" y="233" fill="#9aa7bd" font-size="11">stage failure is logged, skipped, request continues (fail-open) · per-route override allowed</text>
+      </svg>
+      </div>
+      <figcaption>The pipeline order is the security design. Fail modes are tier-resolved centrally by the orchestrator, so a detector never has to reason about whether it guards a payments API or a static asset.</figcaption>
+    </div>
+
+    <!-- ADR 09 -->
+    <div class="adr">
+      <div class="head">
+        <span class="num">ADR&#8209;09</span>
+        <div class="htext">
+          <h3>Ordered, tiered pipeline with a central fail-mode contract</h3>
+          <div class="decides"><b>Decision:</b> stages run cheapest-first with short-circuit; a route's <b>tier</b> (critical/high/medium/low) drives whether a failing stage fails closed (503) or fails open (skip + log), enforced by the orchestrator, not the stage.</div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="blk why"><span class="k">Why</span><p>Ordering by cost means an obvious IP block or rate-limit never pays for AI inference. Centralizing the fail-mode decision means the contract is written once and can't be quietly violated by a new detector — a payments route (CRITICAL) is guaranteed fail-closed, while a marketing page keeps serving if a detector hiccups. This is expressed as a typed state machine threading a <code>RequestContext</code> and a growing <code>Decisions</code> struct.</p></div>
+        <div class="blk trade"><span class="k">Trade-off accepted</span><p>Fail-open on non-critical tiers means a degraded detector can let some traffic through un-inspected — a conscious availability-over-strictness choice for lower-value routes, with the tier system as the dial operators use to move a route up when that's unacceptable.</p></div>
+        <div class="blk alt"><span class="k">Rejected</span><p><b>Uniform fail-closed everywhere</b> — turns any detector bug into a site-wide outage. <b>Per-stage fail logic</b> — scatters the security-critical policy across dozens of call sites where it drifts.</p></div>
+      </div>
+    </div>
+
+    <!-- ADR 10 -->
+    <div class="adr">
+      <div class="head">
+        <span class="num">ADR&#8209;10</span>
+        <div class="htext">
+          <h3>Composite risk key with decay, not a per-IP counter</h3>
+          <div class="decides"><b>Decision:</b> risk accumulates against <code>RiskKey = (ip, device_fp?, session?)</code>, decays over time, and is judged against both a per-request block score and per-tier cumulative thresholds.</div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="blk why"><span class="k">Why</span><p>A raw per-IP counter is both too coarse and too blunt: it punishes everyone behind a corporate NAT for one bad actor, and it never forgives. Adding device-fingerprint and session axes lets two sessions on one NAT'd IP be scored separately; time-decay gives <b>trust recovery</b> so a reformed client isn't blocked forever. Detectors, reputation, bot class, velocity, and threat-intel all feed one score, keeping the verdict explainable.</p></div>
+        <div class="blk trade"><span class="k">Trade-off accepted</span><p>More moving parts than a counter — decay rates and per-tier thresholds are extra knobs, and most of the cumulative tuning is intentionally hidden from the dashboard because the global defaults serve almost everyone. The multi-tenant <code>tenant_id</code> axis was retired when that feature was deprecated, simplifying the key.</p></div>
+        <div class="blk alt"><span class="k">Rejected</span><p><b>Flat per-IP block list</b> — collateral damage behind NAT and no recovery path. <b>Session-only keying</b> — trivially defeated by dropping the cookie.</p></div>
+      </div>
+    </div>
+
+    <!-- ADR 11 -->
+    <div class="adr">
+      <div class="head">
+        <span class="num">ADR&#8209;11</span>
+        <div class="htext">
+          <h3>AI detector as an operator-supplied ONNX model, feature-gated, observe→enforce</h3>
+          <div class="decides"><b>Decision:</b> the ML detector runs a bring-your-own <b>ONNX</b> model via a Rust runtime (<code>ort</code>/tract), compiled in only with <code>--features ai</code>, and defaults to observing before it enforces.</div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="blk why"><span class="k">Why</span><p>Signatures miss novel and obfuscated attacks; a learned classifier catches the long tail. Keeping the model <i>operator-supplied</i> and the whole subsystem behind a feature flag means the default build stays slim and doesn't ship a heavyweight ONNX runtime unless it's wanted. Running inference in-process in Rust keeps it on the sub-millisecond hot path (~0.5 ms p99). Observe-mode first lets operators measure accuracy on their own traffic before trusting it to block.</p></div>
+        <div class="blk trade"><span class="k">Trade-off accepted</span><p>The WAF doesn't ship a blessed model — operators must supply and version one, which is more setup. A probabilistic verdict needs the observe→enforce ramp and a fallback path, adding operational steps a pure-signature engine wouldn't.</p></div>
+        <div class="blk alt"><span class="k">Rejected</span><p><b>Bundled fixed model</b> — bloats every build and ages badly. <b>External inference service</b> — a network hop on the hot path, blowing the latency budget.</p></div>
+      </div>
+    </div>
+
+    <!-- ADR 12 -->
+    <div class="adr">
+      <div class="head">
+        <span class="num">ADR&#8209;12</span>
+        <div class="htext">
+          <h3>Adaptive load shedding (Gradient2), CRITICAL never shed</h3>
+          <div class="decides"><b>Decision:</b> a per-listener admission controller derives its concurrency limit from live latency (<code>L(t+1) = L(t) · RTT_min/RTT_now</code>) — no static ceiling — and sheds by tier, dropping catch-all first and never shedding CRITICAL.</div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="blk why"><span class="k">Why</span><p>A hand-tuned concurrency cap is wrong the moment hardware, upstreams, or traffic mix changes. A gradient controller finds the knee automatically from RTT, so the box protects itself under overload without an operator guessing a number. Shedding by tier means a traffic flood sheds low-value requests first and keeps auth/payment paths flowing; a shed response is an immediate <code>503 + Retry-After</code> that costs no pipeline work and never touches an upstream.</p></div>
+        <div class="blk trade"><span class="k">Trade-off accepted</span><p>An adaptive controller is harder to reason about and test than a fixed limit, and can react to latency it doesn't cause (a slow upstream looks like overload). We accept that for the self-tuning benefit and back it with per-route soft/hard caps so one route can't starve others.</p></div>
+        <div class="blk alt"><span class="k">Rejected</span><p><b>Static concurrency limit</b> — stale on every environment change. <b>No shedding</b> — lets a flood collapse the box and take critical traffic with it.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 5. OPERATIONS & TRUST ============ -->
+<section id="ops">
+  <div class="wrap">
+    <div class="eyebrow">05 — Running it in anger</div>
+    <h2>Operations &amp; trust: deploy without dropping a request</h2>
+    <p class="lead">The last cluster of decisions is about what happens after the code is correct — upgrades, credentials, compliance builds — where a WAF is judged on whether it can change safely while under live traffic.</p>
+
+    <!-- ADR 13 -->
+    <div class="adr">
+      <div class="head">
+        <span class="num">ADR&#8209;13</span>
+        <div class="htext">
+          <h3>Zero-downtime ops: <code>SO_REUSEPORT</code> workers + hot binary reload via FD passing</h3>
+          <div class="decides"><b>Decision:</b> N workers share a listener via <code>SO_REUSEPORT</code>; a new binary inherits the listening socket over <code>SCM_RIGHTS</code> while the old process drains; every config change is dry-run-validated before it swaps.</div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="blk why"><span class="k">Why</span><p>Security patches must ship continuously, and an appliance on the request path can't take a maintenance window. Kernel-load-balanced workers plus FD hand-off let a new version accept connections while the old one finishes in-flight requests — a version upgrade with <b>zero dropped connections</b>. <code>SIGTERM</code> and <code>/admin/drain</code> flip readiness to 503 so external LBs bleed traffic away within one probe interval; readiness-probe failure rolls the hot restart back.</p></div>
+        <div class="blk trade"><span class="k">Trade-off accepted</span><p>The FD-passing and <code>SO_REUSEPORT</code> mechanics are Linux-first, and the graceful-restart path is genuinely intricate to implement and test. That complexity is the price of not having a maintenance window.</p></div>
+        <div class="blk alt"><span class="k">Rejected</span><p><b>Stop-and-start deploys</b> — drop connections, fail the SLO. <b>Blue/green at the LB only</b> — works, but doubles fleet cost and still needs the drain contract we built anyway.</p></div>
+      </div>
+    </div>
+
+    <!-- ADR 14 -->
+    <div class="adr">
+      <div class="head">
+        <span class="num">ADR&#8209;14</span>
+        <div class="htext">
+          <h3>Single hardened admin principal now; RBAC/SSO deferred (not skipped)</h3>
+          <div class="decides"><b>Decision:</b> v1 ships one admin identity gated by argon2id + HMAC session + CSRF + optional TOTP + IP-allowlist + optional mTLS; multi-user RBAC and OIDC SSO are an explicitly sequenced follow-on, not an afterthought.</div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="blk why"><span class="k">Why</span><p>The crypto and session foundation that <i>matters</i> for a secure single admin — modern password hashing, tamper-resistant sessions, CSRF, second factor, network-level gating — is fully in place today. That covers the threat model for a small operator team and let us ship a defensible product without first building an identity provider. The roadmap treats multi-user accounts → RBAC → per-user audit → OIDC SSO as a staged track, with self-service hardening (kill committed defaults, wire dormant endpoints) as the standalone first step.</p></div>
+        <div class="blk trade"><span class="k">Trade-off accepted</span><p>One principal means <b>no per-operator accountability</b> (every audit action reads <code>admin</code>) and <b>no least privilege</b> (every session is full-scope) until the RBAC track lands. We accepted that gap consciously and wrote it down rather than half-building an auth system under time pressure.</p></div>
+        <div class="blk alt"><span class="k">Rejected</span><p><b>Full RBAC/SSO in v1</b> — large, and everything keys off roles, so rushing it risks a privilege-escalation bug in the security console itself. <b>Delegate to a reverse proxy for auth</b> — leaves the admin API unprotected if that proxy is misconfigured.</p></div>
+      </div>
+    </div>
+
+    <!-- ADR 15 -->
+    <div class="adr">
+      <div class="head">
+        <span class="num">ADR&#8209;15</span>
+        <div class="htext">
+          <h3>Pay-for-what-you-use builds via Cargo feature flags</h3>
+          <div class="decides"><b>Decision:</b> Redis, AI/ONNX, FIPS crypto, OTel, Kafka, HTTP/3, HSM, cloud-secret providers, and GeoIP are all optional features — the default build compiles none of their dependency trees.</div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="blk why"><span class="k">Why</span><p>Different deployments have opposite needs: an air-gapped single node wants the smallest possible binary and attack surface; a regulated tenant needs a FIPS-validated crypto provider; a cloud fleet wants Redis, OTel, and cloud secret managers. Feature flags let one codebase produce all of them without carrying every dependency into every image — smaller binaries, faster builds, fewer CVEs to track per deployment. A FIPS build, for instance, enforces a primitive allowlist at load time and refuses non-FIPS crypto.</p></div>
+        <div class="blk trade"><span class="k">Trade-off accepted</span><p>A combinatorial feature matrix is more to test in CI, and a capability's presence now depends on how the binary was built — so docs and error messages must be explicit about "compile with <code>--features x</code>." We accept the build-matrix cost for the deployment flexibility.</p></div>
+        <div class="blk alt"><span class="k">Rejected</span><p><b>One fat build with everything on</b> — bloats every image, forces heavy deps (ONNX runtime, Kafka) onto deployments that never use them, and widens the supply chain for all.</p></div>
+      </div>
+    </div>
+
+    <!-- ADR 16 -->
+    <div class="adr">
+      <div class="head">
+        <span class="num">ADR&#8209;16</span>
+        <div class="htext">
+          <h3>Built to a benchmarked interop contract, with named production profiles</h3>
+          <div class="decides"><b>Decision:</b> the WAF conforms to a versioned interop contract (<code>X-WAF-*</code> headers, <code>/__waf_control/*</code>, a fixed audit schema) and ships three tuned profiles — <code>prod-balanced</code>, <code>prod-strict</code>, <code>prod-high-throughput</code>.</div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="blk why"><span class="k">Why</span><p>An external contract makes behavior <b>testable and comparable</b> rather than a matter of opinion — every response carries the action, reason, and a request-id that ties back to an audit line, and a reset endpoint gives repeatable benchmark runs. Named profiles encode the security-vs-latency trade-off as a supported choice with measured numbers (balanced ≈ 1.9 ms median / 4.5 ms p99), so operators start from a known-good point instead of hand-assembling config.</p></div>
+        <div class="blk trade"><span class="k">Trade-off accepted</span><p>Conforming to an external wire shape constrains internal freedom — header names, endpoints, and the audit file's schema are locked and must be preserved across refactors. Profiles must be kept honest with re-measured numbers as the engine changes.</p></div>
+        <div class="blk ctx"><span class="k">Context</span><p>The contract-locked audit file stays deliberately minimal (ADR-07) precisely so the richer forensic chain can evolve without breaking the benchmark.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 6. LEDGER ============ -->
+<section id="ledger">
+  <div class="wrap">
+    <div class="eyebrow">06 — One line each</div>
+    <h2>Decision ledger</h2>
+    <p class="lead">The whole record at a glance — decision paired with the trade-off we took on to get it. Use this as the committee cheat-sheet; each row expands to a card above.</p>
+    <div class="card scrollx">
+      <table class="ledger">
+        <thead><tr><th>#</th><th>Decision</th><th>Chosen because</th><th class="t">Trade-off accepted</th></tr></thead>
+        <tbody>
+          <tr><td>01</td><td><b>Rust, single static binary</b></td><td>memory safety without GC pauses; tiny distroless surface</td><td class="t">slow builds, smaller hiring pool</td></tr>
+          <tr><td>02</td><td><b>tokio + hyper 1.x + rustls</b></td><td>huge concurrency on bounded threads; FIPS-swappable TLS</td><td class="t">async complexity; worker pool fixed at boot</td></tr>
+          <tr><td>03</td><td><b>Five-crate workspace</b></td><td>plane isolation enforced by the compiler; parallel builds</td><td class="t">shared types need hoisting + trait ceremony</td></tr>
+          <tr><td>04</td><td><b>Two planes, one process</b></td><td>blast-radius containment; single deploy artifact</td><td class="t">one crash takes both planes (mitigated by HA)</td></tr>
+          <tr><td>05</td><td><b>ArcSwap hot reload</b></td><td>zero-downtime config; no hot-path locks; validate-before-swap</td><td class="t">whole-config granularity; brief old-config reads</td></tr>
+          <tr><td>06</td><td><b>StateBackend trait, in-mem default</b></td><td>zero-infra dev; Redis scales out; reconciling fallback</td><td class="t">backend swap is boot-only; partition drift</td></tr>
+          <tr><td>06B</td><td><b>Versioned config plane; optional etcd</b></td><td>CAS convergence + rollback; etcd for consensus-grade durability</td><td class="t">two backends; etcd opt-in, needs migration cutover</td></tr>
+          <tr><td>07</td><td><b>Dual audit sinks</b></td><td>rigid contract file + evolvable forensic hash chain</td><td class="t">chains are per-node; SIEM needed for global view</td></tr>
+          <tr><td>08</td><td><b>Three-layer scaling</b></td><td>orthogonal axes; WAF stays out of orchestration</td><td class="t">no in-WAF autoscale; restart-only resize</td></tr>
+          <tr><td>09</td><td><b>Tiered pipeline + central fail-mode</b></td><td>cheap-first short-circuit; CRITICAL guaranteed fail-closed</td><td class="t">fail-open lets degraded detectors pass low-tier traffic</td></tr>
+          <tr><td>10</td><td><b>Composite decaying risk key</b></td><td>NAT fairness + trust recovery; explainable score</td><td class="t">more knobs than a flat counter</td></tr>
+          <tr><td>11</td><td><b>Operator ONNX model, gated, observe→enforce</b></td><td>catches novel attacks; slim default; sub-ms in-process</td><td class="t">no bundled model; probabilistic verdict ops</td></tr>
+          <tr><td>12</td><td><b>Adaptive shedding, CRITICAL never shed</b></td><td>self-tunes to the box; protects auth/payment paths</td><td class="t">harder to reason about than a fixed cap</td></tr>
+          <tr><td>13</td><td><b>Zero-downtime FD-passing reloads</b></td><td>continuous security patching, no dropped connections</td><td class="t">Linux-first; intricate restart path</td></tr>
+          <tr><td>14</td><td><b>Hardened single admin; RBAC/SSO deferred</b></td><td>solid session/crypto now; ship defensibly, sequence identity</td><td class="t">no per-user accountability / least-privilege yet</td></tr>
+          <tr><td>15</td><td><b>Cargo feature flags</b></td><td>minimal images; FIPS/cloud/AI builds from one codebase</td><td class="t">combinatorial CT/test matrix</td></tr>
+          <tr><td>16</td><td><b>Benchmarked contract + named profiles</b></td><td>testable, comparable behavior; known-good starting points</td><td class="t">locked wire shape; profiles need re-measuring</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <div><b>How to use this in the room.</b> If asked "why not X?", the <span style="color:var(--purple)">Rejected</span> block on each card is the prepared answer. If asked "what did this cost you?", the <span style="color:var(--amber)">Trade-off</span> block is the honest one — every decision here bought something and gave something up, and naming both is the point.</div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    Aegis-Gate — Architecture Decision Record · generated for committee review and long-term reference.<br>
+    Primary sources: <code>Architecture.md</code>, <code>docs/architecture/{scaling-model,storage-and-contract,protocols}.md</code>, <code>docs/FEATURES.md</code>, the Cargo workspace manifests, and <code>config/profiles/</code>. Where this doc and the code disagree, the code wins — fix the doc.
+  </div>
+</footer>
+
+</body>
+</html>
+

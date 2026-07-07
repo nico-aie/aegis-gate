@@ -2694,7 +2694,7 @@ function SecOpsPostureCard() {
       title: firingCount > 0
         ? `${firingCount} alert${firingCount === 1 ? '' : 's'} firing · ${ackedCount} acked`
         : 'No SLO alerts firing',
-      href: '#/incidents',
+      href: '#/health',
     },
     topAttacker
       ? {
@@ -9426,6 +9426,219 @@ function SloObjectivesCard() {
   );
 }
 
+// IncidentQueueCard — the SLO-alert lifecycle queue (ack / snooze /
+// resolve) as a self-contained card. 2026-07-07: extracted from the
+// retired Incidents page and folded into Health & SLOs, which already
+// showed the *same* /api/incidents list read-only. This card is the
+// actionable version; the standalone page is gone (#/incidents now
+// redirects to #/health). Owns its own hooks so it drops cleanly into
+// any page without hoisting state into the host (rules-of-hooks safe).
+function IncidentQueueCard() {
+  const alerts = window.useAlertsApi ? window.useAlertsApi() : { data: null };
+  const incidents = window.useIncidentsApi ? window.useIncidentsApi() : { data: null };
+  const [busy, setBusy] = useStateP(null); // alert id currently mutating
+  const [filter, setFilter] = useStateP('open'); // open | all
+  const scopeBadge = window.useScopeBadge ? window.useScopeBadge() : () => null;
+
+  // Compose: prefer the enriched /api/incidents view; fall back to
+  // /api/alerts when the engine isn't wired yet (test builds).
+  const overlay = incidents.data?.incidents || [];
+  const overlayById = new Map(overlay.map(i => [i.id, i]));
+  const rawAlerts = alerts.data?.alerts || alerts.data?.firing || incidents.data?.raw_alerts?.alerts || [];
+
+  // Parse alert.name as `<sli>-<window>` so the SLI column shows the
+  // meaningful half and the window chip next to it.
+  function sliFromAlertName(name) {
+    if (!name) return { sli: 'unknown', window: '' };
+    const m = /^(.+)-([0-9]+[smhd])$/.exec(name);
+    return m ? { sli: m[1], window: m[2] } : { sli: name, window: '' };
+  }
+
+  // Unified incident list. When the enriched view is populated it IS
+  // the authoritative firing list (fleet-rolled-up, deduped by uid,
+  // with a `firing_on` node breadth). Fall back to the raw /api/alerts
+  // shape only when the enriched view is empty.
+  const merged = overlay.length > 0
+    ? overlay.map(i => {
+        const name = i.id;
+        const { sli, window: sliWindow } = sliFromAlertName(name);
+        return {
+          id: i.id,
+          name,
+          sli: i.sli || sli,
+          sli_window: sliWindow,
+          severity: (i.severity || 'warn').toLowerCase(),
+          fired_at: i.fired_at,
+          burn_rate: i.burn_rate,
+          budget_consumed_pct: i.budget_consumed_pct,
+          window_hours: i.window_hours,
+          runbook_url: i.runbook_url,
+          status: i.status || 'firing',
+          acked_at: i.acked_at,
+          acked_by: i.acked_by,
+          snoozed_until: i.snoozed_until,
+          note: i.note,
+          firing_on: Array.isArray(i.firing_on) ? i.firing_on : [],
+        };
+      })
+    : (Array.isArray(rawAlerts) ? rawAlerts : []).map(a => {
+        const name = a.name || a.sli || a.kind || 'unknown';
+        const fired_at = a.since || a.fired_at;
+        const { sli, window: sliWindow } = sliFromAlertName(name);
+        const id = a.id || name;
+        const o = overlayById.get(id) || overlayById.get(name);
+        return {
+          id,
+          name,
+          sli,
+          sli_window: sliWindow,
+          severity: (a.severity || 'warn').toLowerCase(),
+          fired_at,
+          burn_rate: a.burn_rate,
+          budget_consumed_pct: a.budget_consumed_pct,
+          window_hours: a.window_hours,
+          runbook_url: a.runbook_url,
+          status: o?.status || o?.state || 'firing',
+          acked_at: o?.acked_at,
+          acked_by: o?.acked_by,
+          snoozed_until: o?.snoozed_until,
+          note: o?.note,
+          firing_on: [],
+        };
+      });
+
+  const counts = merged.reduce((acc, m) => ({ ...acc, [m.status]: (acc[m.status] || 0) + 1 }), {});
+  const filtered = merged.filter(m => {
+    if (filter === 'all') return true;
+    // "open" = still needs an operator: firing or acknowledged.
+    return m.status === 'firing' || m.status === 'acknowledged';
+  });
+
+  async function doAct(action, id) {
+    setBusy(id);
+    try {
+      let r;
+      if (action === 'ack')      r = await window.incidentAck(id, { note: '' });
+      if (action === 'snooze')   r = await window.incidentSnooze(id, 15, '');
+      if (action === 'resolve')  r = await window.incidentResolve(id, '');
+      if (r && r.status >= 200 && r.status < 300) {
+        window.aegisToast(`Incident ${action} ok`, 'ok');
+        if (incidents.reload) incidents.reload();
+        if (alerts.reload) alerts.reload();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r?.status ?? '?'}`;
+        window.aegisToast(`${action} failed: ${msg}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`${action} error: ${e.message || e}`, 'err');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function fmtRel(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    const ago = (Date.now() - d.getTime()) / 1000;
+    if (ago < 60) return `${Math.floor(ago)}s ago`;
+    if (ago < 3600) return `${Math.floor(ago / 60)}m ago`;
+    if (ago < 86400) return `${Math.floor(ago / 3600)}h ago`;
+    return `${Math.floor(ago / 86400)}d ago`;
+  }
+
+  const firingCount = counts.firing || 0;
+  const ackedCount = counts.acknowledged || 0;
+
+  return (
+    <div className="card" id="active-alerts" style={{ marginBottom: 12 }}>
+      <window.SectionHeader
+        title="Active alerts"
+        sub={`${firingCount} firing · ${ackedCount} acked · ${filtered.length} shown`}
+        actions={scopeBadge(true)}
+      />
+      <div style={{ display: 'flex', gap: 4, padding: '0 12px 8px' }}>
+        {['open', 'all'].map(f => (
+          <button
+            key={f}
+            className={`btn sm ${filter === f ? 'primary' : ''}`}
+            onClick={() => setFilter(f)}
+          >{f}</button>
+        ))}
+      </div>
+      {filtered.length === 0 ? (
+        <div style={{ padding: 16, textAlign: 'center', color: 'var(--ink-dim)', fontSize: 12 }}>
+          No {filter === 'open' ? 'open ' : ''}incidents. SLO budget above shows current burn pressure.
+        </div>
+      ) : (
+        <table className="tbl tbl-compact">
+          <thead><tr>
+            <th>Status</th>
+            <th>Severity</th>
+            <th>SLI</th>
+            <th>Fired</th>
+            <th>Budget</th>
+            <th>Acked by</th>
+            <th>Note</th>
+            <th style={{ textAlign: 'right' }}>Actions</th>
+          </tr></thead>
+          <tbody>
+            {filtered.map(m => (
+              <tr key={m.id} style={m.status === 'snoozed' ? { opacity: 0.6 } : undefined}>
+                <td>
+                  <span className={`pill ${m.status === 'firing' ? 'down' : m.status === 'acknowledged' ? 'warn' : m.status === 'snoozed' ? 'info' : 'up'}`}>
+                    {m.status}
+                  </span>
+                </td>
+                <td><span className={`pill ${m.severity === 'critical' ? 'down' : 'warn'}`}>{m.severity}</span></td>
+                <td>
+                  <code style={{ fontSize: 11 }} title={m.sli}>{window.sliLabel(m.sli)}</code>
+                  {m.sli_window && (
+                    <span className="pill neutral" style={{ fontSize: 9, marginLeft: 4, padding: '0 6px' }}>{m.sli_window}</span>
+                  )}
+                  {Array.isArray(m.firing_on) && m.firing_on.length > 1 && (
+                    <span
+                      className="scope-badge scope-fleet"
+                      style={{ marginLeft: 4 }}
+                      title={`Firing on ${m.firing_on.length} nodes: ${m.firing_on.join(', ')}`}
+                    >
+                      {m.firing_on.length} nodes
+                    </span>
+                  )}
+                </td>
+                <td title={m.fired_at}>{fmtRel(m.fired_at)}</td>
+                <td className="num" title={m.budget_consumed_pct != null ? `${m.budget_consumed_pct.toFixed(2)}% of error budget consumed` : 'Budget metric not available on this build'}>
+                  {m.budget_consumed_pct != null ? m.budget_consumed_pct.toFixed(1) + '%' : '—'}
+                </td>
+                <td>{m.acked_by || '—'} {m.acked_at && <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>· {fmtRel(m.acked_at)}</span>}</td>
+                <td style={{ fontSize: 11, color: 'var(--ink-dim)' }}>{m.note || '—'}</td>
+                <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  {m.status === 'firing' && (
+                    <button className="btn sm" disabled={busy === m.id} onClick={() => doAct('ack', m.id)}>Ack</button>
+                  )}
+                  {(m.status === 'firing' || m.status === 'acknowledged') && (
+                    <button className="btn sm" disabled={busy === m.id} onClick={() => doAct('snooze', m.id)} style={{ marginLeft: 4 }}>Snooze 15m</button>
+                  )}
+                  {m.status !== 'resolved' && (
+                    <button className="btn sm primary" disabled={busy === m.id} onClick={() => doAct('resolve', m.id)} style={{ marginLeft: 4 }}>Resolve</button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8, borderTop: '1px solid var(--hairline)' }}>
+        <window.I.Info />
+        <span>
+          Ack / snooze / resolve are CSRF-gated POSTs through the audit
+          chain — every action lands in <a href="#/audit" style={{ color: 'var(--accent)' }}>Audit Trail</a>.
+          Alert <em>rules</em> (when to fire) are configured via YAML (<code>cfg.alerts</code>).
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function PageTracking() {
   // Live API hooks. SLO / certs / alerts are engine-backed when the
   // proxy wires them (placeholder shape otherwise); cluster +
@@ -9436,12 +9649,10 @@ function PageTracking() {
   const slo = window.useSloApi();
   const certs = window.useCertsApi();
   const alerts = window.useAlertsApi();
-  // 2026-05-21 — Active alerts is driven by the overlay-aware
-  // /api/incidents enriched list (same source the Incidents page +
-  // notification bell use) so an ack/snooze/resolve there is
-  // reflected here. /api/alerts reads a separate legacy store
-  // (tracking.ack_store) that the Incidents resolve never touches.
-  const incidentsApi = window.useIncidentsApi();
+  // 2026-07-07 — the Active-alerts panel became the actionable
+  // <IncidentQueueCard/> (folded in from the retired Incidents page);
+  // it owns its own /api/incidents hook, so PageTracking no longer
+  // reads incidentsApi directly. `alerts` stays for the Refresh button.
   // CC-T2.2 — alert channels (read + audit-mutated PUT/DELETE/POST-test)
   const alertReceivers = window.useAlertReceiversApi();
 
@@ -9482,7 +9693,7 @@ function PageTracking() {
       </div>
 
       <div className="grid-12" style={{ marginBottom: 12 }}>
-        <div className="col-6 card">
+        <div className="col-12 card">
           <window.SectionHeader
             title="SLO budget"
             sub="Current value vs. target, error-budget remaining, and burn rate per alert window. Availability counts origin 5xx + gateway failures; security blocks are excluded (see Enforcement)."
@@ -9589,63 +9800,12 @@ function PageTracking() {
             </div>
           )}
         </div>
-        <div className="col-6 card">
-          {(() => {
-            // Overlay-aware: a `firing` alert is one whose IncidentTracker
-            // status is still `firing` (ack/snooze/resolve all drop it).
-            // Falls back to the legacy /api/alerts shape only when the
-            // SLO engine isn't wired (test builds → no enriched list).
-            const enriched = Array.isArray(incidentsApi.data?.incidents)
-              ? incidentsApi.data.incidents.map(i => ({
-                  name: `${i.sli}-${i.window_hours}h`,
-                  // SLO-P6b — same operator-facing SLI label as the
-                  // SLO card and Incidents table; `name` stays the
-                  // raw id (React key + legacy-shape parity).
-                  label: `${window.sliLabel(i.sli)} · ${i.window_hours}h`,
-                  severity: i.severity,
-                  since: i.fired_at,
-                  runbook_url: i.runbook_url,
-                  status: i.status,
-                }))
-              : (alerts.data?.firing || []).map(a => ({ ...a, status: 'firing' }));
-            const firing = enriched.filter(a => a.status === 'firing');
-            const acked = enriched.filter(a => a.status === 'acknowledged');
-            return (
-              <>
-                <window.SectionHeader
-                  title="Active alerts"
-                  sub={`${firing.length} firing · ${acked.length} acked`}
-                />
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {firing.length === 0 && (
-                    <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
-                      No alerts firing.
-                    </div>
-                  )}
-                  {firing.map(a => (
-                    <div key={a.name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 8, background: 'var(--canvas-2)', borderRadius: 6, fontSize: 12 }}>
-                      <span className={`pill ${a.severity === 'page' ? 'err' : a.severity === 'ticket' ? 'warn' : 'info'}`}>
-                        {a.severity}
-                      </span>
-                      <div style={{ flex: 1 }}>
-                        <div className="mono" style={{ color: 'var(--ink)' }}>{a.label || a.name}</div>
-                        {a.runbook_url && (
-                          <a href={a.runbook_url} target="_blank" rel="noopener noreferrer" className="dim" style={{ fontSize: 11 }}>
-                            runbook ↗
-                          </a>
-                        )}
-                      </div>
-                      <span className="dim" style={{ fontSize: 11 }}>
-                        {a.since ? new Date(a.since).toLocaleTimeString() : ''}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </>
-            );
-          })()}
-        </div>
       </div>
+
+      {/* 2026-07-07 — the actionable incident queue (ack/snooze/resolve),
+          folded in from the retired standalone Incidents page. Same
+          /api/incidents source the read-only panel used to show. */}
+      <IncidentQueueCard />
 
       {/* SLO-P6b — minute-resolution availability under the budget
           card: the card says how much budget is left, this says
@@ -12298,265 +12458,6 @@ function StubPage({ title, subtitle, children, eta }) {
         </div>
       </div>
       {children}
-    </>
-  );
-}
-
-function PageIncidents() {
-  const alerts = window.useAlertsApi ? window.useAlertsApi() : { data: null };
-  const incidents = window.useIncidentsApi ? window.useIncidentsApi() : { data: null };
-  const [busy, setBusy] = useStateP(null); // alert id currently mutating
-  const [filter, setFilter] = useStateP('open'); // open | snoozed | resolved | all
-  // IF-P1b — the firing list is now a fleet roll-up (deduped by uid, with
-  // per-row firing_on breadth), so the queue is fleet-capable. Note: the
-  // ack/snooze/resolve OVERLAY still resolves per-node until IF-P1c.
-  const scopeBadge = window.useScopeBadge ? window.useScopeBadge() : () => null;
-
-  // Compose: prefer the enriched /api/incidents view; fall back
-  // to /api/alerts when the engine isn't wired yet (test builds).
-  const overlay = incidents.data?.incidents || [];
-  const overlayById = new Map(overlay.map(i => [i.id, i]));
-  const rawAlerts = alerts.data?.alerts || alerts.data?.firing || incidents.data?.raw_alerts?.alerts || [];
-
-  // MED-SO-03 (2026-05-12) — parse the alert.name as
-  // `<sli>-<window>` so the SLI column shows the meaningful
-  // half and the window chips next to it.
-  // Examples: `DataPlaneAvailability-1h`, `LatencyP99-72h`.
-  function sliFromAlertName(name) {
-    if (!name) return { sli: 'unknown', window: '' };
-    const m = /^(.+)-([0-9]+[smhd])$/.exec(name);
-    return m ? { sli: m[1], window: m[2] } : { sli: name, window: '' };
-  }
-
-  // Derive a unified "incident list".
-  // IF-P1b — when the enriched /api/incidents view is populated it IS the
-  // authoritative firing list: fleet-rolled-up (deduped by uid) with a
-  // `firing_on` node breadth. Build rows from it directly. Fall back to
-  // the raw /api/alerts shape only when the enriched view is empty (engine
-  // not wired / older backend). MED-SO-03: the raw shape surfaces `name` /
-  // `since` / `severity` (NOT `sli` / `fired_at` / `budget_consumed_pct`).
-  const merged = overlay.length > 0
-    ? overlay.map(i => {
-        const name = i.id;
-        const { sli, window: sliWindow } = sliFromAlertName(name);
-        return {
-          id: i.id,
-          name,
-          sli: i.sli || sli,
-          sli_window: sliWindow,
-          severity: (i.severity || 'warn').toLowerCase(),
-          fired_at: i.fired_at,
-          burn_rate: i.burn_rate,
-          budget_consumed_pct: i.budget_consumed_pct,
-          window_hours: i.window_hours,
-          runbook_url: i.runbook_url,
-          status: i.status || 'firing',
-          acked_at: i.acked_at,
-          acked_by: i.acked_by,
-          snoozed_until: i.snoozed_until,
-          note: i.note,
-          firing_on: Array.isArray(i.firing_on) ? i.firing_on : [],
-        };
-      })
-    : (Array.isArray(rawAlerts) ? rawAlerts : []).map(a => {
-        const name = a.name || a.sli || a.kind || 'unknown';
-        const fired_at = a.since || a.fired_at;
-        const { sli, window: sliWindow } = sliFromAlertName(name);
-        // IF-P1a — id is node-independent (`<SLI>-<window>h` == name).
-        const id = a.id || name;
-        const o = overlayById.get(id) || overlayById.get(name);
-        return {
-          id,
-          name,
-          sli,
-          sli_window: sliWindow,
-          severity: (a.severity || 'warn').toLowerCase(),
-          fired_at,
-          burn_rate: a.burn_rate,
-          budget_consumed_pct: a.budget_consumed_pct,
-          window_hours: a.window_hours,
-          runbook_url: a.runbook_url,
-          status: o?.status || o?.state || 'firing',
-          acked_at: o?.acked_at,
-          acked_by: o?.acked_by,
-          snoozed_until: o?.snoozed_until,
-          note: o?.note,
-          firing_on: [],
-        };
-      });
-
-  const counts = merged.reduce((acc, m) => ({ ...acc, [m.status]: (acc[m.status] || 0) + 1 }), {});
-  const filtered = merged.filter(m => {
-    if (filter === 'all') return true;
-    if (filter === 'open') return m.status === 'firing' || m.status === 'acknowledged';
-    return m.status === filter;
-  });
-
-  async function doAct(action, id) {
-    setBusy(id);
-    try {
-      let r;
-      if (action === 'ack')      r = await window.incidentAck(id, { note: '' });
-      if (action === 'snooze')   r = await window.incidentSnooze(id, 15, '');
-      if (action === 'resolve')  r = await window.incidentResolve(id, '');
-      // FIX 2026-05-04 — the previous code used `window.toast`
-      // (which doesn't exist; the project's toast is
-      // `aegisToast`), so every failure was silently swallowed
-      // and operators saw a click that did nothing. Surface
-      // the result either way: success → green toast + reload;
-      // failure → red toast with the backend reason.
-      if (r && r.status >= 200 && r.status < 300) {
-        // LOW-FINAL-01 (2026-05-13) — collapse the previous
-        // "lifecycle UI pending" warn fallback.  It was a
-        // stop-gap from when MED-SO-04 / MED-OBS-01 left the
-        // overlay-store write broken; commits `e6b307c` +
-        // `cadd01b` closed the round-trip end-to-end and the
-        // regression test
-        // `ack_then_enrich_returns_acknowledged_status` guards
-        // against re-opening that class of bug.  The 2xx path is
-        // now unambiguous.
-        window.aegisToast(`Incident ${action} ok`, 'ok');
-        if (incidents.reload) incidents.reload();
-        if (alerts.reload) alerts.reload();
-      } else {
-        const msg = (r && (r.message || r.error || r.reason)) || `status ${r?.status ?? '?'}`;
-        window.aegisToast(`${action} failed: ${msg}`, 'err');
-      }
-    } catch (e) {
-      window.aegisToast(`${action} error: ${e.message || e}`, 'err');
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  function fmtRel(iso) {
-    if (!iso) return '—';
-    const d = new Date(iso);
-    const ago = (Date.now() - d.getTime()) / 1000;
-    if (ago < 60) return `${Math.floor(ago)}s ago`;
-    if (ago < 3600) return `${Math.floor(ago / 60)}m ago`;
-    if (ago < 86400) return `${Math.floor(ago / 3600)}h ago`;
-    return `${Math.floor(ago / 86400)}d ago`;
-  }
-
-  return (
-    <>
-      <SecOpsPostureCard />
-      <div className="page-head">
-        <div>
-          <h1 className="page-title">Incidents</h1>
-          <p className="page-subtitle">SLO alerts with operator overlay · ack / snooze / resolve · audit-chained mutations</p>
-        </div>
-      </div>
-
-      <div className="grid-12" style={{ marginBottom: 12 }}>
-        {[
-          { k: 'firing',       label: 'Firing',       tone: 'down' },
-          { k: 'acknowledged', label: 'Acknowledged', tone: 'warn' },
-          { k: 'snoozed',      label: 'Snoozed',      tone: 'info' },
-          { k: 'resolved',     label: 'Resolved',     tone: 'up'   },
-        ].map(b => (
-          <div key={b.k} className="col-3 card" style={{ padding: 12 }}>
-            <div className="card-title">{b.label}</div>
-            <div className="num" style={{ fontSize: 24 }}>
-              <span className={`pill ${b.tone}`}>{counts[b.k] || 0}</span>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="card" style={{ marginBottom: 12 }}>
-        <window.SectionHeader
-          title="Incident queue"
-          sub={`${filtered.length} of ${merged.length} · ${filter} filter`}
-          actions={scopeBadge(true)}
-        />
-        <div style={{ display: 'flex', gap: 4, padding: '0 12px 8px' }}>
-          {['open', 'firing', 'acknowledged', 'snoozed', 'resolved', 'all'].map(f => (
-            <button
-              key={f}
-              className={`btn ${filter === f ? 'primary' : ''}`}
-              onClick={() => setFilter(f)}
-            >{f}</button>
-          ))}
-        </div>
-        {filtered.length === 0 ? (
-          <div style={{ padding: 16, textAlign: 'center', color: 'var(--ink-dim)', fontSize: 12 }}>
-            No incidents in this view.{' '}
-            <a href="#/health" style={{ color: 'var(--accent)' }}>Health &amp; SLOs</a> shows current burn pressure.
-          </div>
-        ) : (
-          <table className="tbl tbl-compact">
-            <thead><tr>
-              <th>Status</th>
-              <th>Severity</th>
-              <th>SLI</th>
-              <th>Fired</th>
-              <th>Budget</th>
-              <th>Acked by</th>
-              <th>Note</th>
-              <th style={{ textAlign: 'right' }}>Actions</th>
-            </tr></thead>
-            <tbody>
-              {filtered.map(m => (
-                <tr key={m.id} style={m.status === 'snoozed' ? { opacity: 0.6 } : undefined}>
-                  <td>
-                    <span className={`pill ${m.status === 'firing' ? 'down' : m.status === 'acknowledged' ? 'warn' : m.status === 'snoozed' ? 'info' : 'up'}`}>
-                      {m.status}
-                    </span>
-                  </td>
-                  <td><span className={`pill ${m.severity === 'critical' ? 'down' : 'warn'}`}>{m.severity}</span></td>
-                  <td>
-                    {/* SLO-P6b — same label as the SLO card; raw SLI
-                        name stays hoverable for grep-ability. */}
-                    <code style={{ fontSize: 11 }} title={m.sli}>{window.sliLabel(m.sli)}</code>
-                    {m.sli_window && (
-                      <span className="pill neutral" style={{ fontSize: 9, marginLeft: 4, padding: '0 6px' }}>{m.sli_window}</span>
-                    )}
-                    {/* IF-P1b — fleet breadth: how many nodes are firing this incident. */}
-                    {Array.isArray(m.firing_on) && m.firing_on.length > 1 && (
-                      <span
-                        className="scope-badge scope-fleet"
-                        style={{ marginLeft: 4 }}
-                        title={`Firing on ${m.firing_on.length} nodes: ${m.firing_on.join(', ')}`}
-                      >
-                        {m.firing_on.length} nodes
-                      </span>
-                    )}
-                  </td>
-                  <td title={m.fired_at}>{fmtRel(m.fired_at)}</td>
-                  <td className="num" title={m.budget_consumed_pct != null ? `${m.budget_consumed_pct.toFixed(2)}% of error budget consumed` : 'Budget metric not available on this build'}>
-                    {m.budget_consumed_pct != null ? m.budget_consumed_pct.toFixed(1) + '%' : '—'}
-                  </td>
-                  <td>{m.acked_by || '—'} {m.acked_at && <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>· {fmtRel(m.acked_at)}</span>}</td>
-                  <td style={{ fontSize: 11, color: 'var(--ink-dim)' }}>{m.note || '—'}</td>
-                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    {m.status === 'firing' && (
-                      <button className="btn sm" disabled={busy === m.id} onClick={() => doAct('ack', m.id)}>Ack</button>
-                    )}
-                    {(m.status === 'firing' || m.status === 'acknowledged') && (
-                      <button className="btn sm" disabled={busy === m.id} onClick={() => doAct('snooze', m.id)} style={{ marginLeft: 4 }}>Snooze 15m</button>
-                    )}
-                    {m.status !== 'resolved' && (
-                      <button className="btn sm primary" disabled={busy === m.id} onClick={() => doAct('resolve', m.id)} style={{ marginLeft: 4 }}>Resolve</button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      <div className="card" style={{ padding: 12, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8 }}>
-        <window.I.Info />
-        <span>
-          Acks/snoozes/resolves are CSRF-gated POSTs that go through
-          the audit chain — every action lands in <a href="#/audit" style={{ color: 'var(--accent)' }}>Audit Trail</a>.
-          Alert <em>rules</em> (when to fire) are still configured via YAML
-          (<code>cfg.alerts</code>); the in-place rule editor isn't built yet.
-        </span>
-      </div>
     </>
   );
 }
@@ -17113,7 +17014,7 @@ Object.assign(window, {
   // PageHelp is owned by help.jsx (loaded after this file).
   PageAccessLists,
   PageUsers,
-  PageIncidents, PageInvestigation,
+  PageInvestigation,
   PageTopAttackers,
   PageReports,
   // 2026-05-09 — Traffic Gates page surfaces the four request-flow
