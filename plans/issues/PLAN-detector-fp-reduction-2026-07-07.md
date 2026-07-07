@@ -240,6 +240,18 @@ threshold; several should **warn**, not block. MA-1/MA-2 (shipped) already cover
    `access` are JWT-scanned — Adobe Target `mbox`, Adobe Analytics `s_vi`, Tealeaf visitor cookies are no
    longer misparsed). Authorization: Bearer path unchanged. RED-then-GREEN; all real detections (alg-none,
    x5c, kid, jku, time-forged) preserved. Suite green (75 pass).
-4. **Phase 2 (OWNER DECISION PENDING):** SQ-2 then CI-1 — recall-affecting tiering, each breaks a documented
-   positive (`cmdi_pipe_dir`; the three bare-token sqli positives). Hold for sign-off before reducing detection.
-5. **G1-c allowlist / Group 2 / Group 4 / Phase 3:** only the residual the corpus still shows after 3–4.
+4. ✅ **Phase 2 — SHIPPED (develop), recall preserved (owner: "do it, preserve recall"):**
+   - **SQ-2 (sqli.rs):** split `SQLI_PATTERNS` → `SQLI_HIGH` (unambiguous, single-hit block) + `SQLI_AMBIGUOUS`
+     (function-name / clause-bridge: `SELECT…FROM`, `UPDATE…SET`, `SLEEP(`, `BENCHMARK(`, `EXEC`, `CHAR(n)`,
+     `CONCAT(`, `ORDER BY n`). Ambiguous fires ONLY with a `--` SQL-comment corroborator in the same field, so
+     a lone benign `concat(`/`char(`/`SELECT…FROM` (analytics/GraphQL/**YQL**) emits **no** signal. Recall
+     preserved: added a HIGH pattern for a time-func in an injection context (`(?:AND|OR|;|\))\s*(?:SLEEP|
+     BENCHMARK|PG_SLEEP)\(`) so realistic blind SQLi (`1 AND SLEEP(5)`) still blocks; bare-token positives
+     re-anchored to realistic `'…--` / `UNION` forms. red_team suite green.
+   - **CI-1 (command_injection.rs):** split the CMD alternation → `HIGH_CMD` (exec/recon binaries, fire on bare
+     metachar) + `AMBIG_CMD` (English facet words `id`/`cat`/`ls`/`dir`/`ping`/`sleep`…, require a real
+     argument tail `AMBIG_ARG`). Pipe/`;`/chain facet lists (`filter=running|training|id`, `sort=price|asc|dir`)
+     no longer fire; real `;cat /etc/passwd` / `|dir /s` still do. Subshell/backtick keep the full set. Only
+     `cmdi_pipe_dir` re-anchored (`|dir /s`).
+   RED-then-GREEN throughout; `cargo test -p aegis-security` 2190 pass, 0 warnings.
+5. **G1-c allowlist / Group 2 / Group 4 / Phase 3:** only the residual the corpus still shows after a re-run.
