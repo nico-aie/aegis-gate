@@ -92,6 +92,7 @@
     <a href="#lifecycle">1 · Request lifecycle</a>
     <a href="#gates">2 · The 4 traffic gates</a>
     <a href="#detectors">3 · Detector chain &amp; scores</a>
+    <a href="#concurrency">3.5 · Concurrency model</a>
     <a href="#risk">4 · Risk key &amp; score</a>
     <a href="#challenge">5 · Challenge ladder</a>
     <a href="#ddos">6 · DDoS protection</a>
@@ -632,6 +633,83 @@
     </div>
 
     <div class="note"><div><b>Per-request sum vs cumulative max.</b> The per-request block gate sums all signals on <i>this</i> request. The separate cumulative IP bucket adds only <code style="font-family:var(--mono)">max(signal)</code> per request (rule SEC-M003) — so one request hitting three detectors doesn't triple-count against an IP's long-term reputation.</div></div>
+  </div>
+</section>
+
+<!-- ============ 3.5 CONCURRENCY MODEL ============ -->
+<section id="concurrency">
+  <div class="wrap">
+    <div class="eyebrow">03.5 — Under the hood</div>
+    <h2>Concurrency model — how one box runs everyone at once</h2>
+    <p class="lead">The detector chain you just saw runs as a single <b>in-order pass</b> for one request. So how does one process handle thousands of connections at once? The answer is where the parallelism lives: <b>across requests</b>, on a pool of worker threads sized to the machine's cores — not <i>inside</i> a request. A request is an async task; a worker picks it up, runs its chain start to finish, and moves on.</p>
+
+    <div class="card">
+      <div class="svgwrap scrollx">
+      <svg viewBox="0 0 1040 360" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+        <defs>
+          <marker id="k_ar" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#67748c"/></marker>
+          <marker id="k_st" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#36cfd1"/></marker>
+        </defs>
+        <rect x="20" y="150" width="92" height="60" rx="9" fill="#1b2436" stroke="#26304a"/><text x="66" y="176" text-anchor="middle" fill="#e8edf6" font-size="12" font-weight="700">clients</text><text x="66" y="194" text-anchor="middle" fill="#9aa7bd" font-size="10">10k+ conns</text>
+        <line x1="112" y1="180" x2="140" y2="180" stroke="#67748c" stroke-width="2" marker-end="url(#k_ar)"/>
+        <rect x="142" y="150" width="96" height="60" rx="9" fill="#111726" stroke="#26304a"/><rect x="142" y="150" width="96" height="4" fill="#4f8cff"/><text x="190" y="176" text-anchor="middle" fill="#e8edf6" font-size="11.5" font-weight="700">accept</text><text x="190" y="193" text-anchor="middle" fill="#9aa7bd" font-size="10">SO_REUSEPORT</text>
+        <line x1="238" y1="180" x2="266" y2="180" stroke="#67748c" stroke-width="2" marker-end="url(#k_ar)"/>
+        <rect x="268" y="120" width="150" height="120" rx="10" fill="#111726" stroke="#26304a"/><text x="343" y="112" text-anchor="middle" fill="#67748c" font-size="10.5" font-family="ui-monospace,Menlo,monospace">async task queue</text>
+        <g fill="#1b2436" stroke="#2f3b58">
+          <rect x="282" y="132" width="56" height="20" rx="5"/><rect x="348" y="132" width="56" height="20" rx="5"/>
+          <rect x="282" y="158" width="56" height="20" rx="5"/><rect x="348" y="158" width="56" height="20" rx="5"/>
+          <rect x="282" y="184" width="56" height="20" rx="5"/><rect x="348" y="184" width="56" height="20" rx="5"/>
+          <rect x="282" y="210" width="56" height="20" rx="5"/><rect x="348" y="210" width="56" height="20" rx="5"/>
+        </g>
+        <g fill="#8fb4ff" font-size="10" text-anchor="middle" font-family="ui-monospace,Menlo,monospace">
+          <text x="310" y="146">req</text><text x="376" y="146">req</text><text x="310" y="172">ws</text><text x="376" y="172">req</text>
+          <text x="310" y="198">idle</text><text x="376" y="198">req</text><text x="310" y="224">req</text><text x="376" y="224">idle</text>
+        </g>
+        <rect x="452" y="40" width="568" height="286" rx="14" fill="none" stroke="#a779ff" stroke-dasharray="5 5"/><text x="464" y="32" fill="#a779ff" font-size="11.5" font-weight="700" font-family="ui-monospace,Menlo,monospace">one process · tokio multi-thread runtime · work-stealing</text>
+        <g>
+          <rect x="468" y="52" width="536" height="52" rx="9" fill="#111726" stroke="#26304a"/><rect x="468" y="52" width="5" height="52" fill="#36d399"/>
+          <text x="486" y="74" fill="#e8edf6" font-size="11.5" font-weight="700">worker 0 · core 0</text><text x="486" y="92" fill="#67748c" font-size="10">running R7</text>
+          <rect x="612" y="64" width="380" height="28" rx="6" fill="#12180e" stroke="#2a3a1e"/><text x="802" y="82" text-anchor="middle" fill="#9aa7bd" font-size="10.5">detector chain — sqli → xss → … (in-order, one pass)</text>
+          <rect x="468" y="112" width="536" height="52" rx="9" fill="#111726" stroke="#26304a"/><rect x="468" y="112" width="5" height="52" fill="#36d399"/>
+          <text x="486" y="134" fill="#e8edf6" font-size="11.5" font-weight="700">worker 1 · core 1</text><text x="486" y="152" fill="#67748c" font-size="10">running R3</text>
+          <rect x="612" y="124" width="380" height="28" rx="6" fill="#12180e" stroke="#2a3a1e"/><text x="802" y="142" text-anchor="middle" fill="#9aa7bd" font-size="10.5">detector chain (in-order, one pass)</text>
+          <rect x="468" y="172" width="536" height="52" rx="9" fill="#111726" stroke="#26304a"/><rect x="468" y="172" width="5" height="52" fill="#36d399"/>
+          <text x="486" y="194" fill="#e8edf6" font-size="11.5" font-weight="700">worker 2 · core 2</text><text x="486" y="212" fill="#67748c" font-size="10">running R5</text>
+          <rect x="612" y="184" width="380" height="28" rx="6" fill="#12180e" stroke="#2a3a1e"/><text x="802" y="202" text-anchor="middle" fill="#9aa7bd" font-size="10.5">detector chain (in-order, one pass)</text>
+          <rect x="468" y="232" width="536" height="52" rx="9" fill="#111726" stroke="#26304a"/><rect x="468" y="232" width="5" height="52" fill="#36d399"/>
+          <text x="486" y="254" fill="#e8edf6" font-size="11.5" font-weight="700">worker N · core N</text><text x="486" y="272" fill="#67748c" font-size="10">idle → steals work ▸</text>
+          <rect x="612" y="244" width="380" height="28" rx="6" fill="#0d1420" stroke="#26304a"/><text x="802" y="262" text-anchor="middle" fill="#67748c" font-size="10.5">(will pick up the next queued task)</text>
+        </g>
+        <line x1="418" y1="150" x2="466" y2="78"  stroke="#67748c" stroke-width="1.6" marker-end="url(#k_ar)"/>
+        <line x1="418" y1="165" x2="466" y2="138" stroke="#67748c" stroke-width="1.6" marker-end="url(#k_ar)"/>
+        <line x1="418" y1="180" x2="466" y2="198" stroke="#67748c" stroke-width="1.6" marker-end="url(#k_ar)"/>
+        <path d="M690,232 C690,214 560,214 560,206" fill="none" stroke="#36cfd1" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#k_st)"/>
+        <text x="640" y="228" fill="#36cfd1" font-size="10">steal</text>
+        <rect x="268" y="270" width="150" height="56" rx="10" fill="#1a1410" stroke="#3a2a1e"/><rect x="268" y="270" width="150" height="4" fill="#f5a524"/>
+        <text x="343" y="292" text-anchor="middle" fill="#f5a524" font-size="11" font-weight="700">blocking pool</text><text x="343" y="309" text-anchor="middle" fill="#9aa7bd" font-size="10">spawn_blocking — ONNX load,</text><text x="343" y="322" text-anchor="middle" fill="#9aa7bd" font-size="10">sync I/O — kept off workers</text>
+      </svg>
+      </div>
+      <figcaption>N work-stealing workers (≈ one per core) each run one request's chain as a single in-order pass. Idle keep-alive / WebSocket connections are parked tasks, not threads — so connection count scales apart from core count.</figcaption>
+    </div>
+
+    <div class="grid3">
+      <div class="card pad">
+        <span class="pill" style="background:rgba(79,140,255,.14);color:#8fb4ff">WHY THREADS = CORES</span>
+        <p style="color:var(--muted);font-size:14px;margin:10px 0 0">The chain is CPU-bound, so throughput tracks cores doing inspection. <code style="font-family:var(--mono)">workers = num_cpus</code> (min 2, max 512) means every core runs a different request in parallel — the box saturates without oversubscribing.</p>
+      </div>
+      <div class="card pad">
+        <span class="pill" style="background:rgba(54,207,209,.14);color:#36cfd1">WHY WORK-STEALING</span>
+        <p style="color:var(--muted);font-size:14px;margin:10px 0 0">An idle worker steals queued tasks from a busy one, so a slow request never creates a hot-spot worker. Tail latency stays low under uneven request cost — no manual sharding or per-core routing.</p>
+      </div>
+      <div class="card pad">
+        <span class="pill" style="background:rgba(245,165,36,.14);color:#f5a524">WHY A BLOCKING POOL</span>
+        <p style="color:var(--muted);font-size:14px;margin:10px 0 0">Sync or heavy-CPU work (ONNX model load, file flush) is pushed to <code style="font-family:var(--mono)">spawn_blocking</code>'s own pool, so it can't stall the async workers that must stay responsive to every other request.</p>
+      </div>
+    </div>
+
+    <div class="note"><div><b>Where each kind of parallelism lives.</b> <b>Async</b> hides I/O waits (accept, TLS, Redis, upstream) so a worker is never idle on a socket. <b>Threads</b> (the N workers) give real CPU parallelism across requests. A single request's detectors run <i>sequentially</i> — there's no I/O to await inside the chain and the work is microseconds, so fanning it across cores would cost more than it saves and would break the &ldquo;signatures first, AI only if nothing fired&rdquo; short-circuit.</div></div>
+
+    <div class="note dim"><div><b>Restart-only.</b> tokio can't resize a live runtime, so <code style="font-family:var(--mono)">runtime.workers</code> changes need a restart (rolling, in HA). In a CPU-limited container, <code style="font-family:var(--mono)">num_cpus</code> sees host cores not the cgroup quota — pin <code style="font-family:var(--mono)">workers</code> explicitly (e.g. <code style="font-family:var(--mono)">cpu: "2"</code> pods) or pay context-switch overhead. Source: <code>docs/operations/runtime-tuning.md</code>, <code>crates/aegis-bin/src/main.rs</code>.</div></div>
   </div>
 </section>
 <!-- ============ 4. RISK KEY & SCORE ============ -->
