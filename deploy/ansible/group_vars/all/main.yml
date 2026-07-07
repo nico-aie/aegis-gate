@@ -44,6 +44,8 @@ trusted_proxies:
 ort_version: "1.24.2"                  # MUST match ort 2.0.0-rc.12 (ort-sys dist.txt)
 ai_enabled: true
 ai_confidence_threshold: 0.8
+ai_sessions: 12            # ONNX synchronous session-pool size (N single-thread inference sessions)
+ai_batch_enabled: false    # model is fast; batching adds coordination overhead + tail latency
 ai_model_src: "{{ builder_repo }}/data/ai_model/waf_model.onnx"   # copied to each node
 geoip_src_dir: "{{ builder_repo }}/data/geoip"                    # GeoLite2-*.mmdb (optional)
 

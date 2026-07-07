@@ -83,6 +83,8 @@ ai:
   enabled: {{ ai_enabled | lower }}
   model_path: "data/ai_model/waf_model.onnx"
   confidence_threshold: {{ ai_confidence_threshold }}
+  sessions: {{ ai_sessions }}
+  batch_enabled: {{ ai_batch_enabled | lower }}
 
 geoip:
   country_db: "data/geoip/GeoLite2-Country.mmdb"
