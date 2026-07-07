@@ -347,6 +347,22 @@
       </div>
     </div>
 
+    <!-- ADR 06B -->
+    <div class="adr">
+      <div class="head">
+        <span class="num">ADR&#8209;06B</span>
+        <div class="htext">
+          <h3>Config plane: a versioned Redis doc by default, optional <b>etcd</b> for consensus-grade clusters</h3>
+          <div class="decides"><b>Decision:</b> fleet-wide config edits propagate as one versioned document activated by compare-and-set; the store sits behind a narrow <code>ConfigBackend</code>/<code>ConfigWatch</code> seam, so it is <code>shared_state</code> (Redis) by default and can be pointed at native <b>etcd</b> (<code>config_plane.store: etcd</code>, <code>etcd_config</code> feature) for Txn/Watch/Lease + Raft durability.</div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="blk why"><span class="k">Why</span><p>A console edit on one node must converge on every peer and <b>survive a leader failover</b>. The CAS-versioned doc gives optimistic concurrency plus per-version rollback snapshots without standing up a second system for the common case. But Redis durability is best-effort — so clusters that need <b>consensus-grade</b> config durability and <i>native</i> watch/lease (instead of polling) can relocate <b>only the config plane</b> to etcd, whose cost is fine for low-write config data, while the ephemeral hot path (counters, cache, leases) stays on Redis. Because the plane lives behind the <code>ConfigBackend</code> seam, switching stores swaps an <i>implementor</i>, not the ~15 call sites; a one-shot <code>waf migrate-config-plane</code> handles the cutover with a documented rollback.</p></div>
+        <div class="blk trade"><span class="k">Trade-off accepted</span><p>Two config-plane backends to maintain and test. etcd is <b>off by default</b> so the shipped binary keeps its one-dependency (Redis-only) constraint — meaning etcd's stronger durability is opt-in and operators must run the migration tool to adopt it. Config and hot state now potentially live in two different stores, which operators must reason about.</p></div>
+        <div class="blk alt"><span class="k">Rejected / history</span><p>An earlier etcd <b>config <i>source</i></b> (<code>AEGIS_CONFIG_SOURCE=etcd</code>) was <b>removed</b> in 2026-05-28 as redundant with file delivery + the Redis config plane, and a maintenance multiplier (every reload path had to be mirrored into it). The re-introduction (H2b) is deliberately scoped to the config <i>plane store</i> behind the <code>ConfigBackend</code> seam — not a parallel source. <span style="color:var(--faint)">(The unrelated <code>etcd</code> service-discovery feature is just an upstream-pool member poller.)</span></p></div>
+      </div>
+    </div>
+
     <!-- ADR 07 -->
     <div class="adr">
       <div class="head">
@@ -596,6 +612,7 @@
           <tr><td>04</td><td><b>Two planes, one process</b></td><td>blast-radius containment; single deploy artifact</td><td class="t">one crash takes both planes (mitigated by HA)</td></tr>
           <tr><td>05</td><td><b>ArcSwap hot reload</b></td><td>zero-downtime config; no hot-path locks; validate-before-swap</td><td class="t">whole-config granularity; brief old-config reads</td></tr>
           <tr><td>06</td><td><b>StateBackend trait, in-mem default</b></td><td>zero-infra dev; Redis scales out; reconciling fallback</td><td class="t">backend swap is boot-only; partition drift</td></tr>
+          <tr><td>06B</td><td><b>Versioned config plane; optional etcd</b></td><td>CAS convergence + rollback; etcd for consensus-grade durability</td><td class="t">two backends; etcd opt-in, needs migration cutover</td></tr>
           <tr><td>07</td><td><b>Dual audit sinks</b></td><td>rigid contract file + evolvable forensic hash chain</td><td class="t">chains are per-node; SIEM needed for global view</td></tr>
           <tr><td>08</td><td><b>Three-layer scaling</b></td><td>orthogonal axes; WAF stays out of orchestration</td><td class="t">no in-WAF autoscale; restart-only resize</td></tr>
           <tr><td>09</td><td><b>Tiered pipeline + central fail-mode</b></td><td>cheap-first short-circuit; CRITICAL guaranteed fail-closed</td><td class="t">fail-open lets degraded detectors pass low-tier traffic</td></tr>
