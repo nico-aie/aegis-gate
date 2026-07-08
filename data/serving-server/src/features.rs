@@ -44,10 +44,24 @@ static SSRF_TARGETS: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)(?:127\.0\.0\.1|localhost|169\.254\.|0\.0\.0\.0|::1|file://|dict://|gopher://|ftp://)")
         .expect("ssrf regex")
 });
+// Bare `.php` removed (benign FP driver); mirrors features.py _PHP.
 static PHP_MARKERS: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)(?:\.php|eval\(|base64_decode\(|system\(|passthru\(|shell_exec\(|phpinfo\(|\$_(?:GET|POST|REQUEST|FILES)\[)")
+    Regex::new(r"(?i)(?:php://|<\?php|eval\(|base64_decode\(|system\(|passthru\(|shell_exec\(|phpinfo\(|\$_(?:GET|POST|REQUEST|FILES)\[)")
         .expect("php regex")
 });
+/// Count only percent-encodings decoding to an injection-relevant byte (control
+/// <0x20 or `<>'"`;|\$`). Mirrors features.py `_dangerous_pct_count`.
+fn dangerous_pct_count(s: &str) -> usize {
+    PCT_ENCODED
+        .find_iter(s)
+        .filter(|m| {
+            u8::from_str_radix(&m.as_str()[1..], 16)
+                .map(|b| b < 0x20
+                    || matches!(b, b'<' | b'>' | b'\'' | b'"' | b'`' | b';' | b'|' | b'\\' | b'$'))
+                .unwrap_or(false)
+        })
+        .count()
+}
 static NULL_BYTE:   Lazy<Regex> = Lazy::new(|| Regex::new(r"%00|\\x00|\\u0000").expect("null byte regex"));
 static HEX_LITERAL: Lazy<Regex> = Lazy::new(|| Regex::new(r"0x[0-9a-fA-F]{4,}").expect("hex regex"));
 static CRLF_INJ:    Lazy<Regex> = Lazy::new(|| Regex::new(r"%0[aAdD]|\\r\\n|\r\n").expect("crlf regex"));
@@ -174,7 +188,7 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
         full.matches('"').count() as f32,                    // 11 double_quote_count
         (full.matches('<').count() + full.matches('>').count()) as f32, // 12 angle_bracket_count
         full.matches(';').count() as f32,                    // 13 semicolon_count
-        PCT_ENCODED.find_iter(&full).count() as f32,         // 14 pct_encoded_count      (raw)
+        dangerous_pct_count(&full) as f32,                   // 14 pct_encoded_count  (injection-relevant only)
         SQL_KEYWORDS.find_iter(&full_dec).count() as f32,    // 15 sql_keyword_count       (decoded)
         XSS_MARKERS.find_iter(&full_dec).count() as f32,     // 16 xss_pattern_count       (decoded)
         path_traversal_count,                                // 17 path_traversal_count    (decoded)

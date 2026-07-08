@@ -85,8 +85,11 @@ static SSRF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)(?:127\.0\.0\.1|localhost|169\.254\.|0\.0\.0\.0|::1|file://|dict://|gopher://|ftp://)").unwrap()
 });
 
+// Bare `.php` removed — a `.php` extension is ordinary in benign legacy/3rd-party
+// URLs; the real signals are `php://`, `<?php`, or dangerous PHP calls. Mirrors
+// features.py _PHP.
 static PHP_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)(?:\.php|eval\(|base64_decode\(|system\(|passthru\(|shell_exec\(|phpinfo\(|\$_(?:GET|POST|REQUEST|FILES)\[)").unwrap()
+    Regex::new(r"(?i)(?:php://|<\?php|eval\(|base64_decode\(|system\(|passthru\(|shell_exec\(|phpinfo\(|\$_(?:GET|POST|REQUEST|FILES)\[)").unwrap()
 });
 
 static NULL_BYTE_RE: Lazy<Regex> =
@@ -106,6 +109,21 @@ static SSTI_RE: Lazy<Regex> = Lazy::new(|| {
         r"(?is)(\{\{.*?\}\})|(\$\{[^}]{1,200}\})|(#\{[^}]{1,200}\})|(<%=.*?%>)|(\?\s*new\s*\()|(__(class|mro|subclasses|globals|builtins|import)__)|(freemarker\.template|velocity\.tools)|(\{\s*\d+\s*\*\s*\d+\s*\})"
     ).unwrap()
 });
+
+/// Count only percent-encodings that decode to an injection-relevant byte
+/// (control byte <0x20, or one of `<>'"`;|\$`). Benign %20/%2F/%3A/%5B encodings
+/// no longer inflate the feature. Mirrors features.py `_dangerous_pct_count`.
+fn dangerous_pct_count(s: &str) -> usize {
+    PCT_RE
+        .find_iter(s)
+        .filter(|m| {
+            u8::from_str_radix(&m.as_str()[1..], 16)
+                .map(|b| b < 0x20
+                    || matches!(b, b'<' | b'>' | b'\'' | b'"' | b'`' | b';' | b'|' | b'\\' | b'$'))
+                .unwrap_or(false)
+        })
+        .count()
+}
 
 fn method_id(method: &str) -> f32 {
     match method.to_ascii_uppercase().as_str() {
@@ -252,7 +270,7 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
         full_for_chars.matches('"').count() as f32,                        // 11
         (full_for_chars.matches('<').count() + full_for_chars.matches('>').count()) as f32,    // 12
         full_for_chars.matches(';').count() as f32,                        // 13
-        PCT_RE.find_iter(&full_for_chars).count() as f32,                  // 14 raw
+        dangerous_pct_count(&full_for_chars) as f32,                       // 14 injection-relevant only
         if SQL_CTX_RE.is_match(&full_dec_for_patterns) {                   // 15 decoded, context-gated
             SQL_RE.find_iter(&full_dec_for_patterns).count() as f32
         } else {
