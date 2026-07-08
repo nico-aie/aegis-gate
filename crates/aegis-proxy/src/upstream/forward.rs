@@ -128,8 +128,24 @@ pub fn build_upstream_headers(
             // Replaced below.
             continue;
         }
+        if n.eq_ignore_ascii_case("accept-encoding") {
+            // Response-filter gzip fix (2026-07-07): forced to `identity`
+            // below. A compressed upstream body defeats `on_body_frame`
+            // (UTF-8 decode fails → the DLP/redact rungs pass the raw
+            // compressed secrets through). Dropping the client's value
+            // here + pinning identity makes the origin answer in the
+            // clear so the response filter can actually scrub it.
+            continue;
+        }
         out.append(name.clone(), value.clone());
     }
+
+    // Force an uncompressed upstream response so the response-filter
+    // pipeline can decode + scrub the body. See the copy-loop note.
+    out.insert(
+        http::header::ACCEPT_ENCODING,
+        HeaderValue::from_static("identity"),
+    );
 
     // Preserve the original Host as X-Forwarded-Host if not
     // already present (operators in front of us may have
@@ -878,6 +894,37 @@ mod tests {
         let original = hm(&[("host", "api.example.com")]);
         let out = build_upstream_headers(&original, "10.0.0.1:8080");
         assert_eq!(out.get("host").unwrap().to_str().unwrap(), "10.0.0.1:8080");
+    }
+
+    // Response-filter gzip fix (2026-07-07) — the WAF must force an
+    // identity (uncompressed) upstream response so `on_body_frame`'s
+    // DLP/redaction can decode + scrub the body. A client advertising
+    // `Accept-Encoding: gzip` otherwise defeats the whole response
+    // filter: the origin returns a gzip body, UTF-8 decode fails, and
+    // the compressed secrets pass straight through.
+    #[test]
+    fn build_upstream_forces_identity_accept_encoding() {
+        let original = hm(&[
+            ("host", "api.example.com"),
+            ("accept-encoding", "gzip, deflate, br"),
+        ]);
+        let out = build_upstream_headers(&original, "10.0.0.1:8080");
+        // Exactly one Accept-Encoding value, and it is `identity`.
+        let vals: Vec<_> = out.get_all("accept-encoding").iter().collect();
+        assert_eq!(vals.len(), 1, "one accept-encoding header expected");
+        assert_eq!(vals[0].to_str().unwrap(), "identity");
+    }
+
+    #[test]
+    fn build_upstream_sets_identity_when_client_sent_none() {
+        // Even when the client sends no Accept-Encoding, pin identity so
+        // the upstream can't opportunistically compress.
+        let original = hm(&[("host", "api.example.com")]);
+        let out = build_upstream_headers(&original, "10.0.0.1:8080");
+        assert_eq!(
+            out.get("accept-encoding").unwrap().to_str().unwrap(),
+            "identity"
+        );
     }
 
     #[test]
