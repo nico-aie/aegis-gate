@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 /// are independently toggleable; defaults match the shipped
 /// `ResponseFilterConfig::default()` (all rungs **on**) so a
 /// `PUT {}` body restores safe-by-default posture.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ResponseFilterPatch {
     #[serde(default = "default_true")]
     pub scrub_stack_traces: bool,
@@ -37,10 +37,40 @@ pub struct ResponseFilterPatch {
     /// responses. Same default-on posture as the body rungs.
     #[serde(default = "default_true")]
     pub strip_response_headers: bool,
+    /// RF-FP (2026-07-08 QC) — broad-PII opt-in rungs, default OFF (the
+    /// largest response-filter false-positive source). A `PUT {}` leaves
+    /// them off.
+    #[serde(default)]
+    pub redact_email: bool,
+    #[serde(default)]
+    pub redact_phone: bool,
+    /// RF-FP (2026-07-08 QC) — token-issuing endpoint paths; on these the
+    /// token-class DLP patterns are skipped so a legit login/OAuth response
+    /// keeps its token. A `PUT {}` restores the default auth-path list.
+    #[serde(default = "default_auth_paths")]
+    pub auth_paths: Vec<String>,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_auth_paths() -> Vec<String> {
+    aegis_security::pipeline::default_auth_paths()
+}
+
+impl Default for ResponseFilterPatch {
+    fn default() -> Self {
+        Self {
+            scrub_stack_traces: true,
+            mask_internal_ips: true,
+            redact_dlp: true,
+            strip_response_headers: true,
+            redact_email: false,
+            redact_phone: false,
+            auth_paths: default_auth_paths(),
+        }
+    }
 }
 
 /// Read shape for `GET /api/response-filter`. Same fields as the
@@ -53,6 +83,9 @@ pub struct ResponseFilterView {
     pub mask_internal_ips: bool,
     pub redact_dlp: bool,
     pub strip_response_headers: bool,
+    pub redact_email: bool,
+    pub redact_phone: bool,
+    pub auth_paths: Vec<String>,
     pub wired: bool,
 }
 
@@ -63,6 +96,9 @@ impl ResponseFilterView {
             mask_internal_ips: true,
             redact_dlp: true,
             strip_response_headers: true,
+            redact_email: false,
+            redact_phone: false,
+            auth_paths: default_auth_paths(),
             wired: false,
         }
     }
@@ -88,6 +124,9 @@ impl ResponseFilterWriter for aegis_security::Pipeline {
             mask_internal_ips: patch.mask_internal_ips,
             redact_dlp: patch.redact_dlp,
             strip_response_headers: patch.strip_response_headers,
+            redact_email: patch.redact_email,
+            redact_phone: patch.redact_phone,
+            auth_paths: patch.auth_paths.clone(),
         });
     }
     fn get(&self) -> ResponseFilterPatch {
@@ -97,6 +136,9 @@ impl ResponseFilterWriter for aegis_security::Pipeline {
             mask_internal_ips: snap.mask_internal_ips,
             redact_dlp: snap.redact_dlp,
             strip_response_headers: snap.strip_response_headers,
+            redact_email: snap.redact_email,
+            redact_phone: snap.redact_phone,
+            auth_paths: snap.auth_paths.clone(),
         }
     }
 }
@@ -124,6 +166,7 @@ mod tests {
             mask_internal_ips: false,
             redact_dlp: true,
             strip_response_headers: true,
+            ..ResponseFilterPatch::default()
         };
         let s = serde_json::to_string(&p).unwrap();
         let back: ResponseFilterPatch = serde_json::from_str(&s).unwrap();
@@ -169,6 +212,7 @@ mod tests {
             mask_internal_ips: false,
             redact_dlp: true,
             strip_response_headers: false,
+            ..ResponseFilterPatch::default()
         });
         let after = pipe.get();
         assert!(after.scrub_stack_traces);

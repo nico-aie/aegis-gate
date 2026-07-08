@@ -317,6 +317,9 @@ pub fn apply_cfg_change_to_response_filter(
         mask_internal_ips: rf.mask_internal_ips,
         redact_dlp: rf.redact_dlp,
         strip_response_headers: rf.strip_response_headers,
+        redact_email: rf.redact_email,
+        redact_phone: rf.redact_phone,
+        auth_paths: rf.auth_paths.clone(),
     });
     ResponseFilterReloadOutcome::Applied {
         scrub_stack_traces: rf.scrub_stack_traces,
@@ -1406,6 +1409,7 @@ ai:
                 mask_internal_ips: true,
                 redact_dlp: true,
                 strip_response_headers: true,
+                ..ResponseFilterPatch::default()
             },
         )));
         let yaml = r#"

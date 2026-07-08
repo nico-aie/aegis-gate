@@ -243,6 +243,9 @@ pub async fn run(
         mask_internal_ips: cfg.response_filter.mask_internal_ips,
         redact_dlp: cfg.response_filter.redact_dlp,
         strip_response_headers: cfg.response_filter.strip_response_headers,
+        redact_email: cfg.response_filter.redact_email,
+        redact_phone: cfg.response_filter.redact_phone,
+        auth_paths: cfg.response_filter.auth_paths.clone(),
     });
 
     // 2026-05-27 (Phase B) — create the shared TierStore here so the same

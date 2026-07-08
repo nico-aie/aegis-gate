@@ -3344,12 +3344,16 @@ pub(crate) async fn forward_allow_to_upstream(
                 }
               }
             }
-            // Pipeline::on_body_frame ignores rctx + route in the
-            // shipping impl, but the trait sig requires both. Build
-            // a minimal RequestCtx from peer_ip + identity so
-            // future filter rungs that *do* read it (per-tenant
-            // DLP policy, audit attribution) have the fields they
-            // need without a second refactor.
+            // Pipeline::on_body_frame reads `fields["path"]` for the RF-FP
+            // auth-path redaction policy (token-issuing endpoints keep their
+            // token payload). Thread the request path in so the filter can
+            // resolve it; other future rungs (per-tenant DLP, audit
+            // attribution) get the same seam without a second refactor.
+            let mut filter_fields = std::collections::BTreeMap::new();
+            filter_fields.insert(
+                "path".to_string(),
+                aegis_core::context::FieldValue::Str(path.clone()),
+            );
             let rctx_for_filter = aegis_core::context::RequestCtx {
                 request_id: String::new(),
                 received_at: request_start,
@@ -3360,13 +3364,21 @@ pub(crate) async fn forward_allow_to_upstream(
                     user_agent: None,
                 },
                 trace_id: None,
-                fields: std::collections::BTreeMap::new(),
+                fields: filter_fields,
             };
             let action = ctx
                 .pipeline
                 .on_body_frame(&body_bytes, &rctx_for_filter, &route_ctx)
                 .await;
             let body_len_before = body_bytes.len();
+            // RF-FP (2026-07-08 QC) — carry the "body was filtered" signal on
+            // the DecisionTag (attached to `allow_tag` below) instead of
+            // emitting a SEPARATE Detection "redact" row. The signal then
+            // surfaces as (a) the `X-WAF-Response-Filtered` response header +
+            // `X-WAF-Rule-Id: response_filter`, and (b) `response_filtered` on
+            // THIS request's own audit record — the drawer detail in Live
+            // Feed / Investigation. Byte delta only; never the secret value.
+            let mut response_filtered_signal: Option<(usize, usize)> = None;
             let final_bytes = match action {
                 aegis_core::pipeline::OutboundAction::PassThrough => body_bytes,
                 aegis_core::pipeline::OutboundAction::Rewrite(new_bytes) => {
@@ -3376,46 +3388,7 @@ pub(crate) async fn forward_allow_to_upstream(
                     if let Ok(v) = HeaderValue::from_str(&new_bytes.len().to_string()) {
                         parts_out.headers.insert(CONTENT_LENGTH, v);
                     }
-                    // Response-filter signal (2026-07-07) — the redact /
-                    // scrub / mask rungs actually rewrote this body. Emit
-                    // one Detection audit row so operators can SEE that a
-                    // response was scrubbed (the rung is otherwise silent).
-                    // Observability only: `action: "redact"`, no risk feed,
-                    // no block — the mitigation already happened. Byte delta
-                    // is a safe, value-free signal (never the secret itself).
-                    let ev = aegis_core::audit::AuditEvent {
-                        schema_version: 1,
-                        ts: chrono::Utc::now(),
-                        request_id: blake3::hash(
-                            format!(
-                                "{}:{}",
-                                peer_ip,
-                                chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
-                            )
-                            .as_bytes(),
-                        )
-                        .to_hex()
-                        .to_string(),
-                        class: aegis_core::audit::AuditClass::Detection,
-                        tenant_id: None,
-                        tier: None,
-                        action: "redact".into(),
-                        reason: "response body scrubbed by response filter".into(),
-                        client_ip: peer_ip.to_string(),
-                        route_id: None,
-                        rule_id: Some("response_filter".into()),
-                        risk_score: None,
-                        method: Some(method.to_string()),
-                        path: Some(path.clone()),
-                        mode: None,
-                        fields: serde_json::json!({
-                            "path": path,
-                            "method": method.to_string(),
-                            "bytes_before": body_len_before,
-                            "bytes_after": new_bytes.len(),
-                        }),
-                    };
-                    bus.emit(ev);
+                    response_filtered_signal = Some((body_len_before, new_bytes.len()));
                     new_bytes
                 }
                 aegis_core::pipeline::OutboundAction::Abort { reason } => {
@@ -3446,6 +3419,12 @@ pub(crate) async fn forward_allow_to_upstream(
             // no-store, content-type/deception armor, per-entry size cap);
             // a refusal still reports MISS on the wire (forwarded, not stored).
             let mut allow_tag = build_allow_tag(allow_rule_id).with_tier(route_ctx.tier);
+            // RF-FP (2026-07-08 QC) — attach the response-filter signal so the
+            // listener stamps `X-WAF-Response-Filtered` + folds it into the
+            // request's own audit row (see `response_filtered_signal` above).
+            if let Some((before, after)) = response_filtered_signal {
+                allow_tag = allow_tag.with_response_filtered(before, after);
+            }
             if let Some((pc, key, rule_idx)) = cache_pending.take() {
                 pc.store(
                     key,
