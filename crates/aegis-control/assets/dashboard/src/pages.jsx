@@ -808,11 +808,18 @@ function RequestDetail({ data, onPivotRiskKey }) {
   const messagePreview = typeof fields?.message_preview === 'string' && fields.message_preview ? fields.message_preview : null;
   const isStreamed = fields?.streamed === true;
   const streamReason = typeof fields?.reason === 'string' ? fields.reason : null;
+  // RF-FP (2026-07-08) — this request's response body was rewritten by the
+  // response filter. Byte delta only (never the redacted value). Surfaced as a
+  // first-class badge below instead of a separate Investigation row.
+  const responseFiltered = fields?.response_filtered === true;
+  const filterBefore = Number.isFinite(Number(fields?.response_filter_bytes_before)) ? Number(fields.response_filter_bytes_before) : null;
+  const filterAfter = Number.isFinite(Number(fields?.response_filter_bytes_after)) ? Number(fields.response_filter_bytes_after) : null;
   // Render any backend-emitted scalar that isn't already covered
   // by the dedicated rows above. Stable key ordering so the
   // drawer doesn't reflow on every poll.
   const ECHO_KEYS = ['request_headers', 'request_body_preview', 'request_body_bytes', 'request_body_truncated', 'request_score', 'risk_key',
-    'surface', 'matched_field', 'message_bytes', 'message_preview', 'streamed', 'response_inspection_skipped'];
+    'surface', 'matched_field', 'message_bytes', 'message_preview', 'streamed', 'response_inspection_skipped',
+    'response_filtered', 'response_filter_bytes_before', 'response_filter_bytes_after'];
   const extraEntries = fields
     ? Object.entries(fields)
         .filter(([k]) => !['method', 'path', 'status', 'region', 'route_id', 'latency_ms', ...ECHO_KEYS].includes(k))
@@ -985,6 +992,25 @@ function RequestDetail({ data, onPivotRiskKey }) {
                 Request + response headers were inspected; the streamed body is pass-through.
               </div>
             )}
+          </div>
+        </div>
+      )}
+      {responseFiltered && (
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6 }}>
+            Response filtered
+          </div>
+          <div style={{ fontSize: 12, lineHeight: 1.7 }}>
+            <span className="pill warn" style={{ fontSize: 10 }}>body scrubbed</span>
+            <span className="mono" style={{ marginLeft: 8, color: 'var(--ink-dim)' }}>
+              {filterBefore != null && filterAfter != null
+                ? `${filterBefore} → ${filterAfter} bytes`
+                : 'body rewritten'}
+            </span>
+            <div style={{ color: 'var(--ink-dim)', marginTop: 4 }}>
+              The response filter rewrote this body (stack-trace scrub / IP mask / DLP redact).
+              The client received <span className="mono">X-WAF-Response-Filtered: true</span>.
+            </div>
           </div>
         </div>
       )}
@@ -8201,31 +8227,59 @@ function ResponseFilterCard() {
   const data = api.data || {};
   const wired = data.wired !== false; // default to wired so live state lights up before first poll
   const [busy, setBusy] = useStateP(null); // which rung is currently in-flight, for the wait cursor
+  // RF-FP (2026-07-08) — auth-path allowlist editor draft. `null` = not
+  // editing (mirror live state); a string = the operator's in-progress edit.
+  const [authDraft, setAuthDraft] = useStateP(null);
 
-  async function flip(rung) {
-    if (busy || !wired) return;
-    const patch = {
+  // Build the full patch from live state so any single change (a rung flip or
+  // an auth-paths save) never resets the other fields to their serde default.
+  function basePatch() {
+    return {
       scrub_stack_traces:     !!data.scrub_stack_traces,
       mask_internal_ips:      !!data.mask_internal_ips,
       redact_dlp:             !!data.redact_dlp,
       strip_response_headers: !!data.strip_response_headers,
+      redact_email:           !!data.redact_email,
+      redact_phone:           !!data.redact_phone,
+      auth_paths:             Array.isArray(data.auth_paths) ? data.auth_paths : [],
     };
-    patch[rung] = !patch[rung];
-    setBusy(rung);
+  }
+
+  async function put(patch, label) {
+    setBusy(label);
     try {
       const r = await window.responseFilterPut(patch);
       if (r.status === 200 && r.ok) {
-        window.aegisToast(`Response filter · ${rung} ${patch[rung] ? 'on' : 'off'}`, 'ok');
+        window.aegisToast(`Response filter · ${label}`, 'ok');
         api.reload && api.reload();
+        return true;
       } else if (r.status === 409 && r.reason === 'feature_off') {
         window.aegisToast('Response filter pipeline not wired in this build', 'warn');
       } else {
         const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
-        window.aegisToast(`Response filter toggle failed: ${msg}`, 'err');
+        window.aegisToast(`Response filter update failed: ${msg}`, 'err');
       }
+      return false;
     } finally {
       setBusy(null);
     }
+  }
+
+  async function flip(rung) {
+    if (busy || !wired) return;
+    const patch = basePatch();
+    patch[rung] = !patch[rung];
+    await put(patch, `${rung} ${patch[rung] ? 'on' : 'off'}`);
+  }
+
+  async function saveAuthPaths() {
+    if (busy || !wired || authDraft === null) return;
+    const list = authDraft
+      .split(/[\n,]/)
+      .map(s => s.trim())
+      .filter(Boolean);
+    const ok = await put({ ...basePatch(), auth_paths: list }, 'auth paths updated');
+    if (ok) setAuthDraft(null);
   }
 
   const rungs = [
@@ -8249,7 +8303,22 @@ function ResponseFilterCard() {
       label: 'Strip leak headers',
       desc: 'Server, X-Powered-By, X-AspNet-Version, X-Debug*/X-Internal*/X-Trace* → removed',
     },
+    {
+      key: 'redact_email',
+      label: 'Redact emails (opt-in)',
+      desc: 'OFF by default — most apps legitimately return email addresses. Enable only if responses must never carry any email → [REDACTED]',
+    },
+    {
+      key: 'redact_phone',
+      label: 'Redact phone numbers (opt-in)',
+      desc: 'OFF by default — phone-shaped numbers are a broad false-positive source. Enable only if responses must never carry any phone number → [REDACTED]',
+    },
   ];
+
+  // RF-FP — the live auth-path list, and what the textarea shows (draft when
+  // editing, else the live newline-joined list).
+  const authPaths = Array.isArray(data.auth_paths) ? data.auth_paths : [];
+  const authText = authDraft !== null ? authDraft : authPaths.join('\n');
 
   return (
     <div className="card" style={{ marginBottom: 12 }}>
@@ -8293,6 +8362,50 @@ function ResponseFilterCard() {
             </div>
           </div>
         ))}
+      </div>
+
+      {/* RF-FP (2026-07-08) — token-issuing endpoint allowlist. On these
+          paths the token-class DLP patterns (jwt + access_token/refresh_token)
+          are skipped so a legit login/OAuth response keeps its token; every
+          other secret still redacts. */}
+      <div style={{ marginTop: 16, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>Auth endpoint allowlist</div>
+        <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginBottom: 8 }}>
+          One path per line. On these token-issuing endpoints the response keeps its
+          access_token / refresh_token / JWT; AWS keys, PEM, passwords and config
+          dumps still redact everywhere. Segment-matched (/oauth/token matches
+          /api/v1/oauth/token; /token never matches /tokenizer).
+        </div>
+        <textarea
+          value={authText}
+          disabled={!wired || busy === 'auth paths updated'}
+          onChange={e => setAuthDraft(e.target.value)}
+          rows={6}
+          spellCheck={false}
+          style={{
+            width: '100%',
+            fontFamily: 'var(--font-mono, monospace)',
+            fontSize: 12,
+            padding: 8,
+            boxSizing: 'border-box',
+            resize: 'vertical',
+          }}
+        />
+        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <button
+            className="btn"
+            disabled={!wired || authDraft === null || busy === 'auth paths updated'}
+            onClick={saveAuthPaths}
+            style={{ cursor: authDraft === null ? 'default' : 'pointer' }}
+          >
+            {busy === 'auth paths updated' ? 'Saving…' : 'Save auth paths'}
+          </button>
+          {authDraft !== null && (
+            <button className="btn ghost" onClick={() => setAuthDraft(null)}>
+              Cancel
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

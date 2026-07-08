@@ -1452,7 +1452,7 @@ async function aiReloadPost() {
 function useResponseFilterApi() {
   return useApi('/api/response-filter', {
     intervalMs: 15000,
-    fallback: { scrub_stack_traces: true, mask_internal_ips: true, redact_dlp: true, strip_response_headers: true, wired: false },
+    fallback: { scrub_stack_traces: true, mask_internal_ips: true, redact_dlp: true, strip_response_headers: true, redact_email: false, redact_phone: false, auth_paths: [], wired: false },
   });
 }
 async function responseFilterPut(patch) {
@@ -1469,6 +1469,11 @@ async function responseFilterPut(patch) {
       // serde default (true) silently re-enable header stripping on
       // every body-rung flip.
       strip_response_headers: !!patch.strip_response_headers,
+      // RF-FP (2026-07-08) — broad-PII opt-in + auth-path allowlist. Always
+      // send all three so a rung flip never resets them to the serde default.
+      redact_email:           !!patch.redact_email,
+      redact_phone:           !!patch.redact_phone,
+      auth_paths:             Array.isArray(patch.auth_paths) ? patch.auth_paths : [],
     }),
   });
   const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
