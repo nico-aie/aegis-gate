@@ -174,19 +174,55 @@ static PCT_ENCODED: Lazy<Regex> =
 static CMD_INJECTION: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\||&&|\$\(|`[^`]*`|\(\s*\)\s*\{").expect("cmd regex"));
 
+// Word-boundaries on numeric IPs so `0.0.0.0` no longer matches inside a Chrome
+// version string ("Chrome/120.0.0.0" contains "0.0.0.0") — that tripped ssrf_count
+// on every modern Chrome UA. Mirrors ml_waf/features.py _SSRF.
 static SSRF_TARGETS: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r"(?i)(?:127\.0\.0\.1|localhost|169\.254\.|0\.0\.0\.0|::1|file://|dict://|gopher://|ftp://)",
+        r"(?i)(?:\b127\.0\.0\.1\b|localhost|\b169\.254\.|\b0\.0\.0\.0\b|::1|file://|dict://|gopher://|ftp://)",
     )
     .expect("ssrf regex compiles")
 });
 
+/// True if `s` looks like raw binary (protobuf/gRPC/telemetry beacon) rather than
+/// text; its random bytes otherwise trip char/pattern features. Mirrors
+/// ml_waf/features.py `_is_binary`: short strings are text; else < 75% printable.
+fn is_binary_body(s: &str) -> bool {
+    let total = s.chars().count();
+    if total < 16 {
+        return false;
+    }
+    let printable = s
+        .chars()
+        .filter(|&c| (' '..='~').contains(&c) || matches!(c, '\t' | '\n' | '\r'))
+        .count();
+    (printable as f32) / (total as f32) < 0.75
+}
+
+// Bare `.php` removed — a `.php` extension is ordinary in benign legacy/3rd-party
+// URLs and was a round-2 AI false-positive driver; the real signals are `php://`,
+// `<?php`, or dangerous PHP calls. Mirrors ml_waf/features.py `_PHP`.
 static PHP_MARKERS: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r"(?i)(?:\.php|eval\(|base64_decode\(|system\(|passthru\(|shell_exec\(|phpinfo\(|\$_(?:GET|POST|REQUEST|FILES)\[)",
+        r"(?i)(?:php://|<\?php|eval\(|base64_decode\(|system\(|passthru\(|shell_exec\(|phpinfo\(|\$_(?:GET|POST|REQUEST|FILES)\[)",
     )
     .expect("php marker regex compiles")
 });
+
+/// Count only percent-encodings that decode to an injection-relevant byte
+/// (control byte <0x20, or one of `<>'"`;|\$`). Benign %20/%2F/%3A/%5B no longer
+/// inflate the feature. Mirrors ml_waf/features.py `_dangerous_pct_count`.
+fn dangerous_pct_count(s: &str) -> usize {
+    PCT_ENCODED
+        .find_iter(s)
+        .filter(|m| {
+            u8::from_str_radix(&m.as_str()[1..], 16)
+                .map(|b| b < 0x20
+                    || matches!(b, b'<' | b'>' | b'\'' | b'"' | b'`' | b';' | b'|' | b'\\' | b'$'))
+                .unwrap_or(false)
+        })
+        .count()
+}
 
 static NULL_BYTE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"%00|\\x00|\\u0000").expect("null byte regex"));
@@ -202,7 +238,7 @@ static DOUBLE_PCT: Lazy<Regex> =
 
 static SSTI_MARKERS: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r"(?is)(\{\{.*?\}\})|(\$\{[^}]{1,200}\})|(#\{[^}]{1,200}\})|(<%=.*?%>)|(\?\s*new\s*\()|(__(class|mro|subclasses|globals|builtins|import)__)|(freemarker\.template|velocity\.tools)|(\{\s*\d+\s*\*\s*\d+\s*\})",
+        r"(?is)(\{\{.*?\}\})|(\$\{[^}]{1,200}\})|(#\{[^}]{1,200}\})|(<%=.*?%>)|(@\([^)]{1,200}\))|(\?\s*new\s*\()|(__(class|mro|subclasses|globals|builtins|import)__)|(freemarker\.template|velocity\.tools)|(\{\s*\d+\s*\*\s*\d+\s*\})",
     )
     .expect("ssti marker regex compiles")
 });
@@ -299,12 +335,17 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
         None => (url, ""),
     };
 
+    // Binary body (protobuf/gRPC/beacon) → excluded from text feature scans (its
+    // random bytes otherwise trip char/pattern features); length features
+    // (body_len #4, request_len #0) still use the real body. Mirrors features.py.
+    let body_feat: &str = if is_binary_body(body) { "" } else { body };
+
     // Char-statistic surface: URL + body only (no header noise).
     let full_for_chars = {
         let mut s = url.to_string();
-        if !body.is_empty() {
+        if !body_feat.is_empty() {
             s.push(' ');
-            s.push_str(body);
+            s.push_str(body_feat);
         }
         s
     };
@@ -329,10 +370,10 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
         } else {
             query.matches('&').count() + 1
         };
-        let b = if body.is_empty() {
+        let b = if body_feat.is_empty() {
             0
         } else {
-            body.matches('&').count() + 1
+            body_feat.matches('&').count() + 1
         };
         (q + b) as f32
     };
@@ -341,7 +382,7 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
     let upper_count = full_for_chars.chars().filter(|c| c.is_ascii_uppercase()).count() as f32;
     let special_count = full_for_chars
         .chars()
-        .filter(|c| matches!(c, '\'' | '"' | '<' | '>' | ';' | '=' | '%' | '&' | '+'))
+        .filter(|c| matches!(c, '\'' | '"' | '<' | '>' | ';'))  // injection chars only (= % & + are benign URL syntax)
         .count() as f32;
 
     // "../" has no alphabetic chars, so the count is case-invariant —
@@ -363,7 +404,7 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
         full_for_chars.matches('"').count() as f32,              // 11 double_quote_count
         (full_for_chars.matches('<').count() + full_for_chars.matches('>').count()) as f32, // 12 angle_bracket_count
         full_for_chars.matches(';').count() as f32,              // 13 semicolon_count
-        PCT_ENCODED.find_iter(&full_for_chars).count() as f32,   // 14 pct_encoded_count    (raw, url+body)
+        dangerous_pct_count(&full_for_chars) as f32,             // 14 pct_encoded_count  (injection-relevant only, url+body)
         if SQL_CTX.is_match(&full_dec_for_patterns) {            // 15 sql_keyword_count (decoded, context-gated)
             SQL_KEYWORDS.find_iter(&full_dec_for_patterns).count() as f32
         } else {
