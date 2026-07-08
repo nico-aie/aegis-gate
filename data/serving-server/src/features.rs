@@ -28,6 +28,14 @@ static SQL_KEYWORDS: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)\b(select|union|insert|update|delete|drop|create|alter|exec|execute|where|from|having|order|group|join|table|database|schema|char|nchar|varchar|cast|convert|declare|waitfor|xp_|sp_|0x)\b")
         .expect("sql regex")
 });
+// Context gate for sql_keyword_count (#15) — mirrors features.py `_SQL_CTX`. A lone
+// SQL keyword in prose scores 0; the count is kept only when SQL *syntax* co-occurs.
+static SQL_CTX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)union\s+(?:all\s+)?select|\bselect\b[^a-zA-Z]*?(?:\*|@@|count\s*\(|distinct\b|top\s+\d|[\w`\[\]]+\s*,)|\bselect\s+(?:version|substring|substr|concat|char|count|current_user|current_database|current_setting|session_user|user|database|group_concat|load_file)\b|@@\w+|\bfrom\s+(?:information_schema|mysql\.|pg_|sys\.|sysobjects)|\binsert\s+into\b|\bdelete\s+from\b|\bupdate\b[^;]{0,80}?\bset\b|\bdrop\s+(?:table|database|schema)\b|\balter\s+table\b|\bcreate\s+(?:table|database)\b|\b(?:order|group)\s+by\s+\d|\bhaving\s+\d|\binto\s+(?:outfile|dumpfile)\b|\bwaitfor\s+delay\b|\b(?:information_schema|load_file|extractvalue|updatexml|benchmark|sleep|pg_sleep)\s*\(|\b(?:xp_|sp_)\w+|(?:--|\#)\s*$|/\*.*?\*/|;\s*(?:select|insert|update|delete|drop|union|create|alter)\b|['"]\s*(?:or|and)\s|\b(?:or|and)\b\s*['"\d][^=<>]{0,12}?[=<>]\s*['"\d\w(]"#,
+    )
+    .expect("sql context regex compiles")
+});
 static XSS_MARKERS: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)(<script|javascript:|vbscript:|onload=|onerror=|onclick=|onfocus=|alert\(|confirm\(|prompt\(|document\.cookie|document\.write|eval\(|<iframe|<img\s|<svg|srcdoc=)")
         .expect("xss regex")
@@ -38,12 +46,26 @@ static SCANNER_UA: Lazy<Regex> = Lazy::new(|| {
 });
 static PCT_ENCODED: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"%[0-9a-fA-F]{2}").expect("pct regex"));
+// Mirrors features.py _CMD: pipe, &&, $(, backtick-pair, shellshock "() {".
+// (Bare `;` is NOT a cmd signal here — too common in benign cookies/matrix params.)
 static CMD_INJECTION: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"[;|]|\|\||&&|\$\(|`[^`]*`").expect("cmd regex"));
+    Lazy::new(|| Regex::new(r"\||&&|\$\(|`[^`]*`|\(\s*\)\s*\{").expect("cmd regex"));
+// Word-boundaries on numeric IPs so `0.0.0.0` no longer matches inside Chrome
+// version strings (Chrome/120.0.0.0). Mirrors features.py _SSRF.
 static SSRF_TARGETS: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)(?:127\.0\.0\.1|localhost|169\.254\.|0\.0\.0\.0|::1|file://|dict://|gopher://|ftp://)")
+    Regex::new(r"(?i)(?:\b127\.0\.0\.1\b|localhost|\b169\.254\.|\b0\.0\.0\.0\b|::1|file://|dict://|gopher://|ftp://)")
         .expect("ssrf regex")
 });
+/// True if `s` looks like raw binary (beacon/protobuf) not text. Mirrors
+/// features.py `_is_binary`: short strings text; else < 75% printable.
+fn is_binary_body(s: &str) -> bool {
+    let total = s.chars().count();
+    if total < 16 { return false; }
+    let printable = s.chars()
+        .filter(|&c| (' '..='~').contains(&c) || matches!(c, '\t' | '\n' | '\r'))
+        .count();
+    (printable as f32) / (total as f32) < 0.75
+}
 // Bare `.php` removed (benign FP driver); mirrors features.py _PHP.
 static PHP_MARKERS: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)(?:php://|<\?php|eval\(|base64_decode\(|system\(|passthru\(|shell_exec\(|phpinfo\(|\$_(?:GET|POST|REQUEST|FILES)\[)")
@@ -67,7 +89,7 @@ static HEX_LITERAL: Lazy<Regex> = Lazy::new(|| Regex::new(r"0x[0-9a-fA-F]{4,}").
 static CRLF_INJ:    Lazy<Regex> = Lazy::new(|| Regex::new(r"%0[aAdD]|\\r\\n|\r\n").expect("crlf regex"));
 static DOUBLE_PCT:  Lazy<Regex> = Lazy::new(|| Regex::new(r"%25[0-9a-fA-F]{2}").expect("double pct regex"));
 static SSTI_MARKERS: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?is)(\{\{.*?\}\})|(\$\{[^}]{1,200}\})|(#\{[^}]{1,200}\})|(<%=.*?%>)|(\?\s*new\s*\()|(__(class|mro|subclasses|globals|builtins|import)__)|(freemarker\.template|velocity\.tools)|(\{\s*\d+\s*\*\s*\d+\s*\})")
+    Regex::new(r"(?is)(\{\{.*?\}\})|(\$\{[^}]{1,200}\})|(#\{[^}]{1,200}\})|(<%=.*?%>)|(@\([^)]{1,200}\))|(\?\s*new\s*\()|(__(class|mro|subclasses|globals|builtins|import)__)|(freemarker\.template|velocity\.tools)|(\{\s*\d+\s*\*\s*\d+\s*\})")
         .expect("ssti regex")
 });
 
@@ -150,9 +172,13 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
         None      => (url, ""),
     };
 
+    // Binary body (beacon/protobuf) → excluded from text scans; length features
+    // (body_len #4, request_len #0) still use the real body. Mirrors features.py.
+    let body_feat: &str = if is_binary_body(body) { "" } else { body };
+
     let full = {
         let mut s = url.to_string();
-        if !body.is_empty()         { s.push(' '); s.push_str(body); }
+        if !body_feat.is_empty()    { s.push(' '); s.push_str(body_feat); }
         if !headers_text.is_empty() { s.push(' '); s.push_str(&headers_text); }
         s
     };
@@ -163,13 +189,13 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
     let digit_count  = full.chars().filter(|c| c.is_ascii_digit()).count() as f32;
     let upper_count  = full.chars().filter(|c| c.is_ascii_uppercase()).count() as f32;
     let special_count = full.chars()
-        .filter(|c| matches!(c, '\'' | '"' | '<' | '>' | ';' | '=' | '%' | '&' | '+'))
+        .filter(|c| matches!(c, '\'' | '"' | '<' | '>' | ';'))  // injection chars only (= % & + are benign URL syntax)
         .count() as f32;
     let path_traversal_count = full_dec_lower.matches("../").count() as f32;
 
     let num_params = {
         let q = if query.is_empty() { 0 } else { query.matches('&').count() + 1 };
-        let b = if body.is_empty()  { 0 } else { body.matches('&').count()  + 1 };
+        let b = if body_feat.is_empty()  { 0 } else { body_feat.matches('&').count()  + 1 };
         (q + b) as f32
     };
 

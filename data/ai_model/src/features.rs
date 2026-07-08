@@ -78,11 +78,14 @@ static SCANNER_RE: Lazy<Regex> = Lazy::new(|| {
 
 static PCT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"%[0-9a-fA-F]{2}").unwrap());
 
+// `\(\s*\)\s*\{` = shellshock "() {" (CVE-2014-6271). Mirrors features.py _CMD.
 static CMD_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\||&&|\$\(|`[^`]*`").unwrap());
+    Lazy::new(|| Regex::new(r"\||&&|\$\(|`[^`]*`|\(\s*\)\s*\{").unwrap());
 
+// Word-boundaries on numeric IPs so `0\.0\.0\.0` no longer matches inside a Chrome
+// version string ("Chrome/120.0.0.0" contains "0.0.0.0"). Mirrors features.py _SSRF.
 static SSRF_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)(?:127\.0\.0\.1|localhost|169\.254\.|0\.0\.0\.0|::1|file://|dict://|gopher://|ftp://)").unwrap()
+    Regex::new(r"(?i)(?:\b127\.0\.0\.1\b|localhost|\b169\.254\.|\b0\.0\.0\.0\b|::1|file://|dict://|gopher://|ftp://)").unwrap()
 });
 
 // Bare `.php` removed — a `.php` extension is ordinary in benign legacy/3rd-party
@@ -106,7 +109,7 @@ static DBL_ENC_RE: Lazy<Regex> =
 
 static SSTI_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r"(?is)(\{\{.*?\}\})|(\$\{[^}]{1,200}\})|(#\{[^}]{1,200}\})|(<%=.*?%>)|(\?\s*new\s*\()|(__(class|mro|subclasses|globals|builtins|import)__)|(freemarker\.template|velocity\.tools)|(\{\s*\d+\s*\*\s*\d+\s*\})"
+        r"(?is)(\{\{.*?\}\})|(\$\{[^}]{1,200}\})|(#\{[^}]{1,200}\})|(<%=.*?%>)|(@\([^)]{1,200}\))|(\?\s*new\s*\()|(__(class|mro|subclasses|globals|builtins|import)__)|(freemarker\.template|velocity\.tools)|(\{\s*\d+\s*\*\s*\d+\s*\})"
     ).unwrap()
 });
 
@@ -123,6 +126,19 @@ fn dangerous_pct_count(s: &str) -> usize {
                 .unwrap_or(false)
         })
         .count()
+}
+
+/// True if `s` looks like raw binary (protobuf/gRPC/telemetry beacon) rather than
+/// text. Its random bytes otherwise trip char/pattern features. Mirrors
+/// features.py `_is_binary`: short strings are text; else < 75% printable.
+fn is_binary_body(s: &str) -> bool {
+    let total = s.chars().count();
+    if total < 16 { return false; }
+    let printable = s
+        .chars()
+        .filter(|&c| (' '..='~').contains(&c) || matches!(c, '\t' | '\n' | '\r'))
+        .count();
+    (printable as f32) / (total as f32) < 0.75
 }
 
 fn method_id(method: &str) -> f32 {
@@ -217,6 +233,11 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
         None      => (url, ""),
     };
 
+    // Binary body (protobuf/gRPC/beacon) → exclude from text feature scans (see
+    // is_binary_body); its random bytes otherwise trip char/pattern features. The
+    // length features (body_len, request_len) still use the real body.
+    let body_feat: &str = if is_binary_body(body) { "" } else { body };
+
     // `full` includes url + body + header values so every regex pattern
     // also scans User-Agent, Cookie, Referer, etc. — mirrors Python logic.
     // Separate full strings:
@@ -224,13 +245,13 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
     // - full_for_patterns: URL + body + headers (for regex-based attack detection in all fields)
     let full_for_chars = {
         let mut s = url.to_string();
-        if !body.is_empty() { s.push(' '); s.push_str(body); }
+        if !body_feat.is_empty() { s.push(' '); s.push_str(body_feat); }
         s
     };
 
     let full_for_patterns = {
         let mut s = url.to_string();
-        if !body.is_empty()         { s.push(' '); s.push_str(body); }
+        if !body_feat.is_empty()    { s.push(' '); s.push_str(body_feat); }
         if !headers_text.is_empty() { s.push(' '); s.push_str(&headers_text); }
         s
     };
@@ -241,13 +262,13 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
     // num_params counts query-string and body params, not header values.
     let num_params =
         (if query.is_empty() { 0 } else { query.matches('&').count() + 1 })
-        + (if body.is_empty()  { 0 } else { body.matches('&').count() + 1 });
+        + (if body_feat.is_empty()  { 0 } else { body_feat.matches('&').count() + 1 });
 
     let digit_count  = full_for_chars.chars().filter(|c| c.is_ascii_digit()).count() as f32;
     let upper_count  = full_for_chars.chars().filter(|c| c.is_ascii_uppercase()).count() as f32;
     let special_count = full_for_chars
         .chars()
-        .filter(|c| matches!(c, '\'' | '"' | '<' | '>' | ';' | '=' | '%' | '&' | '+'))
+        .filter(|c| matches!(c, '\'' | '"' | '<' | '>' | ';'))  // injection chars only (= % & + are benign URL syntax)
         .count() as f32;
 
     // "../" is already lowercase — no need to lowercase full_dec before matching.
