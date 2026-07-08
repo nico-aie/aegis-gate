@@ -808,11 +808,18 @@ function RequestDetail({ data, onPivotRiskKey }) {
   const messagePreview = typeof fields?.message_preview === 'string' && fields.message_preview ? fields.message_preview : null;
   const isStreamed = fields?.streamed === true;
   const streamReason = typeof fields?.reason === 'string' ? fields.reason : null;
+  // RF-FP (2026-07-08) — this request's response body was rewritten by the
+  // response filter. Byte delta only (never the redacted value). Surfaced as a
+  // first-class badge below instead of a separate Investigation row.
+  const responseFiltered = fields?.response_filtered === true;
+  const filterBefore = Number.isFinite(Number(fields?.response_filter_bytes_before)) ? Number(fields.response_filter_bytes_before) : null;
+  const filterAfter = Number.isFinite(Number(fields?.response_filter_bytes_after)) ? Number(fields.response_filter_bytes_after) : null;
   // Render any backend-emitted scalar that isn't already covered
   // by the dedicated rows above. Stable key ordering so the
   // drawer doesn't reflow on every poll.
   const ECHO_KEYS = ['request_headers', 'request_body_preview', 'request_body_bytes', 'request_body_truncated', 'request_score', 'risk_key',
-    'surface', 'matched_field', 'message_bytes', 'message_preview', 'streamed', 'response_inspection_skipped'];
+    'surface', 'matched_field', 'message_bytes', 'message_preview', 'streamed', 'response_inspection_skipped',
+    'response_filtered', 'response_filter_bytes_before', 'response_filter_bytes_after'];
   const extraEntries = fields
     ? Object.entries(fields)
         .filter(([k]) => !['method', 'path', 'status', 'region', 'route_id', 'latency_ms', ...ECHO_KEYS].includes(k))
@@ -985,6 +992,25 @@ function RequestDetail({ data, onPivotRiskKey }) {
                 Request + response headers were inspected; the streamed body is pass-through.
               </div>
             )}
+          </div>
+        </div>
+      )}
+      {responseFiltered && (
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6 }}>
+            Response filtered
+          </div>
+          <div style={{ fontSize: 12, lineHeight: 1.7 }}>
+            <span className="pill warn" style={{ fontSize: 10 }}>body scrubbed</span>
+            <span className="mono" style={{ marginLeft: 8, color: 'var(--ink-dim)' }}>
+              {filterBefore != null && filterAfter != null
+                ? `${filterBefore} → ${filterAfter} bytes`
+                : 'body rewritten'}
+            </span>
+            <div style={{ color: 'var(--ink-dim)', marginTop: 4 }}>
+              The response filter rewrote this body (stack-trace scrub / IP mask / DLP redact).
+              The client received <span className="mono">X-WAF-Response-Filtered: true</span>.
+            </div>
           </div>
         </div>
       )}
@@ -7678,6 +7704,32 @@ function ZtUpstreamPoolsCard() {
   const [openPool, setOpenPool] = useStateP(null);
   const [pem, setPem] = useStateP('');
   const [busy, setBusy] = useStateP(''); // pool name currently mutating
+  // 2026-07-08 — instant-apply mTLS toggle, learned from the Detector Mask
+  // card: the pool PUT lands via the config plane (activate → propagate →
+  // next poll), so raw server state made a flip look like nothing happened
+  // until a manual refresh. `optimistic[pool]` overlays the flipped value
+  // right away and is reconciled away once the server catches up.
+  const [optimistic, setOptimistic] = useStateP({});
+  useEffectP(() => {
+    const list = api.data?.pools;
+    if (!list) return;
+    const live = {};
+    for (const p of list) live[p.pool] = !!p.enabled;
+    setOptimistic(prev => {
+      const next = {};
+      for (const k of Object.keys(prev)) {
+        // Keep only flips the server hasn't caught up to yet.
+        if (k in live && live[k] !== prev[k]) next[k] = prev[k];
+      }
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+    });
+  }, [api.data]);
+  // Converge without a hard refresh when the config plane applies fleet-wide.
+  useEffectP(() => {
+    const onReload = () => { api.reload && api.reload(); };
+    window.addEventListener('aegis:config-reload', onReload);
+    return () => window.removeEventListener('aegis:config-reload', onReload);
+  }, [api.reload]);
 
   const muted = { color: 'var(--ink-mute)' };
   const cell = { padding: '8px 10px', borderBottom: '1px solid var(--hairline)', textAlign: 'left' };
@@ -7703,11 +7755,14 @@ function ZtUpstreamPoolsCard() {
   }
 
   async function toggle(p) {
-    const next = !p.enabled;
+    const cur = p.pool in optimistic ? optimistic[p.pool] : p.enabled;
+    const next = !cur;
     if (next && !identityReady) {
       window.aegisToast('Set the WAF client identity first', 'warn');
       return;
     }
+    // Reflect the flip instantly; revert only if the PUT fails.
+    setOptimistic(prev => ({ ...prev, [p.pool]: next }));
     setBusy(p.pool);
     try {
       const pinned = bundleByName[poolBundleName(p.pool)] ? poolBundleName(p.pool) : (p.trust || null);
@@ -7715,6 +7770,11 @@ function ZtUpstreamPoolsCard() {
       window.aegisToast(`Pool '${p.pool}' mTLS ${next ? 'enabled' : 'disabled'}`, 'ok');
       api.reload && api.reload();
     } catch (e) {
+      // Roll the optimistic flip back on failure.
+      setOptimistic(prev => {
+        const { [p.pool]: _drop, ...rest } = prev;
+        return rest;
+      });
       window.aegisToast(`Pool '${p.pool}': ${e.message || e}`, 'err');
     } finally { setBusy(''); }
   }
@@ -7787,7 +7847,10 @@ function ZtUpstreamPoolsCard() {
               const bundle = poolBundleName(p.pool);
               const pinned = bundleByName[bundle];
               const locked = busy === p.pool;
-              const canEnable = identityReady || p.enabled;
+              // Effective (optimistic-aware) mTLS state — shows the flip
+              // instantly while the config plane propagates.
+              const mtlsOn = p.pool in optimistic ? optimistic[p.pool] : p.enabled;
+              const canEnable = identityReady || mtlsOn;
               const certCell = pinned
                 ? (pinned.error
                     ? <span className="pill warn">{pinned.error}</span>
@@ -7802,10 +7865,10 @@ function ZtUpstreamPoolsCard() {
                   <td style={cell}>{certCell}</td>
                   <td style={cell}>
                     <div
-                      className={`toggle ${p.enabled ? 'on' : ''}`}
+                      className={`toggle ${mtlsOn ? 'on' : ''}`}
                       title={!canEnable
                         ? 'Set the WAF client identity first'
-                        : (p.enabled ? 'mTLS on — click to disable' : 'mTLS off — click to enable')}
+                        : (mtlsOn ? 'mTLS on — click to disable' : 'mTLS off — click to enable')}
                       onClick={(locked || !canEnable) ? undefined : () => toggle(p)}
                       style={{ cursor: locked ? 'wait' : (!canEnable ? 'not-allowed' : 'pointer'), opacity: !canEnable ? 0.5 : 1 }}
                     />
@@ -8201,31 +8264,101 @@ function ResponseFilterCard() {
   const data = api.data || {};
   const wired = data.wired !== false; // default to wired so live state lights up before first poll
   const [busy, setBusy] = useStateP(null); // which rung is currently in-flight, for the wait cursor
+  // RF-FP (2026-07-08) — auth-path allowlist editor draft. `null` = not
+  // editing (mirror live state); a string = the operator's in-progress edit.
+  const [authDraft, setAuthDraft] = useStateP(null);
 
-  async function flip(rung) {
-    if (busy || !wired) return;
-    const patch = {
-      scrub_stack_traces:     !!data.scrub_stack_traces,
-      mask_internal_ips:      !!data.mask_internal_ips,
-      redact_dlp:             !!data.redact_dlp,
-      strip_response_headers: !!data.strip_response_headers,
-    };
-    patch[rung] = !patch[rung];
-    setBusy(rung);
+  // 2026-07-08 — instant-apply toggles, learned from the Detector Mask card:
+  // the config-plane PUT is eventual (activate → propagate → next poll), so
+  // showing raw server state made a flip look like it did nothing until a
+  // manual refresh. `optimistic` overlays the flipped value immediately;
+  // `pendingRef` is the synchronous mirror so a rapid second flip / an
+  // auth-paths save builds its patch from ALL in-flight flips (no clobber).
+  const BOOL_RUNGS = ['scrub_stack_traces', 'mask_internal_ips', 'redact_dlp', 'strip_response_headers', 'redact_email', 'redact_phone'];
+  const [optimistic, setOptimistic] = useStateP({});
+  const pendingRef = useRefP({});
+  // Reconcile: on fresh server data, drop optimistic flips the server has
+  // caught up to; keep only those still mid-propagation so the switch never
+  // snaps back before the config plane confirms.
+  useEffectP(() => {
+    if (!api.data) return;
+    setOptimistic(prev => {
+      const next = {};
+      for (const k of Object.keys(prev)) {
+        if (!!api.data[k] !== prev[k]) next[k] = prev[k];
+      }
+      pendingRef.current = next;
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+    });
+  }, [api.data]);
+  // Converge without a hard refresh: when the config plane applies a new
+  // version fleet-wide (config_reload SSE, re-broadcast by data.jsx), re-fetch
+  // so the reconcile above clears the optimistic overlay.
+  useEffectP(() => {
+    const onReload = () => { api.reload && api.reload(); };
+    window.addEventListener('aegis:config-reload', onReload);
+    return () => window.removeEventListener('aegis:config-reload', onReload);
+  }, [api.reload]);
+
+  // Effective (display) value of a boolean rung: the optimistic flip if one is
+  // pending, else the live server value.
+  const disp = (k) => (k in optimistic ? optimistic[k] : !!data[k]);
+
+  // Build the full patch from the freshest state (live server + ALL pending
+  // flips) so any single change never resets the other fields to their serde
+  // default and a rapid second flip can't resurrect the first.
+  function basePatch() {
+    const p = {};
+    for (const k of BOOL_RUNGS) p[k] = !!data[k];
+    Object.assign(p, pendingRef.current);
+    p.auth_paths = Array.isArray(data.auth_paths) ? data.auth_paths : [];
+    return p;
+  }
+
+  async function put(patch, label) {
+    setBusy(label);
     try {
       const r = await window.responseFilterPut(patch);
       if (r.status === 200 && r.ok) {
-        window.aegisToast(`Response filter · ${rung} ${patch[rung] ? 'on' : 'off'}`, 'ok');
+        window.aegisToast(`Response filter · ${label}`, 'ok');
         api.reload && api.reload();
+        return true;
       } else if (r.status === 409 && r.reason === 'feature_off') {
         window.aegisToast('Response filter pipeline not wired in this build', 'warn');
       } else {
         const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
-        window.aegisToast(`Response filter toggle failed: ${msg}`, 'err');
+        window.aegisToast(`Response filter update failed: ${msg}`, 'err');
       }
+      return false;
     } finally {
       setBusy(null);
     }
+  }
+
+  async function flip(rung) {
+    if (busy || !wired) return;
+    const next = !disp(rung);
+    // Reflect the flip instantly (optimistic), then commit. The switch shows
+    // `next` right away and only reverts if the PUT fails.
+    pendingRef.current = { ...pendingRef.current, [rung]: next };
+    setOptimistic({ ...pendingRef.current });
+    const patch = basePatch();
+    const ok = await put(patch, `${rung} ${next ? 'on' : 'off'}`);
+    if (!ok) {
+      const { [rung]: _drop, ...rest } = pendingRef.current;
+      pendingRef.current = rest;
+      setOptimistic({ ...rest });
+    }
+  }
+
+  async function saveAuthPaths() {
+    if (busy || !wired || authDraft === null) return;
+    const list = authDraft
+      .split(/[\n,]/)
+      .map(s => s.trim())
+      .filter(Boolean);
+    const ok = await put({ ...basePatch(), auth_paths: list }, 'auth paths updated');
+    if (ok) setAuthDraft(null);
   }
 
   const rungs = [
@@ -8249,7 +8382,22 @@ function ResponseFilterCard() {
       label: 'Strip leak headers',
       desc: 'Server, X-Powered-By, X-AspNet-Version, X-Debug*/X-Internal*/X-Trace* → removed',
     },
+    {
+      key: 'redact_email',
+      label: 'Redact emails (opt-in)',
+      desc: 'OFF by default — most apps legitimately return email addresses. Enable only if responses must never carry any email → [REDACTED]',
+    },
+    {
+      key: 'redact_phone',
+      label: 'Redact phone numbers (opt-in)',
+      desc: 'OFF by default — phone-shaped numbers are a broad false-positive source. Enable only if responses must never carry any phone number → [REDACTED]',
+    },
   ];
+
+  // RF-FP — the live auth-path list, and what the textarea shows (draft when
+  // editing, else the live newline-joined list).
+  const authPaths = Array.isArray(data.auth_paths) ? data.auth_paths : [];
+  const authText = authDraft !== null ? authDraft : authPaths.join('\n');
 
   return (
     <div className="card" style={{ marginBottom: 12 }}>
@@ -8277,10 +8425,10 @@ function ResponseFilterCard() {
             style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}
           >
             <div
-              className={`toggle ${data[r.key] ? 'on' : ''}`}
-              onClick={wired && busy !== r.key ? () => flip(r.key) : undefined}
+              className={`toggle ${disp(r.key) ? 'on' : ''}`}
+              onClick={wired && !busy ? () => flip(r.key) : undefined}
               style={{
-                cursor: !wired ? 'not-allowed' : busy === r.key ? 'wait' : 'pointer',
+                cursor: !wired ? 'not-allowed' : busy ? 'wait' : 'pointer',
                 opacity: !wired ? 0.5 : 1,
                 marginTop: 2,
               }}
@@ -8293,6 +8441,50 @@ function ResponseFilterCard() {
             </div>
           </div>
         ))}
+      </div>
+
+      {/* RF-FP (2026-07-08) — token-issuing endpoint allowlist. On these
+          paths the token-class DLP patterns (jwt + access_token/refresh_token)
+          are skipped so a legit login/OAuth response keeps its token; every
+          other secret still redacts. */}
+      <div style={{ marginTop: 16, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>Auth endpoint allowlist</div>
+        <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginBottom: 8 }}>
+          One path per line. On these token-issuing endpoints the response keeps its
+          access_token / refresh_token / JWT; AWS keys, PEM, passwords and config
+          dumps still redact everywhere. Segment-matched (/oauth/token matches
+          /api/v1/oauth/token; /token never matches /tokenizer).
+        </div>
+        <textarea
+          value={authText}
+          disabled={!wired || busy === 'auth paths updated'}
+          onChange={e => setAuthDraft(e.target.value)}
+          rows={6}
+          spellCheck={false}
+          style={{
+            width: '100%',
+            fontFamily: 'var(--font-mono, monospace)',
+            fontSize: 12,
+            padding: 8,
+            boxSizing: 'border-box',
+            resize: 'vertical',
+          }}
+        />
+        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <button
+            className="btn"
+            disabled={!wired || authDraft === null || busy === 'auth paths updated'}
+            onClick={saveAuthPaths}
+            style={{ cursor: authDraft === null ? 'default' : 'pointer' }}
+          >
+            {busy === 'auth paths updated' ? 'Saving…' : 'Save auth paths'}
+          </button>
+          {authDraft !== null && (
+            <button className="btn ghost" onClick={() => setAuthDraft(null)}>
+              Cancel
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

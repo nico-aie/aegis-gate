@@ -26,6 +26,17 @@ pub const MODE: &str = "x-waf-mode";
 /// machine-readably. Only emitted when more than one detector fired.
 pub const DETECTORS: &str = "x-waf-detectors";
 
+/// RF-FP (2026-07-08 QC) — set to `true` on a response whose body the
+/// response-filter rungs rewrote (stack-trace scrub / IP mask / DLP redact),
+/// so the client can SEE that its payload was scrubbed. Paired with
+/// `X-WAF-Rule-Id: response_filter` when the request carried no other rule
+/// attribution. Absent on unfiltered responses.
+pub const RESPONSE_FILTERED: &str = "x-waf-response-filtered";
+
+/// RF-FP (2026-07-08) — bytes of the body AFTER filtering, so operators can
+/// gauge how much was rewritten without ever exposing the redacted value.
+pub const FILTERED_BYTES: &str = "x-waf-filtered-bytes";
+
 /// 2026-05-08 — bonus telemetry header. Reports the per-request
 /// WAF processing time (received → response stamped) in
 /// milliseconds with microsecond precision (e.g. `1.234`).
@@ -198,26 +209,41 @@ pub struct DecisionTag {
     /// hard blocks (blacklist, enforce-mode 403/429) leave it `false` so
     /// they correctly report `enforce`.
     pub route_log_only: bool,
+    /// RF-FP (2026-07-08 QC) — set when the response-filter rungs rewrote the
+    /// body. Drives the `X-WAF-Response-Filtered` header, the
+    /// `X-WAF-Rule-Id: response_filter` fallback, and the `response_filtered`
+    /// field on the request's own audit row — replacing the standalone
+    /// Detection "redact" row that used to be emitted separately.
+    pub response_filtered: Option<ResponseFilterSignal>,
+}
+
+/// RF-FP (2026-07-08 QC) — a body-was-filtered signal. Byte counts only —
+/// NEVER the redacted value — so it's safe to surface on the wire
+/// (`X-WAF-Filtered-Bytes`) and in the audit record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResponseFilterSignal {
+    pub bytes_before: usize,
+    pub bytes_after: usize,
 }
 
 impl DecisionTag {
     pub fn allow() -> Self {
-        Self { action: Action::Allow, rule_id: None, tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false }
+        Self { action: Action::Allow, rule_id: None, tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false, response_filtered: None }
     }
     pub fn block(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Block, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false }
+        Self { action: Action::Block, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false, response_filtered: None }
     }
     pub fn rate_limit(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::RateLimit, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false }
+        Self { action: Action::RateLimit, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false, response_filtered: None }
     }
     pub fn challenge(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Challenge, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false }
+        Self { action: Action::Challenge, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false, response_filtered: None }
     }
     pub fn timeout(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Timeout, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false }
+        Self { action: Action::Timeout, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false, response_filtered: None }
     }
     pub fn circuit_breaker(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::CircuitBreaker, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false }
+        Self { action: Action::CircuitBreaker, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false, response_filtered: None }
     }
 
     /// Attach the per-request detector score (sum of this request's
@@ -277,6 +303,30 @@ impl DecisionTag {
         self.route_log_only = route_log_only;
         self
     }
+
+    /// RF-FP (2026-07-08 QC) — record that the response-filter rungs rewrote
+    /// the body (byte counts only, never the redacted value). See
+    /// [`Self::response_filtered`].
+    pub fn with_response_filtered(mut self, bytes_before: usize, bytes_after: usize) -> Self {
+        self.response_filtered = Some(ResponseFilterSignal { bytes_before, bytes_after });
+        self
+    }
+}
+
+/// RF-FP (2026-07-08 QC) — resolve the attribution for `X-WAF-Rule-Id` +
+/// the audit `rule_id` on a filtered response: when the body was filtered but
+/// the request carried no genuine rule attribution (`None` or `none`), name
+/// the filter (`response_filter`) so the scrub is clearly attributed; a real
+/// allow/block rule id is preserved untouched, and an unfiltered response is
+/// returned verbatim.
+pub fn rule_id_with_filter_fallback(
+    rule_id: Option<String>,
+    filtered: bool,
+) -> Option<String> {
+    if filtered && rule_id.as_deref().map_or(true, |r| r == "none") {
+        return Some("response_filter".to_string());
+    }
+    rule_id
 }
 
 /// All six required headers, packaged for stamping onto any
@@ -289,6 +339,10 @@ pub struct Decision {
     pub rule_id: Option<String>,
     pub cache: CacheState,
     pub mode: Mode,
+    /// RF-FP (2026-07-08 QC) — carried from the `DecisionTag` so `stamp`
+    /// emits `X-WAF-Response-Filtered` (+ `X-WAF-Filtered-Bytes`) when the
+    /// response body was rewritten. `None` on unfiltered responses.
+    pub response_filtered: Option<ResponseFilterSignal>,
 }
 
 impl Decision {
@@ -302,6 +356,7 @@ impl Decision {
             rule_id: None,
             cache: CacheState::Bypass,
             mode,
+            response_filtered: None,
         }
     }
 
@@ -319,6 +374,7 @@ impl Decision {
             rule_id: Some(rule_id.into()),
             cache: CacheState::Bypass,
             mode,
+            response_filtered: None,
         }
     }
 
@@ -362,6 +418,12 @@ impl Decision {
         }
         insert(headers, CACHE, self.cache.as_str());
         insert(headers, MODE, self.mode.as_str());
+        // RF-FP (2026-07-08 QC) — signal a body that the response filter
+        // rewrote. Byte count only (never the redacted value).
+        if let Some(sig) = self.response_filtered {
+            insert(headers, RESPONSE_FILTERED, "true");
+            insert(headers, FILTERED_BYTES, &sig.bytes_after.to_string());
+        }
     }
 }
 
@@ -499,6 +561,59 @@ mod tests {
         assert_eq!(CacheState::Bypass.as_str(), "BYPASS");
     }
 
+    // ---- RF-FP (2026-07-08 QC) — response-filter signal -------------------
+
+    #[test]
+    fn with_response_filtered_sets_signal_without_changing_action() {
+        let tag = DecisionTag::allow().with_response_filtered(120, 96);
+        assert_eq!(tag.action, Action::Allow);
+        let sig = tag.response_filtered.expect("signal set");
+        assert_eq!(sig.bytes_before, 120);
+        assert_eq!(sig.bytes_after, 96);
+        // Untouched tags carry no signal.
+        assert!(DecisionTag::allow().response_filtered.is_none());
+    }
+
+    #[test]
+    fn decision_stamps_response_filtered_header() {
+        let mut h = HeaderMap::new();
+        let d = Decision {
+            request_id: "r".into(),
+            risk_score: 0,
+            action: Action::Allow,
+            rule_id: None,
+            cache: CacheState::Bypass,
+            mode: Mode::Enforce,
+            response_filtered: Some(ResponseFilterSignal { bytes_before: 120, bytes_after: 96 }),
+        };
+        d.stamp(&mut h);
+        assert_eq!(h.get(RESPONSE_FILTERED).unwrap(), "true");
+        // A clean (unfiltered) decision must NOT stamp the header.
+        let mut h2 = HeaderMap::new();
+        Decision::allow("r".into(), 0, Mode::Enforce).stamp(&mut h2);
+        assert!(!h2.contains_key(RESPONSE_FILTERED));
+    }
+
+    #[test]
+    fn rule_id_with_filter_fallback_only_fills_unattributed() {
+        // Filtered + no genuine attribution → name the filter.
+        assert_eq!(
+            rule_id_with_filter_fallback(None, true).as_deref(),
+            Some("response_filter"),
+        );
+        assert_eq!(
+            rule_id_with_filter_fallback(Some("none".into()), true).as_deref(),
+            Some("response_filter"),
+        );
+        // Filtered + a genuine rule id → keep the real attribution.
+        assert_eq!(
+            rule_id_with_filter_fallback(Some("sqli".into()), true).as_deref(),
+            Some("sqli"),
+        );
+        // Not filtered → unchanged.
+        assert_eq!(rule_id_with_filter_fallback(None, false), None);
+    }
+
     /// HIGH-1 (2026-06-19) — a `DecisionTag` defaults to NOT route-monitored
     /// and `with_route_log_only` flips the flag the stamper reads to force
     /// `X-WAF-Mode: log_only` on a forwarded monitored-route decision.
@@ -533,6 +648,7 @@ mod tests {
                 rule_id: None,
                 cache: state,
                 mode: Mode::Enforce,
+                response_filtered: None,
             };
             decision.stamp(&mut h);
             assert_eq!(h.get(CACHE).unwrap(), expected, "X-WAF-Cache for {state:?}");
@@ -554,6 +670,7 @@ mod tests {
             rule_id: tag.rule_id.clone(),
             cache: tag.cache,
             mode: Mode::Enforce,
+            response_filtered: tag.response_filtered,
         };
         let mut h = HeaderMap::new();
         decision.stamp(&mut h);

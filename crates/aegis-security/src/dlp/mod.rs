@@ -20,9 +20,25 @@ pub struct DlpMatch {
     pub action: DlpAction,
 }
 
+/// RF-FP (2026-07-08) — coarse pattern class used by the policy-aware
+/// [`redact_with`]. `Token` (jwt whole-match) is skipped on auth paths;
+/// `Pii` (email/phone) is opt-in; `Secret`/`Financial` always redact.
+/// Structural key-value patterns are `Secret` but carry a per-match
+/// token-class check ([`key_is_token_class`]) so an `access_token` value on
+/// an auth path survives while a `db_password`/`client_secret` in the same
+/// body does not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PatternClass {
+    Token,
+    Secret,
+    Financial,
+    Pii,
+}
+
 /// DLP pattern definition.
 struct DlpPattern {
     name: &'static str,
+    class: PatternClass,
     regex: Regex,
     validator: Option<fn(&str) -> bool>,
     /// `redact()` replacement template. Fixed-shape token patterns use the
@@ -40,16 +56,25 @@ struct DlpPattern {
 /// Sensitive key-name stems (RF-1, 2026-07-06). A response field whose key
 /// contains one of these, carrying a string value, is a credential leak per
 /// contract §5.2. Reused across the env / JSON / YAML / SetEnv shapes.
-const SECRET_KEY_STEM: &str = concat!(
+///
+/// RF-FP (2026-07-08) — split into the token stem and the non-token secret
+/// stems so the auth-path skip ([`key_is_token_class`]) can keep the intended
+/// token payload on token-issuing endpoints while still redacting every other
+/// credential. The structural regexes compile against the UNION, so the match
+/// surface is byte-for-byte identical to the pre-split single-stem version.
+const TOKEN_KEY_STEM: &str = r"token";
+const NON_TOKEN_SECRET_STEM: &str = concat!(
     r"password|passwd|pwd|secret|api[_-]?key|access[_-]?key|private[_-]?key",
-    r"|token|credential|db[_-]?pass|passphrase|client[_-]?secret",
+    r"|credential|db[_-]?pass|passphrase|client[_-]?secret",
 );
 
 static DLP_PATTERNS: LazyLock<Vec<DlpPattern>> = LazyLock::new(|| {
-    let stem = SECRET_KEY_STEM;
+    let stem = format!("{NON_TOKEN_SECRET_STEM}|{TOKEN_KEY_STEM}");
+    let stem = stem.as_str();
     vec![
         DlpPattern {
             name: "credit_card",
+            class: PatternClass::Financial,
             regex: Regex::new(r"\b(\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4})\b").unwrap(),
             validator: Some(luhn_check),
             replacement: "[REDACTED]",
@@ -57,6 +82,7 @@ static DLP_PATTERNS: LazyLock<Vec<DlpPattern>> = LazyLock::new(|| {
         },
         DlpPattern {
             name: "ssn",
+            class: PatternClass::Financial,
             regex: Regex::new(r"\b(\d{3}-\d{2}-\d{4})\b").unwrap(),
             validator: Some(ssn_validate),
             replacement: "[REDACTED]",
@@ -64,6 +90,7 @@ static DLP_PATTERNS: LazyLock<Vec<DlpPattern>> = LazyLock::new(|| {
         },
         DlpPattern {
             name: "iban",
+            class: PatternClass::Financial,
             regex: Regex::new(r"\b([A-Z]{2}\d{2}[A-Z0-9]{4,30})\b").unwrap(),
             validator: Some(iban_mod97),
             replacement: "[REDACTED]",
@@ -71,6 +98,7 @@ static DLP_PATTERNS: LazyLock<Vec<DlpPattern>> = LazyLock::new(|| {
         },
         DlpPattern {
             name: "email",
+            class: PatternClass::Pii,
             regex: Regex::new(r"\b([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\b").unwrap(),
             validator: None,
             replacement: "[REDACTED]",
@@ -78,6 +106,7 @@ static DLP_PATTERNS: LazyLock<Vec<DlpPattern>> = LazyLock::new(|| {
         },
         DlpPattern {
             name: "phone",
+            class: PatternClass::Pii,
             regex: Regex::new(r"\b(\+?\d{1,3}[\s-]?\(?\d{1,4}\)?[\s-]?\d{3,4}[\s-]?\d{4})\b").unwrap(),
             validator: None,
             replacement: "[REDACTED]",
@@ -85,6 +114,7 @@ static DLP_PATTERNS: LazyLock<Vec<DlpPattern>> = LazyLock::new(|| {
         },
         DlpPattern {
             name: "aws_key",
+            class: PatternClass::Secret,
             regex: Regex::new(r"\b(AKIA[0-9A-Z]{16})\b").unwrap(),
             validator: None,
             replacement: "[REDACTED]",
@@ -92,6 +122,7 @@ static DLP_PATTERNS: LazyLock<Vec<DlpPattern>> = LazyLock::new(|| {
         },
         DlpPattern {
             name: "aws_secret",
+            class: PatternClass::Secret,
             regex: Regex::new(r"(?i)(?:aws_secret_access_key|secret_key)\s*[=:]\s*([A-Za-z0-9/+=]{40})").unwrap(),
             validator: None,
             replacement: "[REDACTED]",
@@ -99,6 +130,7 @@ static DLP_PATTERNS: LazyLock<Vec<DlpPattern>> = LazyLock::new(|| {
         },
         DlpPattern {
             name: "github_token",
+            class: PatternClass::Secret,
             regex: Regex::new(r"\b(gh[ps]_[A-Za-z0-9_]{36,})\b").unwrap(),
             validator: None,
             replacement: "[REDACTED]",
@@ -111,6 +143,7 @@ static DLP_PATTERNS: LazyLock<Vec<DlpPattern>> = LazyLock::new(|| {
         // unambiguous secret prefix → FP≈0.
         DlpPattern {
             name: "stripe_key",
+            class: PatternClass::Secret,
             regex: Regex::new(r"\b((?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9_-]{16,})\b").unwrap(),
             validator: None,
             replacement: "[REDACTED]",
@@ -118,6 +151,7 @@ static DLP_PATTERNS: LazyLock<Vec<DlpPattern>> = LazyLock::new(|| {
         },
         DlpPattern {
             name: "slack_token",
+            class: PatternClass::Secret,
             regex: Regex::new(r"\b(xox[bpars]-[A-Za-z0-9-]+)\b").unwrap(),
             validator: None,
             replacement: "[REDACTED]",
@@ -126,6 +160,7 @@ static DLP_PATTERNS: LazyLock<Vec<DlpPattern>> = LazyLock::new(|| {
         // RF-2 — Google API key.
         DlpPattern {
             name: "google_api_key",
+            class: PatternClass::Secret,
             regex: Regex::new(r"\b(AIza[0-9A-Za-z_-]{35})\b").unwrap(),
             validator: None,
             replacement: "[REDACTED]",
@@ -134,6 +169,7 @@ static DLP_PATTERNS: LazyLock<Vec<DlpPattern>> = LazyLock::new(|| {
         // RF-2 — broadened to include OpenSSH-format private keys.
         DlpPattern {
             name: "pem_private_key",
+            class: PatternClass::Secret,
             regex: Regex::new(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----").unwrap(),
             validator: None,
             replacement: "[REDACTED]",
@@ -142,6 +178,7 @@ static DLP_PATTERNS: LazyLock<Vec<DlpPattern>> = LazyLock::new(|| {
         // RF-2 — SSH public keys (`ssh-ed25519 AAAA…`, `ssh-rsa …`).
         DlpPattern {
             name: "ssh_public_key",
+            class: PatternClass::Secret,
             regex: Regex::new(r"\b(ssh-(?:rsa|ed25519|dss|ecdsa)\s+[A-Za-z0-9+/=]{20,})").unwrap(),
             validator: None,
             replacement: "[REDACTED]",
@@ -153,6 +190,7 @@ static DLP_PATTERNS: LazyLock<Vec<DlpPattern>> = LazyLock::new(|| {
         // `$1`-style template collisions.
         DlpPattern {
             name: "password_hash",
+            class: PatternClass::Secret,
             regex: Regex::new(r#"(\$(?:2[abxy]|argon2(?:id|i|d)?|6)\$[^\s"']{15,})"#).unwrap(),
             validator: None,
             replacement: "[REDACTED]",
@@ -160,6 +198,7 @@ static DLP_PATTERNS: LazyLock<Vec<DlpPattern>> = LazyLock::new(|| {
         },
         DlpPattern {
             name: "jwt",
+            class: PatternClass::Token,
             regex: Regex::new(r"\b(eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+)\b").unwrap(),
             validator: None,
             replacement: "[REDACTED]",
@@ -177,6 +216,7 @@ static DLP_PATTERNS: LazyLock<Vec<DlpPattern>> = LazyLock::new(|| {
         // `env_secret` for audit/back-compat.)
         DlpPattern {
             name: "env_secret",
+            class: PatternClass::Secret,
             regex: Regex::new(&format!(
                 r"(?im)(?P<pre>^[ \t]*[\w.-]*(?:{stem})[\w.-]*[ \t]*=[ \t]*)\S.*$"
             ))
@@ -190,6 +230,7 @@ static DLP_PATTERNS: LazyLock<Vec<DlpPattern>> = LazyLock::new(|| {
         // left untouched, which drops the biggest FP class.
         DlpPattern {
             name: "json_secret",
+            class: PatternClass::Secret,
             regex: Regex::new(&format!(
                 r#"(?i)(?P<pre>"[\w.-]*(?:{stem})[\w.-]*"[ \t]*:[ \t]*")(?:[^"\\]|\\.)*""#
             ))
@@ -202,6 +243,7 @@ static DLP_PATTERNS: LazyLock<Vec<DlpPattern>> = LazyLock::new(|| {
         // collide with the JSON form).
         DlpPattern {
             name: "yaml_secret",
+            class: PatternClass::Secret,
             regex: Regex::new(&format!(
                 r"(?im)(?P<pre>^[ \t]*[\w.-]*(?:{stem})[\w.-]*[ \t]*:[ \t]*)\S.*$"
             ))
@@ -214,6 +256,7 @@ static DLP_PATTERNS: LazyLock<Vec<DlpPattern>> = LazyLock::new(|| {
         // a `# comment`).
         DlpPattern {
             name: "htaccess_setenv",
+            class: PatternClass::Secret,
             regex: Regex::new(&format!(
                 r"(?im)(?P<pre>SetEnv[ \t]+[\w.-]*(?:{stem})[\w.-]*[ \t]+)\S.*$"
             ))
@@ -300,13 +343,77 @@ static BENIGN_VALUE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)^(?:true|false|null|~|-?\d+(?:\.\d+)?|\[REDACTED\])$"#).unwrap()
 });
 
-/// Redact text by replacing all DLP matches. Fixed-shape patterns replace the
-/// whole match with `[REDACTED]`; structural key-value patterns (RF-1) scrub
-/// only the VALUE via `${pre}[REDACTED]`, and skip benign metadata keys /
-/// bool-number-null values to keep the false-positive rate low.
+/// RF-FP (2026-07-08) — token-key matcher: is this structural `pre` (the
+/// captured `KEY<sep>` prefix) a *token-class* key? True iff it carries the
+/// `token` stem AND none of the non-token secret stems. Used by
+/// [`redact_with`] to keep `access_token` / `refresh_token` / `token` /
+/// `csrf_token` on auth paths while still redacting `client_secret`,
+/// `db_password`, `api_key`, etc. A key with BOTH (e.g. `secret_token`)
+/// is treated as a secret — the safe default is to redact.
+fn key_is_token_class(pre: &str) -> bool {
+    static TOKEN_KEY_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(&format!(r"(?i)(?:{TOKEN_KEY_STEM})")).unwrap());
+    static NON_TOKEN_SECRET_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(&format!(r"(?i)(?:{NON_TOKEN_SECRET_STEM})")).unwrap());
+    TOKEN_KEY_RE.is_match(pre) && !NON_TOKEN_SECRET_RE.is_match(pre)
+}
+
+/// RF-FP (2026-07-08) — response-body redaction policy. Drives the QC
+/// false-positive reduction: `keep_tokens` is set on token-issuing (auth)
+/// endpoints so the intended token payload survives; `redact_email` /
+/// `redact_phone` gate the broad PII patterns that are off by default.
+#[derive(Clone, Copy, Debug)]
+pub struct RedactPolicy {
+    pub redact_email: bool,
+    pub redact_phone: bool,
+    pub keep_tokens: bool,
+}
+
+impl RedactPolicy {
+    /// The legacy "redact everything, keep nothing" posture that the
+    /// back-compat [`redact`] helper uses (email/phone on, tokens redacted).
+    pub const fn all() -> Self {
+        Self { redact_email: true, redact_phone: true, keep_tokens: false }
+    }
+}
+
+impl Default for RedactPolicy {
+    fn default() -> Self {
+        Self::all()
+    }
+}
+
+/// Redact text by replacing all DLP matches under the "redact everything"
+/// policy ([`RedactPolicy::all`]). Kept for internal callers / tests; the
+/// response pipeline uses [`redact_with`] with an operator-tuned policy.
 pub fn redact(text: &str) -> String {
+    redact_with(text, &RedactPolicy::all())
+}
+
+/// RF-FP (2026-07-08) — policy-aware redaction. Fixed-shape patterns replace
+/// the whole match with `[REDACTED]`; structural key-value patterns (RF-1)
+/// scrub only the VALUE via `${pre}[REDACTED]`, skipping benign metadata
+/// keys / bool-number-null values. The `policy` adds three FP-reduction
+/// gates on top:
+/// - `Pii::email` / `Pii::phone` run only when explicitly enabled (opt-in).
+/// - the `Token` whole-match (`jwt`) is skipped when `keep_tokens` (auth path).
+/// - structural matches whose key is token-class ([`key_is_token_class`]) are
+///   kept when `keep_tokens`, so an auth response keeps its `access_token`
+///   while a `db_password` / `client_secret` in the same body still redacts.
+pub fn redact_with(text: &str, policy: &RedactPolicy) -> String {
     let mut result = text.to_string();
     for pat in DLP_PATTERNS.iter() {
+        // Opt-in PII gates.
+        if pat.name == "email" && !policy.redact_email {
+            continue;
+        }
+        if pat.name == "phone" && !policy.redact_phone {
+            continue;
+        }
+        // Token whole-match (jwt) — kept intact on auth paths.
+        if policy.keep_tokens && pat.class == PatternClass::Token {
+            continue;
+        }
         result = if pat.structural {
             pat.regex
                 .replace_all(&result, |caps: &regex::Captures| {
@@ -314,6 +421,11 @@ pub fn redact(text: &str) -> String {
                     let pre = caps.name("pre").map_or("", |m| m.as_str());
                     // Benign metadata key (token_type, password_updated_at…) → keep.
                     if BENIGN_KEY_SUFFIX.is_match(pre) {
+                        return whole.to_string();
+                    }
+                    // Auth path: keep token-class fields (access_token, …); the
+                    // non-token secret keys in the same body still fall through.
+                    if policy.keep_tokens && key_is_token_class(pre) {
                         return whole.to_string();
                     }
                     // Benign value (bool/number/null/already-redacted) → keep.
@@ -678,5 +790,68 @@ mod tests {
     fn iban_invalid() {
         assert!(!iban_mod97("GB00NWBK60161331926819"));
         assert!(!iban_mod97("XX"));
+    }
+
+    // ===== RF-FP (2026-07-08 QC) — policy-aware redaction for FP reduction.
+    // On token-issuing endpoints (auth paths) the response legitimately
+    // carries tokens; `keep_tokens` skips the token-class patterns (jwt +
+    // structural access_token/refresh_token/token) WITHOUT relaxing the
+    // non-token secret / financial rungs. email + phone are opt-in. =====
+
+    #[test]
+    fn auth_policy_keeps_tokens_but_redacts_other_secrets_in_same_body() {
+        let body = r#"{"access_token":"eyJreal.secret.value","refresh_token":"rt_abcdefghijklmnop","db_password":"sup3rs3cret","aws":"AKIAIOSFODNN7EXAMPLE"}"#;
+        let policy = RedactPolicy { redact_email: false, redact_phone: false, keep_tokens: true };
+        let out = redact_with(body, &policy);
+        // Token fields survive on an auth endpoint (the intended payload).
+        assert!(out.contains("eyJreal.secret.value"), "access_token must survive on auth path: {out}");
+        assert!(out.contains("rt_abcdefghijklmnop"), "refresh_token must survive on auth path: {out}");
+        // Non-token secrets are STILL redacted even on an auth path.
+        assert!(!out.contains("sup3rs3cret"), "db_password must still redact on auth path: {out}");
+        assert!(!out.contains("AKIAIOSFODNN7EXAMPLE"), "aws key must still redact on auth path: {out}");
+    }
+
+    #[test]
+    fn auth_policy_keeps_bare_jwt_only_when_keep_tokens() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123def456";
+        let body = format!("token issued: {jwt}");
+        let keep = RedactPolicy { redact_email: false, redact_phone: false, keep_tokens: true };
+        assert!(redact_with(&body, &keep).contains(jwt), "bare JWT must survive on auth path");
+        let no_keep = RedactPolicy { redact_email: false, redact_phone: false, keep_tokens: false };
+        assert!(!redact_with(&body, &no_keep).contains(jwt), "bare JWT redacted off auth path");
+    }
+
+    #[test]
+    fn email_phone_opt_in_off_by_default_policy() {
+        let body = "contact alice@example.com or +1 415 555 1234";
+        let off = RedactPolicy { redact_email: false, redact_phone: false, keep_tokens: false };
+        assert_eq!(redact_with(body, &off), body, "email/phone must pass through when off");
+        let on = RedactPolicy { redact_email: true, redact_phone: true, keep_tokens: false };
+        let out = redact_with(body, &on);
+        assert!(!out.contains("alice@example.com"), "email redacts when enabled: {out}");
+        assert!(!out.contains("415 555 1234"), "phone redacts when enabled: {out}");
+    }
+
+    #[test]
+    fn key_is_token_class_boundaries() {
+        assert!(key_is_token_class(r#""access_token":""#));
+        assert!(key_is_token_class(r#""refresh_token":""#));
+        assert!(key_is_token_class(r#""csrf_token":""#));
+        assert!(key_is_token_class("token="));
+        // Non-token secret keys are NOT token-class → they still redact.
+        assert!(!key_is_token_class(r#""client_secret":""#), "client_secret is not token-class");
+        assert!(!key_is_token_class(r#""db_password":""#));
+        assert!(!key_is_token_class(r#""api_key":""#));
+        // Mixed key with a non-token stem is treated as a secret (safe default).
+        assert!(!key_is_token_class(r#""secret_token":""#), "secret+token → redact (safe)");
+    }
+
+    #[test]
+    fn legacy_redact_unchanged_all_on_keep_nothing() {
+        // `redact()` == the all-on / keep-nothing policy used OFF the auth path:
+        // tokens AND email still redact, so every pre-existing test stays green.
+        let body = r#"{"access_token":"eyJreal.secret.value"}"#;
+        assert!(!redact(body).contains("eyJreal.secret.value"), "off-auth token still redacts");
+        assert!(redact("mail alice@example.com").contains("[REDACTED]"), "email still redacts by default helper");
     }
 }

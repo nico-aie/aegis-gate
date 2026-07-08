@@ -6024,6 +6024,9 @@ pub(crate) async fn handle_response_filter_put(
         "mask_internal_ips":      patch.mask_internal_ips,
         "redact_dlp":             patch.redact_dlp,
         "strip_response_headers": patch.strip_response_headers,
+        "redact_email":           patch.redact_email,
+        "redact_phone":           patch.redact_phone,
+        "auth_paths":             patch.auth_paths,
     });
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "PUT",
@@ -6099,12 +6102,26 @@ fn patch_response_filter(
         ("mask_internal_ips", patch.mask_internal_ips),
         ("redact_dlp", patch.redact_dlp),
         ("strip_response_headers", patch.strip_response_headers),
+        // RF-FP (2026-07-08) — broad-PII opt-in rungs.
+        ("redact_email", patch.redact_email),
+        ("redact_phone", patch.redact_phone),
     ] {
         rf_map.insert(
             serde_yaml::Value::String(k.into()),
             serde_yaml::Value::Bool(v),
         );
     }
+    // RF-FP (2026-07-08) — token-issuing endpoint allowlist (sequence).
+    rf_map.insert(
+        serde_yaml::Value::String("auth_paths".into()),
+        serde_yaml::Value::Sequence(
+            patch
+                .auth_paths
+                .iter()
+                .map(|p| serde_yaml::Value::String(p.clone()))
+                .collect(),
+        ),
+    );
     serde_yaml::to_string(&doc).map_err(|e| format!("re-serialize config: {e}"))
 }
 
@@ -6119,6 +6136,9 @@ pub(crate) async fn handle_response_filter_get(
                 "mask_internal_ips":      snap.mask_internal_ips,
                 "redact_dlp":             snap.redact_dlp,
                 "strip_response_headers": snap.strip_response_headers,
+                "redact_email":           snap.redact_email,
+                "redact_phone":           snap.redact_phone,
+                "auth_paths":             snap.auth_paths,
                 "wired":                  true,
             })
         }
@@ -6127,6 +6147,9 @@ pub(crate) async fn handle_response_filter_get(
             "mask_internal_ips":      true,
             "redact_dlp":             true,
             "strip_response_headers": true,
+            "redact_email":           false,
+            "redact_phone":           false,
+            "auth_paths":             aegis_security::pipeline::default_auth_paths(),
             "wired":                  false,
         }),
     };
@@ -7597,6 +7620,7 @@ zero_trust:
             mask_internal_ips: true,
             redact_dlp: false,
             strip_response_headers: false,
+            ..ResponseFilterPatch::default()
         };
         let out = patch_response_filter(base, &patch).unwrap();
         let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();

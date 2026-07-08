@@ -1677,10 +1677,19 @@ pub(crate) fn stamp_interop_response<B>(
         request_id: request_id.clone(),
         risk_score: effective_risk_score,
         action: decision_tag.action,
-        rule_id: decision_tag.rule_id.clone(),
+        // RF-FP (2026-07-08 QC) — when the body was filtered but the request
+        // carried no genuine rule attribution, name the filter so
+        // `X-WAF-Rule-Id: response_filter` + the audit `rule_id` are clear;
+        // a real allow/block rule id is preserved.
+        rule_id: aegis_control::interop::headers::rule_id_with_filter_fallback(
+            decision_tag.rule_id.clone(),
+            decision_tag.response_filtered.is_some(),
+        ),
         // SC-1 — carry the smart-cache decision (Hit/Miss/Bypass) through.
         cache: decision_tag.cache,
         mode,
+        // RF-FP (2026-07-08 QC) — drives X-WAF-Response-Filtered + bytes.
+        response_filtered: decision_tag.response_filtered,
     };
     decision.stamp(resp.headers_mut());
 
