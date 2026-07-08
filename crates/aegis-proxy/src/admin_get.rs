@@ -1147,6 +1147,16 @@ pub(crate) fn admin_router<B>(
             json_body_response(200, body, "private, max-age=2")
         }
 
+        // 2026-07-07 — EG-2 response sensitive-data observe rung on/off.
+        // Mirrors the PUT body shape so a {GET → flip → PUT} roundtrip works.
+        "/api/gates/egress" => {
+            let enabled = services
+                .egress_observe_enabled
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let body = serde_json::json!({ "enabled": enabled }).to_string();
+            json_body_response(200, body, "private, max-age=2")
+        }
+
         // D-M5: tracking
         "/api/slo" => json_body_response(200, services.tracking.render_slo(), "private, max-age=2"),
         // SLO-P6 (P4b) — effective objectives + watchdog knob for the

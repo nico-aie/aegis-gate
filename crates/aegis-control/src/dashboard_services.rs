@@ -363,6 +363,13 @@ pub struct DashboardServices {
     /// `PUT /api/gates/shed` flips it. Defaults to a fresh `true` Arc in
     /// `spawn_*`; the proxy boot path overrides it with the shared handle.
     pub load_shed_enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// EG-2 T2/T3 observe gate (2026-07-07). The `Arc<AtomicBool>` the data
+    /// plane reads via `ProxyContext.egress_observe_enabled` before running
+    /// the `egress_sensitive` observe rung; the audit-mutated
+    /// `PUT /api/gates/egress` flips it. Defaults to a fresh `false` Arc in
+    /// `spawn_*`; the proxy boot path overrides it with the shared handle.
+    /// Observability only — never feeds risk or blocks.
+    pub egress_observe_enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// MTLS-T7 — live, mutable allowed-SAN list. The boot path
     /// seeds it from `cfg.tls.client_auth.allowed_sans`; the
     /// audit-mutated `PUT/DELETE /api/mtls/sans` handlers update
@@ -787,6 +794,11 @@ impl DashboardServices {
                 // ProxyContext handle seeded from config.
                 load_shed_enabled: std::sync::Arc::new(
                     std::sync::atomic::AtomicBool::new(true),
+                ),
+                // EG-2 observe gate — wired by the proxy boot path; a
+                // fresh default-OFF Arc until then.
+                egress_observe_enabled: std::sync::Arc::new(
+                    std::sync::atomic::AtomicBool::new(false),
                 ),
                 // MTLS-T7 — wired by the proxy boot path. Until then
                 // identity extraction skips the allowlist gate.

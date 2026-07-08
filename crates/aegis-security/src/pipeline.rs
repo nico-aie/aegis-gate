@@ -420,6 +420,110 @@ mod tests {
         assert!(ResponseFilterConfig::default().strip_response_headers);
     }
 
+    // ---- on_body_frame: the response-filter seam (2026-07-07) ------------
+    // These lock the Rewrite-vs-PassThrough contract the data plane relies
+    // on: the redaction SIGNAL fires iff `on_body_frame` returns `Rewrite`,
+    // and the gzip BYPASS exists precisely because a non-UTF-8 (compressed)
+    // body returns `PassThrough` (which is why the fix strips Accept-Encoding
+    // upstream so the origin answers in the clear).
+
+    fn body_route() -> RouteCtx {
+        RouteCtx {
+            route_id: "test".into(),
+            tier: Tier::Low,
+            failure_mode: FailureMode::FailOpen,
+            upstream: "default".into(),
+            pool_scheme: aegis_core::config::UpstreamScheme::Auto,
+            tcp_destination_allowlist: Vec::new(),
+            max_concurrent_tunnels_per_ip: 0,
+            path_strip_prefix: None,
+            ws_inspect: None,
+            log_only: false,
+        }
+    }
+
+    fn body_ctx() -> RequestCtx {
+        use std::net::{IpAddr, Ipv4Addr};
+        RequestCtx {
+            request_id: "t".into(),
+            received_at: std::time::Instant::now(),
+            client: aegis_core::context::ClientInfo {
+                ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                tls_fingerprint: None,
+                h2_fingerprint: None,
+                user_agent: None,
+            },
+            trace_id: None,
+            fields: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Clean body → PassThrough. Critical for the redaction signal: a
+    /// response with nothing to scrub must NOT report `Rewrite`, or every
+    /// clean response would emit a false "redacted" audit row.
+    #[tokio::test]
+    async fn on_body_frame_clean_body_passes_through() {
+        let pipe = Pipeline::new(Arc::new(crate::rules::RuleSet::new()));
+        let body = br#"{"status":"ok","items":[1,2,3]}"#;
+        let action = pipe.on_body_frame(body, &body_ctx(), &body_route()).await;
+        assert!(
+            matches!(action, OutboundAction::PassThrough),
+            "clean body must pass through (no false redaction signal), got {action:?}",
+        );
+    }
+
+    /// Body with an internal IP → Rewrite with the value masked. This is the
+    /// path that both scrubs AND triggers the `redact` audit row.
+    #[tokio::test]
+    async fn on_body_frame_secret_body_rewrites_and_scrubs() {
+        let pipe = Pipeline::new(Arc::new(crate::rules::RuleSet::new()));
+        let body = b"upstream error contacting 10.0.0.5:5432";
+        let action = pipe.on_body_frame(body, &body_ctx(), &body_route()).await;
+        match action {
+            OutboundAction::Rewrite(new) => {
+                let s = String::from_utf8(new.to_vec()).unwrap();
+                assert!(!s.contains("10.0.0.5"), "internal IP must be masked: {s}");
+                assert!(s.contains("[INTERNAL]"), "mask marker expected: {s}");
+            }
+            other => panic!("a body with an internal IP must Rewrite, got {other:?}"),
+        }
+    }
+
+    /// Non-UTF-8 (compressed) body → PassThrough. This is the gzip-bypass
+    /// gap: `on_body_frame` can't decode a gzip stream, so it forwards it
+    /// unfiltered — which is exactly why the upstream `Accept-Encoding` is
+    /// pinned to `identity` so this branch is never hit for real responses.
+    #[tokio::test]
+    async fn on_body_frame_binary_body_passes_through_unfiltered() {
+        let pipe = Pipeline::new(Arc::new(crate::rules::RuleSet::new()));
+        // gzip magic + invalid UTF-8 continuation byte (0x8b).
+        let gz = [0x1f_u8, 0x8b, 0x08, 0x00, 0xde, 0xad, 0xbe, 0xef];
+        let action = pipe.on_body_frame(&gz, &body_ctx(), &body_route()).await;
+        assert!(
+            matches!(action, OutboundAction::PassThrough),
+            "a non-UTF-8 (compressed) body can't be filtered → PassThrough, got {action:?}",
+        );
+    }
+
+    /// All rungs off → PassThrough even when the body carries a secret; the
+    /// per-frame cost goes to zero and nothing is rewritten (no signal).
+    #[tokio::test]
+    async fn on_body_frame_all_rungs_off_passes_through() {
+        let cfg = ResponseFilterConfig {
+            scrub_stack_traces: false,
+            mask_internal_ips: false,
+            redact_dlp: false,
+            strip_response_headers: false,
+        };
+        let pipe = Pipeline::with_filter(Arc::new(crate::rules::RuleSet::new()), cfg);
+        let body = b"contacting 10.0.0.5 with secret_key=sk_live_abcdefghijklmnop";
+        let action = pipe.on_body_frame(body, &body_ctx(), &body_route()).await;
+        assert!(
+            matches!(action, OutboundAction::PassThrough),
+            "all rungs off must short-circuit to PassThrough, got {action:?}",
+        );
+    }
+
     #[test]
     fn route_override_wins() {
         let rctx = RouteCtx {
