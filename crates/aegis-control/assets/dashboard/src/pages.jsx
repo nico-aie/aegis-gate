@@ -7704,6 +7704,32 @@ function ZtUpstreamPoolsCard() {
   const [openPool, setOpenPool] = useStateP(null);
   const [pem, setPem] = useStateP('');
   const [busy, setBusy] = useStateP(''); // pool name currently mutating
+  // 2026-07-08 — instant-apply mTLS toggle, learned from the Detector Mask
+  // card: the pool PUT lands via the config plane (activate → propagate →
+  // next poll), so raw server state made a flip look like nothing happened
+  // until a manual refresh. `optimistic[pool]` overlays the flipped value
+  // right away and is reconciled away once the server catches up.
+  const [optimistic, setOptimistic] = useStateP({});
+  useEffectP(() => {
+    const list = api.data?.pools;
+    if (!list) return;
+    const live = {};
+    for (const p of list) live[p.pool] = !!p.enabled;
+    setOptimistic(prev => {
+      const next = {};
+      for (const k of Object.keys(prev)) {
+        // Keep only flips the server hasn't caught up to yet.
+        if (k in live && live[k] !== prev[k]) next[k] = prev[k];
+      }
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+    });
+  }, [api.data]);
+  // Converge without a hard refresh when the config plane applies fleet-wide.
+  useEffectP(() => {
+    const onReload = () => { api.reload && api.reload(); };
+    window.addEventListener('aegis:config-reload', onReload);
+    return () => window.removeEventListener('aegis:config-reload', onReload);
+  }, [api.reload]);
 
   const muted = { color: 'var(--ink-mute)' };
   const cell = { padding: '8px 10px', borderBottom: '1px solid var(--hairline)', textAlign: 'left' };
@@ -7729,11 +7755,14 @@ function ZtUpstreamPoolsCard() {
   }
 
   async function toggle(p) {
-    const next = !p.enabled;
+    const cur = p.pool in optimistic ? optimistic[p.pool] : p.enabled;
+    const next = !cur;
     if (next && !identityReady) {
       window.aegisToast('Set the WAF client identity first', 'warn');
       return;
     }
+    // Reflect the flip instantly; revert only if the PUT fails.
+    setOptimistic(prev => ({ ...prev, [p.pool]: next }));
     setBusy(p.pool);
     try {
       const pinned = bundleByName[poolBundleName(p.pool)] ? poolBundleName(p.pool) : (p.trust || null);
@@ -7741,6 +7770,11 @@ function ZtUpstreamPoolsCard() {
       window.aegisToast(`Pool '${p.pool}' mTLS ${next ? 'enabled' : 'disabled'}`, 'ok');
       api.reload && api.reload();
     } catch (e) {
+      // Roll the optimistic flip back on failure.
+      setOptimistic(prev => {
+        const { [p.pool]: _drop, ...rest } = prev;
+        return rest;
+      });
       window.aegisToast(`Pool '${p.pool}': ${e.message || e}`, 'err');
     } finally { setBusy(''); }
   }
@@ -7813,7 +7847,10 @@ function ZtUpstreamPoolsCard() {
               const bundle = poolBundleName(p.pool);
               const pinned = bundleByName[bundle];
               const locked = busy === p.pool;
-              const canEnable = identityReady || p.enabled;
+              // Effective (optimistic-aware) mTLS state — shows the flip
+              // instantly while the config plane propagates.
+              const mtlsOn = p.pool in optimistic ? optimistic[p.pool] : p.enabled;
+              const canEnable = identityReady || mtlsOn;
               const certCell = pinned
                 ? (pinned.error
                     ? <span className="pill warn">{pinned.error}</span>
@@ -7828,10 +7865,10 @@ function ZtUpstreamPoolsCard() {
                   <td style={cell}>{certCell}</td>
                   <td style={cell}>
                     <div
-                      className={`toggle ${p.enabled ? 'on' : ''}`}
+                      className={`toggle ${mtlsOn ? 'on' : ''}`}
                       title={!canEnable
                         ? 'Set the WAF client identity first'
-                        : (p.enabled ? 'mTLS on — click to disable' : 'mTLS off — click to enable')}
+                        : (mtlsOn ? 'mTLS on — click to disable' : 'mTLS off — click to enable')}
                       onClick={(locked || !canEnable) ? undefined : () => toggle(p)}
                       style={{ cursor: locked ? 'wait' : (!canEnable ? 'not-allowed' : 'pointer'), opacity: !canEnable ? 0.5 : 1 }}
                     />
@@ -8231,18 +8268,51 @@ function ResponseFilterCard() {
   // editing (mirror live state); a string = the operator's in-progress edit.
   const [authDraft, setAuthDraft] = useStateP(null);
 
-  // Build the full patch from live state so any single change (a rung flip or
-  // an auth-paths save) never resets the other fields to their serde default.
+  // 2026-07-08 — instant-apply toggles, learned from the Detector Mask card:
+  // the config-plane PUT is eventual (activate → propagate → next poll), so
+  // showing raw server state made a flip look like it did nothing until a
+  // manual refresh. `optimistic` overlays the flipped value immediately;
+  // `pendingRef` is the synchronous mirror so a rapid second flip / an
+  // auth-paths save builds its patch from ALL in-flight flips (no clobber).
+  const BOOL_RUNGS = ['scrub_stack_traces', 'mask_internal_ips', 'redact_dlp', 'strip_response_headers', 'redact_email', 'redact_phone'];
+  const [optimistic, setOptimistic] = useStateP({});
+  const pendingRef = useRefP({});
+  // Reconcile: on fresh server data, drop optimistic flips the server has
+  // caught up to; keep only those still mid-propagation so the switch never
+  // snaps back before the config plane confirms.
+  useEffectP(() => {
+    if (!api.data) return;
+    setOptimistic(prev => {
+      const next = {};
+      for (const k of Object.keys(prev)) {
+        if (!!api.data[k] !== prev[k]) next[k] = prev[k];
+      }
+      pendingRef.current = next;
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+    });
+  }, [api.data]);
+  // Converge without a hard refresh: when the config plane applies a new
+  // version fleet-wide (config_reload SSE, re-broadcast by data.jsx), re-fetch
+  // so the reconcile above clears the optimistic overlay.
+  useEffectP(() => {
+    const onReload = () => { api.reload && api.reload(); };
+    window.addEventListener('aegis:config-reload', onReload);
+    return () => window.removeEventListener('aegis:config-reload', onReload);
+  }, [api.reload]);
+
+  // Effective (display) value of a boolean rung: the optimistic flip if one is
+  // pending, else the live server value.
+  const disp = (k) => (k in optimistic ? optimistic[k] : !!data[k]);
+
+  // Build the full patch from the freshest state (live server + ALL pending
+  // flips) so any single change never resets the other fields to their serde
+  // default and a rapid second flip can't resurrect the first.
   function basePatch() {
-    return {
-      scrub_stack_traces:     !!data.scrub_stack_traces,
-      mask_internal_ips:      !!data.mask_internal_ips,
-      redact_dlp:             !!data.redact_dlp,
-      strip_response_headers: !!data.strip_response_headers,
-      redact_email:           !!data.redact_email,
-      redact_phone:           !!data.redact_phone,
-      auth_paths:             Array.isArray(data.auth_paths) ? data.auth_paths : [],
-    };
+    const p = {};
+    for (const k of BOOL_RUNGS) p[k] = !!data[k];
+    Object.assign(p, pendingRef.current);
+    p.auth_paths = Array.isArray(data.auth_paths) ? data.auth_paths : [];
+    return p;
   }
 
   async function put(patch, label) {
@@ -8267,9 +8337,18 @@ function ResponseFilterCard() {
 
   async function flip(rung) {
     if (busy || !wired) return;
+    const next = !disp(rung);
+    // Reflect the flip instantly (optimistic), then commit. The switch shows
+    // `next` right away and only reverts if the PUT fails.
+    pendingRef.current = { ...pendingRef.current, [rung]: next };
+    setOptimistic({ ...pendingRef.current });
     const patch = basePatch();
-    patch[rung] = !patch[rung];
-    await put(patch, `${rung} ${patch[rung] ? 'on' : 'off'}`);
+    const ok = await put(patch, `${rung} ${next ? 'on' : 'off'}`);
+    if (!ok) {
+      const { [rung]: _drop, ...rest } = pendingRef.current;
+      pendingRef.current = rest;
+      setOptimistic({ ...rest });
+    }
   }
 
   async function saveAuthPaths() {
@@ -8346,10 +8425,10 @@ function ResponseFilterCard() {
             style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}
           >
             <div
-              className={`toggle ${data[r.key] ? 'on' : ''}`}
-              onClick={wired && busy !== r.key ? () => flip(r.key) : undefined}
+              className={`toggle ${disp(r.key) ? 'on' : ''}`}
+              onClick={wired && !busy ? () => flip(r.key) : undefined}
               style={{
-                cursor: !wired ? 'not-allowed' : busy === r.key ? 'wait' : 'pointer',
+                cursor: !wired ? 'not-allowed' : busy ? 'wait' : 'pointer',
                 opacity: !wired ? 0.5 : 1,
                 marginTop: 2,
               }}
