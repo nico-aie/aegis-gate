@@ -2504,13 +2504,22 @@ pub(crate) async fn accept_loop(
                         // `X-WAF-Rule-Id` response header (stamped from
                         // the same `decision.rule_id`) carry the
                         // detectors and stay in lock-step.
-                        reason: decision
-                            .rule_id
-                            .clone()
-                            .unwrap_or_else(|| action.to_string()),
+                        // RF-FP (2026-07-08 QC) — a filtered-but-unattributed
+                        // allow is named `response_filter` here too, so the
+                        // audit `rule_id`/`reason` match the X-WAF-Rule-Id
+                        // header (lock-step). A real detector attribution is
+                        // preserved.
+                        reason: aegis_control::interop::headers::rule_id_with_filter_fallback(
+                            decision.rule_id.clone(),
+                            decision.response_filtered.is_some(),
+                        )
+                        .unwrap_or_else(|| action.to_string()),
                         client_ip: peer.ip().to_string(),
                         route_id: None,
-                        rule_id: decision.rule_id.clone(),
+                        rule_id: aegis_control::interop::headers::rule_id_with_filter_fallback(
+                            decision.rule_id.clone(),
+                            decision.response_filtered.is_some(),
+                        ),
                         risk_score: Some(risk_score),
                         method: None,
                         path: None,
@@ -2564,6 +2573,23 @@ pub(crate) async fn accept_loop(
                                     );
                                     map.insert("reason".to_string(), serde_json::json!("streaming"));
                                 }
+                            }
+                            // RF-FP (2026-07-08 QC) — fold the response-filter
+                            // signal into THIS request's own record (drawer
+                            // detail) instead of emitting a separate Detection
+                            // row. Byte delta only — never the redacted value.
+                            if let (serde_json::Value::Object(ref mut map), Some(sig)) =
+                                (&mut f, decision.response_filtered)
+                            {
+                                map.insert("response_filtered".to_string(), serde_json::json!(true));
+                                map.insert(
+                                    "response_filter_bytes_before".to_string(),
+                                    serde_json::json!(sig.bytes_before),
+                                );
+                                map.insert(
+                                    "response_filter_bytes_after".to_string(),
+                                    serde_json::json!(sig.bytes_after),
+                                );
                             }
                             f
                         },

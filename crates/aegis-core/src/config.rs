@@ -5920,7 +5920,7 @@ fn default_true() -> bool {
 /// can carry these toggles cluster-wide. Each field defaults to `true`
 /// (safe-by-default scrubbing — matches the runtime default), so a config
 /// that omits the `response_filter:` block behaves exactly as before.
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResponseFilterConfig {
     #[serde(default = "default_true")]
@@ -5935,6 +5935,48 @@ pub struct ResponseFilterConfig {
     /// field keeps the safe posture.
     #[serde(default = "default_true")]
     pub strip_response_headers: bool,
+    /// RF-FP (2026-07-08 QC) — the broad PII rungs (`email`, `phone`) are the
+    /// single largest response-filter false-positive source: most apps
+    /// legitimately return addresses / numbers as data. They are therefore
+    /// OFF by default (opt-in). The validated financial rungs (credit_card /
+    /// ssn / iban) and the distinctive credential rungs stay on via
+    /// `redact_dlp`.
+    #[serde(default)]
+    pub redact_email: bool,
+    #[serde(default)]
+    pub redact_phone: bool,
+    /// RF-FP (2026-07-08 QC) — request paths of token-issuing (auth)
+    /// endpoints. On these, the response legitimately carries the intended
+    /// token payload, so the token-class DLP patterns (jwt + structural
+    /// `access_token`/`refresh_token`/`token`) are skipped — while every
+    /// other secret (AWS keys, PEM, `db_password`, config dumps) still
+    /// redacts. Segment-boundary matched, so `/oauth/token` matches
+    /// `/api/v1/oauth/token` but `/token` never matches `/tokenizer`.
+    #[serde(default = "default_auth_paths")]
+    pub auth_paths: Vec<String>,
+}
+
+/// RF-FP (2026-07-08) — default token-issuing endpoint list used when the
+/// `response_filter.auth_paths` key is omitted.
+pub fn default_auth_paths() -> Vec<String> {
+    [
+        "/login",
+        "/signin",
+        "/sign-in",
+        "/auth",
+        "/authenticate",
+        "/authorize",
+        "/token",
+        "/oauth/token",
+        "/oauth2/token",
+        "/connect/token",
+        "/refresh",
+        "/session",
+        "/sso",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 
 impl Default for ResponseFilterConfig {
@@ -5944,6 +5986,9 @@ impl Default for ResponseFilterConfig {
             mask_internal_ips: true,
             redact_dlp: true,
             strip_response_headers: true,
+            redact_email: false,
+            redact_phone: false,
+            auth_paths: default_auth_paths(),
         }
     }
 }

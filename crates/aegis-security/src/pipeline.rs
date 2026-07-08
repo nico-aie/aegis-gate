@@ -63,6 +63,17 @@ pub struct ResponseFilterConfig {
     /// unwired here — forcing those onto arbitrary upstreams breaks
     /// apps.
     pub strip_response_headers: bool,
+    /// RF-FP (2026-07-08 QC) — broad-PII opt-in rungs (default OFF): most
+    /// apps legitimately return emails / phone numbers, so redacting every
+    /// one is the largest response-filter FP source. Financial (Luhn/mod97)
+    /// + distinctive credential rungs stay on under `redact_dlp`.
+    pub redact_email: bool,
+    pub redact_phone: bool,
+    /// RF-FP (2026-07-08 QC) — token-issuing (auth) endpoint paths. On these
+    /// the token-class DLP patterns (jwt + structural access_token/
+    /// refresh_token/token) are skipped so a legit login/OAuth response keeps
+    /// its token; every other secret still redacts. Segment-boundary matched.
+    pub auth_paths: Vec<String>,
 }
 
 impl Default for ResponseFilterConfig {
@@ -72,8 +83,65 @@ impl Default for ResponseFilterConfig {
             mask_internal_ips: true,
             redact_dlp: true,
             strip_response_headers: true,
+            redact_email: false,
+            redact_phone: false,
+            auth_paths: default_auth_paths(),
         }
     }
+}
+
+/// RF-FP (2026-07-08) — default token-issuing endpoint list, mirrored from
+/// `aegis_core::config::default_auth_paths` so a `Default`-constructed
+/// pipeline (tests, `NoopPipeline`) carries the same safe list the boot path
+/// installs from config.
+pub fn default_auth_paths() -> Vec<String> {
+    [
+        "/login",
+        "/signin",
+        "/sign-in",
+        "/auth",
+        "/authenticate",
+        "/authorize",
+        "/token",
+        "/oauth/token",
+        "/oauth2/token",
+        "/connect/token",
+        "/refresh",
+        "/session",
+        "/sso",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// RF-FP (2026-07-08) — does `path` name a token-issuing endpoint in
+/// `auth_paths`? Query-stripped, lowercased, **segment-boundary** match: an
+/// entry `e` matches when the request path equals `e` or contains `e` as a
+/// whole `/`-delimited segment run (so `/oauth/token` matches
+/// `/api/v1/oauth/token` and `/token`, but `/token` never matches
+/// `/tokenizer` or `/authors`).
+pub fn is_auth_path(path: &str, auth_paths: &[String]) -> bool {
+    let p = path.split(['?', '#']).next().unwrap_or(path);
+    let mut p = p.to_ascii_lowercase();
+    // Normalise a trailing slash (but keep the root "/").
+    if p.len() > 1 && p.ends_with('/') {
+        p.pop();
+    }
+    auth_paths.iter().any(|entry| {
+        let e = entry.trim().trim_end_matches('/').to_ascii_lowercase();
+        if e.is_empty() {
+            return false;
+        }
+        // Compare on a leading-slash "needle" so every match is bounded by a
+        // '/' before the entry (an operator entry without a leading slash is
+        // normalised in). `ends_with` covers a trailing segment run
+        // (`/api/v1/oauth/token`); `contains("{needle}/")` covers an interior
+        // segment (`/auth/login`). The leading '/' guarantees `/token` never
+        // matches `/tokenizer` and `/auth` never matches `/authors`.
+        let needle = if e.starts_with('/') { e } else { format!("/{e}") };
+        p == needle || p.ends_with(&needle) || p.contains(&format!("{needle}/"))
+    })
 }
 
 /// Production `SecurityPipeline` impl.
@@ -223,7 +291,7 @@ impl SecurityPipeline for Pipeline {
     async fn on_body_frame(
         &self,
         frame: &[u8],
-        _rctx: &RequestCtx,
+        rctx: &RequestCtx,
         _route: &RouteCtx,
     ) -> OutboundAction {
         let cfg = self.filter.load();
@@ -259,7 +327,21 @@ impl SecurityPipeline for Pipeline {
             }
         }
         if cfg.redact_dlp {
-            let redacted = crate::dlp::redact(&working);
+            // RF-FP (2026-07-08) — build the redaction policy from config +
+            // request context. `keep_tokens` is set on token-issuing (auth)
+            // endpoints so a legit login/OAuth response keeps its token;
+            // email/phone are opt-in. The path is threaded in via
+            // `rctx.fields["path"]` at the data-plane call site.
+            let path = match rctx.fields.get("path") {
+                Some(aegis_core::context::FieldValue::Str(s)) => s.as_str(),
+                _ => "",
+            };
+            let policy = crate::dlp::RedactPolicy {
+                redact_email: cfg.redact_email,
+                redact_phone: cfg.redact_phone,
+                keep_tokens: is_auth_path(path, &cfg.auth_paths),
+            };
+            let redacted = crate::dlp::redact_with(&working, &policy);
             if redacted != *working {
                 working = std::borrow::Cow::Owned(redacted);
             }
@@ -458,6 +540,89 @@ mod tests {
         }
     }
 
+    /// RF-FP — same as [`body_ctx`] but with the request `path` threaded into
+    /// `fields` exactly as the data-plane call site does, so `on_body_frame`
+    /// can resolve the auth-path policy.
+    fn body_ctx_with_path(path: &str) -> RequestCtx {
+        let mut ctx = body_ctx();
+        ctx.fields.insert(
+            "path".into(),
+            aegis_core::context::FieldValue::Str(path.into()),
+        );
+        ctx
+    }
+
+    // ---- RF-FP (2026-07-08 QC) — auth-path matcher + policy behaviour ------
+
+    #[test]
+    fn is_auth_path_segment_boundaries() {
+        let paths = default_auth_paths();
+        // Positive: exact, prefixed, and interior segments.
+        assert!(is_auth_path("/login", &paths));
+        assert!(is_auth_path("/oauth/token", &paths));
+        assert!(is_auth_path("/api/v1/oauth/token", &paths));
+        assert!(is_auth_path("/auth/login", &paths));
+        assert!(is_auth_path("/LOGIN", &paths), "case-insensitive");
+        assert!(is_auth_path("/oauth/token?grant_type=x", &paths), "query stripped");
+        assert!(is_auth_path("/login/", &paths), "trailing slash");
+        // Negative: substring collisions must NOT match.
+        assert!(!is_auth_path("/tokenizer", &paths), "/token must not match /tokenizer");
+        assert!(!is_auth_path("/authors", &paths), "/auth must not match /authors");
+        assert!(!is_auth_path("/api/users", &paths));
+    }
+
+    /// On an auth path the token payload survives, but a non-token secret in
+    /// the SAME body still redacts.
+    #[tokio::test]
+    async fn on_body_frame_auth_path_keeps_token_redacts_other_secret() {
+        let pipe = Pipeline::new(Arc::new(crate::rules::RuleSet::new()));
+        let body = br#"{"access_token":"eyJreal.secret.value","db_password":"sup3rs3cret"}"#;
+        let action = pipe
+            .on_body_frame(body, &body_ctx_with_path("/oauth/token"), &body_route())
+            .await;
+        match action {
+            OutboundAction::Rewrite(new) => {
+                let s = String::from_utf8(new.to_vec()).unwrap();
+                assert!(s.contains("eyJreal.secret.value"), "access_token kept on auth path: {s}");
+                assert!(!s.contains("sup3rs3cret"), "db_password still redacted: {s}");
+            }
+            other => panic!("db_password must force a Rewrite, got {other:?}"),
+        }
+    }
+
+    /// The SAME token body on a NON-auth path is fully redacted (PassThrough
+    /// only if nothing matched — here access_token matches → Rewrite).
+    #[tokio::test]
+    async fn on_body_frame_non_auth_path_redacts_token() {
+        let pipe = Pipeline::new(Arc::new(crate::rules::RuleSet::new()));
+        let body = br#"{"access_token":"eyJreal.secret.value"}"#;
+        let action = pipe
+            .on_body_frame(body, &body_ctx_with_path("/api/users"), &body_route())
+            .await;
+        match action {
+            OutboundAction::Rewrite(new) => {
+                let s = String::from_utf8(new.to_vec()).unwrap();
+                assert!(!s.contains("eyJreal.secret.value"), "token redacted off auth path: {s}");
+            }
+            other => panic!("token off auth path must Rewrite, got {other:?}"),
+        }
+    }
+
+    /// email/phone are opt-in: a body carrying only an email passes through
+    /// untouched under the default (off) policy.
+    #[tokio::test]
+    async fn on_body_frame_email_passes_through_when_opt_in_off() {
+        let pipe = Pipeline::new(Arc::new(crate::rules::RuleSet::new()));
+        let body = br#"{"user":"alice","email":"alice@example.com"}"#;
+        let action = pipe
+            .on_body_frame(body, &body_ctx_with_path("/api/profile"), &body_route())
+            .await;
+        assert!(
+            matches!(action, OutboundAction::PassThrough),
+            "email must pass through when redact_email is off (default), got {action:?}",
+        );
+    }
+
     /// Clean body → PassThrough. Critical for the redaction signal: a
     /// response with nothing to scrub must NOT report `Rewrite`, or every
     /// clean response would emit a false "redacted" audit row.
@@ -514,6 +679,7 @@ mod tests {
             mask_internal_ips: false,
             redact_dlp: false,
             strip_response_headers: false,
+            ..ResponseFilterConfig::default()
         };
         let pipe = Pipeline::with_filter(Arc::new(crate::rules::RuleSet::new()), cfg);
         let body = b"contacting 10.0.0.5 with secret_key=sk_live_abcdefghijklmnop";
