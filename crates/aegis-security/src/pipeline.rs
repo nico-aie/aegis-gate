@@ -154,6 +154,30 @@ pub fn is_auth_path(path: &str, auth_paths: &[String]) -> bool {
     })
 }
 
+/// RF-PERF (2026-07-09) — max bytes of a response body the scrub / mask /
+/// redact rungs scan. Each rung runs several regex passes; on a multi-MB
+/// payload that repeated scanning blows the response-latency budget. Bodies
+/// larger than this are scanned on their first `MAX_REDACT_SCAN_BYTES` only
+/// and the remainder passes through untouched — error bodies, API JSON, HTML
+/// and stack traces (where disclosures actually occur) sit well under 1 MiB,
+/// so the tail scan's security value is low relative to its cost. This
+/// reverses the earlier "redact rung left full-body" note in `data_plane.rs`.
+const MAX_REDACT_SCAN_BYTES: usize = 1024 * 1024;
+
+/// Largest prefix of `text` that is `<= cap` bytes AND ends on a UTF-8 char
+/// boundary. Used to bound the redact-rung scan without splitting a multi-byte
+/// codepoint (which would corrupt the passed-through tail).
+fn redact_scan_boundary(text: &str, cap: usize) -> usize {
+    if text.len() <= cap {
+        return text.len();
+    }
+    let mut b = cap;
+    while b > 0 && !text.is_char_boundary(b) {
+        b -= 1;
+    }
+    b
+}
+
 /// Production `SecurityPipeline` impl.
 ///
 /// **2026-05-11 PR #7 wire-up.** Pre-fix `Pipeline::on_body_frame`
@@ -308,6 +332,20 @@ impl SecurityPipeline for Pipeline {
         if !cfg.scrub_stack_traces && !cfg.mask_internal_ips && !cfg.redact_dlp {
             return OutboundAction::PassThrough;
         }
+        // RF-FP (2026-07-09 S-Tester) — content-type gate. Served code/asset
+        // bodies (JS/CSS/media) are not data payloads; running the secret /
+        // hostname / IP rungs over them only corrupts them (a real replay
+        // rewrote `credentials: "same-origin"` in an app.js bundle to
+        // `[REDACTED]`). The response content-type is threaded in via
+        // `rctx.fields["response_content_type"]` at the data-plane call site;
+        // absent → scan (default-scan so no data type silently bypasses DLP).
+        if let Some(aegis_core::context::FieldValue::Str(ct)) =
+            rctx.fields.get("response_content_type")
+        {
+            if crate::response_filter::is_non_scannable_content_type(ct) {
+                return OutboundAction::PassThrough;
+            }
+        }
         // Binary bodies (`image/*`, `application/octet-stream`,
         // protobuf, etc.) fail UTF-8 decode — short-circuit so we
         // don't waste regex passes. The forwarder buffers full
@@ -316,8 +354,14 @@ impl SecurityPipeline for Pipeline {
         let Ok(text) = std::str::from_utf8(frame) else {
             return OutboundAction::PassThrough;
         };
-        let original_len = text.len();
-        let mut working = std::borrow::Cow::Borrowed(text);
+        // RF-PERF (2026-07-09) — bound the regex work: scan at most
+        // `MAX_REDACT_SCAN_BYTES` (on a char boundary) and pass any tail
+        // through untouched. `head` is what the rungs rewrite; `tail` is
+        // re-appended verbatim.
+        let scan_end = redact_scan_boundary(text, MAX_REDACT_SCAN_BYTES);
+        let (head, tail) = text.split_at(scan_end);
+        let head_len = head.len();
+        let mut working = std::borrow::Cow::Borrowed(head);
         if cfg.scrub_stack_traces {
             let scrubbed = crate::response_filter::scrub_stack_traces(&working);
             if scrubbed != *working {
@@ -357,13 +401,20 @@ impl SecurityPipeline for Pipeline {
                 working = std::borrow::Cow::Owned(redacted);
             }
         }
-        // Nothing changed → pass through. The hot path on clean
-        // responses (the vast majority) pays one Cow::Borrowed
-        // check per filter rung and zero allocations.
-        if matches!(&working, std::borrow::Cow::Borrowed(s) if s.len() == original_len) {
+        // Nothing changed in the scanned head → pass the WHOLE body through.
+        // The hot path on clean responses (the vast majority) pays one
+        // Cow::Borrowed check per filter rung and zero allocations.
+        if matches!(&working, std::borrow::Cow::Borrowed(s) if s.len() == head_len) {
             return OutboundAction::PassThrough;
         }
-        OutboundAction::Rewrite(bytes::Bytes::from(working.into_owned()))
+        // Head was rewritten → emit rewritten head + untouched tail.
+        if tail.is_empty() {
+            OutboundAction::Rewrite(bytes::Bytes::from(working.into_owned()))
+        } else {
+            let mut out = working.into_owned();
+            out.push_str(tail);
+            OutboundAction::Rewrite(bytes::Bytes::from(out))
+        }
     }
 
     /// AC-P1-a — strip the leak-header set in place. O(header count)
@@ -617,6 +668,98 @@ mod tests {
             }
             other => panic!("token off auth path must Rewrite, got {other:?}"),
         }
+    }
+
+    /// RF-FP — same as [`body_ctx`] but with the response content-type threaded
+    /// into `fields` as the data-plane call site does.
+    fn body_ctx_with_ct(ct: &str) -> RequestCtx {
+        let mut ctx = body_ctx();
+        ctx.fields.insert(
+            "response_content_type".into(),
+            aegis_core::context::FieldValue::Str(ct.into()),
+        );
+        ctx
+    }
+
+    /// RF-FP (2026-07-09 S-Tester) — a served `application/javascript` body
+    /// carrying `credentials`/`loginToken` keys must pass through untouched:
+    /// the content-type gate skips all body rungs for code assets so DLP can't
+    /// corrupt the script.
+    #[tokio::test]
+    async fn on_body_frame_skips_javascript_content_type() {
+        let pipe = Pipeline::new(Arc::new(crate::rules::RuleSet::new()));
+        let body = br#"state.loginToken = r.data.login_token; credentials: "same-origin","#;
+        let action = pipe
+            .on_body_frame(body, &body_ctx_with_ct("application/javascript"), &body_route())
+            .await;
+        assert!(
+            matches!(action, OutboundAction::PassThrough),
+            "JS asset must pass through (content-type gate), got {action:?}",
+        );
+    }
+
+    /// The gate is content-type-specific: the SAME secret-bearing body under a
+    /// data content-type is still scanned + rewritten.
+    #[tokio::test]
+    async fn on_body_frame_still_scans_json_content_type() {
+        let pipe = Pipeline::new(Arc::new(crate::rules::RuleSet::new()));
+        let body = br#"{"db_password":"sup3rs3cret"}"#;
+        let action = pipe
+            .on_body_frame(body, &body_ctx_with_ct("application/json"), &body_route())
+            .await;
+        match action {
+            OutboundAction::Rewrite(new) => {
+                let s = String::from_utf8(new.to_vec()).unwrap();
+                assert!(!s.contains("sup3rs3cret"), "json secret still redacted: {s}");
+            }
+            other => panic!("json body must still Rewrite, got {other:?}"),
+        }
+    }
+
+    /// RF-PERF (2026-07-09) — `redact_scan_boundary` never splits a multi-byte
+    /// codepoint (that would corrupt the passed-through tail).
+    #[test]
+    fn redact_scan_boundary_respects_char_boundaries() {
+        let s = format!("{}{}", "a".repeat(9), "é"); // 9 + 2 = 11 bytes
+        assert_eq!(redact_scan_boundary(&s, 10), 9, "byte 10 is mid-'é' → back off to 9");
+        assert_eq!(redact_scan_boundary(&s, 100), s.len(), "cap over len → whole string");
+        assert_eq!(redact_scan_boundary("abc", 3), 3);
+    }
+
+    /// A secret within the first `MAX_REDACT_SCAN_BYTES` of a large body is
+    /// still redacted, and the (unscanned) tail is preserved verbatim.
+    #[tokio::test]
+    async fn on_body_frame_scan_cap_redacts_head_preserves_tail() {
+        let pipe = Pipeline::new(Arc::new(crate::rules::RuleSet::new()));
+        let mut body = br#"{"db_password":"sup3rs3cret","pad":""#.to_vec();
+        body.extend(std::iter::repeat(b'a').take(MAX_REDACT_SCAN_BYTES + 4096));
+        body.extend_from_slice(br#""}"#);
+        let action = pipe.on_body_frame(&body, &body_ctx(), &body_route()).await;
+        match action {
+            OutboundAction::Rewrite(new) => {
+                let s = String::from_utf8(new.to_vec()).unwrap();
+                assert!(!s.contains("sup3rs3cret"), "head secret must be redacted");
+                assert!(s.len() > MAX_REDACT_SCAN_BYTES, "tail must be preserved");
+            }
+            other => panic!("head secret must Rewrite, got {other:?}"),
+        }
+    }
+
+    /// A secret located PAST the scan cap is deliberately not scanned — the
+    /// perf guard bounds the regex work, and the tail passes through. Locks the
+    /// documented trade-off.
+    #[tokio::test]
+    async fn on_body_frame_scan_cap_skips_secret_past_cap() {
+        let pipe = Pipeline::new(Arc::new(crate::rules::RuleSet::new()));
+        let mut body: Vec<u8> = std::iter::repeat(b'a')
+            .take(MAX_REDACT_SCAN_BYTES + 4096)
+            .collect();
+        body.extend_from_slice(br#"{"db_password":"sup3rs3cret"}"#);
+        let action = pipe.on_body_frame(&body, &body_ctx(), &body_route()).await;
+        assert!(
+            matches!(action, OutboundAction::PassThrough),
+            "a secret past MAX_REDACT_SCAN_BYTES is not scanned (perf cap), got {action:?}",
+        );
     }
 
     /// email/phone are opt-in: a body carrying only an email passes through

@@ -3354,6 +3354,19 @@ pub(crate) async fn forward_allow_to_upstream(
                 "path".to_string(),
                 aegis_core::context::FieldValue::Str(path.clone()),
             );
+            // RF-FP (2026-07-09) — thread the response content-type so the
+            // filter can skip served code/asset bodies (JS/CSS/media) whose
+            // secret/hostname heuristics would only corrupt them.
+            if let Some(ct) = parts_out
+                .headers
+                .get(hyper::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+            {
+                filter_fields.insert(
+                    "response_content_type".to_string(),
+                    aegis_core::context::FieldValue::Str(ct.to_string()),
+                );
+            }
             let rctx_for_filter = aegis_core::context::RequestCtx {
                 request_id: String::new(),
                 received_at: request_start,
