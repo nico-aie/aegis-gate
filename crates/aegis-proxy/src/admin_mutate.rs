@@ -233,6 +233,47 @@ fn patch_upstream_pool_set(
     serde_yaml::to_string(&doc).map_err(|e| format!("re-serialize config: {e}"))
 }
 
+/// BUG-zerotrust-upstream-mtls-identity-not-attached (2026-07-09) —
+/// ensure the YAML config doc declares
+/// `zero_trust.upstream_identity { source: state }` so a console-uploaded
+/// identity (stored in the config plane under `UPSTREAM_IDENTITY_STATE_KEY`)
+/// is materialized + validated fleet-wide by both enforcement gates
+/// (`validate_upstream_mtls` + `materialize_zero_trust_state`). Console
+/// upload is authoritative: an existing `source: file` block is
+/// overwritten to `state` and its `cert_path`/`key_ref` dropped (the
+/// state record carries the material). Returns `Ok(None)` when the doc
+/// already declares `source: state` (idempotent — no re-activate needed).
+fn patch_zero_trust_identity_source_state(base: &str) -> Result<Option<String>, String> {
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(base).map_err(|e| format!("base config not YAML: {e}"))?;
+    let serde_yaml::Value::Mapping(map) = &mut doc else {
+        return Err("base config is not a YAML mapping".into());
+    };
+    // Idempotent: already `source: state` ⇒ nothing to publish.
+    let already_state = map
+        .get(serde_yaml::Value::String("zero_trust".into()))
+        .and_then(|z| z.get("upstream_identity"))
+        .and_then(|id| id.get("source"))
+        .and_then(|s| s.as_str())
+        == Some("state");
+    if already_state {
+        return Ok(None);
+    }
+    let zt = yaml_child_map(map, "zero_trust")?;
+    let mut id_map = serde_yaml::Mapping::new();
+    id_map.insert(
+        serde_yaml::Value::String("source".into()),
+        serde_yaml::Value::String("state".into()),
+    );
+    zt.insert(
+        serde_yaml::Value::String("upstream_identity".into()),
+        serde_yaml::Value::Mapping(id_map),
+    );
+    serde_yaml::to_string(&doc)
+        .map(Some)
+        .map_err(|e| format!("re-serialize config: {e}"))
+}
+
 /// Remove `cfg.upstreams.<id>` from a YAML config doc (idempotent).
 fn patch_upstream_pool_remove(base: &str, id: &str) -> Result<String, String> {
     let mut doc: serde_yaml::Value =
@@ -1570,6 +1611,56 @@ pub(crate) async fn handle_mtls_mode_put(
 //
 // Body: `{"cert_pem": "<PUBLIC chain>", "key_pem": "<PEM>"}` or
 //       `{"cert_pem": "<PUBLIC chain>", "key_ref": "<path|secret-ref>"}`.
+/// BUG-zerotrust-upstream-mtls-identity-not-attached (2026-07-09) —
+/// after the identity record is stored, publish
+/// `zero_trust.upstream_identity { source: state }` into the active
+/// config plane so both enforcement gates pick up the record fleet-wide
+/// (`validate_upstream_mtls` sees the block; boot/reload
+/// `materialize_zero_trust_state` folds the record's cert+key; the
+/// rotation task hot-applies within one interval; `store.activate`
+/// propagates the declaration to every node). Idempotent no-op when the
+/// active config already declares `source: state`. Returns an error
+/// response on failure — the record is already stored, so a retry only
+/// re-publishes the idempotent declaration.
+async fn publish_upstream_identity_source_state(
+    services: &aegis_control::dashboard_services::DashboardServices,
+    actor: &str,
+) -> Result<(), Response<Full<Bytes>>> {
+    use aegis_control::api::mutation::MutationError;
+    let (store, base_blob, expected) = load_active_config_doc(services).await?;
+    let new_blob = match patch_zero_trust_identity_source_state(&base_blob) {
+        Ok(None) => return Ok(()), // already source: state — nothing to publish
+        Ok(Some(b)) => b,
+        Err(e) => return Err(mutation_error_response(MutationError::Validation(e))),
+    };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return Err(mutation_error_response(MutationError::Validation(format!(
+            "publishing upstream identity declaration failed validation: {e}"
+        ))));
+    }
+    match store
+        .activate(
+            expected,
+            new_blob,
+            actor,
+            "publish upstream identity (source: state)",
+        )
+        .await
+    {
+        Ok(crate::config_source::config_store::Activate::Applied { .. }) => Ok(()),
+        Ok(crate::config_source::config_store::Activate::Conflict { .. }) => {
+            Err(mutation_error_response(MutationError::Conflict(
+                "config plane changed concurrently while publishing the upstream \
+                 identity declaration; retry"
+                    .into(),
+            )))
+        }
+        Err(e) => Err(mutation_error_response(MutationError::Internal(format!(
+            "publish upstream identity declaration: {e}"
+        )))),
+    }
+}
+
 pub(crate) async fn handle_zt_upstream_identity_put(
     req: hyper::Request<hyper::body::Incoming>,
     services: &aegis_control::dashboard_services::DashboardServices,
@@ -1695,6 +1786,15 @@ pub(crate) async fn handle_zt_upstream_identity_put(
 
     match outcome {
         Ok(_) => {
+            // BUG-zerotrust-upstream-mtls-identity-not-attached (2026-07-09)
+            // — publish `zero_trust.upstream_identity { source: state }` so
+            // the just-stored record is actually materialized + validated on
+            // the dial path (both gates) and converges across the fleet.
+            // Record is written first (above), so the reload/rotation that
+            // this activate triggers finds the material present.
+            if let Err(resp) = publish_upstream_identity_source_state(services, &pre.actor).await {
+                return resp;
+            }
             // Immediately update the in-memory rotation status so the GET
             // endpoint reflects the new cert without waiting for the next
             // poll cycle (≤5 s). The rotation task will also pick it up on

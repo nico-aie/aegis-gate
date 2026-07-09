@@ -194,6 +194,15 @@ fn fingerprint(identity: &Option<UpstreamIdentityConfig>, trust: &HashMap<String
         .and_then(|i| i.key_ref.as_deref())
         .unwrap_or("")
         .hash(&mut h);
+    // BUG-zerotrust-upstream-mtls-identity-not-attached (2026-07-09) —
+    // fold the inline private-key PEM so rotating only the key (same
+    // cert + same key_ref) still changes the fingerprint and rebuilds
+    // the pool client; otherwise the old key stays attached.
+    identity
+        .as_ref()
+        .and_then(|i| i.key_pem.as_deref())
+        .unwrap_or("")
+        .hash(&mut h);
     let mut entries: Vec<(&String, &String)> = trust.iter().collect();
     entries.sort_by(|a, b| a.0.cmp(b.0));
     for (k, v) in entries {

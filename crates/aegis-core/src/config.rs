@@ -3429,6 +3429,15 @@ pub fn resolve_upstream_mtls(
     // materialized cert ⇒ `None` here; the boot path fails closed
     // before reaching the build path, so a downgraded (no-client-auth)
     // dial never goes live.
+    // BUG-zerotrust-upstream-mtls-identity-not-attached (2026-07-09) —
+    // a source: state identity whose PUBLIC cert hasn't materialized
+    // (`cert_pem: None`) must fail closed rather than fall back to the
+    // on-disk `cert_path`; the boot/reload materialization is what folds
+    // the config-plane record in, and presenting a stale file cert here
+    // would be the "wrong cert" symptom.
+    if id.source == UpstreamIdentitySource::State && id.cert_pem.is_none() {
+        return None;
+    }
     let client_cert = match id.cert_pem.clone() {
         Some(pem) => CertSource::Pem(pem),
         None => CertSource::File(id.cert_path.clone()?),
