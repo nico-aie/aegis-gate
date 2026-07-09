@@ -134,19 +134,31 @@ static INTERNAL_IP_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
 /// so `replace_all` can preserve it.
 static INTERNAL_IPV6_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        // Leading anchor only — the `lead` capture distinguishes
-        // bare `::1` from the `::1` tail of a longer public address
-        // like `2001:db8::1`. We deliberately do NOT anchor the
-        // trailing side because legitimate contexts (`::1:9999`
-        // for port, `fc00:abcd:1234:5678::42` for the rest of a
-        // ULA) place hex/colon directly after our pattern. Greedy
-        // hex/colon consumption inside the address branches
-        // (`[0-9a-f:]+`) handles the ULA / link-local "rest of
-        // address" naturally.
+        // Leading anchor + `lead` capture distinguishes bare `::1`
+        // from the `::1` tail of a longer public address like
+        // `2001:db8::1`.
+        //
+        // RF-FP (2026-07-09) — the `::1` branch also carries a
+        // trailing `tail` guard `($ | [^0-9a-fA-F])`. A real IPv6
+        // loopback is *exactly* `::1`; `::1` followed by another hex
+        // digit is a different address (`::1339`) or, in practice,
+        // opaque junk — a verbose-404 echoing `...j::1339.5...` used
+        // to be rewritten to `...j[INTERNAL]339.5...`. The guard
+        // requires the char after `::1` to be end-of-text or a
+        // non-hex-digit, so `::1339`/`::1abc` no longer match while
+        // `::1`, `::1:9999` (a `:` follows — non-hex), and `::1 `
+        // still do. `tail` is captured and restored in the
+        // replacement (`${lead}[INTERNAL]${tail}`); it is unmatched
+        // (→ empty) for the other branches.
+        //
+        // The trailing side is deliberately NOT anchored on the ULA
+        // / link-local branches: legitimate context (`fc00:abcd:…::42`
+        // "rest of a ULA") places hex/colon directly after, and the
+        // greedy `[0-9a-f:]+` inside those branches consumes it.
         r"(?ix)
             (?P<lead> ^ | [^0-9a-fA-F:] )
             (?:
-                ::1
+                ::1 (?P<tail> $ | [^0-9a-fA-F] )
                 | [f][cd][0-9a-f]{2} : [0-9a-f:]+
                 | fe[89ab][0-9a-f]   : [0-9a-f:]+
                 | ::ffff: \d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}
@@ -193,7 +205,7 @@ pub fn mask_internal_ips(text: &str) -> String {
     // non-hex-non-colon char) so the surrounding context is
     // preserved across the replacement.
     INTERNAL_IPV6_PATTERN
-        .replace_all(&v4, "${lead}[INTERNAL]")
+        .replace_all(&v4, "${lead}[INTERNAL]${tail}")
         .to_string()
 }
 
@@ -204,13 +216,23 @@ static INFRA_DSN_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
-/// Internal service-discovery hostnames: any FQDN carrying an `internal` or
-/// `svc` label (`db.internal.novabet.local`, `x.svc.cluster.local`). The
-/// interior `.internal.`/`.svc.` label is the signature — it does not occur
-/// in public FQDNs, so `api.example.com` and the bare-`.local` filename
-/// `app.local.js` are not matched.
+/// Internal service-discovery hostnames. RF-FP (2026-07-09 S-Tester) — this
+/// used to match any FQDN carrying an `internal` OR `svc` label
+/// (`\.(?:internal|svc)`), which fired on huge volumes of legitimate content:
+/// a replay corpus masked 1083 `google.internal.<svc>.<Method>` gRPC service
+/// identifiers and 969 `<name>.svc` WCF/ASP.NET endpoint files. Neither is a
+/// leaked hostname.
+///
+/// Now scoped to the actual internal-zone shape: an `internal` label followed
+/// (eventually) by a `.local` suffix — `db.internal.novabet.local`. The bare
+/// `svc` label is dropped entirely: real K8s service FQDNs end in
+/// `.cluster.local` ([`struct@CLUSTER_LOCAL_PATTERN`]) and infra `svc` DSNs
+/// are caught by [`struct@INFRA_DSN_PATTERN`], so nothing of value is lost
+/// while `<name>.svc` files stop matching. Public FQDNs (`api.example.com`),
+/// gRPC ids (`google.internal.waa.v1.Waa` — no `.local`) and `.local`
+/// filenames (`app.local.js` — no `internal` label) are all left untouched.
 static INTERNAL_HOST_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:internal|svc)(?:\.[a-z0-9-]+)*\b").unwrap()
+    Regex::new(r"(?i)\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.internal(?:\.[a-z0-9-]+)*\.local\b").unwrap()
 });
 
 /// Bare `*.cluster.local` (K8s) without an `svc` label.
@@ -230,6 +252,39 @@ pub fn mask_internal_hostnames(text: &str) -> String {
     let a = INFRA_DSN_PATTERN.replace_all(text, "[INTERNAL]");
     let b = INTERNAL_HOST_PATTERN.replace_all(&a, "[INTERNAL]");
     CLUSTER_LOCAL_PATTERN.replace_all(&b, "[INTERNAL]").to_string()
+}
+
+/// RF-FP (2026-07-09 S-Tester) — content-types whose bodies are served *code*
+/// or binary assets, not data payloads. The response-body filter rungs apply
+/// secret / hostname / IP heuristics that only corrupt these: a replay caught
+/// a served `application/javascript` bundle having `credentials: "same-origin"`
+/// and `loginToken: null` rewritten to `[REDACTED]`, breaking the script.
+///
+/// This is a *denylist* of known non-data types, not a data-type allowlist:
+/// the default is to scan, so an unusual data-ish content-type
+/// (`application/ld+json`, `application/x-ndjson`, a vendor `+json`) can never
+/// silently bypass DLP. `essence` is the media type before any `;` parameters.
+pub fn is_non_scannable_content_type(content_type: &str) -> bool {
+    let essence = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        essence.as_str(),
+        "application/javascript"
+            | "text/javascript"
+            | "application/x-javascript"
+            | "application/ecmascript"
+            | "text/ecmascript"
+            | "text/css"
+            | "application/wasm"
+            | "application/octet-stream"
+    ) || essence.starts_with("image/")
+        || essence.starts_with("font/")
+        || essence.starts_with("audio/")
+        || essence.starts_with("video/")
 }
 
 /// 2026-05-18 F-CRITICAL-013 §5.7 sub-fix (JSON field masking).
@@ -326,6 +381,59 @@ mod tests {
         // Public FQDNs and bare-`.local` filenames must pass through.
         for s in ["GET https://api.example.com/v1", "load /static/app.local.js"] {
             assert_eq!(mask_internal_hostnames(s), s, "public host masked: {s}");
+        }
+    }
+
+    /// RF-FP (2026-07-09 S-Tester) — the old `\.(?:internal|svc)` label matcher
+    /// masked legitimate gRPC service ids and `.svc` endpoint files. These must
+    /// now pass through untouched (they are not internal-zone FQDNs).
+    #[test]
+    fn rf_fp_grpc_and_svc_files_untouched() {
+        for s in [
+            r#"/$rpc/google.internal.waa.v1.Waa/Create"#,
+            r#"/$rpc/google.internal.onegoogle.asyncdata.v1.AsyncDataService/Generate"#,
+            "GET /Services/StockQuote.svc",
+            "POST /api/podedit.svc",
+            "load /static/classic.internal.js",
+            "app.internal.js.html",
+        ] {
+            assert_eq!(mask_internal_hostnames(s), s, "legit token masked: {s}");
+        }
+    }
+
+    /// The tightened `internal` matcher still masks real `.internal.<...>.local`
+    /// zone FQDNs (the RF-3 leak shape) — regression-locks the true positive.
+    #[test]
+    fn rf_fp_internal_local_zone_still_masked() {
+        let out = mask_internal_hostnames("dial db.internal.novabet.local:5432 failed");
+        assert!(!out.contains("db.internal.novabet.local"), "zone host leaked: {out}");
+        assert!(out.contains("[INTERNAL]"), "no mask marker: {out}");
+    }
+
+    /// RF-FP (2026-07-09) — served code/asset content-types are not scanned;
+    /// data types (and unknown/absent types) still are.
+    #[test]
+    fn content_type_gate_skips_code_and_assets_only() {
+        for ct in [
+            "application/javascript",
+            "text/javascript; charset=utf-8",
+            "TEXT/CSS",
+            "image/png",
+            "font/woff2",
+            "video/mp4",
+            "application/octet-stream",
+        ] {
+            assert!(is_non_scannable_content_type(ct), "should skip: {ct}");
+        }
+        for ct in [
+            "application/json",
+            "application/ld+json",
+            "text/html; charset=utf-8",
+            "text/plain",
+            "application/xml",
+            "",
+        ] {
+            assert!(!is_non_scannable_content_type(ct), "should scan: {ct}");
         }
     }
 
@@ -615,6 +723,41 @@ mod tests {
         let text = "ipv6 host 2001:db8::1 listening";
         let m = mask_internal_ips(text);
         assert!(m.contains("2001:db8::1"), "public IPv6 should not be masked: {m}");
+    }
+
+    /// RF-FP (2026-07-09) — `::1` immediately followed by a hex digit
+    /// is a DIFFERENT address / opaque junk, not loopback. The reported
+    /// case: a verbose-404 echoing an Amazon telemetry blob
+    /// (`...www.amazon.com$cel=j::1339.5...`) was being rewritten to
+    /// `...j[INTERNAL]339.5...`. The trailing `tail` guard must leave it
+    /// untouched.
+    #[test]
+    fn does_not_mask_colon_colon_one_followed_by_hex_digit() {
+        let text = "/1/OE/…:www.amazon.com$cel=j::1339.5,\"y\":367.859375,\"t\":9484}";
+        let m = mask_internal_ips(text);
+        assert_eq!(m, text, "::1<hex> must not be masked: {m}");
+        assert!(!m.contains("[INTERNAL]"), "no mask marker expected: {m}");
+    }
+
+    /// The trailing-hex guard also rejects `::11` / `::1abc` (distinct
+    /// addresses whose `::1` prefix is not loopback).
+    #[test]
+    fn does_not_mask_colon_colon_one_hex_variants() {
+        for text in ["addr ::11 here", "node ::1abc down", "x::1def"] {
+            assert_eq!(mask_internal_ips(text), text, "over-matched: {text}");
+        }
+    }
+
+    /// Bare `::1` as its own token (end-of-string / whitespace-bounded)
+    /// is still masked — the guard's `$ | [^0-9a-fA-F]` alternative
+    /// covers the loopback true-positive.
+    #[test]
+    fn still_masks_bare_ipv6_loopback() {
+        for text in ["connect to ::1", "backend ::1 refused", "host=::1;"] {
+            let m = mask_internal_ips(text);
+            assert!(!m.contains("::1"), "loopback should be masked: {m}");
+            assert!(m.contains("[INTERNAL]"), "mask marker expected: {m}");
+        }
     }
 
     /// JSON field mask replaces values for configured field names.
