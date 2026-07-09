@@ -44,6 +44,12 @@ pub struct ResponseFilterPatch {
     pub redact_email: bool,
     #[serde(default)]
     pub redact_phone: bool,
+    /// RF-FP (2026-07-09 QC — "full key-first") — run the free-floating
+    /// VALUE-shape secret/financial DLP patterns. OFF by default: only the
+    /// structural KEY-value patterns redact (scrub a value only when its key
+    /// names a secret). A `PUT {}` leaves it off.
+    #[serde(default)]
+    pub redact_value_shapes: bool,
     /// RF-FP (2026-07-08 QC) — token-issuing endpoint paths; on these the
     /// token-class DLP patterns are skipped so a legit login/OAuth response
     /// keeps its token. A `PUT {}` restores the default auth-path list.
@@ -68,6 +74,7 @@ impl Default for ResponseFilterPatch {
             strip_response_headers: true,
             redact_email: false,
             redact_phone: false,
+            redact_value_shapes: false,
             auth_paths: default_auth_paths(),
         }
     }
@@ -85,6 +92,7 @@ pub struct ResponseFilterView {
     pub strip_response_headers: bool,
     pub redact_email: bool,
     pub redact_phone: bool,
+    pub redact_value_shapes: bool,
     pub auth_paths: Vec<String>,
     pub wired: bool,
 }
@@ -98,6 +106,7 @@ impl ResponseFilterView {
             strip_response_headers: true,
             redact_email: false,
             redact_phone: false,
+            redact_value_shapes: false,
             auth_paths: default_auth_paths(),
             wired: false,
         }
@@ -126,6 +135,7 @@ impl ResponseFilterWriter for aegis_security::Pipeline {
             strip_response_headers: patch.strip_response_headers,
             redact_email: patch.redact_email,
             redact_phone: patch.redact_phone,
+            redact_value_shapes: patch.redact_value_shapes,
             auth_paths: patch.auth_paths.clone(),
         });
     }
@@ -138,6 +148,7 @@ impl ResponseFilterWriter for aegis_security::Pipeline {
             strip_response_headers: snap.strip_response_headers,
             redact_email: snap.redact_email,
             redact_phone: snap.redact_phone,
+            redact_value_shapes: snap.redact_value_shapes,
             auth_paths: snap.auth_paths.clone(),
         }
     }
@@ -181,6 +192,20 @@ mod tests {
         assert!(p.mask_internal_ips);
         assert!(p.redact_dlp);
         assert!(p.strip_response_headers);
+    }
+
+    /// RF-FP (2026-07-09) — the value-shape rung is OFF on an empty PUT
+    /// (key-first is the default posture) and round-trips through JSON.
+    #[test]
+    fn redact_value_shapes_defaults_off_and_round_trips() {
+        let empty: ResponseFilterPatch =
+            serde_json::from_str("{}").expect("empty object parses");
+        assert!(!empty.redact_value_shapes, "value-shapes off by default (key-first)");
+        let on = ResponseFilterPatch { redact_value_shapes: true, ..ResponseFilterPatch::default() };
+        let back: ResponseFilterPatch =
+            serde_json::from_str(&serde_json::to_string(&on).unwrap()).unwrap();
+        assert!(back.redact_value_shapes);
+        assert_eq!(on, back);
     }
 
     #[test]

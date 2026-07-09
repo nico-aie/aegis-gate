@@ -8274,7 +8274,7 @@ function ResponseFilterCard() {
   // manual refresh. `optimistic` overlays the flipped value immediately;
   // `pendingRef` is the synchronous mirror so a rapid second flip / an
   // auth-paths save builds its patch from ALL in-flight flips (no clobber).
-  const BOOL_RUNGS = ['scrub_stack_traces', 'mask_internal_ips', 'redact_dlp', 'strip_response_headers', 'redact_email', 'redact_phone'];
+  const BOOL_RUNGS = ['scrub_stack_traces', 'mask_internal_ips', 'redact_dlp', 'strip_response_headers', 'redact_email', 'redact_phone', 'redact_value_shapes'];
   const [optimistic, setOptimistic] = useStateP({});
   const pendingRef = useRefP({});
   // Reconcile: on fresh server data, drop optimistic flips the server has
@@ -8375,7 +8375,7 @@ function ResponseFilterCard() {
     {
       key: 'redact_dlp',
       label: 'Redact DLP payloads',
-      desc: 'Structural secrets (env/JSON/YAML key=value) → [REDACTED]; cards (Luhn), SSN, IBAN, AWS/GitHub/Stripe/Slack tokens, SSH keys, password hashes; internal hostnames/DSNs → [INTERNAL]',
+      desc: 'Structural key-first: a value is redacted when its KEY names a secret (env/JSON/YAML key=value, e.g. password/secret/api_key/token) → [REDACTED]; internal hostnames/DSNs → [INTERNAL]. Value-shape matching is a separate rung below.',
     },
     {
       key: 'strip_response_headers',
@@ -8391,6 +8391,11 @@ function ResponseFilterCard() {
       key: 'redact_phone',
       label: 'Redact phone numbers (opt-in)',
       desc: 'OFF by default — phone-shaped numbers are a broad false-positive source. Enable only if responses must never carry any phone number → [REDACTED]',
+    },
+    {
+      key: 'redact_value_shapes',
+      label: 'Match secret value shapes (opt-in)',
+      desc: 'OFF by default (key-first). When on, redacts secrets by VALUE shape anywhere in the body — AWS/GitHub/Stripe/Slack/Google keys, PEM/SSH keys, password hashes, JWTs, and checksum-valid cards/SSN/IBAN — even with no key beside them. Catches keyless leaks (secret dumped in a stack trace) at the cost of some false positives on opaque IDs that look like tokens.',
     },
   ];
 

@@ -1452,7 +1452,7 @@ async function aiReloadPost() {
 function useResponseFilterApi() {
   return useApi('/api/response-filter', {
     intervalMs: 15000,
-    fallback: { scrub_stack_traces: true, mask_internal_ips: true, redact_dlp: true, strip_response_headers: true, redact_email: false, redact_phone: false, auth_paths: [], wired: false },
+    fallback: { scrub_stack_traces: true, mask_internal_ips: true, redact_dlp: true, strip_response_headers: true, redact_email: false, redact_phone: false, redact_value_shapes: false, auth_paths: [], wired: false },
   });
 }
 async function responseFilterPut(patch) {
@@ -1473,6 +1473,8 @@ async function responseFilterPut(patch) {
       // send all three so a rung flip never resets them to the serde default.
       redact_email:           !!patch.redact_email,
       redact_phone:           !!patch.redact_phone,
+      // RF-FP (2026-07-09) — value-shape secret/financial rungs (key-first when off).
+      redact_value_shapes:    !!patch.redact_value_shapes,
       auth_paths:             Array.isArray(patch.auth_paths) ? patch.auth_paths : [],
     }),
   });

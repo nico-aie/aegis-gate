@@ -69,6 +69,15 @@ pub struct ResponseFilterConfig {
     /// + distinctive credential rungs stay on under `redact_dlp`.
     pub redact_email: bool,
     pub redact_phone: bool,
+    /// RF-FP (2026-07-09 QC — "full key-first") — run the free-floating
+    /// VALUE-shape secret/financial DLP patterns (aws/github/stripe/slack/
+    /// google/pem/ssh/hash/jwt/card/ssn/iban). Default **OFF**: only the
+    /// structural KEY-value patterns redact (a value is scrubbed only when its
+    /// key names a secret), which is the low-FP posture — opaque IDs that merely
+    /// look like a token/IBAN/card are never touched. Trade-off: a keyless
+    /// secret dumped bare (e.g. an `AKIA…` in a stack trace) is not caught until
+    /// an operator flips this on.
+    pub redact_value_shapes: bool,
     /// RF-FP (2026-07-08 QC) — token-issuing (auth) endpoint paths. On these
     /// the token-class DLP patterns (jwt + structural access_token/
     /// refresh_token/token) are skipped so a legit login/OAuth response keeps
@@ -85,6 +94,7 @@ impl Default for ResponseFilterConfig {
             strip_response_headers: true,
             redact_email: false,
             redact_phone: false,
+            redact_value_shapes: false,
             auth_paths: default_auth_paths(),
         }
     }
@@ -340,6 +350,7 @@ impl SecurityPipeline for Pipeline {
                 redact_email: cfg.redact_email,
                 redact_phone: cfg.redact_phone,
                 keep_tokens: is_auth_path(path, &cfg.auth_paths),
+                redact_value_shapes: cfg.redact_value_shapes,
             };
             let redacted = crate::dlp::redact_with(&working, &policy);
             if redacted != *working {
@@ -688,6 +699,49 @@ mod tests {
             matches!(action, OutboundAction::PassThrough),
             "all rungs off must short-circuit to PassThrough, got {action:?}",
         );
+    }
+
+    /// RF-FP (2026-07-09 QC — "full key-first") — the wired data-plane default
+    /// (`ResponseFilterConfig::default()`, value-shapes OFF) redacts a secret
+    /// whose KEY names it (structural) but leaves a KEYLESS value-shape secret
+    /// (a bare `AKIA…`) untouched. This is the FP/recall trade-off the operator
+    /// chose: opaque IDs that merely look like tokens survive.
+    #[tokio::test]
+    async fn on_body_frame_default_is_key_first() {
+        let pipe = Pipeline::new(Arc::new(crate::rules::RuleSet::new()));
+        // Structural (keyed) secret + a keyless AWS key value.
+        let body = br#"{"db_password":"sup3rs3cret","note":"AKIAIOSFODNN7EXAMPLE"}"#;
+        match pipe.on_body_frame(body, &body_ctx(), &body_route()).await {
+            OutboundAction::Rewrite(new) => {
+                let s = String::from_utf8(new.to_vec()).unwrap();
+                assert!(!s.contains("sup3rs3cret"), "keyed secret must redact (structural): {s}");
+                assert!(
+                    s.contains("AKIAIOSFODNN7EXAMPLE"),
+                    "keyless AKIA must survive under key-first default: {s}",
+                );
+            }
+            other => panic!("keyed db_password must force a Rewrite, got {other:?}"),
+        }
+    }
+
+    /// With value-shapes explicitly enabled, the same keyless `AKIA…` is caught.
+    #[tokio::test]
+    async fn on_body_frame_value_shapes_on_catches_keyless_secret() {
+        let cfg = ResponseFilterConfig { redact_value_shapes: true, ..ResponseFilterConfig::default() };
+        let pipe = Pipeline::with_filter(Arc::new(crate::rules::RuleSet::new()), cfg);
+        let body = br#"{"note":"AKIAIOSFODNN7EXAMPLE"}"#;
+        match pipe.on_body_frame(body, &body_ctx(), &body_route()).await {
+            OutboundAction::Rewrite(new) => {
+                let s = String::from_utf8(new.to_vec()).unwrap();
+                assert!(!s.contains("AKIAIOSFODNN7EXAMPLE"), "value-shapes on must redact keyless AKIA: {s}");
+            }
+            other => panic!("value-shapes on must Rewrite the AKIA body, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn default_config_is_key_first() {
+        assert!(!ResponseFilterConfig::default().redact_value_shapes, "value-shapes off by default");
     }
 
     #[test]

@@ -319,6 +319,7 @@ pub fn apply_cfg_change_to_response_filter(
         strip_response_headers: rf.strip_response_headers,
         redact_email: rf.redact_email,
         redact_phone: rf.redact_phone,
+        redact_value_shapes: rf.redact_value_shapes,
         auth_paths: rf.auth_paths.clone(),
     });
     ResponseFilterReloadOutcome::Applied {
