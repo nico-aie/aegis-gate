@@ -2550,6 +2550,21 @@ pub(crate) async fn accept_loop(
                             {
                                 map.extend(echo);
                             }
+                            // 2026-07-09 — a detected-but-allowed request
+                            // (detectors fired, under the per-request tier
+                            // threshold) carries the full redacted echo the
+                            // data plane captured while the body was still
+                            // buffered (headers + body preview), gated at
+                            // Info like blocks. Merge it so the allowed-but-
+                            // flagged drawer shows the same detail a block
+                            // does — and so it supersedes the Debug-only
+                            // header echo above when both are present. Clean
+                            // allows leave `audit_echo` None → row stays slim.
+                            if let (serde_json::Value::Object(ref mut map), Some(echo)) =
+                                (&mut f, decision.audit_echo.clone())
+                            {
+                                map.extend(echo);
+                            }
                             // 2026-05-21 — per-request detector score for
                             // a detected-but-allowed request (sum of this
                             // request's signals), distinct from the
