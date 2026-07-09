@@ -3429,6 +3429,15 @@ pub fn resolve_upstream_mtls(
     // materialized cert ⇒ `None` here; the boot path fails closed
     // before reaching the build path, so a downgraded (no-client-auth)
     // dial never goes live.
+    // BUG-zerotrust-upstream-mtls-identity-not-attached (2026-07-09) —
+    // a source: state identity whose PUBLIC cert hasn't materialized
+    // (`cert_pem: None`) must fail closed rather than fall back to the
+    // on-disk `cert_path`; the boot/reload materialization is what folds
+    // the config-plane record in, and presenting a stale file cert here
+    // would be the "wrong cert" symptom.
+    if id.source == UpstreamIdentitySource::State && id.cert_pem.is_none() {
+        return None;
+    }
     let client_cert = match id.cert_pem.clone() {
         Some(pem) => CertSource::Pem(pem),
         None => CertSource::File(id.cert_path.clone()?),
@@ -8600,6 +8609,22 @@ state: {{ backend: in_memory }}
         cfg.validate().unwrap();
         let id = cfg.zero_trust.as_ref().and_then(|z| z.upstream_identity.as_ref());
         assert!(resolve_upstream_mtls(&cfg.upstreams["api"], id).is_none());
+    }
+
+    // BUG-zerotrust-upstream-mtls-identity-not-attached (2026-07-09) —
+    // a source: state identity whose PUBLIC cert never materialized
+    // (cert_pem: None) must NOT silently fall back to the on-disk
+    // cert_path — that would present a stale/wrong cert. Fail closed.
+    #[test]
+    fn upstream_mtls_state_identity_without_materialized_cert_fails_closed() {
+        let state_id = "zero_trust:\n  upstream_identity:\n    source: state\n    cert_path: /etc/waf/stale.pem\n    key_ref: /etc/waf/stale.key\n";
+        let yaml = cfg_with_upstream("    upstream_mtls: { enabled: true }\n", state_id);
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let id = cfg.zero_trust.as_ref().and_then(|z| z.upstream_identity.as_ref());
+        assert!(
+            resolve_upstream_mtls(&cfg.upstreams["api"], id).is_none(),
+            "state identity without a materialized cert_pem must fail closed, not use cert_path"
+        );
     }
 
     #[test]
