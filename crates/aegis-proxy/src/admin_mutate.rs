@@ -7437,6 +7437,65 @@ mod gate_toggle_patch_tests {
 mod tests {
     use super::*;
 
+    // BUG-zerotrust-upstream-mtls-identity-not-attached (2026-07-09) —
+    // a console identity upload must publish `zero_trust.upstream_identity
+    // { source: state }` into the config plane so both enforcement gates
+    // (validate_upstream_mtls + materialize_zero_trust_state) pick up the
+    // stored record fleet-wide. These cover the pure blob patch helper.
+    const ZT_BASE_NO_ZT: &str = r#"
+listeners:
+  data: [{ bind: "0.0.0.0:443" }]
+  admin: { bind: "127.0.0.1:9443" }
+routes:
+  - { id: catch-all, path: "/", upstream: api }
+upstreams:
+  api: { members: [{ addr: "127.0.0.1:3000" }] }
+state: { backend: in_memory }
+"#;
+
+    #[test]
+    fn patch_zt_identity_adds_state_block_when_absent() {
+        let patched = patch_zero_trust_identity_source_state(ZT_BASE_NO_ZT)
+            .expect("patch ok")
+            .expect("a change was published (no zero_trust block existed)");
+        let cfg = aegis_core::load_config_str(&patched).expect("patched config valid");
+        let src = cfg
+            .zero_trust
+            .as_ref()
+            .and_then(|z| z.upstream_identity.as_ref())
+            .map(|id| id.source);
+        assert_eq!(src, Some(aegis_core::config::UpstreamIdentitySource::State));
+    }
+
+    #[test]
+    fn patch_zt_identity_overrides_file_source() {
+        let base = format!(
+            "{ZT_BASE_NO_ZT}\nzero_trust:\n  upstream_identity:\n    source: file\n    cert_path: /etc/waf/c.pem\n    key_ref: /etc/waf/c.key\n"
+        );
+        let patched = patch_zero_trust_identity_source_state(&base)
+            .expect("patch ok")
+            .expect("file source is overridden to state (console upload wins)");
+        let cfg = aegis_core::load_config_str(&patched).expect("patched config valid");
+        let src = cfg
+            .zero_trust
+            .as_ref()
+            .and_then(|z| z.upstream_identity.as_ref())
+            .map(|id| id.source);
+        assert_eq!(src, Some(aegis_core::config::UpstreamIdentitySource::State));
+    }
+
+    #[test]
+    fn patch_zt_identity_idempotent_when_already_state() {
+        let base = format!(
+            "{ZT_BASE_NO_ZT}\nzero_trust:\n  upstream_identity:\n    source: state\n"
+        );
+        // Already `source: state` ⇒ no publish needed (None), so the
+        // handler skips a redundant config activate.
+        assert!(patch_zero_trust_identity_source_state(&base)
+            .expect("patch ok")
+            .is_none());
+    }
+
     // SLO-P6 (P4b) — patch_slo folds the section into the doc and
     // the result survives full config validation + round-trips.
     #[test]

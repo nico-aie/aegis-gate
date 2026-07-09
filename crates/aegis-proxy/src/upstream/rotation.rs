@@ -368,6 +368,27 @@ state: {{ backend: in_memory }}
         assert_ne!(fp_a, m2.fingerprint, "rotated cert must change the fingerprint");
     }
 
+    // BUG-zerotrust-upstream-mtls-identity-not-attached (2026-07-09) —
+    // rotating only the inline private key (same cert) must change the
+    // fingerprint so the pool client is rebuilt; otherwise the old key
+    // stays attached.
+    #[test]
+    fn fingerprint_changes_when_only_key_pem_rotates() {
+        let mk = |key_pem: Option<&str>| {
+            Some(UpstreamIdentityConfig {
+                source: aegis_core::config::UpstreamIdentitySource::State,
+                cert_path: None,
+                key_ref: None,
+                cert_pem: Some("CERT-A".into()),
+                key_pem: key_pem.map(|s| s.to_string()),
+            })
+        };
+        let trust: HashMap<String, String> = HashMap::new();
+        let fp1 = fingerprint(&mk(Some("KEY-1")), &trust);
+        let fp2 = fingerprint(&mk(Some("KEY-2")), &trust);
+        assert_ne!(fp1, fp2, "a rotated inline private key must change the fingerprint");
+    }
+
     #[tokio::test]
     async fn read_material_skips_file_source_identity() {
         let state: Arc<dyn StateBackend> = Arc::new(InMemoryBackend::new());

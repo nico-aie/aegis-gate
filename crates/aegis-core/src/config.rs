@@ -8602,6 +8602,22 @@ state: {{ backend: in_memory }}
         assert!(resolve_upstream_mtls(&cfg.upstreams["api"], id).is_none());
     }
 
+    // BUG-zerotrust-upstream-mtls-identity-not-attached (2026-07-09) —
+    // a source: state identity whose PUBLIC cert never materialized
+    // (cert_pem: None) must NOT silently fall back to the on-disk
+    // cert_path — that would present a stale/wrong cert. Fail closed.
+    #[test]
+    fn upstream_mtls_state_identity_without_materialized_cert_fails_closed() {
+        let state_id = "zero_trust:\n  upstream_identity:\n    source: state\n    cert_path: /etc/waf/stale.pem\n    key_ref: /etc/waf/stale.key\n";
+        let yaml = cfg_with_upstream("    upstream_mtls: { enabled: true }\n", state_id);
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let id = cfg.zero_trust.as_ref().and_then(|z| z.upstream_identity.as_ref());
+        assert!(
+            resolve_upstream_mtls(&cfg.upstreams["api"], id).is_none(),
+            "state identity without a materialized cert_pem must fail closed, not use cert_path"
+        );
+    }
+
     #[test]
     fn upstream_mtls_fingerprint_changes_with_trust() {
         let base = cfg_with_upstream("    upstream_mtls: { enabled: true }\n", ID_FILE);
