@@ -4,7 +4,9 @@
 - **Severity:** High — enabling upstream mTLS silently presents **no client cert**
   or the **wrong (stale) on-disk cert**; the dashboard shows `configured: true`,
   masking the failure.
-- **Status:** 🟡 open — plan approved 2026-07-09, awaiting implementation.
+- **Status:** ✅ implemented 2026-07-09 on branch `fix/zerotrust-page` (TDD;
+  RED→GREEN→refactor). Rust tests green (aegis-core/proxy/control + workspace);
+  end-to-end `tests/mtls` handshake + cluster smoke still to run before merge.
 - **Branch:** `fix/zerotrust-page`.
 - **Reporter:** liud (QC, 2026-07-09).
 - **Decisions (confirmed):**
