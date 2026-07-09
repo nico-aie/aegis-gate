@@ -367,13 +367,44 @@ pub struct RedactPolicy {
     pub redact_email: bool,
     pub redact_phone: bool,
     pub keep_tokens: bool,
+    /// RF-FP (2026-07-09 QC — "full key-first") — run the free-floating
+    /// VALUE-shape secret/financial patterns (`aws_key`, `github_token`,
+    /// `stripe`, `slack_token`, `google_api`, `pem`, `ssh`, `password_hash`,
+    /// `jwt`, `credit_card`, `ssn`, `iban`). When **false** (the default
+    /// posture) only the structural KEY-value patterns redact — a value is
+    /// scrubbed only when its *key* names a secret (`password`, `secret`,
+    /// `token`, `api_key`, …). This is the low-FP "check the key, not the
+    /// value" mode: opaque IDs that merely *look* like an IBAN / card / token
+    /// are never touched. Trade-off: a KEYLESS secret (an `AKIA…` or a PEM
+    /// block dumped bare in a stack trace / URL, with no key beside it) is not
+    /// caught in this mode. `email`/`phone` are gated independently by their
+    /// own opt-in flags, NOT by this one.
+    pub redact_value_shapes: bool,
 }
 
 impl RedactPolicy {
     /// The legacy "redact everything, keep nothing" posture that the
-    /// back-compat [`redact`] helper uses (email/phone on, tokens redacted).
+    /// back-compat [`redact`] helper uses (email/phone on, tokens redacted,
+    /// value-shape patterns on).
     pub const fn all() -> Self {
-        Self { redact_email: true, redact_phone: true, keep_tokens: false }
+        Self {
+            redact_email: true,
+            redact_phone: true,
+            keep_tokens: false,
+            redact_value_shapes: true,
+        }
+    }
+
+    /// RF-FP (2026-07-09) — the default "key-first" posture: structural
+    /// key-value redaction only; email/phone/value-shapes all off. Mirrors the
+    /// data-plane default built from `ResponseFilterConfig`.
+    pub const fn key_first() -> Self {
+        Self {
+            redact_email: false,
+            redact_phone: false,
+            keep_tokens: false,
+            redact_value_shapes: false,
+        }
     }
 }
 
@@ -403,11 +434,23 @@ pub fn redact(text: &str) -> String {
 pub fn redact_with(text: &str, policy: &RedactPolicy) -> String {
     let mut result = text.to_string();
     for pat in DLP_PATTERNS.iter() {
-        // Opt-in PII gates.
+        // Opt-in PII gates (independent of the value-shape gate below).
         if pat.name == "email" && !policy.redact_email {
             continue;
         }
         if pat.name == "phone" && !policy.redact_phone {
+            continue;
+        }
+        // RF-FP (2026-07-09 QC — "full key-first") — value-shape secret /
+        // financial patterns run only when explicitly enabled. Structural
+        // key-value patterns (`structural: true`) always run: they are the
+        // key-first core. `email`/`phone` are handled by their own gates
+        // above, so they are exempt here.
+        if !pat.structural
+            && pat.name != "email"
+            && pat.name != "phone"
+            && !policy.redact_value_shapes
+        {
             continue;
         }
         // Token whole-match (jwt) — kept intact on auth paths.
@@ -439,7 +482,30 @@ pub fn redact_with(text: &str, policy: &RedactPolicy) -> String {
                 })
                 .to_string()
         } else {
-            pat.regex.replace_all(&result, pat.replacement).to_string()
+            // RF-FP (2026-07-08 QC) — honor the per-pattern `validator` on the
+            // redaction path exactly like `scan` does. A bare `replace_all`
+            // redacted every checksum-SHAPED false positive (IBAN lookalikes
+            // that fail mod-97, non-Luhn 16-digit refs, invalid SSNs), which
+            // fired the response filter on benign bodies — e.g. Amazon
+            // request-IDs (`[A-Z]{2}\d{2}[A-Z0-9]{4,}`) echoed in a 404. When a
+            // match fails its validator we return the original text unchanged.
+            match pat.validator {
+                Some(validator) => pat
+                    .regex
+                    .replace_all(&result, |caps: &regex::Captures| {
+                        let whole = caps.get(0).unwrap().as_str();
+                        let value = caps.get(1).map_or(whole, |m| m.as_str());
+                        if validator(value) {
+                            let mut dst = String::new();
+                            caps.expand(pat.replacement, &mut dst);
+                            dst
+                        } else {
+                            whole.to_string()
+                        }
+                    })
+                    .to_string(),
+                None => pat.regex.replace_all(&result, pat.replacement).to_string(),
+            }
         };
     }
     result
@@ -566,6 +632,66 @@ mod tests {
     fn detect_iban_de() {
         let matches = scan("IBAN: DE89370400440532013000");
         assert!(matches.iter().any(|m| m.pattern_name == "iban"));
+    }
+
+    // RF-FP (2026-07-08 QC) — the redaction path (`redact_with`) must honor the
+    // per-pattern `validator` exactly like `scan` does. Pre-fix `redact_with`
+    // ran a bare `replace_all` and skipped the validator, so any checksum-shaped
+    // FALSE positive got redacted anyway. The canonical trigger: Amazon
+    // request/session IDs (`[A-Z]{2}\d{2}[A-Z0-9]{4,}`) structurally match the
+    // IBAN regex but fail mod-97 — they were redacted, firing the response
+    // filter (X-WAF-Response-Filtered + `rule: response-filter`) on benign 404
+    // telemetry bodies.
+
+    #[test]
+    fn redact_skips_iban_shaped_token_that_fails_mod97() {
+        // Amazon request-ID shape — matches the iban regex, fails the checksum.
+        let token = "VC299VJ9F97G82HEF28Q";
+        assert!(!iban_mod97(token), "precondition: token must fail mod-97");
+        let body = format!("id={token}&next={token}");
+        let out = redact(&body);
+        assert_eq!(out, body, "mod-97-invalid IBAN lookalike must NOT be redacted");
+        assert!(!out.contains("[REDACTED]"), "no redaction expected: {out}");
+    }
+
+    #[test]
+    fn redact_still_redacts_valid_iban() {
+        let out = redact("account IBAN GB29NWBK60161331926819 here");
+        assert!(out.contains("[REDACTED]"), "a checksum-valid IBAN must still redact: {out}");
+        assert!(!out.contains("GB29NWBK60161331926819"));
+    }
+
+    #[test]
+    fn redact_skips_non_luhn_card_shape() {
+        // 16-digit card SHAPE that fails the Luhn check → not a real card.
+        // Uses the production policy (phone opt-in OFF); the digit-dash shape
+        // otherwise overlaps the (validator-less) phone pattern.
+        let policy = RedactPolicy { redact_email: false, redact_phone: false, keep_tokens: false, redact_value_shapes: true };
+        let out = redact_with("ref 4111-1111-1111-1112 end", &policy);
+        assert_eq!(out, "ref 4111-1111-1111-1112 end", "non-Luhn card shape must not redact");
+    }
+
+    #[test]
+    fn redact_skips_invalid_ssn_shape() {
+        // 000 area is an invalid SSN → must not redact (phone opt-in OFF).
+        let policy = RedactPolicy { redact_email: false, redact_phone: false, keep_tokens: false, redact_value_shapes: true };
+        let out = redact_with("code 000-45-6789 end", &policy);
+        assert_eq!(out, "code 000-45-6789 end", "invalid SSN shape must not redact");
+    }
+
+    /// End-to-end regression on the exact QC beacon body: the origin's verbose
+    /// 404 echoes an Amazon telemetry URL whose request IDs are IBAN-shaped.
+    /// Under the production policy (email/phone opt-in OFF) nothing in it is a
+    /// real secret, so the response filter must leave it untouched.
+    #[test]
+    fn redact_leaves_amazon_404_beacon_untouched() {
+        let body = "{\"error\":\"not_found\",\"tried\":\"/1/batch/1/OP/\
+ATVPDKIKX0DER:134-1400937-8492661:VC299VJ9F97G82HEF28Q$uedata=s:/rd/uedata?\
+id=VC299VJ9F97G82HEF28Q&sc0=adplacements:viewablelatency:\
+cf81795d-ef39-406a-ad7e-6538fcad65f8&pti=B0CKBX52VG\"}";
+        let policy = RedactPolicy::key_first();
+        let out = redact_with(body, &policy);
+        assert_eq!(out, body, "benign telemetry 404 must not trigger the response filter: {out}");
     }
 
     // Email tests.
@@ -801,7 +927,7 @@ mod tests {
     #[test]
     fn auth_policy_keeps_tokens_but_redacts_other_secrets_in_same_body() {
         let body = r#"{"access_token":"eyJreal.secret.value","refresh_token":"rt_abcdefghijklmnop","db_password":"sup3rs3cret","aws":"AKIAIOSFODNN7EXAMPLE"}"#;
-        let policy = RedactPolicy { redact_email: false, redact_phone: false, keep_tokens: true };
+        let policy = RedactPolicy { redact_email: false, redact_phone: false, keep_tokens: true, redact_value_shapes: true };
         let out = redact_with(body, &policy);
         // Token fields survive on an auth endpoint (the intended payload).
         assert!(out.contains("eyJreal.secret.value"), "access_token must survive on auth path: {out}");
@@ -815,18 +941,19 @@ mod tests {
     fn auth_policy_keeps_bare_jwt_only_when_keep_tokens() {
         let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123def456";
         let body = format!("token issued: {jwt}");
-        let keep = RedactPolicy { redact_email: false, redact_phone: false, keep_tokens: true };
+        let keep = RedactPolicy { redact_email: false, redact_phone: false, keep_tokens: true, redact_value_shapes: true };
         assert!(redact_with(&body, &keep).contains(jwt), "bare JWT must survive on auth path");
-        let no_keep = RedactPolicy { redact_email: false, redact_phone: false, keep_tokens: false };
+        let no_keep = RedactPolicy { redact_email: false, redact_phone: false, keep_tokens: false, redact_value_shapes: true };
         assert!(!redact_with(&body, &no_keep).contains(jwt), "bare JWT redacted off auth path");
     }
 
     #[test]
     fn email_phone_opt_in_off_by_default_policy() {
         let body = "contact alice@example.com or +1 415 555 1234";
-        let off = RedactPolicy { redact_email: false, redact_phone: false, keep_tokens: false };
+        let off = RedactPolicy { redact_email: false, redact_phone: false, keep_tokens: false, redact_value_shapes: false };
         assert_eq!(redact_with(body, &off), body, "email/phone must pass through when off");
-        let on = RedactPolicy { redact_email: true, redact_phone: true, keep_tokens: false };
+        // value-shapes OFF here proves email/phone are gated INDEPENDENTLY of it.
+        let on = RedactPolicy { redact_email: true, redact_phone: true, keep_tokens: false, redact_value_shapes: false };
         let out = redact_with(body, &on);
         assert!(!out.contains("alice@example.com"), "email redacts when enabled: {out}");
         assert!(!out.contains("415 555 1234"), "phone redacts when enabled: {out}");

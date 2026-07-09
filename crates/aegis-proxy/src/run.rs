@@ -245,6 +245,7 @@ pub async fn run(
         strip_response_headers: cfg.response_filter.strip_response_headers,
         redact_email: cfg.response_filter.redact_email,
         redact_phone: cfg.response_filter.redact_phone,
+        redact_value_shapes: cfg.response_filter.redact_value_shapes,
         auth_paths: cfg.response_filter.auth_paths.clone(),
     });
 

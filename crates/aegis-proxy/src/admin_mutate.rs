@@ -6126,6 +6126,7 @@ pub(crate) async fn handle_response_filter_put(
         "strip_response_headers": patch.strip_response_headers,
         "redact_email":           patch.redact_email,
         "redact_phone":           patch.redact_phone,
+        "redact_value_shapes":    patch.redact_value_shapes,
         "auth_paths":             patch.auth_paths,
     });
     let req_ctx = aegis_control::api::mutation::MutationRequest {
@@ -6205,6 +6206,8 @@ fn patch_response_filter(
         // RF-FP (2026-07-08) — broad-PII opt-in rungs.
         ("redact_email", patch.redact_email),
         ("redact_phone", patch.redact_phone),
+        // RF-FP (2026-07-09) — value-shape secret/financial rungs (key-first off).
+        ("redact_value_shapes", patch.redact_value_shapes),
     ] {
         rf_map.insert(
             serde_yaml::Value::String(k.into()),
@@ -6238,6 +6241,7 @@ pub(crate) async fn handle_response_filter_get(
                 "strip_response_headers": snap.strip_response_headers,
                 "redact_email":           snap.redact_email,
                 "redact_phone":           snap.redact_phone,
+                "redact_value_shapes":    snap.redact_value_shapes,
                 "auth_paths":             snap.auth_paths,
                 "wired":                  true,
             })
@@ -6249,6 +6253,7 @@ pub(crate) async fn handle_response_filter_get(
             "strip_response_headers": true,
             "redact_email":           false,
             "redact_phone":           false,
+            "redact_value_shapes":    false,
             "auth_paths":             aegis_security::pipeline::default_auth_paths(),
             "wired":                  false,
         }),

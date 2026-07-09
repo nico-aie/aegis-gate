@@ -5954,6 +5954,16 @@ pub struct ResponseFilterConfig {
     pub redact_email: bool,
     #[serde(default)]
     pub redact_phone: bool,
+    /// RF-FP (2026-07-09 QC — "full key-first") — run the free-floating
+    /// VALUE-shape secret/financial DLP patterns (aws/github/stripe/slack/
+    /// google/pem/ssh/hash/jwt/card/ssn/iban). OFF by default: only the
+    /// structural KEY-value patterns redact (a value is scrubbed only when its
+    /// key names a secret). This is the low-FP posture the QC asked for —
+    /// opaque IDs that merely look like a token/IBAN/card are never touched.
+    /// Trade-off: a keyless secret dumped bare (e.g. an `AKIA…` in a stack
+    /// trace) is only caught when an operator flips this on.
+    #[serde(default)]
+    pub redact_value_shapes: bool,
     /// RF-FP (2026-07-08 QC) — request paths of token-issuing (auth)
     /// endpoints. On these, the response legitimately carries the intended
     /// token payload, so the token-class DLP patterns (jwt + structural
@@ -5997,6 +6007,7 @@ impl Default for ResponseFilterConfig {
             strip_response_headers: true,
             redact_email: false,
             redact_phone: false,
+            redact_value_shapes: false,
             auth_paths: default_auth_paths(),
         }
     }
