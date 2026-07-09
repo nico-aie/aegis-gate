@@ -215,6 +215,18 @@ pub struct DecisionTag {
     /// field on the request's own audit row — replacing the standalone
     /// Detection "redact" row that used to be emitted separately.
     pub response_filtered: Option<ResponseFilterSignal>,
+    /// 2026-07-09 — the redacted request echo (headers + bounded body
+    /// preview) for a **detected-but-allowed** request. Blocks build this
+    /// echo inside the data plane (where the body is still buffered) and
+    /// hand it straight to `blocked_response`; a request that tripped a
+    /// detector but stayed under the per-request tier threshold is instead
+    /// forwarded as `allow`, and the listener is the sole emitter for
+    /// `allow`. The listener has no body (it was consumed by the data
+    /// plane), so the data plane captures the echo here and the listener
+    /// merges it into the audit `fields` — giving allowed-but-flagged rows
+    /// the same forensic detail (headers + body) as blocks. `None` on clean
+    /// allows so ordinary traffic keeps a slim audit row.
+    pub audit_echo: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// RF-FP (2026-07-08 QC) — a body-was-filtered signal. Byte counts only —
@@ -228,22 +240,22 @@ pub struct ResponseFilterSignal {
 
 impl DecisionTag {
     pub fn allow() -> Self {
-        Self { action: Action::Allow, rule_id: None, tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false, response_filtered: None }
+        Self { action: Action::Allow, rule_id: None, tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false, response_filtered: None, audit_echo: None }
     }
     pub fn block(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Block, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false, response_filtered: None }
+        Self { action: Action::Block, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false, response_filtered: None, audit_echo: None }
     }
     pub fn rate_limit(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::RateLimit, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false, response_filtered: None }
+        Self { action: Action::RateLimit, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false, response_filtered: None, audit_echo: None }
     }
     pub fn challenge(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Challenge, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false, response_filtered: None }
+        Self { action: Action::Challenge, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false, response_filtered: None, audit_echo: None }
     }
     pub fn timeout(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Timeout, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false, response_filtered: None }
+        Self { action: Action::Timeout, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false, response_filtered: None, audit_echo: None }
     }
     pub fn circuit_breaker(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::CircuitBreaker, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false, response_filtered: None }
+        Self { action: Action::CircuitBreaker, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass, streamed: false, route_log_only: false, response_filtered: None, audit_echo: None }
     }
 
     /// Attach the per-request detector score (sum of this request's
@@ -309,6 +321,18 @@ impl DecisionTag {
     /// [`Self::response_filtered`].
     pub fn with_response_filtered(mut self, bytes_before: usize, bytes_after: usize) -> Self {
         self.response_filtered = Some(ResponseFilterSignal { bytes_before, bytes_after });
+        self
+    }
+
+    /// 2026-07-09 — attach the redacted request echo (headers + bounded body
+    /// preview) captured in the data plane for a detected-but-allowed
+    /// request, so the listener audit records the same forensic detail a
+    /// block does. See [`Self::audit_echo`].
+    pub fn with_audit_echo(
+        mut self,
+        echo: serde_json::Map<String, serde_json::Value>,
+    ) -> Self {
+        self.audit_echo = Some(echo);
         self
     }
 }
@@ -559,6 +583,27 @@ mod tests {
         assert_eq!(CacheState::Hit.as_str(), "HIT");
         assert_eq!(CacheState::Miss.as_str(), "MISS");
         assert_eq!(CacheState::Bypass.as_str(), "BYPASS");
+    }
+
+    /// A detected-but-allowed request carries the redacted request echo
+    /// (headers + body preview) captured in the data plane so the listener
+    /// audit shows the same detail a block does. Action must stay `allow`.
+    #[test]
+    fn with_audit_echo_attaches_fields_without_changing_action() {
+        let mut echo = serde_json::Map::new();
+        echo.insert(
+            "request_body_preview".to_string(),
+            serde_json::Value::String("id=1&q=hello".to_string()),
+        );
+        let tag = DecisionTag::allow().with_audit_echo(echo);
+        assert_eq!(tag.action, Action::Allow);
+        let carried = tag.audit_echo.expect("echo set");
+        assert_eq!(
+            carried.get("request_body_preview").and_then(|v| v.as_str()),
+            Some("id=1&q=hello"),
+        );
+        // Untouched tags carry no echo (clean allows stay slim).
+        assert!(DecisionTag::allow().audit_echo.is_none());
     }
 
     // ---- RF-FP (2026-07-08 QC) — response-filter signal -------------------

@@ -1698,6 +1698,21 @@ pub(crate) async fn handle_data_request_inner(
         // log_only OR under-tier-threshold detection: forward to
         // upstream WITHOUT running the clean-decay path (the
         // malicious score was already recorded and must accumulate).
+        //
+        // 2026-07-09 — capture the redacted request echo (headers + body)
+        // BEFORE `parts` + `body_bytes` are moved into the forward. Only a
+        // detected-but-allowed request (`detected_under_threshold.is_some()`)
+        // earns the echo; the listener merges it so the allowed-but-flagged
+        // audit row shows the same detail a block does. `log_only`-only
+        // forwards (no under-threshold detection) leave it `None` — those
+        // already self-audited a full Detection echo on the block path above.
+        let detected_allow_echo = detected_allow_audit_echo(
+            detected_under_threshold.is_some(),
+            load_mode.is_critical(),
+            allow_verbose_fields,
+            &parts.headers,
+            &body_bytes,
+        );
         let (resp, tag) = forward_allow_to_upstream(
             parts,
             body_bytes,
@@ -1727,6 +1742,12 @@ pub(crate) async fn handle_data_request_inner(
                 }
                 if let Some(rs) = detected_request_score.take() {
                     t = t.with_detector_score(rs);
+                }
+                // 2026-07-09 — hand the captured echo to the listener so the
+                // allowed-but-flagged audit row carries the same redacted
+                // headers + body preview a block does.
+                if let Some(echo) = detected_allow_echo {
+                    t = t.with_audit_echo(echo);
                 }
                 (resp, t)
             }
@@ -4288,6 +4309,73 @@ mod request_echo_tests {
     }
 }
 
+#[cfg(test)]
+mod detected_allow_echo_tests {
+    use super::detected_allow_audit_echo;
+    use http::HeaderMap;
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(
+                http::header::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                http::header::HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        h
+    }
+
+    // A detected-but-allowed request (detectors fired, under the per-request
+    // tier threshold) carries the SAME redacted echo a block does — headers
+    // AND body preview — so the detail drawer shows what tripped the detector.
+    #[test]
+    fn detected_allow_carries_headers_and_body_at_info() {
+        let h = headers(&[("user-agent", "curl/8.0")]);
+        let echo = detected_allow_audit_echo(
+            /* detectors_fired */ true,
+            /* load_is_critical */ false,
+            /* allow_verbose_fields */ true,
+            &h,
+            b"id=1&q=hello",
+        )
+        .expect("echo present for a detected-but-allowed request");
+        assert!(echo.contains_key("request_headers"), "headers echoed");
+        assert_eq!(echo["request_body_preview"], "id=1&q=hello");
+        assert_eq!(echo["request_body_bytes"], 12);
+    }
+
+    // A genuinely clean allow (no detector fired) stays slim — no echo, so
+    // ordinary traffic doesn't bloat the audit sink.
+    #[test]
+    fn clean_allow_carries_no_echo() {
+        let h = headers(&[("user-agent", "curl/8.0")]);
+        assert!(
+            detected_allow_audit_echo(false, false, true, &h, b"id=1").is_none(),
+            "clean allow must not echo"
+        );
+    }
+
+    // Critical load sheds the verbose echo (mirrors the block path's gate).
+    #[test]
+    fn critical_load_sheds_echo() {
+        let h = headers(&[("user-agent", "curl/8.0")]);
+        assert!(
+            detected_allow_audit_echo(true, true, true, &h, b"id=1").is_none(),
+            "critical load must shed echo"
+        );
+    }
+
+    // Below Info verbosity there is no request echo (same dial as blocks).
+    #[test]
+    fn sub_info_verbosity_suppresses_echo() {
+        let h = headers(&[("user-agent", "curl/8.0")]);
+        assert!(
+            detected_allow_audit_echo(true, false, false, &h, b"id=1").is_none(),
+            "sub-Info verbosity must suppress echo"
+        );
+    }
+}
+
 /// event. Centralised so every deny path uses the same shape
 /// (audit class `Access`, `x-waf-rule-id` response header,
 /// plain-text body with the message).
@@ -4531,6 +4619,31 @@ pub(crate) fn risk_key_audit_value(key: &aegis_core::risk::RiskKey) -> serde_jso
         "session_present": key.session.is_some(),
         "key_hash": key_hash,
     })
+}
+
+/// 2026-07-09 — build the redacted request echo for a **detected-but-allowed**
+/// request (detectors fired but the combined score stayed under the per-request
+/// tier threshold, so the request is forwarded as `allow`). Mirrors the block
+/// path's echo so the detail drawer surfaces the same headers + body preview
+/// regardless of whether the request was blocked or allowed — the operator can
+/// review the reason a detector fired either way.
+///
+/// Returns `None` — keeping the audit row slim — when the request was clean
+/// (no detector fired), under Critical load, or below `Info` verbosity. These
+/// are the exact gates the detector-block echo uses (`data_plane.rs` block
+/// path), so allowed-but-flagged rows reach parity without widening what
+/// ordinary traffic writes to the audit sink.
+pub(crate) fn detected_allow_audit_echo(
+    detectors_fired: bool,
+    load_is_critical: bool,
+    allow_verbose_fields: bool,
+    headers: &http::HeaderMap,
+    body: &[u8],
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    if !detectors_fired || load_is_critical || !allow_verbose_fields {
+        return None;
+    }
+    Some(request_echo_fields(headers, Some(body)))
 }
 
 /// 2026-05-20 — bounded, redacted request echo for the audit
