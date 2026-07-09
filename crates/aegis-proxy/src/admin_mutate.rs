@@ -7585,6 +7585,36 @@ state: { backend: in_memory }
     }
 
     #[test]
+    fn patch_zt_identity_unblocks_enabling_mtls_pool_gate() {
+        // Gate G1 (validate_upstream_mtls): a pool with mTLS enabled but no
+        // zero_trust.upstream_identity in the blob is REJECTED by
+        // load_config_str — this is the bug's precondition. After the patch
+        // publishes source: state, the same config VALIDATES.
+        let base = r#"
+listeners:
+  data: [{ bind: "0.0.0.0:443" }]
+  admin: { bind: "127.0.0.1:9443" }
+routes:
+  - { id: catch-all, path: "/", upstream: api }
+upstreams:
+  api:
+    members: [{ addr: "127.0.0.1:8443" }]
+    connection: { tls: true }
+    upstream_mtls: { enabled: true }
+state: { backend: in_memory }
+"#;
+        assert!(
+            aegis_core::load_config_str(base).is_err(),
+            "enabling mTLS without an identity block must be rejected (bug precondition)"
+        );
+        let patched = patch_zero_trust_identity_source_state(base)
+            .expect("patch ok")
+            .expect("a change was published");
+        aegis_core::load_config_str(&patched)
+            .expect("after publishing source: state, enabling mTLS validates");
+    }
+
+    #[test]
     fn patch_zt_identity_idempotent_when_already_state() {
         let base = format!(
             "{ZT_BASE_NO_ZT}\nzero_trust:\n  upstream_identity:\n    source: state\n"
