@@ -136,6 +136,7 @@
     <a href="#ddos">6 · DDoS protection</a>
     <a href="#shed">7 · Load shedding</a>
     <a href="#mtls">8 · Zero Trust mTLS</a>
+    <a href="#compare">9 · vs. other providers</a>
   </div>
 </nav>
 
@@ -1541,6 +1542,154 @@
     </div>
 
     <div class="note warn"><div><b>Capability-gated.</b> All cert mutation is audited, CSRF-gated, and behind <code style="font-family:var(--mono)">admin.dashboard_auth.allow_ca_upload</code> (off by default) — the upload UI only renders when the flag is on. This supersedes the old <code style="font-family:var(--mono)">tls.client_auth</code> and per-pool <code style="font-family:var(--mono)">tls:{client_cert,…}</code> shapes with no back-compat alias: migrate existing YAML.</div></div>
+  </div>
+</section>
+
+<!-- ============ 9. COMPARISON ============ -->
+<section id="compare">
+  <div class="wrap">
+    <div class="eyebrow">09 — Positioning</div>
+    <h2>How Aegis-Gate compares</h2>
+    <p class="lead">Aegis-Gate targets <b>F5 BIG-IP / Imperva / Akamai Kona / Cloudflare Enterprise-class capability without the licensing</b> — a single self-hosted Rust binary you fully own, run inside your own perimeter and backed by your own SRE team. The map below places it against the common WAF archetypes by <b>deployment control</b> and <b>cost model</b>; it's a positioning guide, not a benchmark. Read honestly, two limits remain: <b>network-layer scale</b> — L3/L4 volumetric floods still need an upstream scrubbing / anycast tier — and <b>maturity</b>: it's a newer platform, less battle-tested than F5, Imperva or Cloudflare, though its production experience is growing steadily.</p>
+
+    <div class="card">
+      <div class="svgwrap scrollx">
+      <svg viewBox="0 0 1040 500" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+        <!-- quadrant frame -->
+        <rect x="120" y="60" width="840" height="380" rx="12" fill="#0f1320" stroke="#26304a"/>
+        <!-- mid guides -->
+        <line x1="540" y1="60" x2="540" y2="440" stroke="#26304a" stroke-width="1" stroke-dasharray="4 5"/>
+        <line x1="120" y1="250" x2="960" y2="250" stroke="#26304a" stroke-width="1" stroke-dasharray="4 5"/>
+
+        <!-- axis labels -->
+        <text x="130" y="34" fill="#9aa7bd" font-size="12" font-weight="700">↑ Licensed · per-request / seat / appliance cost</text>
+        <text x="130" y="470" fill="#36d399" font-size="12" font-weight="700">↓ Open · single binary · no per-request licensing</text>
+        <text x="128" y="52" fill="#67748c" font-size="11" text-anchor="start">◀ Cloud SaaS / edge network</text>
+        <text x="952" y="52" fill="#67748c" font-size="11" text-anchor="end">Self-hosted / on-prem ▶</text>
+
+        <!-- competitor dots (muted) -->
+        <g font-size="11.5" fill="#cdd6e6">
+          <circle cx="250" cy="120" r="8" fill="#4f8cff" opacity=".85"/>
+          <text x="266" y="118" font-weight="700" fill="#e8edf6">Cloudflare Enterprise</text>
+          <text x="266" y="133" fill="#67748c" font-size="10.5">cloud SaaS · anycast edge · global scrubbing</text>
+
+          <circle cx="330" cy="180" r="8" fill="#36cfd1" opacity=".85"/>
+          <text x="346" y="178" font-weight="700" fill="#e8edf6">Akamai Kona / Imperva</text>
+          <text x="346" y="193" fill="#67748c" font-size="10.5">managed cloud WAF + DDoS service</text>
+
+          <circle cx="430" cy="235" r="8" fill="#a779ff" opacity=".85"/>
+          <text x="446" y="233" font-weight="700" fill="#e8edf6">AWS WAF</text>
+          <text x="446" y="248" fill="#67748c" font-size="10.5">cloud, pay-per-rule + per-request</text>
+
+          <circle cx="800" cy="150" r="8" fill="#f5a524" opacity=".85"/>
+          <text x="784" y="148" font-weight="700" fill="#e8edf6" text-anchor="end">F5 BIG-IP ASM</text>
+          <text x="784" y="163" fill="#67748c" font-size="10.5" text-anchor="end">self-hosted appliance · licensed</text>
+
+          <circle cx="815" cy="360" r="8" fill="#9aa7bd" opacity=".85"/>
+          <text x="799" y="358" font-weight="700" fill="#e8edf6" text-anchor="end">ModSecurity + OWASP CRS</text>
+          <text x="799" y="373" fill="#67748c" font-size="10.5" text-anchor="end">open engine · bolt-on to nginx/Apache</text>
+        </g>
+
+        <!-- Aegis-Gate (highlight) -->
+        <circle cx="850" cy="330" r="26" fill="#36d39922" stroke="#36d399" stroke-width="1.5" data-anim="1">
+          <animate attributeName="r" values="20;30;20" dur="2.4s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" values="1;.5;1" dur="2.4s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="850" cy="330" r="11" fill="#36d399" class="flow-dot" color="#36d399"/>
+        <text x="850" y="300" text-anchor="middle" fill="#36d399" font-size="14" font-weight="800">Aegis-Gate</text>
+        <text x="850" y="368" text-anchor="middle" fill="#9aa7bd" font-size="11">self-hosted · single Rust binary · SOC-first · audit-chained</text>
+
+        <text x="130" y="428" fill="#67748c" font-size="10.5">Positions are illustrative archetypes; capabilities vary by vendor tier &amp; version.</text>
+      </svg>
+      </div>
+      <figcaption>Positioning per README/Requirement.md ("enterprise-class capability without the licensing"). Competitor placement is high-level, not a scored benchmark.</figcaption>
+    </div>
+
+    <!-- capability table -->
+    <div class="card pad" style="margin-top:18px">
+      <h3 style="margin:0 0 12px;font-size:16px">Capability model — at a glance</h3>
+      <div class="scrollx">
+      <table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:820px">
+        <thead>
+          <tr style="text-align:left;color:var(--faint);font-size:11.5px">
+            <th style="padding:8px 10px;font-weight:700"> </th>
+            <th style="padding:8px 10px;color:var(--green);font-weight:800">Aegis-Gate</th>
+            <th style="padding:8px 10px;font-weight:700">Cloudflare Ent.</th>
+            <th style="padding:8px 10px;font-weight:700">F5 BIG-IP ASM</th>
+            <th style="padding:8px 10px;font-weight:700">ModSecurity + CRS</th>
+          </tr>
+        </thead>
+        <tbody style="color:var(--muted)">
+          <tr style="border-top:1px solid var(--line)">
+            <td style="padding:9px 10px;color:var(--ink);font-weight:700">Deployment</td>
+            <td style="padding:9px 10px;color:#cdd6e6">Self-hosted single binary / distroless (~70 MB)</td>
+            <td style="padding:9px 10px">Cloud SaaS · anycast edge</td>
+            <td style="padding:9px 10px">Hardware / virtual appliance</td>
+            <td style="padding:9px 10px">Module bolted onto nginx / Apache</td>
+          </tr>
+          <tr style="border-top:1px solid var(--line)">
+            <td style="padding:9px 10px;color:var(--ink);font-weight:700">Cost model</td>
+            <td style="padding:9px 10px;color:#cdd6e6">No per-request licensing — you run it</td>
+            <td style="padding:9px 10px">Subscription + per-request / add-ons</td>
+            <td style="padding:9px 10px">Appliance + license + support</td>
+            <td style="padding:9px 10px">Free/open · you integrate &amp; tune</td>
+          </tr>
+          <tr style="border-top:1px solid var(--line)">
+            <td style="padding:9px 10px;color:var(--ink);font-weight:700">Traffic ownership</td>
+            <td style="padding:9px 10px;color:#cdd6e6">Full — traffic never leaves your infra (data residency)</td>
+            <td style="padding:9px 10px">Terminates at vendor edge</td>
+            <td style="padding:9px 10px">On-prem, in your DC</td>
+            <td style="padding:9px 10px">On-prem, in your DC</td>
+          </tr>
+          <tr style="border-top:1px solid var(--line)">
+            <td style="padding:9px 10px;color:var(--ink);font-weight:700">Detection</td>
+            <td style="padding:9px 10px;color:#cdd6e6">OWASP detectors + rule DSL + composite risk + optional ONNX AI</td>
+            <td style="padding:9px 10px">Managed rulesets + ML (vendor)</td>
+            <td style="padding:9px 10px">Signatures + policy learning</td>
+            <td style="padding:9px 10px">CRS signature rules</td>
+          </tr>
+          <tr style="border-top:1px solid var(--line)">
+            <td style="padding:9px 10px;color:var(--ink);font-weight:700">Config &amp; change control</td>
+            <td style="padding:9px 10px;color:#cdd6e6">Hot-reload · SHA-256 audit-chained · CSRF-gated CRUD</td>
+            <td style="padding:9px 10px">Dashboard / API (vendor-managed)</td>
+            <td style="padding:9px 10px">iRules / policy console</td>
+            <td style="padding:9px 10px">Text config + reload</td>
+          </tr>
+          <tr style="border-top:1px solid var(--line)">
+            <td style="padding:9px 10px;color:var(--ink);font-weight:700">SOC dashboard</td>
+            <td style="padding:9px 10px;color:#cdd6e6">Built-in SOC-first console · live SSE feed</td>
+            <td style="padding:9px 10px">Rich vendor analytics</td>
+            <td style="padding:9px 10px">Console + reporting module</td>
+            <td style="padding:9px 10px">None (bring your own)</td>
+          </tr>
+          <tr style="border-top:1px solid var(--line)">
+            <td style="padding:9px 10px;color:var(--ink);font-weight:700">L3/L4 volumetric DDoS</td>
+            <td style="padding:9px 10px;color:#f5a524">App-layer gate only — needs upstream/anycast scrubbing</td>
+            <td style="padding:9px 10px;color:#36d399">Global scrubbing network ✓</td>
+            <td style="padding:9px 10px">Appliance + network tier</td>
+            <td style="padding:9px 10px;color:#f4525f">Not in scope</td>
+          </tr>
+        </tbody>
+      </table>
+      </div>
+    </div>
+
+    <div class="grid3" style="margin-top:18px">
+      <div class="card pad">
+        <div class="tag" style="color:var(--green)">Where it wins</div>
+        <p style="font-size:13.5px;color:var(--muted);margin:8px 0 0">Full data residency, no per-request bill, source-available transparency, audit-chained config for compliance (PCI / HIPAA / SOC 2 / GDPR tags), and a SOC-first dashboard baked in — all from one hot-reloadable binary.</p>
+      </div>
+      <div class="card pad">
+        <div class="tag" style="color:var(--amber)">Honest trade-offs</div>
+        <p style="font-size:13.5px;color:var(--muted);margin:8px 0 0">No global anycast edge: L3/L4 volumetric floods still want kernel/LB + upstream scrubbing. It runs inside your own infrastructure — backed by your SRE team rather than a third-party edge provider.</p>
+      </div>
+      <div class="card pad">
+        <div class="tag" style="color:var(--blue)">Best fit</div>
+        <p style="font-size:13.5px;color:var(--muted);margin:8px 0 0">Fintech, healthcare, and public-sector teams that need enterprise-class inspection <i>inside their own perimeter</i> — where sending traffic through a third-party edge is a non-starter and licensing is the blocker.</p>
+      </div>
+    </div>
+
+    <div class="note warn"><div><b>Read this fairly.</b> Competitor columns are high-level archetypes — capabilities, pricing and rulesets vary widely by tier and change over time. This section reflects the project's own "enterprise-class without the licensing" positioning; verify any specific vendor claim against current vendor documentation before making a purchasing decision.</div></div>
   </div>
 </section>
 
