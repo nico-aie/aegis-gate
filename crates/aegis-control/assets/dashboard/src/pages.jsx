@@ -13083,16 +13083,28 @@ function PageInvestigation() {
         // detection — exactly what the aggregator buckets server
         // side. Same window (last 1h) by clipping to the live
         // ring window.
+        // Render the window from the value the backend actually served.
+        // The hook asks for 3600s but `by_detector` clamps to RETENTION
+        // (900s), so a hardcoded "last 1h" over-claimed the coverage —
+        // read `window_seconds` off the response and format it instead.
+        const fmtWindow = (s) => {
+          if (!Number.isFinite(s) || s <= 0) return '';
+          if (s % 3600 === 0) return `last ${s / 3600}h`;
+          if (s % 60 === 0) return `last ${s / 60}m`;
+          return `last ${s}s`;
+        };
         const apiDetectors = insightsByDetector.data?.detectors ?? [];
         let detectorBars;
         let totalDetections;
         let breakdownSource;
+        let windowLabel;
         if (apiDetectors.length > 0) {
           detectorBars = apiDetectors
             .map(d => ({ label: d.name, value: d.count, color: detectorColor(d.name) }))
             .sort((a, b) => b.value - a.value);
           totalDetections = detectorBars.reduce((s, x) => s + x.value, 0);
           breakdownSource = 'by-detector aggregator';
+          windowLabel = fmtWindow(insightsByDetector.data?.window_seconds) || 'live ring';
         } else {
           const counts = {};
           for (const row of rawEvents) {
@@ -13111,6 +13123,9 @@ function PageInvestigation() {
             .sort((a, b) => b.value - a.value);
           totalDetections = detectorBars.reduce((s, x) => s + x.value, 0);
           breakdownSource = 'audit ring (fallback)';
+          // Fallback counts the whole audit ring with no time clip, so
+          // it can't honestly claim a fixed window.
+          windowLabel = 'live ring';
         }
         const botCategories = insightsBotMix.data?.categories ?? [];
         const botColorFor = name => ({
@@ -13152,7 +13167,7 @@ function PageInvestigation() {
               <div className="col-6 card">
                 <window.SectionHeader
                   title="Detector breakdown"
-                  sub={`${totalDetections.toLocaleString()} detections · last 1h · ${breakdownSource}`}
+                  sub={`${totalDetections.toLocaleString()} detections · ${windowLabel} · ${breakdownSource}`}
                   actions={scopeBadge(true)}
                 />
                 {detectorBars.length === 0 ? (
@@ -13166,7 +13181,7 @@ function PageInvestigation() {
               <div className="col-6 card">
                 <window.SectionHeader
                   title="Bot classification mix"
-                  sub={botCategories.length ? `${botCategories.reduce((s, c) => s + c.count, 0).toLocaleString()} classified · last 1h` : 'no bot signal yet'}
+                  sub={botCategories.length ? `${botCategories.reduce((s, c) => s + c.count, 0).toLocaleString()} classified · ${fmtWindow(insightsBotMix.data?.window_seconds) || 'live ring'}` : 'no bot signal yet'}
                   actions={scopeBadge(true)}
                 />
                 {/* 2026-05-21 — the mix is a tier breakdown of FLAGGED
