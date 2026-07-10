@@ -25,14 +25,14 @@ const MAX_BODY_BYTES: usize = 8_192;
 // ── Regexes (compiled once) ──────────────────────────────────────────────────
 
 static SQL_KEYWORDS: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)\b(select|union|insert|update|delete|drop|create|alter|exec|execute|where|from|having|order|group|join|table|database|schema|char|nchar|varchar|cast|convert|declare|waitfor|xp_|sp_|0x|and|or|ascii|substr|substring|mid|version|length|benchmark|sleep|pg_sleep|randomblob|extractvalue|updatexml|xmlagg|xml2clob)\b")
+    Regex::new(r"(?i)\b(select|union|insert|update|delete|drop|create|alter|exec|execute|where|from|having|order|group|join|table|database|schema|char|nchar|varchar|cast|convert|declare|waitfor|xp_|sp_|0x)\b")
         .expect("sql regex")
 });
 // Context gate for sql_keyword_count (#15) — mirrors features.py `_SQL_CTX`. A lone
 // SQL keyword in prose scores 0; the count is kept only when SQL *syntax* co-occurs.
 static SQL_CTX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)union\s+(?:all\s+)?select|\bselect\b[^a-zA-Z]*?(?:\*|@@|count\s*\(|distinct\b|top\s+\d|[\w`\[\]]+\s*,)|\bselect\s+(?:version|substring|substr|concat|char|count|current_user|current_database|current_setting|session_user|user|database|group_concat|load_file)\b|@@\w+|\bfrom\s+(?:information_schema|mysql\.|pg_|sys\.|sysobjects)|\binsert\s+into\b|\bdelete\s+from\b|\bupdate\b[^;]{0,80}?\bset\b|\bdrop\s+(?:table|database|schema)\b|\balter\s+table\b|\bcreate\s+(?:table|database)\b|\b(?:order|group)\s+by\s+\d|\bhaving\s+\d|\binto\s+(?:outfile|dumpfile)\b|\bwaitfor\s+delay\b|\b(?:information_schema|load_file|extractvalue|updatexml|benchmark|sleep|pg_sleep)\s*\(|\b(?:xp_|sp_)\w+|(?:--|\#)\s*$|/\*.*?\*/|;\s*(?:select|insert|update|delete|drop|union|create|alter)\b|['"]\s*(?:or|and)\s|\b(?:or|and)\b\s*['"\d][^=<>]{0,12}?[=<>]\s*['"\d\w(]|\b(?:and|or)\b\s+\d+\s*[=<>]+\s*\d+|\b(?:and|or)\b\s+\w{1,4}\s*=\s*\w{1,4}\b|\b(?:and|or)\b\s+(?:true|false)\b|\b(?:and|or)\b[^;]{0,40}?\b(?:ascii|substr|substring|mid|left|right|version|length|hex|ord)\s*\(|\b(?:randomblob|xmlagg|xml2clob)\s*\(|\bunion\b[\s(]*\bselect\b"#,
+        r#"(?is)union\s+(?:all\s+)?select|\bselect\b[^a-zA-Z]*?(?:\*|@@|count\s*\(|distinct\b|top\s+\d|[\w`\[\]]+\s*,)|\bselect\s+(?:version|substring|substr|concat|char|count|current_user|current_database|current_setting|session_user|user|database|group_concat|load_file)\b|@@\w+|\bfrom\s+(?:information_schema|mysql\.|pg_|sys\.|sysobjects)|\binsert\s+into\b|\bdelete\s+from\b|\bupdate\b[^;]{0,80}?\bset\b|\bdrop\s+(?:table|database|schema)\b|\balter\s+table\b|\bcreate\s+(?:table|database)\b|\b(?:order|group)\s+by\s+\d|\bhaving\s+\d|\binto\s+(?:outfile|dumpfile)\b|\bwaitfor\s+delay\b|\b(?:information_schema|load_file|extractvalue|updatexml|benchmark|sleep|pg_sleep)\s*\(|\b(?:xp_|sp_)\w+|(?:--|\#)\s*$|/\*.*?\*/|;\s*(?:select|insert|update|delete|drop|union|create|alter)\b|['"]\s*(?:or|and)\s|\b(?:or|and)\b\s*['"\d][^=<>]{0,12}?[=<>]\s*['"\d\w(]"#,
     )
     .expect("sql context regex compiles")
 });
@@ -83,29 +83,6 @@ fn dangerous_pct_count(s: &str) -> usize {
                 .unwrap_or(false)
         })
         .count()
-}
-// ─── Attack-normalization (traversal/sqli evasion defeat) — mirror features.py ───
-static HEX_TRAV: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)0x2e|0x2f|0x5c").expect("hex_trav"));
-static ODD_SEP: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"[\x0b\x0c\x1c-\x1f\u{a0}\u{fffd}\u{2000}-\u{200a}\u{202f}\u{205f}\u{3000}]").expect("odd_sep"));
-static OVERLONG: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)%[cdef][0-9a-f](?:%[89ab][0-9a-f])*%(?:ae|ee|5e|fe|af|9c)").expect("overlong"));
-static TRAV_TARGET: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)boot\.ini|/etc/|etc[/\\%]|passwd|shadow|win\.ini|/windows|/proc/|/self/|\bhosts\b|\.ssh|id_rsa|wp-config|web\.config").expect("trav_target")
-});
-static DOTS3: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.{3,}").expect("dots3"));
-
-fn decode_overlong(s: &str) -> String {
-    OVERLONG.replace_all(s, |c: &regex::Captures| {
-        let m = c.get(0).unwrap().as_str();
-        match m[m.len() - 2..].to_ascii_lowercase().as_str() { "af" => "/", "9c" => "\\", _ => "." }.to_string()
-    }).into_owned()
-}
-fn normalize_for_patterns(s: &str) -> String {
-    let hex = HEX_TRAV.replace_all(s, |c: &regex::Captures| {
-        match c.get(0).unwrap().as_str().to_ascii_lowercase().as_str() { "0x2f" => "/", "0x5c" => "\\", _ => "." }.to_string()
-    });
-    ODD_SEP.replace_all(&hex, " ").into_owned()
 }
 static NULL_BYTE:   Lazy<Regex> = Lazy::new(|| Regex::new(r"%00|\\x00|\\u0000").expect("null byte regex"));
 static HEX_LITERAL: Lazy<Regex> = Lazy::new(|| Regex::new(r"0x[0-9a-fA-F]{4,}").expect("hex regex"));
@@ -205,8 +182,8 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
         if !headers_text.is_empty() { s.push(' '); s.push_str(&headers_text); }
         s
     };
-    // Overlong-UTF8 decode BEFORE url_decode; hex-byte + odd-sep normalize AFTER.
-    let full_dec = normalize_for_patterns(&url_decode(&decode_overlong(&full)));
+    let full_dec       = url_decode(&full);
+    let full_dec_lower = full_dec.to_ascii_lowercase();
 
     let total_chars  = full.chars().count().max(1) as f32;
     let digit_count  = full.chars().filter(|c| c.is_ascii_digit()).count() as f32;
@@ -214,14 +191,7 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
     let special_count = full.chars()
         .filter(|c| matches!(c, '\'' | '"' | '<' | '>' | ';'))  // injection chars only (= % & + are benign URL syntax)
         .count() as f32;
-    let path_traversal_count = {
-        let mut ptc = full_dec.matches("../").count()
-            + full_dec.matches("..\\").count()
-            + full.to_lowercase().matches("0x2e0x2e").count();
-        let dd = DOTS3.replace_all(&full_dec, " ").matches("..").count();
-        if dd >= 2 && TRAV_TARGET.is_match(&full_dec) { ptc += dd; }
-        ptc as f32
-    };
+    let path_traversal_count = full_dec_lower.matches("../").count() as f32;
 
     let num_params = {
         let q = if query.is_empty() { 0 } else { query.matches('&').count() + 1 };
@@ -245,7 +215,7 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
         (full.matches('<').count() + full.matches('>').count()) as f32, // 12 angle_bracket_count
         full.matches(';').count() as f32,                    // 13 semicolon_count
         dangerous_pct_count(&full) as f32,                   // 14 pct_encoded_count  (injection-relevant only)
-        if SQL_CTX.is_match(&full_dec) { SQL_KEYWORDS.find_iter(&full_dec).count() as f32 } else { 0.0 }, // 15 sql_keyword_count (context-gated, decoded)
+        SQL_KEYWORDS.find_iter(&full_dec).count() as f32,    // 15 sql_keyword_count       (decoded)
         XSS_MARKERS.find_iter(&full_dec).count() as f32,     // 16 xss_pattern_count       (decoded)
         path_traversal_count,                                // 17 path_traversal_count    (decoded)
         CMD_INJECTION.find_iter(&full_dec).count() as f32,   // 18 cmd_injection_count     (decoded)
