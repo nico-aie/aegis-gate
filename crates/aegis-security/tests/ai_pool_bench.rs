@@ -11,6 +11,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use aegis_security::detectors::ai::features::NUM_FEATURES;
 use aegis_security::detectors::ai::Model;
 
 fn bench(model_path: &str, n_sessions: usize, threads: usize, per_thread: usize) {
@@ -18,7 +19,7 @@ fn bench(model_path: &str, n_sessions: usize, threads: usize, per_thread: usize)
         Model::load_pool(std::path::Path::new(model_path), 0, n_sessions)
             .expect("load model pool"),
     );
-    let feats = [0.2f32; 27];
+    let feats = [0.2f32; NUM_FEATURES];
 
     let start = Instant::now();
     let handles: Vec<_> = (0..threads)

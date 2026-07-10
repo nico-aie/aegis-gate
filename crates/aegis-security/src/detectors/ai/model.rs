@@ -105,8 +105,8 @@ pub struct Model {
 }
 
 impl Model {
-    /// Open an ONNX file and prepare a single session (ORT default
-    /// threading). Equivalent to `load_pool(.., 1)`.
+    /// Open an ONNX file and prepare a single session (1 intra-op
+    /// thread — see [`Model::load_pool`]). Equivalent to `load_pool(.., 1)`.
     pub fn load(model_path: &Path, normal_class_idx: i64) -> Result<Self, ModelError> {
         Self::load_pool(model_path, normal_class_idx, 1)
     }
@@ -116,11 +116,14 @@ impl Model {
     /// run inference in parallel without the single-session `Mutex`
     /// bottleneck — the scaling path for a fast CPU model.
     ///
-    /// For `n > 1` each session is capped to **one** intra-op thread:
-    /// parallelism comes from the pool, not from per-session ORT threads,
-    /// which would otherwise oversubscribe the box (N sessions × cores
-    /// threads). `n == 1` keeps ORT's default threading — best latency
-    /// for a lone session.
+    /// Every session (including `n == 1`) is capped to **one** intra-op
+    /// thread. ORT's default threading spins up one thread per core, which
+    /// for the tiny `[1, 29]` LightGBM forward pass is pure overhead: the
+    /// intra-op pool's dispatch + spin-wait *adds* latency (measured
+    /// 27.5 → 24.2 µs/predict with 1 thread) and burns idle CPU on
+    /// spin-waiting workers between requests. Parallelism comes from the
+    /// pool (`n` sessions), never from per-session ORT threads — which
+    /// would otherwise oversubscribe the box (N sessions × cores threads).
     pub fn load_pool(
         model_path: &Path,
         normal_class_idx: i64,
@@ -132,7 +135,7 @@ impl Model {
             });
         }
         let n = n.max(1);
-        let intra_threads = if n > 1 { Some(1) } else { None };
+        let intra_threads = Some(1);
         let mut sessions = Vec::with_capacity(n);
         for _ in 0..n {
             sessions.push(Mutex::new(build_session(model_path, intra_threads)?));
