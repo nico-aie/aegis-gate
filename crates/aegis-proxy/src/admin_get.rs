@@ -1024,6 +1024,19 @@ pub(crate) fn admin_router<B>(
         // shape so a roundtrip {GET → modify → PUT} works.
         "/api/risk/thresholds" => {
             let t = services.risk.thresholds();
+            // 2026-07-10 — resolve the live interop mode for the cumulative
+            // risk gate (`risk_engine` feature, probed via the `risk-score`
+            // rule_id) so the Traffic Gates card can show a `set_profile
+            // log_only` as "monitor — not blocking", not just the config-level
+            // `enabled` flag. Same resolver the data plane uses.
+            let risk_mode = services
+                .interop
+                .as_ref()
+                .map(|rt| {
+                    aegis_control::interop::rule_map::mode_for_rule(&rt.modes, Some("risk-score"))
+                        .as_str()
+                })
+                .unwrap_or("enforce");
             let body = serde_json::json!({
                 "enabled":      t.enabled,
                 "challenge_at": t.challenge_at,
@@ -1033,6 +1046,7 @@ pub(crate) fn admin_router<B>(
                 // as trust-recovery. Lets the dashboard show the real decay
                 // model instead of a misleading exponential "half-life".
                 "trust_per_hour": services.risk.trust_per_hour(),
+                "effective_mode": risk_mode,
             })
             .to_string();
             json_body_response(200, body, "private, max-age=2")
@@ -1109,8 +1123,25 @@ pub(crate) fn admin_router<B>(
         // (rate-limit is steady-state per-IP returning 429;
         // DDoS is sustained-burst → TTL'd auto-block returning 403).
         "/api/rate-limit" => {
+            // 2026-07-10 — resolve the live interop mode for the `rate_limit`
+            // feature (probed via the `ip-rate-limit` rule_id) so the Traffic
+            // Gates card can show a `set_profile log_only` as "monitor — not
+            // blocking", not just the config-level `enabled` flag. Mirrors the
+            // DDoS gate view.
+            let rl_mode = services
+                .interop
+                .as_ref()
+                .map(|rt| {
+                    aegis_control::interop::rule_map::mode_for_rule(
+                        &rt.modes,
+                        Some("ip-rate-limit"),
+                    )
+                    .as_str()
+                })
+                .unwrap_or("enforce");
             let body = aegis_control::api::gates::render_get_rate_limit(
                 &services.ip_rate_limiter,
+                rl_mode,
             );
             json_body_response(200, body, "private, max-age=2")
         }

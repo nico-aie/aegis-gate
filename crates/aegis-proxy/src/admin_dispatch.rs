@@ -360,6 +360,37 @@ pub(crate) async fn handle_admin_request(
     if method == hyper::Method::PUT && path == "/api/gates/ddos/mode" {
         return crate::admin_mutate::handle_ddos_mode_put(req, services).await;
     }
+    // 2026-07-10 — flip the Cumulative IP-risk and Rate-Limit gates'
+    // interop mode (enforce/log_only) from the dashboard so a
+    // set_profile log_only on `risk_engine` / `rate_limit` is reversible
+    // in the UI (Traffic Gates cards #3 / #4), same cluster-converging
+    // path as the DDoS mode toggle.
+    if method == hyper::Method::PUT && path == "/api/gates/risk/mode" {
+        return crate::admin_mutate::handle_feature_mode_put(
+            req,
+            services,
+            "risk-mode-put",
+            "risk_engine",
+            "risk-score",
+            "/api/gates/risk/mode",
+            "risk_mode_set",
+            "operator toggled Cumulative IP-risk gate enforce/log-only",
+        )
+        .await;
+    }
+    if method == hyper::Method::PUT && path == "/api/gates/rate-limit/mode" {
+        return crate::admin_mutate::handle_feature_mode_put(
+            req,
+            services,
+            "rate-limit-mode-put",
+            "rate_limit",
+            "ip-rate-limit",
+            "/api/gates/rate-limit/mode",
+            "rate_limit_mode_set",
+            "operator toggled Rate-Limit gate enforce/log-only",
+        )
+        .await;
+    }
     if method == hyper::Method::PUT && path == "/api/rate-limit" {
         return crate::admin_mutate::handle_rate_limit_put(req, services).await;
     }
