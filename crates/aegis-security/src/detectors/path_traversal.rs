@@ -24,21 +24,13 @@ static TRAVERSAL_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // tail of a normal word. The old `(?:c|d):[\\/]` matched `c:/`
         // / `d:/` ANYWHERE, false-positiving on ubiquitous strings like
         // `dynami(c:/)slot`, `ab(c:/)cdn`, `a(d:/)banner` (ad-tech).
-        // 2026-07 (FP fix) — the guard was `[^a-z0-9]` (any non-alnum),
-        // which still allowed `_D:/` — an Oracle ATG Commerce form-handler
-        // param (`?_dyncharset=…&_D:/atg/commerce/…`), a benign platform
-        // idiom. Tightened to a real VALUE boundary (`=`, `&`, `?`, `/`,
-        // `\`, quote, whitespace, start). A real `?file=c:\windows` /
-        // `/c:/boot.ini` still fires; `_D:/`, `.d:/`, `-c:/` no longer do.
-        r#"(?i)(?:^|[=&?/\\"'\s])[cd]:[\\/]"#,
+        // Now the drive letter must follow start or a non-alphanumeric
+        // (`=c:\`, `/c:/`, `=C:/boot.ini`), matching a real
+        // `?file=c:\windows` traversal but not a mid-word coincidence.
+        r"(?i)(?:^|[^a-z0-9])[cd]:[\\/]",
         r"(?:boot\.ini)",
         r"(?:win\.ini)",
-        // Literal UNC `\\host\share`. 2026-07 (FP fix) — the host segment must
-        // START with an alphanumeric (a real UNC/SMB hostname), so the rule no
-        // longer trips on JSON/JS-escaped backslashes in analytics/error beacons
-        // (`https?:\\/\\/…`, `cookie":"\\"…\\"` — where `\\` is followed by `/`
-        // or `"`, not a hostname). Real `\\server\share` still fires.
-        r"(?:\\\\[a-zA-Z0-9][^\\]*\\)",
+        r"(?:\\\\[^\\]+\\)",
         r"(?:%00|\x00)",
         // 2026-05-24 (FP fix) — the old bare `(?:%5c)` matched an
         // encoded backslash ANYWHERE, false-positiving on the heap of
@@ -47,15 +39,11 @@ static TRAVERSAL_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // as DATA — e.g. opaque CDN/beacon paths with `?d=a%5cb`). It
         // was also lowercase-only, so it FP'd on legit `%5c` yet let a
         // real `%5C` attack slip past. Now the encoded backslash must
-        // sit in a traversal context: adjacent to `..`. Real `..%5c..%5c`
-        // still fires; a lone `%5c` in a value no longer trips.
-        // 2026-07 (FP fix) — dropped the `%5c%5c` (encoded UNC) alternative:
-        // it false-positived on analytics/error beacons carrying `\\` in
-        // telemetry data (.NET namespaces / Windows stack-trace paths, e.g.
-        // `name='Ms.Webi.OutgoingRequest'`). A real encoded UNC `%5c%5cserver%5c`
-        // still fires — the decode pass recovers `\\server\`, caught by the
-        // literal-UNC rule `\\\\[^\\]+\\` below.
-        r"(?i)(?:\.\.%5c|%5c\.\.)",
+        // sit in a traversal context: adjacent to `..` or doubled
+        // (encoded UNC `\\`). Real `..%5c..%5c` still fires — the
+        // decode pass recovers `..\`, caught by the `\.\.[\\/]` rule
+        // above; a lone `%5c` in a value no longer trips.
+        r"(?i)(?:\.\.%5c|%5c\.\.|%5c%5c)",
         // GAP-002 (Run-5, 2026-05-09) — overlong UTF-8 encoding
         // for `.`, `/`, `\`. RFC 3629 forbids these (any code
         // point < 0x80 must be encoded in 1 byte), but legacy
@@ -91,49 +79,10 @@ static TRAVERSAL_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // feeds a url-decoded variant where %ef%bc%8f becomes U+FF0F).
         r"(?i)\.\.%ef%bc%8f",
         "\\.\\.\u{ff0f}",
-        // 2026-07 (junk-separator evasion) — a sensitive `/etc/` file reached
-        // when the `/` before the filename is an ENCODED / non-slash separator
-        // (overlong `%c0%af`, `%2f`→ already caught, `%3f`→`?`, `0x2f`, unicode
-        // `%u2215`), so the plain `/etc/passwd` rule above misses it:
-        //   `etc%c0%afpasswd`, `etc%3fshadow`, `etc0x2fgroup`.
-        // Scoped to /etc/-only sensitive files (`passwd/shadow/group/gshadow`) at
-        // a word boundary, with an ENCODED-only gap, so benign `etc`-containing
-        // paths never trip. Measured 0 added FP on 40k Legitimate. The bulk of
-        // this evasion family uses INVALID encoding (`%bg%qf`) with no real-world
-        // value — deliberately NOT matched to keep FP at zero.
-        r"(?i)\betc(?:%[0-9a-z]{2}|0x[0-9a-f]{2}|%u[0-9a-f]{4}){1,6}(?:passwd|shadow|group|gshadow)\b",
     ]
     .iter()
     .map(|p| Regex::new(p).unwrap())
     .collect()
-});
-
-// 2026-07 (junk-separator compound rule) — catches obfuscated traversal whose
-// separator is an INVALID percent-encoding (`etc%bg%qfpasswd`, `..%bg%qf..boot.ini`)
-// that survives url-decode, so neither the `/etc/passwd` (needs a real slash) nor
-// the `%`-count features fire. Requires BOTH signals in the same normalised
-// variant:
-//   1. INVALID_PCT — a `%` + two chars where at least one is a non-hex letter
-//      (`%bg`, `%qf`, `%zz`). Real clients never emit these; measured on 40k
-//      Legitimate only 0.005% carry any (e.g. `50%off`), and none alongside a
-//      sensitive target.
-//   2. SENSITIVE_TARGET — a path-traversal target filename.
-// Alone, INVALID_PCT is not enough (a stray `50%off` is benign); the AND with a
-// sensitive target makes it 0-FP (measured 0/40291) while recovering the invalid-
-// encoding evasion family that raw `%`-counting could only catch by risking FP.
-static INVALID_PCT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"%(?:[0-9a-fA-F][g-zG-Z]|[g-zG-Z][0-9a-zA-Z])").unwrap());
-// Sensitive-file targets. Bare `passwd`/`shadow` are NOT used (they occur in
-// benign words — `box-shadow`, `text-shadow`; `password` doesn't contain `passwd`
-// but `shadow` does appear). Instead they must sit in an `/etc/` slash context OR
-// an `etc<junk-gap>file` context (the junk-separator attack), so `box-shadow`
-// without a preceding `etc<gap>` never matches. The specific config/key filenames
-// are attack-only strings on their own.
-static SENSITIVE_TARGET: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)boot\.ini|win\.ini|wp-config|web\.config|id_rsa|(?:^|[/\\.])\.env|/proc/self|/etc/(?:passwd|shadow|hosts|group|issue|gshadow)|etc(?:%[0-9a-zA-Z]{2}|[^a-z0-9]){1,6}(?:passwd|shadow|group|gshadow|hosts|issue)\b",
-    )
-    .unwrap()
 });
 
 impl Detector for PathTraversalDetector {
@@ -184,14 +133,6 @@ fn check(input: &str, field: &str, signals: &mut Vec<Signal>) {
             });
             return;
         }
-    }
-    // Compound: invalid percent-encoding (junk separator) AND a sensitive target.
-    if INVALID_PCT.is_match(input) && SENSITIVE_TARGET.is_match(input) {
-        signals.push(Signal {
-            score: super::scores::path_traversal::PATH_TRAVERSAL,
-            tag: "path_traversal".into(),
-            field: field.into(),
-        });
     }
 }
 
@@ -318,15 +259,6 @@ mod tests {
     positive!(webinf_xml,           "/read?f=/WEB-INF/web.xml");
     positive!(nginx_conf,           "/read?f=/etc/nginx/nginx.conf");
     positive!(fullwidth_slash_enc,  "/assets?p=..%ef%bc%8f..%ef%bc%8fetc/passwd");
-    // 2026-07 (junk-separator) — /etc/ sensitive file via ENCODED non-slash gap.
-    positive!(etc_overlong_passwd,  "/download?f=etc%c0%afpasswd");
-    positive!(etc_qmark_shadow,     "/read?f=etc%3fshadow");
-    positive!(etc_hex_group,        "/read?f=etc0x2fgroup");
-    positive!(etc_unicode_passwd,   "/read?f=etc%u2215passwd");
-    // 2026-07 (compound: invalid-% + sensitive target) — invalid-encoding junk sep.
-    positive!(junk_sep_etc_passwd,  "/?p=..%bg%qf..%bg%qfetc%bg%qfpasswd");
-    positive!(junk_sep_etc_shadow,  "/read?f=etc%zz%zzshadow");
-    positive!(junk_sep_qmark_passwd,"/?p=%3F.%bg%qf%3F.%bg%qfetc%bg%qfpasswd");
 
     negative!(clean_root, "/");
     negative!(clean_api, "/api/users/123");
@@ -373,23 +305,6 @@ mod tests {
     negative!(clean_encoded_backslash_value, "/track?d=a%5cb");
     negative!(clean_encoded_backslash_upper, "/img?u=a%5Cb");
     negative!(clean_beacon_encoded_bs, "/AGY0DmkM-xA2f00AEg/t9amcwJVb2mp3z?d=x%5cy");
-    // 2026-07 (junk-separator rule FP guards) — the new etc-gap rule needs an
-    // ENCODED gap AND an /etc/-specific file; these benign forms must stay clean.
-    negative!(clean_fetch_passwordreset, "/fetch?redirect=passwordreset");   // "etc" in fetch, no encoded gap, passwd≠password
-    negative!(clean_etc_readme,          "/docs/etc/readme.txt");            // etc but not a sensitive file
-    negative!(clean_etc_eq_passwords,    "/config?etc=passwords");           // gap `=` not encoded, and passwords≠passwd\b
-    negative!(clean_etcher_download,     "/apps/etcher-1.18.11.deb");        // "etc" inside "etcher", no gap+target
-    // 2026-07 (FP fix) — drive-letter guard + encoded-UNC drop.
-    negative!(clean_atg_form_handler,    "/checkout/includes/?_dyncharset=utf-8&_D:/atg/commerce/order/CartModifierFormHandler"); // ATG `_D:/` idiom
-    negative!(clean_beacon_double_bs,    "/collect/t.gif?name=Ns%5c%5cClass"); // `\\` in telemetry data, no `..` / trailing `\`
-    negative!(clean_beacon_js_escape,    "/collect/v1/t.gif?re=(https?:\\\\/\\\\/mem.gfx.ms)"); // JS-regex escape `\\/`, host isn't alnum
-    // 2026-07 (compound rule FP guards) — invalid-% present but must NOT fire
-    // without a sensitive target; and a target word without invalid-% context.
-    negative!(clean_percent_off,         "/sale?discount=50%off&id=42");        // invalid-% `%of`, no target
-    negative!(clean_invalid_pct_only,    "/track?a=%gg&b=%hh&id=1");            // invalid-% only, no target
-    negative!(clean_box_shadow_pct,      "/theme?css=box-shadow%20effect&x=%zz"); // invalid-% + "shadow" but no /etc/ or etc-gap
-    negative!(clean_password_reset_pct,  "/auth?type=password_reset&t=%zz");    // "password" ≠ "passwd", invalid-% present
-    negative!(clean_etc_readme_pct,      "/docs?p=etc%bg%qfreadme.md");         // etc-gap but "readme" not sensitive
 
     // 2026-05-24 (FP fix) — body scanning skips the bare literal `../`.
     fn view_with_body(body: &str) -> (http::Method, http::Uri, http::HeaderMap, BodyPeek) {
