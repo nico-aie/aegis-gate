@@ -132,7 +132,7 @@ pub const FEATURE_NAMES: [&str; NUM_FEATURES] = [
 
 static SQL_KEYWORDS: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r"(?i)\b(select|union|insert|update|delete|drop|create|alter|exec|execute|where|from|having|order|group|join|table|database|schema|char|nchar|varchar|cast|convert|declare|waitfor|xp_|sp_|0x|and|or|ascii|substr|substring|mid|version|length|benchmark|sleep|pg_sleep|randomblob|extractvalue|updatexml|xmlagg|xml2clob)\b",
+        r"(?i)\b(select|union|insert|update|delete|drop|create|alter|exec|execute|where|from|having|order|group|join|table|database|schema|char|nchar|varchar|cast|convert|declare|waitfor|xp_|sp_|0x)\b",
     )
     .expect("sql keyword regex compiles")
 });
@@ -145,7 +145,7 @@ static SQL_KEYWORDS: Lazy<Regex> = Lazy::new(|| {
 // identical to the Python engine. `(?is)` = case-insensitive + dot-matches-\n.
 static SQL_CTX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)union\s+(?:all\s+)?select|\bselect\b[^a-zA-Z]*?(?:\*|@@|count\s*\(|distinct\b|top\s+\d|[\w`\[\]]+\s*,)|\bselect\s+(?:version|substring|substr|concat|char|count|current_user|current_database|current_setting|session_user|user|database|group_concat|load_file)\b|@@\w+|\bfrom\s+(?:information_schema|mysql\.|pg_|sys\.|sysobjects)|\binsert\s+into\b|\bdelete\s+from\b|\bupdate\b[^;]{0,80}?\bset\b|\bdrop\s+(?:table|database|schema)\b|\balter\s+table\b|\bcreate\s+(?:table|database)\b|\b(?:order|group)\s+by\s+\d|\bhaving\s+\d|\binto\s+(?:outfile|dumpfile)\b|\bwaitfor\s+delay\b|\b(?:information_schema|load_file|extractvalue|updatexml|benchmark|sleep|pg_sleep)\s*\(|\b(?:xp_|sp_)\w+|(?:--|\#)\s*$|/\*.*?\*/|;\s*(?:select|insert|update|delete|drop|union|create|alter)\b|['"]\s*(?:or|and)\s|\b(?:or|and)\b\s*['"\d][^=<>]{0,12}?[=<>]\s*['"\d\w(]|\b(?:and|or)\b\s+\d+\s*[=<>]+\s*\d+|\b(?:and|or)\b\s+\w{1,4}\s*=\s*\w{1,4}\b|\b(?:and|or)\b\s+(?:true|false)\b|\b(?:and|or)\b[^;]{0,40}?\b(?:ascii|substr|substring|mid|left|right|version|length|hex|ord)\s*\(|\b(?:randomblob|xmlagg|xml2clob)\s*\(|\bunion\b[\s(]*\bselect\b"#,
+        r#"(?is)union\s+(?:all\s+)?select|\bselect\b[^a-zA-Z]*?(?:\*|@@|count\s*\(|distinct\b|top\s+\d|[\w`\[\]]+\s*,)|\bselect\s+(?:version|substring|substr|concat|char|count|current_user|current_database|current_setting|session_user|user|database|group_concat|load_file)\b|@@\w+|\bfrom\s+(?:information_schema|mysql\.|pg_|sys\.|sysobjects)|\binsert\s+into\b|\bdelete\s+from\b|\bupdate\b[^;]{0,80}?\bset\b|\bdrop\s+(?:table|database|schema)\b|\balter\s+table\b|\bcreate\s+(?:table|database)\b|\b(?:order|group)\s+by\s+\d|\bhaving\s+\d|\binto\s+(?:outfile|dumpfile)\b|\bwaitfor\s+delay\b|\b(?:information_schema|load_file|extractvalue|updatexml|benchmark|sleep|pg_sleep)\s*\(|\b(?:xp_|sp_)\w+|(?:--|\#)\s*$|/\*.*?\*/|;\s*(?:select|insert|update|delete|drop|union|create|alter)\b|['"]\s*(?:or|and)\s|\b(?:or|and)\b\s*['"\d][^=<>]{0,12}?[=<>]\s*['"\d\w(]"#,
     )
     .expect("sql context regex compiles")
 });
@@ -197,54 +197,6 @@ fn is_binary_body(s: &str) -> bool {
         .filter(|&c| (' '..='~').contains(&c) || matches!(c, '\t' | '\n' | '\r'))
         .count();
     (printable as f32) / (total as f32) < 0.75
-}
-
-// ─── Attack-normalization (traversal/sqli evasion defeat) — mirror features.py ───
-// hex-byte notation 0x2e→. 0x2f→/ 0x5c→\  ; odd separators → space.
-static HEX_TRAV: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)0x2e|0x2f|0x5c").expect("hex_trav"));
-static ODD_SEP: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"[\x0b\x0c\x1c-\x1f\u{a0}\u{fffd}\u{2000}-\u{200a}\u{202f}\u{205f}\u{3000}]")
-        .expect("odd_sep")
-});
-// Overlong-UTF8: %c0%ae→. %c0%af→/ %c1%9c→\ (and multi-byte / fuzzer variants).
-static OVERLONG: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)%[cdef][0-9a-f](?:%[89ab][0-9a-f])*%(?:ae|ee|5e|fe|af|9c)").expect("overlong")
-});
-// Sensitive traversal target (guards the repeated-`..` junk-separator signal).
-static TRAV_TARGET: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)boot\.ini|/etc/|etc[/\\%]|passwd|shadow|win\.ini|/windows|/proc/|/self/|\bhosts\b|\.ssh|id_rsa|wp-config|web\.config")
-        .expect("trav_target")
-});
-static DOTS3: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.{3,}").expect("dots3"));
-
-/// Overlong-UTF8 decode — MUST run on the RAW string BEFORE url_decode (mirrors
-/// features.py `_decode_overlong`). Final byte decides the char.
-fn decode_overlong(s: &str) -> String {
-    OVERLONG
-        .replace_all(s, |c: &regex::Captures| {
-            let m = c.get(0).unwrap().as_str();
-            match m[m.len() - 2..].to_ascii_lowercase().as_str() {
-                "af" => "/",
-                "9c" => "\\",
-                _ => ".",
-            }
-            .to_string()
-        })
-        .into_owned()
-}
-
-/// hex-byte + odd-separator normalization on the DECODED surface (mirrors
-/// features.py `_normalize_for_patterns`).
-fn normalize_for_patterns(s: &str) -> String {
-    let hex = HEX_TRAV.replace_all(s, |c: &regex::Captures| {
-        match c.get(0).unwrap().as_str().to_ascii_lowercase().as_str() {
-            "0x2f" => "/",
-            "0x5c" => "\\",
-            _ => ".",
-        }
-        .to_string()
-    });
-    ODD_SEP.replace_all(&hex, " ").into_owned()
 }
 
 // Bare `.php` removed — a `.php` extension is ordinary in benign legacy/3rd-party
@@ -406,9 +358,7 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
         }
         s
     };
-    // Overlong-UTF8 decode BEFORE url_decode; hex-byte + odd-sep normalize AFTER.
-    let full_dec_for_patterns =
-        normalize_for_patterns(&url_decode(&decode_overlong(&full_for_patterns)));
+    let full_dec_for_patterns = url_decode(&full_for_patterns);
 
     // Ratio denominator — char count of the char surface, clamped to 1.
     let n = full_for_chars.chars().count().max(1) as f32;
@@ -435,20 +385,9 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
         .filter(|c| matches!(c, '\'' | '"' | '<' | '>' | ';'))  // injection chars only (= % & + are benign URL syntax)
         .count() as f32;
 
-    // path traversal: literal ../ and ..\, hex `..` (0x2e0x2e on the raw surface),
-    // plus the target-guarded junk-separator form (repeated `..` + a sensitive
-    // target). Mirrors features.py feature 17.
-    let mut ptc = full_dec_for_patterns.matches("../").count()
-        + full_dec_for_patterns.matches("..\\").count()
-        + full_for_patterns.to_lowercase().matches("0x2e0x2e").count();
-    let dd = DOTS3
-        .replace_all(&full_dec_for_patterns, " ")
-        .matches("..")
-        .count();
-    if dd >= 2 && TRAV_TARGET.is_match(&full_dec_for_patterns) {
-        ptc += dd;
-    }
-    let path_traversal_count = ptc as f32;
+    // "../" has no alphabetic chars, so the count is case-invariant —
+    // scan the decoded string directly (matches the training extractor).
+    let path_traversal_count = full_dec_for_patterns.matches("../").count() as f32;
 
     [
         request.chars().count() as f32,                          // 0  request_len (chars, incl. headers)
@@ -565,30 +504,7 @@ mod tests {
     fn path_traversal_lights_up_after_decoding() {
         let v = extract_features("GET /files?p=..%2F..%2Fetc%2Fpasswd");
         assert!(v[17] >= 1.0, "path_traversal_count after decode, got {}", v[17]);
-        // pct_encoded_count is 0 here: %2F decodes to '/', a benign URL char that the
-        // injection-relevant pct feature no longer counts (see dangerous_pct_count).
-        assert_eq!(v[14], 0.0, "pct_encoded_count (benign %2F), got {}", v[14]);
-    }
-
-    // Parity with ml_waf/features.py reference values (round-2 evasion payloads).
-    #[test]
-    fn traversal_sqli_evasion_parity() {
-        // hex-byte forward + backslash → trav = 6 (six ../ or ..\ groups)
-        assert_eq!(extract_features("GET /?p=0x2e0x2e/0x2e0x2e/etc/issue")[17], 6.0);
-        assert_eq!(extract_features("GET /?p=0x2e0x2e0x5c0x2e0x2e0x5cetc0x5cissue")[17], 6.0);
-        // overlong-UTF8 %c0%ae%c0%ae%c0%af → ../ → trav = 1
-        assert_eq!(extract_features("GET /?p=%c0%ae%c0%ae%c0%afboot.ini")[17], 1.0);
-        // junk-separator: three `..` groups + target → trav = 3
-        assert_eq!(extract_features("GET /?p=..%bg%qf..%bg%qf..%bg%qfboot.ini")[17], 3.0);
-        // blind sqli via functions after `and` → sql_keyword_count = 4
-        assert_eq!(extract_features("GET /?p=1 and ascii(lower(substr(version(),1,1)))=51")[15], 4.0);
-        // parens tautology → sql = 1
-        assert_eq!(extract_features("GET /?p=(1)and(1)=(1)--")[15], 1.0);
-        // benign GraphQL `...` spread (no traversal target) → trav = 0 (no FP)
-        assert_eq!(
-            extract_features("POST /consumer/graphql/ {\"query\":\"...frag ...frag2 ...x\"}")[17],
-            0.0
-        );
+        assert!(v[14] >= 3.0, "pct_encoded_count, got {}", v[14]);
     }
 
     #[test]
@@ -716,7 +632,7 @@ mod tests {
         let cases: &[(&str, [f32; NUM_FEATURES])] = &[
             (
                 "GET /search?q=' UNION SELECT * FROM users--\nUser-Agent: sqlmap/1.7",
-                [66.0, 0.0, 7.0, 3.0, 27.0, 2.0, 4.558107, 0.0, 0.384615, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 4.277613],
+                [66.0, 0.0, 7.0, 3.0, 27.0, 2.0, 4.558107, 0.0, 0.384615, 2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 4.277613],
             ),
             (
                 "POST /api/feedback {\"c\":\"<script>alert(1)</script>\"}\nContent-Type: application/json",
@@ -724,7 +640,7 @@ mod tests {
             ),
             (
                 "GET /static/..%2f..%2fetc%2fpasswd\nReferer: http://169.254.169.254/",
-                [67.0, 0.0, 30.0, 0.0, 0.0, 0.0, 3.647743, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 3.991729],
+                [67.0, 0.0, 30.0, 0.0, 0.0, 0.0, 3.647743, 0.1, 0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 2.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 3.991729],
             ),
             (
                 "GET /\nUser-Agent: Mozilla/5.0\nCookie: sid=abc",
