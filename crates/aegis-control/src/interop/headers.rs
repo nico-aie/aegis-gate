@@ -20,10 +20,19 @@ pub const CACHE: &str = "x-waf-cache";
 pub const MODE: &str = "x-waf-mode";
 
 /// Bonus header (§5.2) — the full set of detectors that fired on a
-/// multi-detector decision, comma-joined (e.g. `sqli,xss,path-traversal`).
+/// decision, comma-joined (e.g. `sqli,xss,path-traversal`).
 /// `X-WAF-Rule-Id` (§5.1) carries only the single primary detector to
 /// stay singular + wire-legal; this preserves the complete attribution
-/// machine-readably. Only emitted when more than one detector fired.
+/// machine-readably.
+///
+/// 2026-07-10 — emitted whenever the rule attribution is a detector
+/// class, for a **single** detector as well as multiple, so a
+/// one-detector decision carries the same machine-readable attribution
+/// as a multi-detector one (previously it was multi-only). Gate/infra
+/// rule_ids (`risk-score`, `risk-challenge`, `blacklist`, `ddos`,
+/// `ip-rate-limit`, `none`, system-level signals) are NOT detectors and
+/// are excluded — classified via [`super::rule_map::rule_to_feature`]
+/// (a rule maps to the `rules_engine` feature iff it's a detector).
 pub const DETECTORS: &str = "x-waf-detectors";
 
 /// RF-FP (2026-07-08 QC) — set to `true` on a response whose body the
@@ -427,17 +436,26 @@ impl Decision {
             .map(sanitize_primary_rule_id)
             .unwrap_or_else(|| "none".to_string());
         insert(headers, RULE_ID, &rule_id);
-        // §5.2 bonus — full detector list when more than one fired.
+        // §5.2 bonus — the detector(s) that fired. Emitted whenever the
+        // rule attribution is a detector class, for a single detector as
+        // well as multiple (2026-07-10), so `X-WAF-Rule-Id: sqli` also
+        // carries `X-WAF-Detectors: sqli`. Gate/infra rule_ids
+        // (`risk-score`, `risk-challenge`, `blacklist`, `ddos`, `none`,
+        // system-level signals) are NOT detectors and are filtered out:
+        // a segment counts only if it maps to the `rules_engine` feature.
         if let Some(raw) = self.rule_id.as_deref() {
-            if raw.contains(',') {
-                let all: Vec<String> = raw
-                    .split(',')
-                    .map(sanitize_rule_id)
-                    .filter(|s| s != "none")
-                    .collect();
-                if !all.is_empty() {
-                    insert(headers, DETECTORS, &all.join(","));
-                }
+            let detectors: Vec<String> = raw
+                .split(',')
+                .map(str::trim)
+                .filter(|seg| {
+                    super::rule_map::rule_to_feature(seg)
+                        .is_some_and(|(feat, _)| feat == "rules_engine")
+                })
+                .map(sanitize_rule_id)
+                .filter(|s| s != "none")
+                .collect();
+            if !detectors.is_empty() {
+                insert(headers, DETECTORS, &detectors.join(","));
             }
         }
         insert(headers, CACHE, self.cache.as_str());
@@ -794,11 +812,46 @@ mod tests {
     }
 
     #[test]
-    fn stamp_single_detector_emits_no_detectors_header() {
+    fn stamp_single_detector_also_emits_detectors_header() {
+        // 2026-07-10 — a single-detector decision now carries
+        // `X-WAF-Detectors` too (was multi-only), so tooling reads the
+        // same machine-readable attribution regardless of detector count.
         let mut h = HeaderMap::new();
         Decision::block("rid".into(), 90, "command_injection", Mode::Enforce).stamp(&mut h);
         assert_eq!(h.get(RULE_ID).unwrap(), "command-injection");
-        assert!(h.get(DETECTORS).is_none(), "single detector → no bonus header");
+        assert_eq!(h.get(DETECTORS).unwrap(), "command-injection");
+    }
+
+    #[test]
+    fn stamp_gate_and_infra_rule_ids_emit_no_detectors_header() {
+        // The risk gate, blacklist, rate-limit, ddos, and system-level
+        // signals are NOT detectors — their singular rule_id must never
+        // leak into `X-WAF-Detectors`, which lists detector classes only.
+        for rule in [
+            "risk-challenge",
+            "risk-score",
+            "blacklist",
+            "ip-rate-limit",
+            "ddos",
+            "body-too-large",
+            "unmatched_route",
+        ] {
+            let mut h = HeaderMap::new();
+            Decision::block("rid".into(), 90, rule, Mode::Enforce).stamp(&mut h);
+            assert!(
+                h.get(DETECTORS).is_none(),
+                "gate/infra rule_id {rule:?} must not emit X-WAF-Detectors",
+            );
+        }
+    }
+
+    #[test]
+    fn stamp_mixed_detector_and_gate_lists_only_detectors() {
+        // A defensive check: if a rule_id ever mixed a detector with a
+        // non-detector segment, only the detector reaches X-WAF-Detectors.
+        let mut h = HeaderMap::new();
+        Decision::block("rid".into(), 90, "sqli,blacklist", Mode::Enforce).stamp(&mut h);
+        assert_eq!(h.get(DETECTORS).unwrap(), "sqli");
     }
 
     // ----- F-V26-003: X-WAF-Risk-Score clamp to 0-100 -----
