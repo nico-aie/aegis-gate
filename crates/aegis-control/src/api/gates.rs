@@ -294,6 +294,13 @@ pub struct RateLimitView {
     pub limit: u32,
     /// Configured window in seconds.
     pub window_seconds: u64,
+    /// 2026-07-10 — interop mode resolved for the `rate_limit` feature
+    /// (`"enforce"` / `"log_only"`). Distinct from `enabled` (config
+    /// on/off): a `set_profile log_only` on `rate_limit` leaves the gate
+    /// `enabled` but suppresses the 429 (detect-only). Surfacing it lets
+    /// the Traffic Gates card show "monitor — not blocking" instead of a
+    /// misleading "ENABLED", mirroring the DDoS gate view.
+    pub effective_mode: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -328,12 +335,18 @@ impl RateLimitPutBody {
     }
 }
 
-pub fn render_get_rate_limit(limiter: &Arc<IpRateLimiter>) -> String {
+/// `effective_mode` is the interop mode resolved for the `rate_limit`
+/// feature (`"enforce"` / `"log_only"`); the caller resolves it from the
+/// live `ModeStore` (via `mode_for_rule(.., Some("ip-rate-limit"))`) so a
+/// `set_profile log_only` is reflected in the gate view, not just the
+/// config-level `enabled` flag. Mirrors [`render_get`] for DDoS.
+pub fn render_get_rate_limit(limiter: &Arc<IpRateLimiter>, effective_mode: &str) -> String {
     let cfg = limiter.config_snapshot();
     let view = RateLimitView {
         enabled: cfg.enabled,
         limit: cfg.limit,
         window_seconds: cfg.window.as_secs(),
+        effective_mode: effective_mode.to_string(),
     };
     serde_json::to_string(&view).unwrap_or_else(|_| String::from("{}"))
 }
@@ -501,6 +514,25 @@ mod tests {
         .validate()
         .unwrap_err();
         assert_eq!(errs.len(), 2);
+    }
+
+    #[test]
+    fn rate_limit_render_carries_effective_mode() {
+        // 2026-07-10 — the Traffic Gates card needs the resolved interop
+        // mode (a `set_profile log_only` leaves the gate `enabled` but
+        // suppresses the 429) so it can show "monitor — not blocking"
+        // instead of a misleading "ENABLED". Mirrors the DDoS view.
+        let limiter = std::sync::Arc::new(IpRateLimiter::new(IpRateLimitConfig {
+            limit: 100,
+            window: std::time::Duration::from_secs(60),
+            enabled: true,
+        }));
+        for mode in ["enforce", "log_only"] {
+            let body = render_get_rate_limit(&limiter, mode);
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(v["enabled"], true, "config enable flag is independent of mode");
+            assert_eq!(v["effective_mode"], mode);
+        }
     }
 
     #[test]

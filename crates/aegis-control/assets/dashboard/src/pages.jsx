@@ -14056,6 +14056,43 @@ function StrikesEditModal({ current, onClose, onSaved }) {
   );
 }
 
+// 2026-07-10 — shared enforce/log_only control for the Cumulative IP
+// risk (#3) and Rate Limit (#4) Traffic Gates cards. Pairs each card's
+// config on/off toggle with the interop mode resolved from the live
+// ModeStore: a `set_profile log_only` leaves the gate *enabled* but
+// suppresses enforcement (detect-only), so without this an operator sees
+// a misleading "ON/ENABLED" while nothing actually blocks. Flips the
+// feature-level mode via the cluster-converging PUT the parent supplies.
+// Presentational — all hooks/state live in the parent card, so there's
+// no rules-of-hooks hazard (see build.sh acorn guard).
+function GateModeControl({ mode, busy, onSet }) {
+  const logOnly = mode === 'log_only';
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>Enforcement</span>
+      <button
+        className={`btn ${mode === 'enforce' ? 'primary' : ''}`}
+        disabled={busy || mode === 'enforce'}
+        onClick={() => onSet('enforce')}
+        title="Enforce — risk decisions actually block / challenge."
+        style={{ fontSize: 11, padding: '3px 10px', cursor: busy ? 'wait' : 'pointer' }}
+      >enforce</button>
+      <button
+        className={`btn ${logOnly ? 'primary' : ''}`}
+        disabled={busy || logOnly}
+        onClick={() => onSet('log_only')}
+        title="Log-only — decisions are recorded but the request is forwarded upstream (monitor)."
+        style={{ fontSize: 11, padding: '3px 10px', cursor: busy ? 'wait' : 'pointer' }}
+      >log_only</button>
+      {logOnly && (
+        <span className="pill warn" style={{ fontSize: 10 }}>
+          monitor — set_profile log_only, not blocking
+        </span>
+      )}
+    </div>
+  );
+}
+
 // 2026-05-10 — moved from PageSettings into Traffic Gates so all
 // per-IP-risk knobs (strike threshold, cumulative challenge_at,
 // cumulative block_at) sit on one page. The two thresholds gate
@@ -14071,6 +14108,12 @@ function CumulativeIpRiskCard() {
   // Linear decay rate (points/hour) — editable; synced from the live API below.
   const [perHour, setPerHour] = useStateP(30);
   const [riskBusy, setRiskBusy] = useStateP(false);
+  // 2026-07-10 — interop enforce/log_only mode for the risk_engine
+  // feature, resolved server-side and surfaced so the card can pair its
+  // on/off toggle with the actual blocking behaviour. Separate busy flag
+  // so a mode flip doesn't lock the threshold sliders and vice-versa.
+  const [modeBusy, setModeBusy] = useStateP(false);
+  const effMode = riskApi.data?.effective_mode || 'enforce';
   // 2026-05-21 — master on/off for the whole cumulative gate.
   // Defaults to enabled until the API answers (the live value syncs in
   // the effect below). When off, accumulated score never gates traffic.
@@ -14114,6 +14157,30 @@ function CumulativeIpRiskCard() {
     await putThresholds({ enabled: next }, `Cumulative IP risk gate ${next ? 'ENABLED' : 'DISABLED'}`);
   }
 
+  // 2026-07-10 — flip the risk_engine feature's interop mode
+  // (enforce/log_only) via the cluster-converging PUT, so a
+  // `set_profile log_only` is reversible from this card without the
+  // loopback `/__waf_control/set_profile`. Orthogonal to the on/off
+  // toggle above (config `enabled`).
+  async function setRiskMode(next) {
+    if (modeBusy || next === effMode) return;
+    setModeBusy(true);
+    try {
+      const r = await window.csrfMutate('/api/gates/risk/mode', { method: 'PUT', body: { mode: next } });
+      if (r && r.ok !== false && (r.status === undefined || (r.status >= 200 && r.status < 300))) {
+        window.aegisToast(`Cumulative IP-risk gate → ${next}`, 'ok');
+        riskApi.reload && riskApi.reload();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r?.status ?? '?'}`;
+        window.aegisToast(`Mode change failed: ${msg}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`Mode change failed: ${e.message || e}`, 'err');
+    } finally {
+      setModeBusy(false);
+    }
+  }
+
   async function saveRiskThresholds() {
     const ph = Math.max(0, Math.round(Number(perHour) || 0));
     await putThresholds(
@@ -14148,6 +14215,12 @@ function CumulativeIpRiskCard() {
             style={{ cursor: riskBusy ? 'wait' : 'pointer' }}
           />
         </div>
+      </div>
+      {/* 2026-07-10 — interop mode control, paired with the on/off toggle
+          above. Always visible (not dimmed with the body) so the
+          enforce/log_only state is legible even when the gate is off. */}
+      <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <GateModeControl mode={effMode} busy={modeBusy} onSet={setRiskMode} />
       </div>
       <div style={{ padding: 16, opacity: gateEnabled ? 1 : 0.55 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
@@ -14269,6 +14342,11 @@ function RateLimitGateCard() {
   const cfg = rl.data;
   const [editing, setEditing] = useStateP(false);
   const [busy, setBusy] = useStateP(false);
+  // 2026-07-10 — interop enforce/log_only mode for the rate_limit feature,
+  // resolved server-side. Paired with the enable toggle below so the card
+  // shows "monitor — not blocking" when a set_profile put it in log_only.
+  const [modeBusy, setModeBusy] = useStateP(false);
+  const effMode = cfg?.effective_mode || 'enforce';
 
   // 2026-06-22 — inline enable/disable toggle (DDoS-parity). PUTs the flipped
   // `enabled` alongside the current limit/window so the durable config doc and
@@ -14297,6 +14375,28 @@ function RateLimitGateCard() {
     }
   }
 
+  // 2026-07-10 — flip the rate_limit feature's interop mode
+  // (enforce/log_only) via the cluster-converging PUT. Orthogonal to the
+  // enable toggle: log_only leaves the gate enabled but suppresses the 429.
+  async function setRateMode(next) {
+    if (modeBusy || next === effMode) return;
+    setModeBusy(true);
+    try {
+      const r = await window.csrfMutate('/api/gates/rate-limit/mode', { method: 'PUT', body: { mode: next } });
+      if (r && r.ok !== false && (r.status === undefined || (r.status >= 200 && r.status < 300))) {
+        window.aegisToast && window.aegisToast(`Rate limit → ${next}`, 'ok');
+        rl.reload && rl.reload();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r?.status ?? '?'}`;
+        window.aegisToast && window.aegisToast(`Mode change failed: ${msg}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast && window.aegisToast(`Mode change failed: ${e.message || e}`, 'err');
+    } finally {
+      setModeBusy(false);
+    }
+  }
+
   return (
     <div id="rate-limit-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
@@ -14318,6 +14418,12 @@ function RateLimitGateCard() {
                 </span>
               </div>
               <MaskSwitch on={enabled} busy={busy} onToggle={toggleEnabled} label="Toggle rate-limit gate" />
+            </div>
+            {/* 2026-07-10 — interop mode control, paired with the enable
+                toggle above so a set_profile log_only is visible + reversible
+                here instead of only via the loopback control plane. */}
+            <div style={{ marginBottom: 12, paddingBottom: 12, borderBottom: '1px solid var(--border)' }}>
+              <GateModeControl mode={effMode} busy={modeBusy} onSet={setRateMode} />
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, marginBottom: 12, opacity: enabled ? 1 : 0.5 }}>
               <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
