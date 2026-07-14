@@ -521,10 +521,7 @@ pub(crate) async fn handle_data_request_inner(
     // blocks on the SAME route correctly showed high. Unmatched paths
     // fall back to Low (and still 404 in the forward path as before).
     let resolved_route = upstream_ctx.route_table.resolve(
-        req.headers()
-            .get(hyper::header::HOST)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("localhost"),
+        crate::route::host::effective_host(req.headers(), req.uri()),
         req.uri().path(),
         req.method(),
     );
@@ -2164,12 +2161,8 @@ pub(crate) async fn forward_allow_to_upstream(
         shedder.record_rtt(request_start.elapsed());
     }
 
-    let host = parts
-        .headers
-        .get(hyper::header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("localhost")
-        .to_string();
+    let host =
+        crate::route::host::effective_host(&parts.headers, &parts.uri).to_string();
     let path = parts.uri.path().to_string();
     let method = parts.method.clone();
     tracing::Span::current().record("host", host.as_str());

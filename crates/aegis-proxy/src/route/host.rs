@@ -63,6 +63,32 @@ impl HostMatcher {
     }
 }
 
+/// Fallback host when a request carries no authority at all
+/// (HTTP/1.0 without a `Host` header, or an origin-form h2 request
+/// with no `:authority`).
+pub const DEFAULT_HOST: &str = "localhost";
+
+/// The effective request host, for route matching / tier resolution /
+/// cache keys.
+///
+/// HTTP/1.1 carries the authority in the `Host` header. HTTP/2 and
+/// HTTP/3 carry it in the `:authority` pseudo-header, which hyper
+/// surfaces on the request URI and does *not* mirror into `Host`.
+/// Reading only the header therefore made every h2 request fall back
+/// to the literal `DEFAULT_HOST`, collapsing all vhosts onto whichever
+/// route matched `localhost` (or 404ing when none did).
+///
+/// `Host` wins when present so HTTP/1.1 behaviour is unchanged. The
+/// returned value may still carry a port; [`HostMatcher::matches`]
+/// strips it.
+pub fn effective_host<'a>(headers: &'a http::HeaderMap, uri: &'a http::Uri) -> &'a str {
+    headers
+        .get(http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| uri.authority().map(|a| a.as_str()))
+        .unwrap_or(DEFAULT_HOST)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +245,72 @@ mod tests {
     fn sni_mismatch_rejected_by_wildcard() {
         let m = HostMatcher::new("*.example.com").unwrap();
         assert!(!m.matches("evil.attacker.com"));
+    }
+
+    // -----------------------------------------------------------------------
+    // effective_host — HTTP/1.1 `Host` vs HTTP/2 `:authority`
+    // -----------------------------------------------------------------------
+
+    fn headers_with_host(value: &str) -> http::HeaderMap {
+        let mut h = http::HeaderMap::new();
+        h.insert(http::header::HOST, value.parse().unwrap());
+        h
+    }
+
+    #[test]
+    fn effective_host_reads_http1_host_header() {
+        let headers = headers_with_host("abc.com");
+        let uri: http::Uri = "/admin".parse().unwrap();
+        assert_eq!(effective_host(&headers, &uri), "abc.com");
+    }
+
+    #[test]
+    fn effective_host_falls_back_to_h2_authority() {
+        // hyper puts the HTTP/2 `:authority` pseudo-header on the URI
+        // and leaves `Host` unset — the shape that used to resolve to
+        // DEFAULT_HOST and misroute every h2 request.
+        let headers = http::HeaderMap::new();
+        let uri: http::Uri = "https://abc.com/admin".parse().unwrap();
+        assert_eq!(effective_host(&headers, &uri), "abc.com");
+    }
+
+    #[test]
+    fn effective_host_prefers_host_header_over_authority() {
+        let headers = headers_with_host("abc.com");
+        let uri: http::Uri = "https://other.example/admin".parse().unwrap();
+        assert_eq!(effective_host(&headers, &uri), "abc.com");
+    }
+
+    #[test]
+    fn effective_host_keeps_authority_port_for_matcher_to_strip() {
+        let headers = http::HeaderMap::new();
+        let uri: http::Uri = "https://abc.com:8443/admin".parse().unwrap();
+        assert_eq!(effective_host(&headers, &uri), "abc.com:8443");
+
+        let m = HostMatcher::new("abc.com").unwrap();
+        assert!(m.matches(effective_host(&headers, &uri)));
+    }
+
+    #[test]
+    fn effective_host_defaults_when_no_authority_anywhere() {
+        let headers = http::HeaderMap::new();
+        let uri: http::Uri = "/admin".parse().unwrap();
+        assert_eq!(effective_host(&headers, &uri), DEFAULT_HOST);
+    }
+
+    #[test]
+    fn h2_authority_selects_the_matching_vhost_not_localhost() {
+        // The production symptom: two exact-host routes, an h2 request
+        // for `abc.com`. Pre-fix the host resolved to "localhost", so
+        // the `localhost` route swallowed it (or nothing matched).
+        let abc = HostMatcher::new("abc.com").unwrap();
+        let local = HostMatcher::new("localhost").unwrap();
+
+        let headers = http::HeaderMap::new();
+        let uri: http::Uri = "https://abc.com/".parse().unwrap();
+        let host = effective_host(&headers, &uri);
+
+        assert!(abc.matches(host));
+        assert!(!local.matches(host));
     }
 }

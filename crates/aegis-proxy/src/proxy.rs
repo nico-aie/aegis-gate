@@ -576,12 +576,8 @@ where
     let bench_total_start: Option<Instant> =
         ctx.benchmark.is_on().then(Instant::now);
 
-    let host = req
-        .headers()
-        .get("host")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("localhost")
-        .to_string();
+    let host =
+        crate::route::host::effective_host(req.headers(), req.uri()).to_string();
     let path = req.uri().path().to_string();
     let method = req.method().clone();
 
